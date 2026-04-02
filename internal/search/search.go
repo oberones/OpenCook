@@ -57,4 +57,3 @@ func (i NoopIndex) Status() Status {
 func (i NoopIndex) Search(_ context.Context, _ Query) (Result, error) {
 	return Result{}, nil
 }
-

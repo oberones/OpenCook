@@ -28,7 +28,10 @@ func New(cfg config.Config, logger *log.Logger, build version.Info) (*Applicatio
 	postgresStore := pg.New(cfg.PostgresDSN)
 	searchIndex := search.NewNoopIndex(cfg.OpenSearchURL)
 	blobStore := blob.NewNoopStore(cfg.BlobStorageURL)
-	authnVerifier := authn.NoopVerifier{}
+	keyStore := authn.NewMemoryKeyStore()
+	authnVerifier := authn.NewChefVerifier(keyStore, authn.Options{
+		AllowedClockSkew: cfg.AuthSkew,
+	})
 	authzAuthorizer := authz.NoopAuthorizer{}
 
 	handler := api.NewRouter(api.Dependencies{
@@ -79,4 +82,3 @@ func (a *Application) Run(ctx context.Context) error {
 		return a.server.Shutdown(shutdownCtx)
 	}
 }
-

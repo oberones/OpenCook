@@ -32,4 +32,3 @@ func main() {
 		logger.Fatalf("run application: %v", err)
 	}
 }
-

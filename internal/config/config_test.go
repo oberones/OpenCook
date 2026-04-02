@@ -9,6 +9,7 @@ func TestLoadFromEnvDefaults(t *testing.T) {
 	t.Setenv("OPENCOOK_READ_TIMEOUT", "")
 	t.Setenv("OPENCOOK_WRITE_TIMEOUT", "")
 	t.Setenv("OPENCOOK_SHUTDOWN_TIMEOUT", "")
+	t.Setenv("OPENCOOK_AUTH_SKEW", "")
 	t.Setenv("OPENCOOK_BOOTSTRAP_MODE", "")
 	t.Setenv("OPENCOOK_POSTGRES_DSN", "")
 	t.Setenv("OPENCOOK_OPENSEARCH_URL", "")
@@ -27,8 +28,11 @@ func TestLoadFromEnvDefaults(t *testing.T) {
 		t.Fatalf("ListenAddress = %q, want %q", cfg.ListenAddress, ":4000")
 	}
 
+	if cfg.AuthSkew.String() != "15m0s" {
+		t.Fatalf("AuthSkew = %q, want %q", cfg.AuthSkew.String(), "15m0s")
+	}
+
 	if !cfg.BootstrapMode {
 		t.Fatalf("BootstrapMode = %v, want true", cfg.BootstrapMode)
 	}
 }
-

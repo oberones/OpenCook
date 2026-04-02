@@ -2,10 +2,8 @@ package authn
 
 import (
 	"context"
-	"errors"
+	"crypto/rsa"
 )
-
-var ErrNotImplemented = errors.New("chef request verification not implemented")
 
 type Principal struct {
 	Type         string `json:"type"`
@@ -13,37 +11,44 @@ type Principal struct {
 	Organization string `json:"organization,omitempty"`
 }
 
+type Key struct {
+	ID        string
+	Principal Principal
+	PublicKey *rsa.PublicKey
+}
+
 type RequestContext struct {
-	Method  string            `json:"method"`
-	Path    string            `json:"path"`
-	Headers map[string]string `json:"headers,omitempty"`
+	Method           string
+	Path             string
+	Body             []byte
+	Headers          map[string]string
+	Organization     string
+	ServerAPIVersion string
 }
 
 type VerificationResult struct {
 	Authenticated bool      `json:"authenticated"`
 	Mode          string    `json:"mode"`
 	Principal     Principal `json:"principal"`
+	SignVersion   string    `json:"sign_version,omitempty"`
+	Algorithm     string    `json:"algorithm,omitempty"`
+	KeyID         string    `json:"key_id,omitempty"`
+}
+
+type Capabilities struct {
+	SupportedSignVersions []string `json:"supported_sign_versions"`
+	SupportedAlgorithms   []string `json:"supported_algorithms"`
+	AllowedClockSkew      string   `json:"allowed_clock_skew"`
+	KeyStore              string   `json:"key_store"`
 }
 
 type Verifier interface {
 	Name() string
+	Capabilities() Capabilities
 	Verify(context.Context, RequestContext) (VerificationResult, error)
 }
 
-type NoopVerifier struct{}
-
-func (NoopVerifier) Name() string {
-	return "noop-chef-signer"
+type KeyStore interface {
+	Name() string
+	Lookup(context.Context, string, string) ([]Key, error)
 }
-
-func (NoopVerifier) Verify(_ context.Context, _ RequestContext) (VerificationResult, error) {
-	return VerificationResult{
-		Authenticated: false,
-		Mode:          "scaffold",
-		Principal: Principal{
-			Type: "unknown",
-			Name: "anonymous",
-		},
-	}, ErrNotImplemented
-}
-
