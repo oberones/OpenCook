@@ -4,12 +4,13 @@ OpenCook is a Go-based rewrite of Chef Infra Server with a compatibility-first a
 
 OpenCook is intended to be fully free and open source. Licensing, license enforcement, license telemetry, and related product mechanics are intentionally out of scope.
 
-The project is currently in scaffold phase. This repository now includes:
+The project is currently in its compatibility-foundation phase. This repository now includes:
 
 - a buildable Go application layout centered on `cmd/opencook`
-- internal package boundaries aligned to the rewrite roadmap
 - compatibility surface inventory wired into the HTTP server
-- placeholders for PostgreSQL, OpenSearch, blob storage, authn, and authz
+- Chef request-signing verification with test coverage
+- in-memory bootstrap state for users, organizations, clients, groups, containers, and ACLs
+- initial authenticated endpoints for users, organizations, clients, ACL inspection, and actor key lookup
 - docs for architecture decisions, milestones, and compatibility tracking
 - a starting test layout for contract-driven development
 
@@ -28,6 +29,7 @@ The project is currently in scaffold phase. This repository now includes:
 |   |-- authn
 |   |-- authz
 |   |-- blob
+|   |-- bootstrap
 |   |-- compat
 |   |-- config
 |   |-- search
@@ -61,8 +63,14 @@ With that in place, signed requests can successfully hit:
 
 - `/users`
 - `/users/{name}`
+- `/users/{name}/keys`
+- `/users/{name}/keys/{key}`
+- `/organizations`
+- `/organizations/{org}`
 - `/organizations/{org}/clients`
 - `/organizations/{org}/clients/{name}`
+- `/organizations/{org}/clients/{name}/keys`
+- `/organizations/{org}/clients/{name}/keys/{key}`
 
 Typical commands once a Go toolchain is available:
 
