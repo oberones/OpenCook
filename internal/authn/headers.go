@@ -275,7 +275,7 @@ func canonicalHeaderName(key string) string {
 	case "x-ops-sign":
 		return "X-Ops-Sign"
 	case "x-ops-userid":
-		return "X-Ops-Userid"
+		return "X-Ops-UserId"
 	case "x-ops-timestamp":
 		return "X-Ops-Timestamp"
 	case "x-ops-content-hash":

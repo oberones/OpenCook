@@ -12,7 +12,7 @@ import (
 )
 
 type Options struct {
-	AllowedClockSkew        time.Duration
+	AllowedClockSkew        *time.Duration
 	Now                     func() time.Time
 	DefaultServerAPIVersion string
 }
@@ -23,9 +23,6 @@ type ChefVerifier struct {
 }
 
 func NewChefVerifier(store KeyStore, opts Options) *ChefVerifier {
-	if opts.AllowedClockSkew == 0 {
-		opts.AllowedClockSkew = 15 * time.Minute
-	}
 	if opts.Now == nil {
 		opts.Now = time.Now
 	}
@@ -50,7 +47,7 @@ func (v *ChefVerifier) Capabilities() Capabilities {
 	return Capabilities{
 		SupportedSignVersions: []string{"1.0", "1.1", "1.3"},
 		SupportedAlgorithms:   []string{"sha1", "sha256"},
-		AllowedClockSkew:      v.opts.AllowedClockSkew.String(),
+		AllowedClockSkew:      v.allowedClockSkew().String(),
 		KeyStore:              v.store.Name(),
 	}
 }
@@ -60,16 +57,18 @@ func (v *ChefVerifier) Verify(ctx context.Context, req RequestContext) (Verifica
 		req.ServerAPIVersion = v.opts.DefaultServerAPIVersion
 	}
 
-	parsed, err := parseRequest(req, v.opts.Now().UTC(), v.opts.AllowedClockSkew)
+	principalHint := Principal{
+		Type:         "unknown",
+		Name:         requestUserID(req.Headers),
+		Organization: req.Organization,
+	}
+
+	parsed, err := parseRequest(req, v.opts.Now().UTC(), v.allowedClockSkew())
 	if err != nil {
 		return VerificationResult{
 			Authenticated: false,
 			Mode:          "failed",
-			Principal: Principal{
-				Type:         "unknown",
-				Name:         parsed.UserID,
-				Organization: req.Organization,
-			},
+			Principal:     principalHint,
 		}, err
 	}
 
@@ -78,11 +77,7 @@ func (v *ChefVerifier) Verify(ctx context.Context, req RequestContext) (Verifica
 		return VerificationResult{
 			Authenticated: false,
 			Mode:          "failed",
-			Principal: Principal{
-				Type:         "unknown",
-				Name:         parsed.UserID,
-				Organization: req.Organization,
-			},
+			Principal:     principalHint,
 		}, newError(ErrorKindKeyStoreFailure, fmt.Sprintf("key lookup failed: %v", err))
 	}
 
@@ -90,11 +85,7 @@ func (v *ChefVerifier) Verify(ctx context.Context, req RequestContext) (Verifica
 		return VerificationResult{
 			Authenticated: false,
 			Mode:          "failed",
-			Principal: Principal{
-				Type:         "unknown",
-				Name:         parsed.UserID,
-				Organization: req.Organization,
-			},
+			Principal:     principalHint,
 		}, newError(ErrorKindRequestorNotFound, "requestor not found")
 	}
 
@@ -128,6 +119,18 @@ func (v *ChefVerifier) Verify(ctx context.Context, req RequestContext) (Verifica
 		SignVersion:   parsed.Sign.Version,
 		Algorithm:     parsed.Sign.Algorithm,
 	}, newError(ErrorKindBadSignature, "signature verification failed")
+}
+
+func (v *ChefVerifier) allowedClockSkew() time.Duration {
+	if v.opts.AllowedClockSkew == nil {
+		return 15 * time.Minute
+	}
+
+	return *v.opts.AllowedClockSkew
+}
+
+func requestUserID(headers map[string]string) string {
+	return normalizedHeaders(headers)["x-ops-userid"]
 }
 
 func canonicalStringToSign(req parsedRequest) string {
