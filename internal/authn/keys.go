@@ -36,7 +36,17 @@ func (s *MemoryKeyStore) Put(key Key) error {
 	defer s.mu.Unlock()
 
 	index := lookupKey(key.Principal.Organization, key.Principal.Name)
-	s.keys[index] = append(s.keys[index], key)
+	replaced := false
+	for idx, existing := range s.keys[index] {
+		if existing.ID == key.ID {
+			s.keys[index][idx] = key
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		s.keys[index] = append(s.keys[index], key)
+	}
 	return nil
 }
 
@@ -55,6 +65,38 @@ func (s *MemoryKeyStore) Lookup(_ context.Context, userID, organization string) 
 	return copied, nil
 }
 
+func (s *MemoryKeyStore) Delete(principal Principal, keyID string) error {
+	if principal.Name == "" {
+		return fmt.Errorf("principal name is required")
+	}
+	if keyID == "" {
+		return fmt.Errorf("key id is required")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	index := lookupKey(principal.Organization, principal.Name)
+	keys := s.keys[index]
+	if len(keys) == 0 {
+		return nil
+	}
+
+	filtered := keys[:0]
+	for _, key := range keys {
+		if key.ID == keyID {
+			continue
+		}
+		filtered = append(filtered, key)
+	}
+	if len(filtered) == 0 {
+		delete(s.keys, index)
+		return nil
+	}
+
+	s.keys[index] = append([]Key(nil), filtered...)
+	return nil
+}
 func lookupKey(organization, name string) string {
 	return organization + "\x00" + name
 }
