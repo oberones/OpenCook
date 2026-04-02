@@ -39,6 +39,7 @@ func NewRouter(deps Dependencies) http.Handler {
 	mux.HandleFunc("/healthz", srv.handleHealth)
 	mux.HandleFunc("/readyz", srv.handleReady)
 	mux.HandleFunc("/internal/contracts/routes", srv.handleRouteContract)
+	mux.HandleFunc("/internal/authn/capabilities", srv.handleAuthnCapabilities)
 
 	for _, surface := range deps.Compat.Surfaces() {
 		surface := surface
@@ -61,11 +62,11 @@ func (s *server) handleRoot(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"service":      s.deps.Config.ServiceName,
-		"phase":        "scaffold",
-		"version":      s.deps.Version,
+		"service":       s.deps.Config.ServiceName,
+		"phase":         "scaffold",
+		"version":       s.deps.Version,
 		"compat_routes": s.deps.Compat.RouteCount(),
-		"next":         "implement request signing compatibility slice",
+		"next":          "implement request signing compatibility slice",
 	})
 }
 
@@ -90,18 +91,26 @@ func (s *server) handleRouteContract(w http.ResponseWriter, _ *http.Request) {
 	})
 }
 
+func (s *server) handleAuthnCapabilities(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"service":      s.deps.Config.ServiceName,
+		"authn_engine": s.deps.Authn.Name(),
+		"capabilities": s.deps.Authn.Capabilities(),
+	})
+}
+
 func (s *server) handleNotImplemented(surface compat.Surface, pattern string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotImplemented, map[string]any{
-			"error":    "not_implemented",
-			"message":  "compatibility surface scaffolded but not implemented",
-			"method":   r.Method,
-			"path":     r.URL.Path,
-			"pattern":  pattern,
-			"surface":  surface.Name,
-			"owner":    surface.Owner,
-			"phase":    surface.Phase,
-			"notes":    surface.Notes,
+			"error":   "not_implemented",
+			"message": "compatibility surface scaffolded but not implemented",
+			"method":  r.Method,
+			"path":    r.URL.Path,
+			"pattern": pattern,
+			"surface": surface.Name,
+			"owner":   surface.Owner,
+			"phase":   surface.Phase,
+			"notes":   surface.Notes,
 		})
 	}
 }
@@ -122,6 +131,7 @@ func (s *server) statusPayload(mode string) map[string]any {
 			"authn": map[string]string{
 				"backend": s.deps.Authn.Name(),
 			},
+			"authn_capabilities": s.deps.Authn.Capabilities(),
 			"authz": map[string]string{
 				"backend": s.deps.Authz.Name(),
 			},
@@ -131,4 +141,3 @@ func (s *server) statusPayload(mode string) map[string]any {
 		},
 	}
 }
-

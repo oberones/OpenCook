@@ -37,4 +37,3 @@ func (s *Store) Status() Status {
 		Message:    "PostgreSQL repository scaffold only",
 	}
 }
-

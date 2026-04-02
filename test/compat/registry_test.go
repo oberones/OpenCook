@@ -18,4 +18,3 @@ func TestDefaultRegistryIncludesCoreSurfaces(t *testing.T) {
 		t.Fatal("RouteCount() = 0, want non-zero")
 	}
 }
-
