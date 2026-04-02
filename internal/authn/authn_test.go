@@ -63,7 +63,7 @@ func TestChefVerifierVerifyVersion11LegacyRequest(t *testing.T) {
 	path := "/organizations/ponyville/nodes"
 
 	verifier := NewChefVerifier(store, Options{
-		AllowedClockSkew: 15 * time.Minute,
+		AllowedClockSkew: durationPtr(15 * time.Minute),
 		Now: func() time.Time {
 			return mustParseTime(t, timestamp).Add(30 * time.Second)
 		},
@@ -115,7 +115,7 @@ func TestChefVerifierVerifyVersion13Request(t *testing.T) {
 	path := "/users"
 
 	verifier := NewChefVerifier(store, Options{
-		AllowedClockSkew: 15 * time.Minute,
+		AllowedClockSkew: durationPtr(15 * time.Minute),
 		Now: func() time.Time {
 			return mustParseTime(t, timestamp).Add(30 * time.Second)
 		},
@@ -191,7 +191,7 @@ func TestChefVerifierClockSkew(t *testing.T) {
 	body := []byte{}
 
 	verifier := NewChefVerifier(store, Options{
-		AllowedClockSkew: 15 * time.Minute,
+		AllowedClockSkew: durationPtr(15 * time.Minute),
 		Now: func() time.Time {
 			return mustParseTime(t, timestamp).Add(16 * time.Minute)
 		},
@@ -218,7 +218,7 @@ func TestChefVerifierClockSkew(t *testing.T) {
 func TestChefVerifierRequestorNotFound(t *testing.T) {
 	privateKey := mustParsePrivateKey(t)
 	verifier := NewChefVerifier(NewMemoryKeyStore(), Options{
-		AllowedClockSkew: 15 * time.Minute,
+		AllowedClockSkew: durationPtr(15 * time.Minute),
 		Now: func() time.Time {
 			return mustParseTime(t, "2026-04-02T15:04:35Z")
 		},
@@ -270,6 +270,64 @@ func TestParseSignDescriptionAcceptsLegacyAndModernFormats(t *testing.T) {
 	}
 }
 
+func TestChefVerifierExplicitZeroClockSkewDisablesValidation(t *testing.T) {
+	privateKey := mustParsePrivateKey(t)
+	store := NewMemoryKeyStore()
+	if err := store.Put(Key{
+		ID: "default",
+		Principal: Principal{
+			Type: "user",
+			Name: "silent-bob",
+		},
+		PublicKey: &privateKey.PublicKey,
+	}); err != nil {
+		t.Fatalf("store.Put() error = %v", err)
+	}
+
+	timestamp := "2026-04-02T15:04:05Z"
+	verifier := NewChefVerifier(store, Options{
+		AllowedClockSkew: durationPtr(0),
+		Now: func() time.Time {
+			return mustParseTime(t, timestamp).Add(6 * time.Hour)
+		},
+	})
+
+	result, err := verifier.Verify(context.Background(), RequestContext{
+		Method: "GET",
+		Path:   "/users",
+		Headers: manufactureSignedHeaders(t, privateKey, "silent-bob", "GET", "/users", nil, signDescription{
+			Version:   "1.1",
+			Algorithm: "sha1",
+		}, timestamp, defaultServerAPIVersion),
+	})
+	if err != nil {
+		t.Fatalf("Verify() error = %v", err)
+	}
+	if !result.Authenticated {
+		t.Fatal("Verify() returned unauthenticated result")
+	}
+}
+
+func TestChefVerifierParseFailurePreservesUserHint(t *testing.T) {
+	verifier := NewChefVerifier(NewMemoryKeyStore(), Options{})
+
+	result, err := verifier.Verify(context.Background(), RequestContext{
+		Method: "GET",
+		Path:   "/users",
+		Headers: map[string]string{
+			"X-Ops-Userid":       "silent-bob",
+			"X-Ops-Timestamp":    "2026-04-02T15:04:05Z",
+			"X-Ops-Content-Hash": "abc",
+		},
+	})
+	if err == nil {
+		t.Fatal("Verify() error = nil, want non-nil")
+	}
+	if result.Principal.Name != "silent-bob" {
+		t.Fatalf("Principal.Name = %q, want %q", result.Principal.Name, "silent-bob")
+	}
+}
+
 func mustParsePrivateKey(t *testing.T) *rsa.PrivateKey {
 	t.Helper()
 
@@ -288,6 +346,10 @@ func mustParseTime(t *testing.T, raw string) time.Time {
 		t.Fatalf("time.Parse() error = %v", err)
 	}
 	return ts
+}
+
+func durationPtr(duration time.Duration) *time.Duration {
+	return &duration
 }
 
 func manufactureSignedHeaders(t *testing.T, privateKey *rsa.PrivateKey, userID, method, path string, body []byte, sign signDescription, timestamp, serverAPIVersion string) map[string]string {

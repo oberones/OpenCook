@@ -29,8 +29,9 @@ func New(cfg config.Config, logger *log.Logger, build version.Info) (*Applicatio
 	searchIndex := search.NewNoopIndex(cfg.OpenSearchURL)
 	blobStore := blob.NewNoopStore(cfg.BlobStorageURL)
 	keyStore := authn.NewMemoryKeyStore()
+	authSkew := cfg.AuthSkew
 	authnVerifier := authn.NewChefVerifier(keyStore, authn.Options{
-		AllowedClockSkew: cfg.AuthSkew,
+		AllowedClockSkew: &authSkew,
 	})
 	authzAuthorizer := authz.NoopAuthorizer{}
 
