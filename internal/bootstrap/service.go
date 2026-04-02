@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/oberones/OpenCook/internal/authn"
 	"github.com/oberones/OpenCook/internal/authz"
@@ -106,11 +107,12 @@ type KeyMaterial struct {
 }
 
 type KeyRecord struct {
-	Name           string `json:"name"`
-	URI            string `json:"uri"`
-	PublicKeyPEM   string `json:"public_key"`
-	ExpirationDate string `json:"expiration_date"`
-	Expired        bool   `json:"expired"`
+	Name           string     `json:"name"`
+	URI            string     `json:"uri"`
+	PublicKeyPEM   string     `json:"public_key"`
+	ExpirationDate string     `json:"expiration_date"`
+	Expired        bool       `json:"expired"`
+	ExpiresAt      *time.Time `json:"-"`
 }
 
 type CreateUserInput struct {
@@ -134,6 +136,13 @@ type CreateClientInput struct {
 	Validator bool
 	Admin     bool
 	PublicKey string
+}
+
+type CreateKeyInput struct {
+	Name           string
+	PublicKey      string
+	CreateKey      bool
+	ExpirationDate string
 }
 
 type organizationState struct {
@@ -221,6 +230,7 @@ func (s *Service) SeedPublicKey(principal authn.Principal, name, publicKeyPEM st
 		PublicKeyPEM:   publicKeyPEM,
 		ExpirationDate: "infinity",
 		Expired:        false,
+		ExpiresAt:      nil,
 	})
 	return nil
 }
@@ -264,7 +274,43 @@ func (s *Service) GetUserKey(name, keyName string) (KeyRecord, bool, bool) {
 	}
 
 	record, ok := s.userKeys[name][keyName]
-	return record, true, ok
+	return effectiveKeyRecord(record), true, ok
+}
+
+func (s *Service) CreateUserKey(name string, input CreateKeyInput) (*KeyMaterial, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, ok := s.users[name]; !ok {
+		return nil, ErrNotFound
+	}
+
+	return s.createNamedKeyLocked(authn.Principal{
+		Type: "user",
+		Name: name,
+	}, s.userKeys[name], input)
+}
+
+func (s *Service) DeleteUserKey(name, keyName string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, ok := s.users[name]; !ok {
+		return ErrNotFound
+	}
+	if _, ok := s.userKeys[name][keyName]; !ok {
+		return ErrNotFound
+	}
+
+	delete(s.userKeys[name], keyName)
+	if len(s.userKeys[name]) == 0 {
+		delete(s.userKeys, name)
+	}
+
+	return s.keyStore.Delete(authn.Principal{
+		Type: "user",
+		Name: name,
+	}, keyName)
 }
 
 func (s *Service) CreateUser(input CreateUserInput) (User, *KeyMaterial, error) {
@@ -476,7 +522,70 @@ func (s *Service) GetClientKey(orgName, clientName, keyName string) (KeyRecord, 
 	}
 
 	record, ok := org.clientKeys[clientName][keyName]
-	return record, true, true, ok
+	return effectiveKeyRecord(record), true, true, ok
+}
+
+func (s *Service) CreateClientKey(orgName, clientName string, input CreateKeyInput) (*KeyMaterial, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	org, ok := s.orgs[orgName]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	if _, ok := org.clients[clientName]; !ok {
+		return nil, ErrNotFound
+	}
+
+	keyMaterial, err := s.createNamedKeyLocked(authn.Principal{
+		Type:         "client",
+		Name:         clientName,
+		Organization: orgName,
+	}, org.clientKeys[clientName], input)
+	if err != nil {
+		return nil, err
+	}
+
+	if keyMaterial.Name == "default" {
+		client := org.clients[clientName]
+		client.PublicKey = keyMaterial.PublicKeyPEM
+		org.clients[clientName] = client
+	}
+
+	return keyMaterial, nil
+}
+
+func (s *Service) DeleteClientKey(orgName, clientName, keyName string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	org, ok := s.orgs[orgName]
+	if !ok {
+		return ErrNotFound
+	}
+	if _, ok := org.clients[clientName]; !ok {
+		return ErrNotFound
+	}
+	if _, ok := org.clientKeys[clientName][keyName]; !ok {
+		return ErrNotFound
+	}
+
+	delete(org.clientKeys[clientName], keyName)
+	if len(org.clientKeys[clientName]) == 0 {
+		delete(org.clientKeys, clientName)
+	}
+
+	if keyName == "default" {
+		client := org.clients[clientName]
+		client.PublicKey = ""
+		org.clients[clientName] = client
+	}
+
+	return s.keyStore.Delete(authn.Principal{
+		Type:         "client",
+		Name:         clientName,
+		Organization: orgName,
+	}, keyName)
 }
 
 func (s *Service) CreateClient(orgName string, input CreateClientInput) (Client, *KeyMaterial, error) {
@@ -714,6 +823,7 @@ func (s *Service) keyMaterialForPrincipalLocked(principal authn.Principal, provi
 		PublicKeyPEM:   publicKeyPEM,
 		ExpirationDate: "infinity",
 		Expired:        false,
+		ExpiresAt:      nil,
 	}
 	s.recordKeyLocked(principal, record)
 
@@ -723,6 +833,81 @@ func (s *Service) keyMaterialForPrincipalLocked(principal authn.Principal, provi
 		PrivateKeyPEM:  privateKeyPEM,
 		PublicKeyPEM:   publicKeyPEM,
 		ExpirationDate: "infinity",
+	}, nil
+}
+
+func (s *Service) createNamedKeyLocked(principal authn.Principal, existing map[string]KeyRecord, input CreateKeyInput) (*KeyMaterial, error) {
+	principal, err := normalizeKeyPrincipal(principal)
+	if err != nil {
+		return nil, err
+	}
+
+	name := strings.TrimSpace(input.Name)
+	if name == "" {
+		return nil, fmt.Errorf("%w: key name is required", ErrInvalidInput)
+	}
+	if !validNamePattern.MatchString(name) {
+		return nil, fmt.Errorf("%w: key name contains invalid characters", ErrInvalidInput)
+	}
+	if _, exists := existing[name]; exists {
+		return nil, ErrConflict
+	}
+
+	expirationDate, expiresAt, expired, err := parseExpirationDate(input.ExpirationDate)
+	if err != nil {
+		return nil, err
+	}
+
+	publicKeyPEM := strings.TrimSpace(input.PublicKey)
+	if input.CreateKey && publicKeyPEM != "" {
+		return nil, fmt.Errorf("%w: public_key and create_key cannot both be set", ErrInvalidInput)
+	}
+	if !input.CreateKey && publicKeyPEM == "" {
+		return nil, fmt.Errorf("%w: public_key is required unless create_key is true", ErrInvalidInput)
+	}
+
+	var (
+		privateKeyPEM string
+		publicKey     *rsa.PublicKey
+	)
+
+	if input.CreateKey {
+		privateKeyPEM, publicKeyPEM, publicKey, err = generateRSAKeyPair()
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		publicKey, err = authn.ParseRSAPublicKeyPEM([]byte(publicKeyPEM))
+		if err != nil {
+			return nil, fmt.Errorf("%w: parse public key: %v", ErrInvalidInput, err)
+		}
+	}
+
+	if err := s.keyStore.Put(authn.Key{
+		ID:        name,
+		Principal: principal,
+		PublicKey: publicKey,
+		ExpiresAt: expiresAt,
+	}); err != nil {
+		return nil, err
+	}
+
+	uri := keyURI(principal, name)
+	s.recordKeyLocked(principal, KeyRecord{
+		Name:           name,
+		URI:            uri,
+		PublicKeyPEM:   publicKeyPEM,
+		ExpirationDate: expirationDate,
+		Expired:        expired,
+		ExpiresAt:      expiresAt,
+	})
+
+	return &KeyMaterial{
+		Name:           name,
+		URI:            uri,
+		PrivateKeyPEM:  privateKeyPEM,
+		PublicKeyPEM:   publicKeyPEM,
+		ExpirationDate: expirationDate,
 	}, nil
 }
 
@@ -743,6 +928,33 @@ func (s *Service) recordKeyLocked(principal authn.Principal, record KeyRecord) {
 		org.clientKeys[principal.Name] = make(map[string]KeyRecord)
 	}
 	org.clientKeys[principal.Name][record.Name] = record
+}
+
+func parseExpirationDate(raw string) (string, *time.Time, bool, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", nil, false, fmt.Errorf("%w: expiration_date is required", ErrInvalidInput)
+	}
+	if raw == "infinity" {
+		return "infinity", nil, false, nil
+	}
+
+	expiresAt, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		return "", nil, false, fmt.Errorf("%w: expiration_date must be RFC3339 or infinity", ErrInvalidInput)
+	}
+	expiresAt = expiresAt.UTC()
+	expired := !expiresAt.After(time.Now().UTC())
+	return expiresAt.Format(time.RFC3339), &expiresAt, expired, nil
+}
+
+func effectiveKeyRecord(record KeyRecord) KeyRecord {
+	record.Expired = isExpiredTime(record.ExpiresAt)
+	return record
+}
+
+func isExpiredTime(expiresAt *time.Time) bool {
+	return expiresAt != nil && !expiresAt.After(time.Now().UTC())
 }
 
 func defaultGroups(superuserName, ownerName, orgName string) map[string]Group {
@@ -986,7 +1198,7 @@ func sortedKeyRecords(in map[string]KeyRecord) []KeyRecord {
 
 	out := make([]KeyRecord, 0, len(keys))
 	for _, name := range keys {
-		out = append(out, in[name])
+		out = append(out, effectiveKeyRecord(in[name]))
 	}
 	return out
 }
