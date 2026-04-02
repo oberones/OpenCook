@@ -260,6 +260,96 @@ func TestUsersEndpointRejectsTrailingJSONData(t *testing.T) {
 	}
 }
 
+func TestUserKeysEndpointListsDefaultKey(t *testing.T) {
+	router := newTestRouter(t)
+	body := []byte(`{"username":"rainbow","display_name":"Rainbow Dash"}`)
+	createReq := httptest.NewRequest(http.MethodPost, "/users", bytes.NewReader(body))
+	applySignedHeaders(t, createReq, "pivotal", "", http.MethodPost, "/users", body, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	createRec := httptest.NewRecorder()
+	router.ServeHTTP(createRec, createReq)
+
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("create status = %d, want %d", createRec.Code, http.StatusCreated)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/users/rainbow/keys/", nil)
+	applySignedHeaders(t, req, "pivotal", "", http.MethodGet, "/users/rainbow/keys/", nil, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	var payload []map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+
+	if len(payload) != 1 {
+		t.Fatalf("len(payload) = %d, want %d", len(payload), 1)
+	}
+	if payload[0]["name"] != "default" {
+		t.Fatalf("name = %v, want %q", payload[0]["name"], "default")
+	}
+	if payload[0]["uri"] != "/users/rainbow/keys/default" {
+		t.Fatalf("uri = %v, want %q", payload[0]["uri"], "/users/rainbow/keys/default")
+	}
+	if payload[0]["expired"] != false {
+		t.Fatalf("expired = %v, want false", payload[0]["expired"])
+	}
+}
+
+func TestUserKeyEndpointReturnsPublicKey(t *testing.T) {
+	router := newTestRouter(t)
+	publicKeyPEM := mustMarshalPublicKeyPEM(t, &mustParsePrivateKey(t).PublicKey)
+	body := []byte(`{"username":"rainbow","public_key":` + strconv.Quote(publicKeyPEM) + `}`)
+	createReq := httptest.NewRequest(http.MethodPost, "/users", bytes.NewReader(body))
+	applySignedHeaders(t, createReq, "pivotal", "", http.MethodPost, "/users", body, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	createRec := httptest.NewRecorder()
+	router.ServeHTTP(createRec, createReq)
+
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("create status = %d, want %d", createRec.Code, http.StatusCreated)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/users/rainbow/keys/default", nil)
+	applySignedHeaders(t, req, "pivotal", "", http.MethodGet, "/users/rainbow/keys/default", nil, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+
+	if payload["name"] != "default" {
+		t.Fatalf("name = %v, want %q", payload["name"], "default")
+	}
+	if strings.TrimSpace(payload["public_key"].(string)) != strings.TrimSpace(publicKeyPEM) {
+		t.Fatalf("public_key = %v, want seeded PEM", payload["public_key"])
+	}
+	if payload["expiration_date"] != "infinity" {
+		t.Fatalf("expiration_date = %v, want %q", payload["expiration_date"], "infinity")
+	}
+}
+
 func TestOrganizationsEndpointCreatesBootstrapArtifacts(t *testing.T) {
 	router := newTestRouter(t)
 	body := []byte(`{"name":"canterlot","full_name":"Canterlot","org_type":"Business"}`)
@@ -397,6 +487,76 @@ func TestOrgClientsEndpointCreatesBackedClient(t *testing.T) {
 	}
 }
 
+func TestOrgClientKeysEndpointListsDefaultKey(t *testing.T) {
+	router := newTestRouter(t)
+	body := []byte(`{"name":"twilight"}`)
+	createReq := httptest.NewRequest(http.MethodPost, "/organizations/ponyville/clients", bytes.NewReader(body))
+	applySignedHeaders(t, createReq, "silent-bob", "", http.MethodPost, "/organizations/ponyville/clients", body, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	createRec := httptest.NewRecorder()
+	router.ServeHTTP(createRec, createReq)
+
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("create status = %d, want %d", createRec.Code, http.StatusCreated)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/organizations/ponyville/clients/twilight/keys", nil)
+	applySignedHeaders(t, req, "silent-bob", "", http.MethodGet, "/organizations/ponyville/clients/twilight/keys", nil, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	var payload []map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+
+	if len(payload) != 1 {
+		t.Fatalf("len(payload) = %d, want %d", len(payload), 1)
+	}
+	if payload[0]["uri"] != "/organizations/ponyville/clients/twilight/keys/default" {
+		t.Fatalf("uri = %v, want %q", payload[0]["uri"], "/organizations/ponyville/clients/twilight/keys/default")
+	}
+}
+
+func TestOrgClientKeyEndpointReturnsPublicKey(t *testing.T) {
+	router := newTestRouter(t)
+	req := httptest.NewRequest(http.MethodGet, "/organizations/ponyville/clients/org-validator/keys/default", nil)
+	applySignedHeaders(t, req, "silent-bob", "", http.MethodGet, "/organizations/ponyville/clients/org-validator/keys/default", nil, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+
+	if payload["name"] != "default" {
+		t.Fatalf("name = %v, want %q", payload["name"], "default")
+	}
+	if payload["public_key"] == "" {
+		t.Fatalf("public_key missing from payload: %v", payload)
+	}
+	if payload["expiration_date"] != "infinity" {
+		t.Fatalf("expiration_date = %v, want %q", payload["expiration_date"], "infinity")
+	}
+}
+
 func TestUsersEndpointRejectsOversizedBodyBeforeVerification(t *testing.T) {
 	router := newTestRouterWithConfig(t, config.Config{
 		ServiceName:      "opencook",
@@ -516,7 +676,14 @@ func newTestRouterWithOverrides(t *testing.T, cfg config.Config, logger *log.Log
 		PublicKey: &privateKey.PublicKey,
 	})
 	state := bootstrap.NewService(store, bootstrap.Options{SuperuserName: "pivotal"})
+	publicKeyPEM := mustMarshalPublicKeyPEM(t, &privateKey.PublicKey)
 	state.SeedPrincipal(authn.Principal{Type: "user", Name: "silent-bob"})
+	if err := state.SeedPublicKey(authn.Principal{Type: "user", Name: "silent-bob"}, "default", publicKeyPEM); err != nil {
+		t.Fatalf("SeedPublicKey(silent-bob) error = %v", err)
+	}
+	if err := state.SeedPublicKey(authn.Principal{Type: "user", Name: "pivotal"}, "default", publicKeyPEM); err != nil {
+		t.Fatalf("SeedPublicKey(pivotal) error = %v", err)
+	}
 	if _, _, _, err := state.CreateOrganization(bootstrap.CreateOrganizationInput{
 		Name:      "ponyville",
 		FullName:  "Ponyville",
@@ -525,7 +692,6 @@ func newTestRouterWithOverrides(t *testing.T, cfg config.Config, logger *log.Log
 	}); err != nil {
 		t.Fatalf("CreateOrganization() error = %v", err)
 	}
-	publicKeyPEM := mustMarshalPublicKeyPEM(t, &privateKey.PublicKey)
 	if _, _, err := state.CreateClient("ponyville", bootstrap.CreateClientInput{
 		Name:      "org-validator",
 		PublicKey: publicKeyPEM,
