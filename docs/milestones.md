@@ -15,9 +15,9 @@ Status: in progress
 
 - Chef header signing verification is implemented and enforced on the first real endpoints
 - in-memory key lookup is implemented for signed request verification
-- `/keys` list, create, and delete behavior is implemented for users and organization clients
+- `/keys` list, create, update, and delete behavior is implemented for users and organization clients
 - key expiration is now enforced during request verification
-- API version edge cases and full actor key update semantics are still pending
+- API version edge cases and broader actor/resource compatibility semantics are still pending
 - fixture-based canonical request coverage still needs to be expanded
 
 ## Milestone 3: Org and ACL Bootstrap

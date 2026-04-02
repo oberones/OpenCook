@@ -128,6 +128,35 @@ func (s *server) handleUserKeys(w http.ResponseWriter, r *http.Request) {
 			"name": keyName,
 			"uri":  basePath + "/" + keyName,
 		})
+	case http.MethodPut:
+		if !s.authorizeUserKeyWrite(w, r, name) {
+			return
+		}
+
+		keyName, ok := pathTail(r.URL.Path, basePath+"/")
+		if !ok {
+			writeJSON(w, http.StatusNotFound, apiError{
+				Error:   "not_found",
+				Message: "route not found in scaffold router",
+			})
+			return
+		}
+
+		var payload keyUpdatePayload
+		if !decodeJSON(w, r, &payload) {
+			return
+		}
+
+		result, err := state.UpdateUserKey(name, keyName, payload.toUpdateInput())
+		if !s.writeBootstrapError(w, err) {
+			return
+		}
+
+		status, body := userFacingKeyUpdateResponse(result, payload)
+		if result.Renamed {
+			w.Header().Set("Location", result.KeyMaterial.URI)
+		}
+		writeJSON(w, status, body)
 	default:
 		writeJSON(w, http.StatusNotImplemented, map[string]any{
 			"error":   "not_implemented",
@@ -274,6 +303,35 @@ func (s *server) handleOrgClientKeys(w http.ResponseWriter, r *http.Request) {
 			"name": keyName,
 			"uri":  basePath + "/" + keyName,
 		})
+	case http.MethodPut:
+		if !s.authorizeClientKeyWrite(w, r, org, name) {
+			return
+		}
+
+		keyName, ok := pathTail(r.URL.Path, basePath+"/")
+		if !ok {
+			writeJSON(w, http.StatusNotFound, apiError{
+				Error:   "not_found",
+				Message: "route not found in scaffold router",
+			})
+			return
+		}
+
+		var payload keyUpdatePayload
+		if !decodeJSON(w, r, &payload) {
+			return
+		}
+
+		result, err := state.UpdateClientKey(org, name, keyName, payload.toUpdateInput())
+		if !s.writeBootstrapError(w, err) {
+			return
+		}
+
+		status, body := userFacingKeyUpdateResponse(result, payload)
+		if result.Renamed {
+			w.Header().Set("Location", result.KeyMaterial.URI)
+		}
+		writeJSON(w, status, body)
 	default:
 		writeJSON(w, http.StatusNotImplemented, map[string]any{
 			"error":   "not_implemented",
@@ -306,6 +364,46 @@ func keyDetailPayload(key bootstrap.KeyRecord) map[string]any {
 		"public_key":      key.PublicKeyPEM,
 		"expiration_date": key.ExpirationDate,
 	}
+}
+
+type keyUpdatePayload struct {
+	Name           *string `json:"name"`
+	PublicKey      *string `json:"public_key"`
+	CreateKey      *bool   `json:"create_key"`
+	ExpirationDate *string `json:"expiration_date"`
+}
+
+func (p keyUpdatePayload) toUpdateInput() bootstrap.UpdateKeyInput {
+	return bootstrap.UpdateKeyInput{
+		Name:           p.Name,
+		PublicKey:      p.PublicKey,
+		CreateKey:      p.CreateKey,
+		ExpirationDate: p.ExpirationDate,
+	}
+}
+
+func userFacingKeyUpdateResponse(result bootstrap.UpdateKeyResult, payload keyUpdatePayload) (int, map[string]any) {
+	body := make(map[string]any)
+
+	if payload.Name != nil {
+		body["name"] = result.KeyMaterial.Name
+	}
+	if payload.ExpirationDate != nil {
+		body["expiration_date"] = result.KeyMaterial.ExpirationDate
+	}
+	if payload.PublicKey != nil || (payload.CreateKey != nil && *payload.CreateKey) {
+		body["public_key"] = result.KeyMaterial.PublicKeyPEM
+	}
+	if payload.CreateKey != nil && *payload.CreateKey {
+		body["private_key"] = result.KeyMaterial.PrivateKeyPEM
+	}
+
+	status := http.StatusOK
+	if result.Renamed {
+		status = http.StatusCreated
+	}
+
+	return status, body
 }
 
 func (s *server) authorizeUserKeyWrite(w http.ResponseWriter, r *http.Request, name string) bool {
