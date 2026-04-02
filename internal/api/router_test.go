@@ -8,8 +8,10 @@ import (
 	"crypto/rsa"
 	"crypto/sha1"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"log"
 	"math/big"
@@ -23,6 +25,7 @@ import (
 	"github.com/oberones/OpenCook/internal/authn"
 	"github.com/oberones/OpenCook/internal/authz"
 	"github.com/oberones/OpenCook/internal/blob"
+	"github.com/oberones/OpenCook/internal/bootstrap"
 	"github.com/oberones/OpenCook/internal/compat"
 	"github.com/oberones/OpenCook/internal/config"
 	"github.com/oberones/OpenCook/internal/search"
@@ -73,7 +76,7 @@ func TestUsersEndpointRequiresAuthentication(t *testing.T) {
 func TestUsersEndpointAcceptsSignedRequest(t *testing.T) {
 	router := newTestRouter(t)
 	req := httptest.NewRequest(http.MethodGet, "/users", nil)
-	applySignedHeaders(t, req, "silent-bob", "", http.MethodGet, "/users", nil, signDescription{
+	applySignedHeaders(t, req, "pivotal", "", http.MethodGet, "/users", nil, signDescription{
 		Version:   "1.1",
 		Algorithm: "sha1",
 	}, "2026-04-02T15:04:05Z")
@@ -91,15 +94,31 @@ func TestUsersEndpointAcceptsSignedRequest(t *testing.T) {
 	}
 
 	requestor := payload["requestor"].(map[string]any)
-	if requestor["name"] != "silent-bob" {
-		t.Fatalf("requestor.name = %v, want %q", requestor["name"], "silent-bob")
+	if requestor["name"] != "pivotal" {
+		t.Fatalf("requestor.name = %v, want %q", requestor["name"], "pivotal")
+	}
+}
+
+func TestUsersEndpointCollectionRequiresCollectionReadAuthz(t *testing.T) {
+	router := newTestRouter(t)
+	req := httptest.NewRequest(http.MethodGet, "/users", nil)
+	applySignedHeaders(t, req, "silent-bob", "", http.MethodGet, "/users", nil, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusForbidden)
 	}
 }
 
 func TestUsersEndpointCollectionAcceptsTrailingSlash(t *testing.T) {
 	router := newTestRouter(t)
 	req := httptest.NewRequest(http.MethodGet, "/users/", nil)
-	applySignedHeaders(t, req, "silent-bob", "", http.MethodGet, "/users/", nil, signDescription{
+	applySignedHeaders(t, req, "pivotal", "", http.MethodGet, "/users/", nil, signDescription{
 		Version:   "1.1",
 		Algorithm: "sha1",
 	}, "2026-04-02T15:04:05Z")
@@ -124,7 +143,7 @@ func TestUsersEndpointCollectionAcceptsTrailingSlash(t *testing.T) {
 func TestOrgClientsEndpointUsesOrgScopedLookup(t *testing.T) {
 	router := newTestRouter(t)
 	req := httptest.NewRequest(http.MethodGet, "/organizations/ponyville/clients", nil)
-	applySignedHeaders(t, req, "org-validator", "ponyville", http.MethodGet, "/organizations/ponyville/clients", nil, signDescription{
+	applySignedHeaders(t, req, "silent-bob", "", http.MethodGet, "/organizations/ponyville/clients", nil, signDescription{
 		Version:   "1.1",
 		Algorithm: "sha1",
 	}, "2026-04-02T15:04:05Z")
@@ -144,12 +163,17 @@ func TestOrgClientsEndpointUsesOrgScopedLookup(t *testing.T) {
 	if payload["organization"] != "ponyville" {
 		t.Fatalf("organization = %v, want %q", payload["organization"], "ponyville")
 	}
+
+	clients := payload["clients"].(map[string]any)
+	if _, ok := clients["org-validator"]; !ok {
+		t.Fatalf("clients did not include seeded org client, got %v", clients)
+	}
 }
 
 func TestOrgClientsEndpointCollectionAcceptsTrailingSlash(t *testing.T) {
 	router := newTestRouter(t)
 	req := httptest.NewRequest(http.MethodGet, "/organizations/ponyville/clients/", nil)
-	applySignedHeaders(t, req, "org-validator", "ponyville", http.MethodGet, "/organizations/ponyville/clients/", nil, signDescription{
+	applySignedHeaders(t, req, "silent-bob", "", http.MethodGet, "/organizations/ponyville/clients/", nil, signDescription{
 		Version:   "1.1",
 		Algorithm: "sha1",
 	}, "2026-04-02T15:04:05Z")
@@ -168,6 +192,208 @@ func TestOrgClientsEndpointCollectionAcceptsTrailingSlash(t *testing.T) {
 
 	if payload["clients"] == nil {
 		t.Fatalf("clients payload missing for trailing slash collection path")
+	}
+}
+
+func TestUsersEndpointCreatesUserWithPrivateKey(t *testing.T) {
+	router := newTestRouter(t)
+	body := []byte(`{"username":"rainbow","display_name":"Rainbow Dash"}`)
+	req := httptest.NewRequest(http.MethodPost, "/users", bytes.NewReader(body))
+	applySignedHeaders(t, req, "pivotal", "", http.MethodPost, "/users", body, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusCreated)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+
+	privateKey, _ := payload["private_key"].(string)
+	if !strings.Contains(privateKey, "BEGIN RSA PRIVATE KEY") {
+		t.Fatalf("private_key missing PEM payload: %v", payload["private_key"])
+	}
+
+	getReq := httptest.NewRequest(http.MethodGet, "/users/rainbow", nil)
+	applySignedHeaders(t, getReq, "pivotal", "", http.MethodGet, "/users/rainbow", nil, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	getRec := httptest.NewRecorder()
+	router.ServeHTTP(getRec, getReq)
+
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("GET status = %d, want %d", getRec.Code, http.StatusOK)
+	}
+}
+
+func TestUsersEndpointRejectsTrailingJSONData(t *testing.T) {
+	router := newTestRouter(t)
+	body := []byte(`{"username":"rainbow"}{"username":"pinkie"}`)
+	req := httptest.NewRequest(http.MethodPost, "/users", bytes.NewReader(body))
+	applySignedHeaders(t, req, "pivotal", "", http.MethodPost, "/users", body, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+
+	if payload["error"] != "invalid_json" {
+		t.Fatalf("error = %v, want %q", payload["error"], "invalid_json")
+	}
+}
+
+func TestOrganizationsEndpointCreatesBootstrapArtifacts(t *testing.T) {
+	router := newTestRouter(t)
+	body := []byte(`{"name":"canterlot","full_name":"Canterlot","org_type":"Business"}`)
+	req := httptest.NewRequest(http.MethodPost, "/organizations", bytes.NewReader(body))
+	applySignedHeaders(t, req, "pivotal", "", http.MethodPost, "/organizations", body, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusCreated)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+
+	if payload["clientname"] != "canterlot-validator" {
+		t.Fatalf("clientname = %v, want %q", payload["clientname"], "canterlot-validator")
+	}
+	if !strings.Contains(payload["private_key"].(string), "BEGIN RSA PRIVATE KEY") {
+		t.Fatalf("private_key missing PEM payload")
+	}
+
+	getReq := httptest.NewRequest(http.MethodGet, "/organizations/canterlot", nil)
+	applySignedHeaders(t, getReq, "pivotal", "", http.MethodGet, "/organizations/canterlot", nil, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	getRec := httptest.NewRecorder()
+	router.ServeHTTP(getRec, getReq)
+
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("GET status = %d, want %d", getRec.Code, http.StatusOK)
+	}
+}
+
+func TestOrganizationBootstrapExposesGroupsContainersAndACLs(t *testing.T) {
+	router := newTestRouter(t)
+	createOrgForTest(t, router, "canterlot")
+
+	groupReq := httptest.NewRequest(http.MethodGet, "/organizations/canterlot/groups", nil)
+	applySignedHeaders(t, groupReq, "pivotal", "", http.MethodGet, "/organizations/canterlot/groups", nil, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	groupRec := httptest.NewRecorder()
+	router.ServeHTTP(groupRec, groupReq)
+
+	if groupRec.Code != http.StatusOK {
+		t.Fatalf("groups status = %d, want %d", groupRec.Code, http.StatusOK)
+	}
+
+	var groups map[string]any
+	if err := json.Unmarshal(groupRec.Body.Bytes(), &groups); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if _, ok := groups["admins"]; !ok {
+		t.Fatalf("groups missing admins entry: %v", groups)
+	}
+
+	containerReq := httptest.NewRequest(http.MethodGet, "/organizations/canterlot/containers", nil)
+	applySignedHeaders(t, containerReq, "pivotal", "", http.MethodGet, "/organizations/canterlot/containers", nil, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	containerRec := httptest.NewRecorder()
+	router.ServeHTTP(containerRec, containerReq)
+
+	if containerRec.Code != http.StatusOK {
+		t.Fatalf("containers status = %d, want %d", containerRec.Code, http.StatusOK)
+	}
+
+	var containers map[string]any
+	if err := json.Unmarshal(containerRec.Body.Bytes(), &containers); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if _, ok := containers["clients"]; !ok {
+		t.Fatalf("containers missing clients entry: %v", containers)
+	}
+
+	aclReq := httptest.NewRequest(http.MethodGet, "/organizations/canterlot/containers/clients/_acl", nil)
+	applySignedHeaders(t, aclReq, "pivotal", "", http.MethodGet, "/organizations/canterlot/containers/clients/_acl", nil, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	aclRec := httptest.NewRecorder()
+	router.ServeHTTP(aclRec, aclReq)
+
+	if aclRec.Code != http.StatusOK {
+		t.Fatalf("acl status = %d, want %d", aclRec.Code, http.StatusOK)
+	}
+
+	var acl map[string]map[string]any
+	if err := json.Unmarshal(aclRec.Body.Bytes(), &acl); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+
+	readGroups := stringSliceFromAny(t, acl["read"]["groups"])
+	if !containsString(readGroups, "users") || !containsString(readGroups, "admins") {
+		t.Fatalf("read groups = %v, want admins/users", readGroups)
+	}
+}
+
+func TestOrgClientsEndpointCreatesBackedClient(t *testing.T) {
+	router := newTestRouter(t)
+	body := []byte(`{"name":"twilight"}`)
+	req := httptest.NewRequest(http.MethodPost, "/organizations/ponyville/clients", bytes.NewReader(body))
+	applySignedHeaders(t, req, "silent-bob", "", http.MethodPost, "/organizations/ponyville/clients", body, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusCreated)
+	}
+
+	getReq := httptest.NewRequest(http.MethodGet, "/organizations/ponyville/clients/twilight", nil)
+	applySignedHeaders(t, getReq, "silent-bob", "", http.MethodGet, "/organizations/ponyville/clients/twilight", nil, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	getRec := httptest.NewRecorder()
+	router.ServeHTTP(getRec, getReq)
+
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("GET status = %d, want %d", getRec.Code, http.StatusOK)
 	}
 }
 
@@ -231,6 +457,31 @@ func TestUsersEndpointHidesInternalVerifierErrors(t *testing.T) {
 	}
 }
 
+func TestUserACLRouteHandlesMissingBootstrap(t *testing.T) {
+	router := newTestRouterWithoutBootstrap(t)
+	req := httptest.NewRequest(http.MethodGet, "/users/silent-bob/_acl", nil)
+	applySignedHeaders(t, req, "silent-bob", "", http.MethodGet, "/users/silent-bob/_acl", nil, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusInternalServerError)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+
+	if payload["error"] != "bootstrap_unavailable" {
+		t.Fatalf("error = %v, want %q", payload["error"], "bootstrap_unavailable")
+	}
+}
+
 func newTestRouter(t *testing.T) http.Handler {
 	return newTestRouterWithConfig(t, config.Config{
 		ServiceName: "opencook",
@@ -259,12 +510,28 @@ func newTestRouterWithOverrides(t *testing.T, cfg config.Config, logger *log.Log
 	mustPutKey(t, store, authn.Key{
 		ID: "default",
 		Principal: authn.Principal{
-			Type:         "client",
-			Name:         "org-validator",
-			Organization: "ponyville",
+			Type: "user",
+			Name: "pivotal",
 		},
 		PublicKey: &privateKey.PublicKey,
 	})
+	state := bootstrap.NewService(store, bootstrap.Options{SuperuserName: "pivotal"})
+	state.SeedPrincipal(authn.Principal{Type: "user", Name: "silent-bob"})
+	if _, _, _, err := state.CreateOrganization(bootstrap.CreateOrganizationInput{
+		Name:      "ponyville",
+		FullName:  "Ponyville",
+		OrgType:   "Business",
+		OwnerName: "silent-bob",
+	}); err != nil {
+		t.Fatalf("CreateOrganization() error = %v", err)
+	}
+	publicKeyPEM := mustMarshalPublicKeyPEM(t, &privateKey.PublicKey)
+	if _, _, err := state.CreateClient("ponyville", bootstrap.CreateClientInput{
+		Name:      "org-validator",
+		PublicKey: publicKeyPEM,
+	}); err != nil {
+		t.Fatalf("CreateClient() error = %v", err)
+	}
 
 	skew := 15 * time.Minute
 	if cfg.MaxAuthBodyBytes == 0 {
@@ -285,11 +552,50 @@ func newTestRouterWithOverrides(t *testing.T, cfg config.Config, logger *log.Log
 	}
 
 	return NewRouter(Dependencies{
-		Logger:   logger,
-		Config:   cfg,
-		Version:  version.Current(),
-		Compat:   compat.NewDefaultRegistry(),
-		Authn:    verifier,
+		Logger:    logger,
+		Config:    cfg,
+		Version:   version.Current(),
+		Compat:    compat.NewDefaultRegistry(),
+		Authn:     verifier,
+		Authz:     authz.NewACLAuthorizer(state),
+		Bootstrap: state,
+		Blob:      blob.NewNoopStore(""),
+		Search:    search.NewNoopIndex(""),
+		Postgres:  pg.New(""),
+	})
+}
+
+func newTestRouterWithoutBootstrap(t *testing.T) http.Handler {
+	t.Helper()
+
+	privateKey := mustParsePrivateKey(t)
+	store := authn.NewMemoryKeyStore()
+	mustPutKey(t, store, authn.Key{
+		ID: "default",
+		Principal: authn.Principal{
+			Type: "user",
+			Name: "silent-bob",
+		},
+		PublicKey: &privateKey.PublicKey,
+	})
+
+	skew := 15 * time.Minute
+	return NewRouter(Dependencies{
+		Logger: log.New(ioDiscard{}, "", 0),
+		Config: config.Config{
+			ServiceName:      "opencook",
+			Environment:      "test",
+			AuthSkew:         skew,
+			MaxAuthBodyBytes: config.DefaultMaxAuthBodyBytes,
+		},
+		Version: version.Current(),
+		Compat:  compat.NewDefaultRegistry(),
+		Authn: authn.NewChefVerifier(store, authn.Options{
+			AllowedClockSkew: &skew,
+			Now: func() time.Time {
+				return mustParseTime(t, "2026-04-02T15:04:35Z")
+			},
+		}),
 		Authz:    authz.NoopAuthorizer{},
 		Blob:     blob.NewNoopStore(""),
 		Search:   search.NewNoopIndex(""),
@@ -322,6 +628,73 @@ func mustParseTime(t *testing.T, raw string) time.Time {
 		t.Fatalf("time.Parse() error = %v", err)
 	}
 	return ts
+}
+
+func mustMarshalPublicKeyPEM(t *testing.T, publicKey *rsa.PublicKey) string {
+	t.Helper()
+
+	der, err := x509.MarshalPKIXPublicKey(publicKey)
+	if err != nil {
+		t.Fatalf("x509.MarshalPKIXPublicKey() error = %v", err)
+	}
+
+	return string(pem.EncodeToMemory(&pem.Block{
+		Type:  "PUBLIC KEY",
+		Bytes: der,
+	}))
+}
+
+func createOrgForTest(t *testing.T, router http.Handler, orgName string) {
+	t.Helper()
+
+	body, err := json.Marshal(map[string]string{
+		"name":      orgName,
+		"full_name": orgName,
+		"org_type":  "Business",
+	})
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/organizations", bytes.NewReader(body))
+	applySignedHeaders(t, req, "pivotal", "", http.MethodPost, "/organizations", body, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create org status = %d, want %d, body = %s", rec.Code, http.StatusCreated, rec.Body.String())
+	}
+}
+
+func stringSliceFromAny(t *testing.T, value any) []string {
+	t.Helper()
+
+	raw, ok := value.([]any)
+	if !ok {
+		t.Fatalf("value = %T, want []any", value)
+	}
+
+	out := make([]string, 0, len(raw))
+	for _, item := range raw {
+		str, ok := item.(string)
+		if !ok {
+			t.Fatalf("slice item = %T, want string", item)
+		}
+		out = append(out, str)
+	}
+	return out
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
 
 func applySignedHeaders(t *testing.T, req *http.Request, userID, organization, method, path string, body []byte, sign signDescription, timestamp string) {
