@@ -9,19 +9,28 @@ import (
 )
 
 type Config struct {
-	ServiceName     string
-	Environment     string
-	ListenAddress   string
-	ReadTimeout     time.Duration
-	WriteTimeout    time.Duration
-	ShutdownTimeout time.Duration
-	AuthSkew        time.Duration
-	BootstrapMode   bool
+	ServiceName      string
+	Environment      string
+	ListenAddress    string
+	ReadTimeout      time.Duration
+	WriteTimeout     time.Duration
+	ShutdownTimeout  time.Duration
+	AuthSkew         time.Duration
+	MaxAuthBodyBytes int64
+	BootstrapMode    bool
 
 	PostgresDSN    string
 	OpenSearchURL  string
 	BlobStorageURL string
+
+	BootstrapRequestorName          string
+	BootstrapRequestorType          string
+	BootstrapRequestorOrganization  string
+	BootstrapRequestorKeyID         string
+	BootstrapRequestorPublicKeyPath string
 }
+
+const DefaultMaxAuthBodyBytes int64 = 8 << 20
 
 func LoadFromEnv() (Config, error) {
 	readTimeout, err := envDuration("OPENCOOK_READ_TIMEOUT", 15*time.Second)
@@ -44,39 +53,59 @@ func LoadFromEnv() (Config, error) {
 		return Config{}, err
 	}
 
+	maxAuthBodyBytes, err := envInt64("OPENCOOK_MAX_AUTH_BODY_BYTES", DefaultMaxAuthBodyBytes)
+	if err != nil {
+		return Config{}, err
+	}
+	if maxAuthBodyBytes <= 0 {
+		return Config{}, fmt.Errorf("OPENCOOK_MAX_AUTH_BODY_BYTES: must be positive")
+	}
+
 	bootstrapMode, err := envBool("OPENCOOK_BOOTSTRAP_MODE", true)
 	if err != nil {
 		return Config{}, err
 	}
 
 	return Config{
-		ServiceName:     envString("OPENCOOK_SERVICE_NAME", "opencook"),
-		Environment:     envString("OPENCOOK_ENV", "development"),
-		ListenAddress:   envString("OPENCOOK_LISTEN_ADDRESS", ":4000"),
-		ReadTimeout:     readTimeout,
-		WriteTimeout:    writeTimeout,
-		ShutdownTimeout: shutdownTimeout,
-		AuthSkew:        authSkew,
-		BootstrapMode:   bootstrapMode,
-		PostgresDSN:     strings.TrimSpace(os.Getenv("OPENCOOK_POSTGRES_DSN")),
-		OpenSearchURL:   strings.TrimSpace(os.Getenv("OPENCOOK_OPENSEARCH_URL")),
-		BlobStorageURL:  strings.TrimSpace(os.Getenv("OPENCOOK_BLOB_STORAGE_URL")),
+		ServiceName:                     envString("OPENCOOK_SERVICE_NAME", "opencook"),
+		Environment:                     envString("OPENCOOK_ENV", "development"),
+		ListenAddress:                   envString("OPENCOOK_LISTEN_ADDRESS", ":4000"),
+		ReadTimeout:                     readTimeout,
+		WriteTimeout:                    writeTimeout,
+		ShutdownTimeout:                 shutdownTimeout,
+		AuthSkew:                        authSkew,
+		MaxAuthBodyBytes:                maxAuthBodyBytes,
+		BootstrapMode:                   bootstrapMode,
+		PostgresDSN:                     strings.TrimSpace(os.Getenv("OPENCOOK_POSTGRES_DSN")),
+		OpenSearchURL:                   strings.TrimSpace(os.Getenv("OPENCOOK_OPENSEARCH_URL")),
+		BlobStorageURL:                  strings.TrimSpace(os.Getenv("OPENCOOK_BLOB_STORAGE_URL")),
+		BootstrapRequestorName:          envString("OPENCOOK_BOOTSTRAP_REQUESTOR_NAME", ""),
+		BootstrapRequestorType:          envString("OPENCOOK_BOOTSTRAP_REQUESTOR_TYPE", "user"),
+		BootstrapRequestorOrganization:  envString("OPENCOOK_BOOTSTRAP_REQUESTOR_ORG", ""),
+		BootstrapRequestorKeyID:         envString("OPENCOOK_BOOTSTRAP_REQUESTOR_KEY_ID", "default"),
+		BootstrapRequestorPublicKeyPath: envString("OPENCOOK_BOOTSTRAP_PUBLIC_KEY_PATH", ""),
 	}, nil
 }
 
 func (c Config) Redacted() map[string]string {
 	return map[string]string{
-		"service_name":     c.ServiceName,
-		"environment":      c.Environment,
-		"listen_address":   c.ListenAddress,
-		"read_timeout":     c.ReadTimeout.String(),
-		"write_timeout":    c.WriteTimeout.String(),
-		"shutdown_timeout": c.ShutdownTimeout.String(),
-		"auth_skew":        c.AuthSkew.String(),
-		"bootstrap_mode":   strconv.FormatBool(c.BootstrapMode),
-		"postgres_dsn":     redact(c.PostgresDSN),
-		"opensearch_url":   redact(c.OpenSearchURL),
-		"blob_storage_url": redact(c.BlobStorageURL),
+		"service_name":               c.ServiceName,
+		"environment":                c.Environment,
+		"listen_address":             c.ListenAddress,
+		"read_timeout":               c.ReadTimeout.String(),
+		"write_timeout":              c.WriteTimeout.String(),
+		"shutdown_timeout":           c.ShutdownTimeout.String(),
+		"auth_skew":                  c.AuthSkew.String(),
+		"max_auth_body_bytes":        strconv.FormatInt(c.MaxAuthBodyBytes, 10),
+		"bootstrap_mode":             strconv.FormatBool(c.BootstrapMode),
+		"bootstrap_requestor_name":   c.BootstrapRequestorName,
+		"bootstrap_requestor_type":   c.BootstrapRequestorType,
+		"bootstrap_requestor_org":    c.BootstrapRequestorOrganization,
+		"bootstrap_requestor_key_id": c.BootstrapRequestorKeyID,
+		"bootstrap_public_key_path":  redact(c.BootstrapRequestorPublicKeyPath),
+		"postgres_dsn":               redact(c.PostgresDSN),
+		"opensearch_url":             redact(c.OpenSearchURL),
+		"blob_storage_url":           redact(c.BlobStorageURL),
 	}
 }
 
@@ -111,6 +140,20 @@ func envBool(key string, fallback bool) (bool, error) {
 	parsed, err := strconv.ParseBool(value)
 	if err != nil {
 		return false, fmt.Errorf("%s: %w", key, err)
+	}
+
+	return parsed, nil
+}
+
+func envInt64(key string, fallback int64) (int64, error) {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback, nil
+	}
+
+	parsed, err := strconv.ParseInt(value, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("%s: %w", key, err)
 	}
 
 	return parsed, nil
