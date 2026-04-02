@@ -50,4 +50,3 @@ func (NoopAuthorizer) Authorize(_ context.Context, _ Subject, _ Action, _ Resour
 		Reason:  "authorization scaffold only",
 	}, ErrNotImplemented
 }
-
