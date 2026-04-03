@@ -420,6 +420,7 @@ func normalizePolicyPayload(payload map[string]any, targetName string) (PolicyRe
 
 	normalized := cloneMap(payload)
 	delete(normalized, "policy_group_list")
+	delete(normalized, "policy_group")
 	normalized["revision_id"] = revisionID
 	normalized["name"] = name
 	normalized["run_list"] = stringSliceToAny(runList)
@@ -434,11 +435,11 @@ func normalizePolicyPayload(payload map[string]any, targetName string) (PolicyRe
 	}
 
 	if value, ok := payload["solution_dependencies"]; ok {
-		deps, ok := value.(map[string]any)
-		if !ok {
-			return PolicyRevision{}, &ValidationError{Messages: []string{"Field 'solution_dependencies' invalid"}}
+		deps, err := validatePolicySolutionDependencies(value)
+		if err != nil {
+			return PolicyRevision{}, err
 		}
-		normalized["solution_dependencies"] = cloneMap(deps)
+		normalized["solution_dependencies"] = deps
 	}
 
 	return PolicyRevision{
@@ -509,24 +510,38 @@ func validatePolicyRunList(value any) ([]string, error) {
 }
 
 func validatePolicyNamedRunLists(value any) (map[string][]string, error) {
-	raw, ok := value.(map[string]any)
-	if !ok {
+	switch raw := value.(type) {
+	case map[string][]string:
+		out := make(map[string][]string, len(raw))
+		for name, entry := range raw {
+			validName, err := validatePolicyToken("named_run_lists", name)
+			if err != nil {
+				return nil, &ValidationError{Messages: []string{"Field 'named_run_lists' invalid"}}
+			}
+			runList, err := validatePolicyRunList(entry)
+			if err != nil {
+				return nil, err
+			}
+			out[validName] = runList
+		}
+		return out, nil
+	case map[string]any:
+		out := make(map[string][]string, len(raw))
+		for name, entry := range raw {
+			validName, err := validatePolicyToken("named_run_lists", name)
+			if err != nil {
+				return nil, &ValidationError{Messages: []string{"Field 'named_run_lists' invalid"}}
+			}
+			runList, err := validatePolicyRunList(entry)
+			if err != nil {
+				return nil, err
+			}
+			out[validName] = runList
+		}
+		return out, nil
+	default:
 		return nil, &ValidationError{Messages: []string{"Field 'named_run_lists' invalid"}}
 	}
-
-	out := make(map[string][]string, len(raw))
-	for name, entry := range raw {
-		validName, err := validatePolicyToken("named_run_lists", name)
-		if err != nil {
-			return nil, &ValidationError{Messages: []string{"Field 'named_run_lists' invalid"}}
-		}
-		runList, err := validatePolicyRunList(entry)
-		if err != nil {
-			return nil, err
-		}
-		out[validName] = runList
-	}
-	return out, nil
 }
 
 func validatePolicyCookbookLocks(value any) (map[string]any, error) {
@@ -543,6 +558,10 @@ func validatePolicyCookbookLocks(value any) (map[string]any, error) {
 	sort.Strings(keys)
 
 	for _, name := range keys {
+		if !validCookbookNamePattern.MatchString(name) {
+			return nil, &ValidationError{Messages: []string{"Field 'cookbook_locks' invalid"}}
+		}
+
 		lockRaw, ok := raw[name].(map[string]any)
 		if !ok {
 			return nil, &ValidationError{Messages: []string{"Field 'cookbook_locks' invalid"}}
@@ -555,10 +574,26 @@ func validatePolicyCookbookLocks(value any) (map[string]any, error) {
 		if _, err := validatePolicyToken("identifier", identifierValue); err != nil {
 			return nil, err
 		}
+		versionValue, ok := lockRaw["version"]
+		if !ok {
+			return nil, &ValidationError{Messages: []string{"Field 'version' missing"}}
+		}
+		if _, err := validatePolicyCookbookVersion("version", versionValue); err != nil {
+			return nil, err
+		}
 		if dotted, ok := lockRaw["dotted_decimal_identifier"]; ok {
-			version, ok := dotted.(string)
-			if !ok || !validPolicyDottedDecimalIdentifier(version) {
-				return nil, &ValidationError{Messages: []string{"Field 'dotted_decimal_identifier' is not a valid version"}}
+			if _, err := validatePolicyCookbookVersion("dotted_decimal_identifier", dotted); err != nil {
+				return nil, err
+			}
+		}
+		if scmInfo, ok := lockRaw["scm_info"]; ok {
+			if _, ok := scmInfo.(map[string]any); !ok {
+				return nil, &ValidationError{Messages: []string{"Field 'scm_info' invalid"}}
+			}
+		}
+		if sourceOptions, ok := lockRaw["source_options"]; ok {
+			if _, ok := sourceOptions.(map[string]any); !ok {
+				return nil, &ValidationError{Messages: []string{"Field 'source_options' invalid"}}
 			}
 		}
 
@@ -566,6 +601,54 @@ func validatePolicyCookbookLocks(value any) (map[string]any, error) {
 	}
 
 	return out, nil
+}
+
+func validatePolicySolutionDependencies(value any) (map[string]any, error) {
+	raw, ok := value.(map[string]any)
+	if !ok {
+		return nil, &ValidationError{Messages: []string{"Field 'solution_dependencies' invalid"}}
+	}
+
+	if policyfileValue, ok := raw["Policyfile"]; ok {
+		pairs, ok := policyfileValue.([]any)
+		if !ok {
+			return nil, &ValidationError{Messages: []string{"Field 'solution_dependencies' invalid"}}
+		}
+		for _, pairValue := range pairs {
+			pair, ok := pairValue.([]any)
+			if !ok || len(pair) != 2 {
+				return nil, &ValidationError{Messages: []string{"Field 'solution_dependencies' invalid"}}
+			}
+			for _, item := range pair {
+				text, ok := item.(string)
+				if !ok || strings.TrimSpace(text) == "" {
+					return nil, &ValidationError{Messages: []string{"Field 'solution_dependencies' invalid"}}
+				}
+			}
+		}
+	}
+
+	if dependenciesValue, ok := raw["dependencies"]; ok {
+		dependencies, ok := dependenciesValue.(map[string]any)
+		if !ok {
+			return nil, &ValidationError{Messages: []string{"Field 'solution_dependencies' invalid"}}
+		}
+		for _, entry := range dependencies {
+			if _, ok := entry.([]any); !ok {
+				return nil, &ValidationError{Messages: []string{"Field 'solution_dependencies' invalid"}}
+			}
+		}
+	}
+
+	return cloneMap(raw), nil
+}
+
+func validatePolicyCookbookVersion(field string, value any) (string, error) {
+	text, ok := value.(string)
+	if !ok || !validPolicyDottedDecimalIdentifier(text) {
+		return "", &ValidationError{Messages: []string{fmt.Sprintf("Field '%s' is not a valid version", field)}}
+	}
+	return strings.TrimSpace(text), nil
 }
 
 func validPolicyDottedDecimalIdentifier(value string) bool {
