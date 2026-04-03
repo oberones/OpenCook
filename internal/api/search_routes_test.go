@@ -42,6 +42,7 @@ func TestSearchIndexesEndpointListsImplementedIndexes(t *testing.T) {
 	}
 
 	expected := map[string]string{
+		"client":      "/search/client",
 		"environment": "/search/environment",
 		"node":        "/search/node",
 		"role":        "/search/role",
@@ -219,6 +220,83 @@ func TestSearchNodeEndpointSupportsFullPartialAndPagination(t *testing.T) {
 	pagedRows, ok := pagedPayload["rows"].([]any)
 	if !ok || len(pagedRows) != 1 {
 		t.Fatalf("paged rows = %T %v, want one result", pagedPayload["rows"], pagedPayload["rows"])
+	}
+}
+
+func TestSearchClientEndpointSupportsFullAndPartialSearch(t *testing.T) {
+	router := newTestRouter(t)
+
+	searchReq := httptest.NewRequest(http.MethodGet, "/search/client?q=name:org-validator", nil)
+	applySignedHeaders(t, searchReq, "silent-bob", "", http.MethodGet, "/search/client", nil, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	searchRec := httptest.NewRecorder()
+	router.ServeHTTP(searchRec, searchReq)
+
+	if searchRec.Code != http.StatusOK {
+		t.Fatalf("search client status = %d, want %d, body = %s", searchRec.Code, http.StatusOK, searchRec.Body.String())
+	}
+
+	var searchPayload map[string]any
+	if err := json.Unmarshal(searchRec.Body.Bytes(), &searchPayload); err != nil {
+		t.Fatalf("json.Unmarshal(search client) error = %v", err)
+	}
+	rows := searchPayload["rows"].([]any)
+	if len(rows) != 1 {
+		t.Fatalf("search client rows len = %d, want 1 (%v)", len(rows), rows)
+	}
+	row := rows[0].(map[string]any)
+	if row["name"] != "org-validator" {
+		t.Fatalf("client row name = %v, want %q", row["name"], "org-validator")
+	}
+	if row["clientname"] != "org-validator" {
+		t.Fatalf("client row clientname = %v, want %q", row["clientname"], "org-validator")
+	}
+	if row["json_class"] != "Chef::ApiClient" {
+		t.Fatalf("client row json_class = %v, want %q", row["json_class"], "Chef::ApiClient")
+	}
+	if row["chef_type"] != "client" {
+		t.Fatalf("client row chef_type = %v, want %q", row["chef_type"], "client")
+	}
+	if row["orgname"] != "ponyville" {
+		t.Fatalf("client row orgname = %v, want %q", row["orgname"], "ponyville")
+	}
+	if row["validator"] != false {
+		t.Fatalf("client row validator = %v, want false", row["validator"])
+	}
+
+	partialBody := []byte(`{"validator":["validator"],"org":["orgname"]}`)
+	partialReq := httptest.NewRequest(http.MethodPost, "/search/client?q=name:org-validator", bytes.NewReader(partialBody))
+	applySignedHeaders(t, partialReq, "silent-bob", "", http.MethodPost, "/search/client", partialBody, signDescription{
+		Version:   "1.3",
+		Algorithm: "sha256",
+	}, "2026-04-02T15:04:05Z")
+	partialRec := httptest.NewRecorder()
+	router.ServeHTTP(partialRec, partialReq)
+
+	if partialRec.Code != http.StatusOK {
+		t.Fatalf("partial search client status = %d, want %d, body = %s", partialRec.Code, http.StatusOK, partialRec.Body.String())
+	}
+
+	var partialPayload map[string]any
+	if err := json.Unmarshal(partialRec.Body.Bytes(), &partialPayload); err != nil {
+		t.Fatalf("json.Unmarshal(partial client) error = %v", err)
+	}
+	partialRows := partialPayload["rows"].([]any)
+	if len(partialRows) != 1 {
+		t.Fatalf("partial client rows len = %d, want 1 (%v)", len(partialRows), partialRows)
+	}
+	partialRow := partialRows[0].(map[string]any)
+	if partialRow["url"] != "/clients/org-validator" {
+		t.Fatalf("partial client url = %v, want %q", partialRow["url"], "/clients/org-validator")
+	}
+	data := partialRow["data"].(map[string]any)
+	if data["validator"] != false {
+		t.Fatalf("partial client validator = %v, want false", data["validator"])
+	}
+	if data["org"] != "ponyville" {
+		t.Fatalf("partial client org = %v, want %q", data["org"], "ponyville")
 	}
 }
 

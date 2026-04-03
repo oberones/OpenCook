@@ -708,6 +708,45 @@ func (s *Service) CreateClient(orgName string, input CreateClientInput) (Client,
 	return client, keyMaterial, nil
 }
 
+func (s *Service) DeleteClient(orgName, clientName string) (Client, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	org, ok := s.orgs[orgName]
+	if !ok {
+		return Client{}, ErrNotFound
+	}
+
+	client, ok := org.clients[clientName]
+	if !ok {
+		return Client{}, ErrNotFound
+	}
+
+	if keys, ok := org.clientKeys[clientName]; ok {
+		principal := authn.Principal{
+			Type:         "client",
+			Name:         clientName,
+			Organization: orgName,
+		}
+		for keyName := range keys {
+			if err := s.keyStore.Delete(principal, keyName); err != nil {
+				return Client{}, fmt.Errorf("delete client key %q: %w", keyName, err)
+			}
+		}
+	}
+
+	delete(org.clients, clientName)
+	delete(org.acls, clientACLKey(clientName))
+	delete(org.clientKeys, clientName)
+
+	group := org.groups["clients"]
+	group.Clients = withoutString(group.Clients, clientName)
+	group.Actors = uniqueSorted(append(group.Users, group.Clients...))
+	org.groups["clients"] = group
+
+	return client, nil
+}
+
 func (s *Service) ListGroups(orgName string) (map[string]string, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -1423,6 +1462,21 @@ func contains(values []string, target string) bool {
 		}
 	}
 	return false
+}
+
+func withoutString(values []string, target string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if value == target {
+			continue
+		}
+		out = append(out, value)
+	}
+	return out
 }
 
 func fallback(value, fallback string) string {
