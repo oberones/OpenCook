@@ -22,6 +22,7 @@ import (
 
 var (
 	ErrConflict     = errors.New("resource already exists")
+	ErrImmutable    = errors.New("resource cannot be modified")
 	ErrInvalidInput = errors.New("invalid input")
 	ErrNotFound     = errors.New("resource not found")
 )
@@ -161,6 +162,7 @@ type organizationState struct {
 	org        Organization
 	clients    map[string]Client
 	clientKeys map[string]map[string]KeyRecord
+	envs       map[string]Environment
 	nodes      map[string]Node
 	groups     map[string]Group
 	containers map[string]Container
@@ -438,6 +440,7 @@ func (s *Service) CreateOrganization(input CreateOrganizationInput) (Organizatio
 		org:        org,
 		clients:    make(map[string]Client),
 		clientKeys: make(map[string]map[string]KeyRecord),
+		envs:       make(map[string]Environment),
 		nodes:      make(map[string]Node),
 		groups:     make(map[string]Group),
 		containers: make(map[string]Container),
@@ -461,6 +464,11 @@ func (s *Service) CreateOrganization(input CreateOrganizationInput) (Organizatio
 	}
 
 	state.acls[organizationACLKey()] = defaultOrganizationACL(s.superuserName)
+	state.envs["_default"] = defaultEnvironment()
+	state.acls[environmentACLKey("_default")] = defaultEnvironmentACL(s.superuserName, authn.Principal{
+		Type: "user",
+		Name: ownerName,
+	})
 
 	validatorName := org.Name + "-validator"
 	keyMaterial, err := s.keyMaterialForPrincipalLocked(authn.Principal{
@@ -795,6 +803,13 @@ func (s *Service) ResolveACL(_ context.Context, resource authz.Resource) (authz.
 			return authz.ACL{}, false, nil
 		}
 		acl, ok := org.acls[clientACLKey(resource.Name)]
+		return acl, ok, nil
+	case "environment":
+		org, ok := s.orgs[resource.Organization]
+		if !ok {
+			return authz.ACL{}, false, nil
+		}
+		acl, ok := org.acls[environmentACLKey(resource.Name)]
 		return acl, ok, nil
 	case "node":
 		org, ok := s.orgs[resource.Organization]

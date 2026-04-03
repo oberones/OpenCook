@@ -54,6 +54,16 @@ Implemented so far:
 - Chef request-signing verification
 - initial authenticated routing
 - in-memory bootstrap state for users, organizations, clients, groups, containers, and ACLs
+- the first environment slice:
+  - `_default` environment bootstrap
+  - list
+  - get
+  - head
+  - create
+  - update
+  - delete
+  - rename-capable `PUT`
+  - `/environments/{name}/nodes`
 - the first core object slice for nodes:
   - list
   - get
@@ -235,8 +245,8 @@ These areas are still intentionally incomplete:
 - PostgreSQL-backed persistence
 - OpenSearch-backed indexing and query behavior
 - core Chef object CRUD such as nodes, roles, environments, and data bags
-- deeper node compatibility such as environment-filtered listing and search indexing
+- deeper node and environment compatibility such as search indexing, cookbook constraint edge cases, and linked object behavior
 - Bookshelf/sandbox/cookbook flows
 - operational parity and migration tooling
 
-The next likely major slice is deeper node compatibility or the next adjacent object API, not more speculative infrastructure work.
+The next likely major slice is deeper node/environment compatibility or the next adjacent object API, not more speculative infrastructure work.
