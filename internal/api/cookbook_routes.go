@@ -24,6 +24,14 @@ var legacyCookbookSegments = []string{
 	"root_files",
 }
 
+const (
+	defaultCookbookDescription     = "A fabulous new cookbook"
+	defaultCookbookLongDescription = ""
+	defaultCookbookMaintainer      = "Your Name"
+	defaultCookbookMaintainerEmail = "youremail@example.com"
+	defaultCookbookLicense         = "Apache v2.0"
+)
+
 func (s *server) handleCookbookArtifacts(w http.ResponseWriter, r *http.Request) {
 	state := s.deps.Bootstrap
 	if state == nil {
@@ -631,7 +639,7 @@ func (s *server) renderCookbookVersionResponse(r *http.Request, org string, vers
 		"json_class":    version.JSONClass,
 		"chef_type":     version.ChefType,
 		"frozen?":       version.Frozen,
-		"metadata":      cloneResponseMap(version.Metadata),
+		"metadata":      renderCookbookReadMetadata(version.CookbookName, version.Version, version.Metadata),
 	}
 
 	if requestedCookbookAPIVersion(r) >= 2 {
@@ -884,6 +892,35 @@ func invalidCookbookNameMessage(name string) string {
 
 func invalidCookbookVersionMessage(version string) string {
 	return fmt.Sprintf("Invalid cookbook version '%s'.", version)
+}
+
+func renderCookbookReadMetadata(name, version string, metadata map[string]any) map[string]any {
+	raw := cloneResponseMap(metadata)
+	out := map[string]any{
+		"attributes":       map[string]any{},
+		"dependencies":     map[string]any{},
+		"description":      defaultCookbookDescription,
+		"license":          defaultCookbookLicense,
+		"long_description": defaultCookbookLongDescription,
+		"maintainer":       defaultCookbookMaintainer,
+		"maintainer_email": defaultCookbookMaintainerEmail,
+		"name":             name,
+		"recipes":          map[string]any{},
+		"version":          version,
+	}
+
+	for _, field := range []string{"attributes", "dependencies", "recipes"} {
+		if value, ok := raw[field]; ok {
+			out[field] = value
+		}
+	}
+	for _, field := range []string{"description", "license", "long_description", "maintainer", "maintainer_email"} {
+		if value, ok := raw[field]; ok {
+			out[field] = value
+		}
+	}
+
+	return out
 }
 
 func (s *server) writeCookbookArtifactError(w http.ResponseWriter, err error, name, identifier string) bool {
