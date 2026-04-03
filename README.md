@@ -48,6 +48,22 @@ The project is currently in scaffold phase. This repository now includes:
 
 The scaffold uses environment variables for configuration. See [configs/opencook.env.example](/Users/oberon/Projects/coding/go/OpenCook/configs/opencook.env.example).
 
+To exercise the first authenticated HTTP endpoints locally, configure a bootstrap requestor with a public key:
+
+```bash
+export OPENCOOK_BOOTSTRAP_REQUESTOR_NAME=silent-bob
+export OPENCOOK_BOOTSTRAP_REQUESTOR_TYPE=user
+export OPENCOOK_BOOTSTRAP_PUBLIC_KEY_PATH=/path/to/public.pem
+export OPENCOOK_MAX_AUTH_BODY_BYTES=8388608
+```
+
+With that in place, signed requests can successfully hit:
+
+- `/users`
+- `/users/{name}`
+- `/organizations/{org}/clients`
+- `/organizations/{org}/clients/{name}`
+
 Typical commands once a Go toolchain is available:
 
 ```bash
