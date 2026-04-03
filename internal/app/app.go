@@ -12,6 +12,7 @@ import (
 	"github.com/oberones/OpenCook/internal/authn"
 	"github.com/oberones/OpenCook/internal/authz"
 	"github.com/oberones/OpenCook/internal/blob"
+	"github.com/oberones/OpenCook/internal/bootstrap"
 	"github.com/oberones/OpenCook/internal/compat"
 	"github.com/oberones/OpenCook/internal/config"
 	"github.com/oberones/OpenCook/internal/search"
@@ -31,25 +32,32 @@ func New(cfg config.Config, logger *log.Logger, build version.Info) (*Applicatio
 	searchIndex := search.NewNoopIndex(cfg.OpenSearchURL)
 	blobStore := blob.NewNoopStore(cfg.BlobStorageURL)
 	keyStore := authn.NewMemoryKeyStore()
+	bootstrapState := bootstrap.NewService(keyStore, bootstrap.Options{
+		SuperuserName: resolveSuperuserName(cfg),
+	})
 	if err := seedBootstrapRequestor(keyStore, cfg); err != nil {
 		return nil, err
+	}
+	if principal, ok := bootstrapPrincipalFromConfig(cfg); ok {
+		bootstrapState.SeedPrincipal(principal)
 	}
 	authSkew := cfg.AuthSkew
 	authnVerifier := authn.NewChefVerifier(keyStore, authn.Options{
 		AllowedClockSkew: &authSkew,
 	})
-	authzAuthorizer := authz.NoopAuthorizer{}
+	authzAuthorizer := authz.NewACLAuthorizer(bootstrapState)
 
 	handler := api.NewRouter(api.Dependencies{
-		Logger:   logger,
-		Config:   cfg,
-		Version:  build,
-		Compat:   compatRegistry,
-		Authn:    authnVerifier,
-		Authz:    authzAuthorizer,
-		Blob:     blobStore,
-		Search:   searchIndex,
-		Postgres: postgresStore,
+		Logger:    logger,
+		Config:    cfg,
+		Version:   build,
+		Compat:    compatRegistry,
+		Authn:     authnVerifier,
+		Authz:     authzAuthorizer,
+		Bootstrap: bootstrapState,
+		Blob:      blobStore,
+		Search:    searchIndex,
+		Postgres:  postgresStore,
 	})
 
 	server := &http.Server{
@@ -90,6 +98,25 @@ func seedBootstrapRequestor(store *authn.MemoryKeyStore, cfg config.Config) erro
 		},
 		PublicKey: publicKey,
 	})
+}
+
+func bootstrapPrincipalFromConfig(cfg config.Config) (authn.Principal, bool) {
+	if cfg.BootstrapRequestorName == "" {
+		return authn.Principal{}, false
+	}
+
+	return authn.Principal{
+		Type:         cfg.BootstrapRequestorType,
+		Name:         cfg.BootstrapRequestorName,
+		Organization: cfg.BootstrapRequestorOrganization,
+	}, true
+}
+
+func resolveSuperuserName(cfg config.Config) string {
+	if cfg.BootstrapRequestorType == "user" && cfg.BootstrapRequestorName != "" {
+		return cfg.BootstrapRequestorName
+	}
+	return "pivotal"
 }
 
 func (a *Application) Run(ctx context.Context) error {

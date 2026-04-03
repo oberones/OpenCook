@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log"
@@ -12,6 +13,7 @@ import (
 	"github.com/oberones/OpenCook/internal/authn"
 	"github.com/oberones/OpenCook/internal/authz"
 	"github.com/oberones/OpenCook/internal/blob"
+	"github.com/oberones/OpenCook/internal/bootstrap"
 	"github.com/oberones/OpenCook/internal/compat"
 	"github.com/oberones/OpenCook/internal/config"
 	"github.com/oberones/OpenCook/internal/search"
@@ -20,15 +22,16 @@ import (
 )
 
 type Dependencies struct {
-	Logger   *log.Logger
-	Config   config.Config
-	Version  version.Info
-	Compat   compat.Registry
-	Authn    authn.Verifier
-	Authz    authz.Authorizer
-	Blob     blob.Store
-	Search   search.Index
-	Postgres *pg.Store
+	Logger    *log.Logger
+	Config    config.Config
+	Version   version.Info
+	Compat    compat.Registry
+	Authn     authn.Verifier
+	Authz     authz.Authorizer
+	Bootstrap *bootstrap.Service
+	Blob      blob.Store
+	Search    search.Index
+	Postgres  *pg.Store
 }
 
 type server struct {
@@ -49,10 +52,21 @@ func NewRouter(deps Dependencies) http.Handler {
 	mux.HandleFunc("/readyz", srv.handleReady)
 	mux.HandleFunc("/internal/contracts/routes", srv.handleRouteContract)
 	mux.HandleFunc("/internal/authn/capabilities", srv.handleAuthnCapabilities)
+	mux.HandleFunc("/organizations", srv.withAuthn("organizations-root", srv.handleOrganizations))
+	mux.HandleFunc("/organizations/", srv.withAuthn("organizations-routes", srv.handleOrganizations))
+	mux.HandleFunc("/organizations/{org}/_acl", srv.withAuthn("org-acl", srv.handleOrgACL))
+	mux.HandleFunc("/organizations/{org}/groups", srv.withAuthn("org-groups-root", srv.handleOrgGroups))
+	mux.HandleFunc("/organizations/{org}/groups/", srv.withAuthn("org-groups-routes", srv.handleOrgGroups))
+	mux.HandleFunc("/organizations/{org}/groups/{name}/_acl", srv.withAuthn("org-group-acl", srv.handleOrgGroupACL))
+	mux.HandleFunc("/organizations/{org}/containers", srv.withAuthn("org-containers-root", srv.handleOrgContainers))
+	mux.HandleFunc("/organizations/{org}/containers/", srv.withAuthn("org-containers-routes", srv.handleOrgContainers))
+	mux.HandleFunc("/organizations/{org}/containers/{name}/_acl", srv.withAuthn("org-container-acl", srv.handleOrgContainerACL))
 	mux.HandleFunc("/users", srv.withAuthn("users-root", srv.handleUsers))
 	mux.HandleFunc("/users/", srv.withAuthn("users-named", srv.handleUsers))
+	mux.HandleFunc("/users/{name}/_acl", srv.withAuthn("user-acl", srv.handleUserACL))
 	mux.HandleFunc("/organizations/{org}/clients", srv.withAuthn("org-clients", srv.handleOrgClients))
 	mux.HandleFunc("/organizations/{org}/clients/", srv.withAuthn("org-client-named", srv.handleOrgClients))
+	mux.HandleFunc("/organizations/{org}/clients/{name}/_acl", srv.withAuthn("org-client-acl", srv.handleOrgClientACL))
 
 	for _, surface := range deps.Compat.Surfaces() {
 		surface := surface
@@ -117,16 +131,27 @@ func (s *server) handleAuthnCapabilities(w http.ResponseWriter, _ *http.Request)
 
 func (s *server) handleUsers(w http.ResponseWriter, r *http.Request) {
 	requestor, _ := requestorFromContext(r.Context())
+	state := s.deps.Bootstrap
+	if state == nil {
+		writeJSON(w, http.StatusInternalServerError, apiError{
+			Error:   "bootstrap_unavailable",
+			Message: "bootstrap state service is not configured",
+		})
+		return
+	}
 
 	switch r.Method {
 	case http.MethodGet:
 		if matchesCollectionPath(r.URL.Path, "/users") {
+			if !s.authorizeRequest(w, r, authz.ActionRead, authz.Resource{Type: "users"}) {
+				return
+			}
+
 			writeJSON(w, http.StatusOK, map[string]any{
-				"requestor": requestor,
-				"users": map[string]string{
-					requestor.Name: "/users/" + requestor.Name,
-				},
-				"note": "authentication is wired; persistent user storage is not implemented yet",
+				"requestor":   requestor,
+				"users":       state.ListUsers(),
+				"authn":       "verified",
+				"persistence": "memory-bootstrap",
 			})
 			return
 		}
@@ -139,15 +164,78 @@ func (s *server) handleUsers(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
+		if !s.authorizeUserRead(w, r, name) {
+			return
+		}
+
+		user, ok := state.GetUser(name)
+		if !ok {
+			writeJSON(w, http.StatusNotFound, apiError{
+				Error:   "not_found",
+				Message: "user not found",
+			})
+			return
+		}
 
 		writeJSON(w, http.StatusOK, map[string]any{
-			"name":           name,
+			"username":       user.Username,
+			"display_name":   user.DisplayName,
+			"email":          user.Email,
+			"first_name":     user.FirstName,
+			"last_name":      user.LastName,
 			"requestor":      requestor,
 			"uri":            "/users/" + name,
 			"authn_status":   "verified",
-			"storage_status": "stub",
-			"compatibility":  "wire-compatible authn path in progress",
+			"storage_status": "memory-bootstrap",
 		})
+	case http.MethodPost:
+		if !matchesCollectionPath(r.URL.Path, "/users") {
+			writeJSON(w, http.StatusNotFound, apiError{
+				Error:   "not_found",
+				Message: "route not found in scaffold router",
+			})
+			return
+		}
+
+		if !s.authorizeRequest(w, r, authz.ActionCreate, authz.Resource{Type: "users"}) {
+			return
+		}
+
+		var payload struct {
+			Username    string `json:"username"`
+			DisplayName string `json:"display_name"`
+			Email       string `json:"email"`
+			FirstName   string `json:"first_name"`
+			LastName    string `json:"last_name"`
+			PublicKey   string `json:"public_key"`
+			CreateKey   bool   `json:"create_key"`
+		}
+		if !decodeJSON(w, r, &payload) {
+			return
+		}
+
+		user, keyMaterial, err := state.CreateUser(bootstrap.CreateUserInput{
+			Username:    payload.Username,
+			DisplayName: payload.DisplayName,
+			Email:       payload.Email,
+			FirstName:   payload.FirstName,
+			LastName:    payload.LastName,
+			PublicKey:   payload.PublicKey,
+		})
+		if !s.writeBootstrapError(w, err) {
+			return
+		}
+
+		response := map[string]any{
+			"uri": "/users/" + user.Username,
+		}
+		if keyMaterial != nil && keyMaterial.PrivateKeyPEM != "" {
+			response["private_key"] = keyMaterial.PrivateKeyPEM
+		}
+		if payload.CreateKey && keyMaterial != nil {
+			response["chef_key"] = keyMaterial
+		}
+		writeJSON(w, http.StatusCreated, response)
 	default:
 		writeJSON(w, http.StatusNotImplemented, map[string]any{
 			"error":   "not_implemented",
@@ -160,17 +248,42 @@ func (s *server) handleUsers(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) handleOrgClients(w http.ResponseWriter, r *http.Request) {
 	requestor, _ := requestorFromContext(r.Context())
+	state := s.deps.Bootstrap
+	if state == nil {
+		writeJSON(w, http.StatusInternalServerError, apiError{
+			Error:   "bootstrap_unavailable",
+			Message: "bootstrap state service is not configured",
+		})
+		return
+	}
 	org := r.PathValue("org")
 	collectionPath := "/organizations/" + org + "/clients"
 
 	switch r.Method {
 	case http.MethodGet:
+		if _, ok := state.GetOrganization(org); !ok {
+			writeJSON(w, http.StatusNotFound, apiError{
+				Error:   "not_found",
+				Message: "organization not found",
+			})
+			return
+		}
+
 		if matchesCollectionPath(r.URL.Path, collectionPath) {
+			if !s.authorizeRequest(w, r, authz.ActionRead, authz.Resource{
+				Type:         "container",
+				Name:         "clients",
+				Organization: org,
+			}) {
+				return
+			}
+
+			clients, _ := state.ListClients(org)
 			writeJSON(w, http.StatusOK, map[string]any{
 				"organization": org,
 				"requestor":    requestor,
-				"clients":      map[string]string{},
-				"note":         "authentication is wired; persistent client storage is not implemented yet",
+				"clients":      clients,
+				"storage":      "memory-bootstrap",
 			})
 			return
 		}
@@ -184,14 +297,83 @@ func (s *server) handleOrgClients(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		client, ok := state.GetClient(org, name)
+		if !ok {
+			writeJSON(w, http.StatusNotFound, apiError{
+				Error:   "not_found",
+				Message: "client not found",
+			})
+			return
+		}
+		if !s.authorizeClientRead(w, r, org, name) {
+			return
+		}
+
 		writeJSON(w, http.StatusOK, map[string]any{
 			"organization":   org,
-			"name":           name,
+			"name":           client.Name,
+			"clientname":     client.ClientName,
+			"validator":      client.Validator,
+			"admin":          client.Admin,
 			"requestor":      requestor,
-			"uri":            "/organizations/" + org + "/clients/" + name,
+			"uri":            client.URI,
 			"authn_status":   "verified",
-			"storage_status": "stub",
+			"storage_status": "memory-bootstrap",
 		})
+	case http.MethodPost:
+		if !matchesCollectionPath(r.URL.Path, collectionPath) {
+			writeJSON(w, http.StatusNotFound, apiError{
+				Error:   "not_found",
+				Message: "route not found in scaffold router",
+			})
+			return
+		}
+
+		if !s.authorizeRequest(w, r, authz.ActionCreate, authz.Resource{
+			Type:         "container",
+			Name:         "clients",
+			Organization: org,
+		}) {
+			return
+		}
+
+		var payload struct {
+			Name       string `json:"name"`
+			ClientName string `json:"clientname"`
+			Validator  bool   `json:"validator"`
+			Admin      bool   `json:"admin"`
+			PublicKey  string `json:"public_key"`
+			CreateKey  bool   `json:"create_key"`
+		}
+		if !decodeJSON(w, r, &payload) {
+			return
+		}
+
+		name := payload.Name
+		if name == "" {
+			name = payload.ClientName
+		}
+
+		client, keyMaterial, err := state.CreateClient(org, bootstrap.CreateClientInput{
+			Name:      name,
+			Validator: payload.Validator,
+			Admin:     payload.Admin,
+			PublicKey: payload.PublicKey,
+		})
+		if !s.writeBootstrapError(w, err) {
+			return
+		}
+
+		response := map[string]any{
+			"uri": client.URI,
+		}
+		if keyMaterial != nil && keyMaterial.PrivateKeyPEM != "" {
+			response["private_key"] = keyMaterial.PrivateKeyPEM
+		}
+		if payload.CreateKey && keyMaterial != nil {
+			response["chef_key"] = keyMaterial
+		}
+		writeJSON(w, http.StatusCreated, response)
 	default:
 		writeJSON(w, http.StatusNotImplemented, map[string]any{
 			"error":   "not_implemented",
@@ -298,7 +480,7 @@ func flattenHeaders(header http.Header) map[string]string {
 
 func isImplementedPattern(pattern string) bool {
 	switch pattern {
-	case "/users", "/users/", "/organizations/{org}/clients", "/organizations/{org}/clients/":
+	case "/users", "/users/", "/organizations/", "/organizations/{org}/clients", "/organizations/{org}/clients/":
 		return true
 	default:
 		return false
@@ -323,6 +505,29 @@ func (s *server) logf(format string, args ...any) {
 	}
 
 	s.deps.Logger.Printf(format, args...)
+}
+
+func decodeJSON(w http.ResponseWriter, r *http.Request, payload any) bool {
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(payload); err != nil {
+		writeJSON(w, http.StatusBadRequest, apiError{
+			Error:   "invalid_json",
+			Message: "request body must be valid JSON",
+		})
+		return false
+	}
+
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		writeJSON(w, http.StatusBadRequest, apiError{
+			Error:   "invalid_json",
+			Message: "request body must contain exactly one JSON document",
+		})
+		return false
+	}
+
+	return true
 }
 
 func (s *server) statusPayload(mode string) map[string]any {
