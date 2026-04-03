@@ -91,12 +91,17 @@ Implemented so far:
 - the first search-facing slice:
   - `/search`
   - `/search/{client,environment,node,role}`
+  - live per-data-bag indexes under `/search/{bag}`
   - `/organizations/{org}/search`
   - `/organizations/{org}/search/{client,environment,node,role}`
+  - `/organizations/{org}/search/{bag}`
   - GET search results
   - POST partial search results
   - ACL-filtered search responses
   - merged node attributes for search-facing partial search
+  - Chef-style wrapped data bag search rows
+  - raw-item data bag partial search rows
+  - simple `AND`/`NOT` matching and escaped-slash prefix handling
 - the first data bag slice:
   - `/data`
   - `/data/{bag}`
@@ -282,8 +287,8 @@ These areas are still intentionally incomplete:
 - remaining core Chef object CRUD beyond nodes, environments, roles, and data bags
 - deeper node and environment compatibility such as cookbook constraint edge cases and linked object behavior
 - deeper role compatibility such as run-list normalization and linked environment behavior
-- broader search semantics beyond the current in-memory compatibility layer, especially query translation and data-bag coverage
+- broader search semantics beyond the current in-memory compatibility layer, especially richer Lucene-style query translation and wider object coverage
 - Bookshelf/sandbox/cookbook flows
 - operational parity and migration tooling
 
-The next likely major slice is broader search parity, especially data-bag-aware indexing and richer query semantics, not more speculative infrastructure work.
+The next likely major slice is broader search parity beyond the current compatibility subset, or the next adjacent API surface, not more speculative infrastructure work.

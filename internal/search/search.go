@@ -8,8 +8,10 @@ import (
 )
 
 var (
-	ErrNotFound    = errors.New("search target not found")
-	ErrUnavailable = errors.New("search backend unavailable")
+	ErrOrganizationNotFound = errors.New("search organization not found")
+	ErrIndexNotFound        = errors.New("search index not found")
+	ErrNotFound             = ErrOrganizationNotFound
+	ErrUnavailable          = errors.New("search backend unavailable")
 )
 
 type Status struct {

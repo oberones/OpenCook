@@ -57,6 +57,37 @@ func TestSearchIndexesEndpointListsImplementedIndexes(t *testing.T) {
 	}
 }
 
+func TestSearchIndexesEndpointIncludesDataBagIndexes(t *testing.T) {
+	router := newTestRouter(t)
+
+	createReq := newSignedJSONRequest(t, http.MethodPost, "/data", mustMarshalDataBagJSON(t, map[string]any{"name": "ponies"}))
+	createRec := httptest.NewRecorder()
+	router.ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("create data bag status = %d, want %d, body = %s", createRec.Code, http.StatusCreated, createRec.Body.String())
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/search", nil)
+	applySignedHeaders(t, req, "silent-bob", "", http.MethodGet, "/search", nil, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("search index status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var payload map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal(search indexes with data bag) error = %v", err)
+	}
+	if payload["ponies"] != "/search/ponies" {
+		t.Fatalf("search index %q = %q, want %q", "ponies", payload["ponies"], "/search/ponies")
+	}
+}
+
 func TestSearchIndexesEndpointReturnsNotFoundForUnknownOrganization(t *testing.T) {
 	router := newTestRouter(t)
 
@@ -340,6 +371,214 @@ func TestSearchQueryEndpointReturnsNotFoundForUnknownOrganization(t *testing.T) 
 	}
 	if payload["message"] != "organization not found" {
 		t.Fatalf("message = %v, want %q", payload["message"], "organization not found")
+	}
+}
+
+func TestSearchDataBagEndpointSupportsFullAndPartialSearch(t *testing.T) {
+	router := newTestRouter(t)
+
+	createBagReq := newSignedJSONRequest(t, http.MethodPost, "/data", mustMarshalDataBagJSON(t, map[string]any{"name": "ponies"}))
+	createBagRec := httptest.NewRecorder()
+	router.ServeHTTP(createBagRec, createBagReq)
+	if createBagRec.Code != http.StatusCreated {
+		t.Fatalf("create data bag status = %d, want %d, body = %s", createBagRec.Code, http.StatusCreated, createBagRec.Body.String())
+	}
+
+	createItemReq := newSignedJSONRequest(t, http.MethodPost, "/data/ponies", mustMarshalDataBagJSON(t, map[string]any{
+		"id": "alice",
+		"ssh": map[string]any{
+			"public_key":  "---RSA Public Key--- Alice",
+			"private_key": "---RSA Private Key--- Alice",
+		},
+	}))
+	createItemRec := httptest.NewRecorder()
+	router.ServeHTTP(createItemRec, createItemReq)
+	if createItemRec.Code != http.StatusCreated {
+		t.Fatalf("create data bag item status = %d, want %d, body = %s", createItemRec.Code, http.StatusCreated, createItemRec.Body.String())
+	}
+
+	searchReq := httptest.NewRequest(http.MethodGet, "/search/ponies?q=id:alice", nil)
+	applySignedHeaders(t, searchReq, "silent-bob", "", http.MethodGet, "/search/ponies", nil, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	searchReq.SetPathValue("index", "ponies")
+	searchRec := httptest.NewRecorder()
+	router.ServeHTTP(searchRec, searchReq)
+
+	if searchRec.Code != http.StatusOK {
+		t.Fatalf("search data bag status = %d, want %d, body = %s", searchRec.Code, http.StatusOK, searchRec.Body.String())
+	}
+
+	var searchPayload map[string]any
+	if err := json.Unmarshal(searchRec.Body.Bytes(), &searchPayload); err != nil {
+		t.Fatalf("json.Unmarshal(search data bag) error = %v", err)
+	}
+	rows := searchPayload["rows"].([]any)
+	if len(rows) != 1 {
+		t.Fatalf("search data bag rows len = %d, want 1 (%v)", len(rows), rows)
+	}
+	row := rows[0].(map[string]any)
+	if row["name"] != "data_bag_item_ponies_alice" {
+		t.Fatalf("search row name = %v, want %q", row["name"], "data_bag_item_ponies_alice")
+	}
+	if row["data_bag"] != "ponies" {
+		t.Fatalf("search row data_bag = %v, want %q", row["data_bag"], "ponies")
+	}
+	rawData := row["raw_data"].(map[string]any)
+	if rawData["id"] != "alice" {
+		t.Fatalf("search row raw_data[id] = %v, want %q", rawData["id"], "alice")
+	}
+
+	partialBody := []byte(`{"private_key":["ssh","private_key"],"public_key":["ssh","public_key"]}`)
+	partialReq := httptest.NewRequest(http.MethodPost, "/organizations/ponyville/search/ponies?q=ssh_public_key:*", bytes.NewReader(partialBody))
+	applySignedHeaders(t, partialReq, "silent-bob", "", http.MethodPost, "/organizations/ponyville/search/ponies", partialBody, signDescription{
+		Version:   "1.3",
+		Algorithm: "sha256",
+	}, "2026-04-02T15:04:05Z")
+	partialReq.SetPathValue("org", "ponyville")
+	partialReq.SetPathValue("index", "ponies")
+	partialRec := httptest.NewRecorder()
+	router.ServeHTTP(partialRec, partialReq)
+
+	if partialRec.Code != http.StatusOK {
+		t.Fatalf("partial search data bag status = %d, want %d, body = %s", partialRec.Code, http.StatusOK, partialRec.Body.String())
+	}
+
+	var partialPayload map[string]any
+	if err := json.Unmarshal(partialRec.Body.Bytes(), &partialPayload); err != nil {
+		t.Fatalf("json.Unmarshal(partial data bag) error = %v", err)
+	}
+	partialRows := partialPayload["rows"].([]any)
+	if len(partialRows) != 1 {
+		t.Fatalf("partial data bag rows len = %d, want 1 (%v)", len(partialRows), partialRows)
+	}
+	partialRow := partialRows[0].(map[string]any)
+	if partialRow["url"] != "/organizations/ponyville/data/ponies/alice" {
+		t.Fatalf("partial data bag url = %v, want %q", partialRow["url"], "/organizations/ponyville/data/ponies/alice")
+	}
+	data := partialRow["data"].(map[string]any)
+	if data["private_key"] != "---RSA Private Key--- Alice" {
+		t.Fatalf("partial data bag private_key = %v, want expected private key", data["private_key"])
+	}
+	if data["public_key"] != "---RSA Public Key--- Alice" {
+		t.Fatalf("partial data bag public_key = %v, want expected public key", data["public_key"])
+	}
+
+	missReq := httptest.NewRequest(http.MethodGet, "/search/ponies?q=raw_data_ssh_public_key:*", nil)
+	applySignedHeaders(t, missReq, "silent-bob", "", http.MethodGet, "/search/ponies", nil, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	missReq.SetPathValue("index", "ponies")
+	missRec := httptest.NewRecorder()
+	router.ServeHTTP(missRec, missReq)
+
+	if missRec.Code != http.StatusOK {
+		t.Fatalf("search raw_data-prefixed miss status = %d, want %d, body = %s", missRec.Code, http.StatusOK, missRec.Body.String())
+	}
+
+	var missPayload map[string]any
+	if err := json.Unmarshal(missRec.Body.Bytes(), &missPayload); err != nil {
+		t.Fatalf("json.Unmarshal(raw_data-prefixed miss) error = %v", err)
+	}
+	if missPayload["total"] != float64(0) {
+		t.Fatalf("raw_data-prefixed miss total = %v, want 0", missPayload["total"])
+	}
+}
+
+func TestSearchDataBagEndpointReturnsChefStyleNotFound(t *testing.T) {
+	router := newTestRouter(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/search/no_bag?q=id:*", nil)
+	applySignedHeaders(t, req, "silent-bob", "", http.MethodGet, "/search/no_bag", nil, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	req.SetPathValue("index", "no_bag")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("search missing data bag status = %d, want %d, body = %s", rec.Code, http.StatusNotFound, rec.Body.String())
+	}
+
+	var payload map[string][]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal(search missing data bag) error = %v", err)
+	}
+	if len(payload["error"]) != 1 || payload["error"][0] != "I don't know how to search for no_bag data objects." {
+		t.Fatalf("search missing data bag payload = %v, want Chef-style message", payload)
+	}
+}
+
+func TestSearchDataBagEndpointSupportsSpecialCharacterQueries(t *testing.T) {
+	router := newTestRouter(t)
+
+	createBagReq := newSignedJSONRequest(t, http.MethodPost, "/data", mustMarshalDataBagJSON(t, map[string]any{"name": "x"}))
+	createBagRec := httptest.NewRecorder()
+	router.ServeHTTP(createBagRec, createBagReq)
+	if createBagRec.Code != http.StatusCreated {
+		t.Fatalf("create data bag status = %d, want %d, body = %s", createBagRec.Code, http.StatusCreated, createBagRec.Body.String())
+	}
+
+	for _, payload := range []map[string]any{
+		{"id": "foo", "path": "foo/bar"},
+		{"id": "foo-bar"},
+	} {
+		req := newSignedJSONRequest(t, http.MethodPost, "/data/x", mustMarshalDataBagJSON(t, payload))
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("create data bag item %v status = %d, want %d, body = %s", payload["id"], rec.Code, http.StatusCreated, rec.Body.String())
+		}
+	}
+
+	andReq := httptest.NewRequest(http.MethodGet, "/search/x?q=id:foo*%20AND%20NOT%20bar", nil)
+	applySignedHeaders(t, andReq, "silent-bob", "", http.MethodGet, "/search/x", nil, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	andReq.SetPathValue("index", "x")
+	andRec := httptest.NewRecorder()
+	router.ServeHTTP(andRec, andReq)
+
+	if andRec.Code != http.StatusOK {
+		t.Fatalf("search and/not status = %d, want %d, body = %s", andRec.Code, http.StatusOK, andRec.Body.String())
+	}
+
+	var andPayload map[string]any
+	if err := json.Unmarshal(andRec.Body.Bytes(), &andPayload); err != nil {
+		t.Fatalf("json.Unmarshal(search and/not) error = %v", err)
+	}
+	if andPayload["total"] != float64(2) {
+		t.Fatalf("and/not total = %v, want 2", andPayload["total"])
+	}
+
+	pathReq := httptest.NewRequest(http.MethodGet, `/search/x?q=path:foo\/*`, nil)
+	applySignedHeaders(t, pathReq, "silent-bob", "", http.MethodGet, "/search/x", nil, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	pathReq.SetPathValue("index", "x")
+	pathRec := httptest.NewRecorder()
+	router.ServeHTTP(pathRec, pathReq)
+
+	if pathRec.Code != http.StatusOK {
+		t.Fatalf("search escaped slash status = %d, want %d, body = %s", pathRec.Code, http.StatusOK, pathRec.Body.String())
+	}
+
+	var pathPayload map[string]any
+	if err := json.Unmarshal(pathRec.Body.Bytes(), &pathPayload); err != nil {
+		t.Fatalf("json.Unmarshal(search escaped slash) error = %v", err)
+	}
+	pathRows := pathPayload["rows"].([]any)
+	if len(pathRows) != 1 {
+		t.Fatalf("escaped slash rows len = %d, want 1 (%v)", len(pathRows), pathRows)
+	}
+	pathRow := pathRows[0].(map[string]any)
+	if pathRow["name"] != "data_bag_item_x_foo" {
+		t.Fatalf("escaped slash row name = %v, want %q", pathRow["name"], "data_bag_item_x_foo")
 	}
 }
 

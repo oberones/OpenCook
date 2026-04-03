@@ -3,13 +3,13 @@ package api
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
 
 	"github.com/oberones/OpenCook/internal/authn"
 	"github.com/oberones/OpenCook/internal/authz"
+	"github.com/oberones/OpenCook/internal/bootstrap"
 	"github.com/oberones/OpenCook/internal/search"
 )
 
@@ -38,7 +38,7 @@ func (s *server) handleSearchIndexes(w http.ResponseWriter, r *http.Request) {
 
 	indexes, err := s.deps.Search.Indexes(r.Context(), org)
 	if err != nil {
-		if !s.writeSearchError(w, err, "search index listing") {
+		if !s.writeSearchError(w, err, "search index listing", "") {
 			return
 		}
 		return
@@ -46,7 +46,7 @@ func (s *server) handleSearchIndexes(w http.ResponseWriter, r *http.Request) {
 
 	response := make(map[string]string)
 	for _, indexName := range indexes {
-		resource, found := searchContainerResource(indexName, org)
+		resource, found := searchIndexResource(indexName, org, s.deps.Bootstrap)
 		if !found {
 			continue
 		}
@@ -84,12 +84,9 @@ func (s *server) handleSearchQuery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resource, found := searchContainerResource(indexName, org)
+	resource, found := searchIndexResource(indexName, org, s.deps.Bootstrap)
 	if !found {
-		writeJSON(w, http.StatusNotFound, apiError{
-			Error:   "not_found",
-			Message: "route not found in scaffold router",
-		})
+		writeSearchIndexNotFound(w, indexName)
 		return
 	}
 	if !s.authorizeRequest(w, r, authz.ActionRead, resource) {
@@ -116,7 +113,7 @@ func (s *server) handleSearchQuery(w http.ResponseWriter, r *http.Request) {
 		Q:            r.URL.Query().Get("q"),
 	})
 	if err != nil {
-		if !s.writeSearchError(w, err, "search query "+indexName) {
+		if !s.writeSearchError(w, err, "search query "+indexName, indexName) {
 			return
 		}
 		return
@@ -197,7 +194,7 @@ func (s *server) resolveSearchRoute(w http.ResponseWriter, r *http.Request) (str
 	return org, "/search", true
 }
 
-func searchContainerResource(indexName, org string) (authz.Resource, bool) {
+func searchIndexResource(indexName, org string, state *bootstrap.Service) (authz.Resource, bool) {
 	switch indexName {
 	case "client":
 		return authz.Resource{Type: "container", Name: "clients", Organization: org}, true
@@ -208,6 +205,11 @@ func searchContainerResource(indexName, org string) (authz.Resource, bool) {
 	case "role":
 		return authz.Resource{Type: "container", Name: "roles", Organization: org}, true
 	default:
+		if state != nil {
+			if _, orgExists, bagExists := state.GetDataBag(org, indexName); orgExists && bagExists {
+				return authz.Resource{Type: "data_bag", Name: indexName, Organization: org}, true
+			}
+		}
 		return authz.Resource{}, false
 	}
 }
@@ -304,13 +306,15 @@ func decodePartialSearchBody(w http.ResponseWriter, r *http.Request) (map[string
 	return selectors, true
 }
 
-func (s *server) writeSearchError(w http.ResponseWriter, err error, operation string) bool {
+func (s *server) writeSearchError(w http.ResponseWriter, err error, operation, indexName string) bool {
 	if err == nil {
 		return true
 	}
 
 	switch {
-	case errors.Is(err, search.ErrNotFound):
+	case errors.Is(err, search.ErrIndexNotFound):
+		writeSearchIndexNotFound(w, indexName)
+	case errors.Is(err, search.ErrOrganizationNotFound), errors.Is(err, search.ErrNotFound):
 		writeJSON(w, http.StatusNotFound, apiError{
 			Error:   "not_found",
 			Message: "organization not found",
@@ -323,6 +327,10 @@ func (s *server) writeSearchError(w http.ResponseWriter, err error, operation st
 		})
 	}
 	return false
+}
+
+func writeSearchIndexNotFound(w http.ResponseWriter, indexName string) {
+	writeDataBagMessages(w, http.StatusNotFound, "I don't know how to search for "+indexName+" data objects.")
 }
 
 func applyPartialSearchSelectors(document map[string]any, selectors map[string][]string) map[string]any {
@@ -375,6 +383,9 @@ func searchDocumentURL(doc search.Document, org, basePath string) string {
 		}
 		return "/organizations/" + org + "/roles/" + doc.Name
 	default:
-		return fmt.Sprintf("%s/%s/%s", basePath, doc.Index, doc.Name)
+		if basePath == "/search" {
+			return "/data/" + doc.Index + "/" + doc.Name
+		}
+		return "/organizations/" + org + "/data/" + doc.Index + "/" + doc.Name
 	}
 }
