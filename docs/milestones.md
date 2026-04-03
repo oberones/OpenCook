@@ -39,12 +39,15 @@ Status: in progress
 - `/environments/{name}/nodes` is live and filters the current node compatibility state
 - in-memory role list/get/head/create/update/delete behavior is implemented
 - `/roles/{name}/environments` and `/roles/{name}/environments/{environment}` are live, including `_default` run-list resolution
+- in-memory data bag list/get/create/delete behavior is implemented for both default-org and explicit-org routes
+- in-memory data bag item get/create/update/delete behavior is implemented with Chef-style response shapes and error messages
 - default-org and explicit-org client read/create/delete routes are now available too
 - default-org and explicit-org node routes are both available for the first object slice
 - default-org and explicit-org environment routes are now available too
 - default-org and explicit-org role routes are now available too
+- default-org and explicit-org data bag routes are now available too
 - creator-aware node ACLs now allow clients to manage their own node objects
-- data bags and the rest of the object surface still need follow-on slices
+- the rest of the object surface still needs follow-on slices
 - PostgreSQL-backed persistence for object APIs is still pending
 
 ## Milestone 5: Search Compatibility
@@ -57,7 +60,7 @@ Status: in progress
 - search results are filtered through current read authz before pagination is applied
 - node partial search now reflects merged attribute precedence for search-facing behavior
 - default-org client search results now point at live `/clients/...` routes instead of org-only URLs
-- OpenSearch-backed indexing, provider capability handling, and reindex tooling are still pending
+- OpenSearch-backed indexing, provider capability handling, data-bag search coverage, and reindex tooling are still pending
 
 ## Milestone 6: Cookbook and Blob Workflows
 

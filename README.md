@@ -10,7 +10,7 @@ The project is currently in its compatibility-foundation phase. This repository 
 - compatibility surface inventory wired into the HTTP server
 - Chef request-signing verification with test coverage
 - in-memory bootstrap state for users, organizations, clients, groups, containers, and ACLs
-- initial authenticated endpoints for users, organizations, clients, ACL inspection, actor key lifecycle, nodes, environments, roles, and compatibility search
+- initial authenticated endpoints for users, organizations, clients, ACL inspection, actor key lifecycle, nodes, environments, roles, data bags, and compatibility search
 - docs for architecture decisions, milestones, and compatibility tracking
 - a starting test layout for contract-driven development
 
@@ -42,7 +42,7 @@ The project is currently in its compatibility-foundation phase. This repository 
 
 1. Request signing and key management compatibility
 2. Org, user, client, and ACL bootstrap flows
-3. Data bags and remaining core object CRUD
+3. Remaining core object CRUD and deeper object parity
 4. Search provider and indexing compatibility on OpenSearch
 5. Cookbook, sandbox, and blob storage flows
 
@@ -70,6 +70,9 @@ With that in place, signed requests can successfully hit:
 - `/clients/{name}`
 - `/clients/{name}/keys`
 - `/clients/{name}/keys/{key}`
+- `/data`
+- `/data/{bag}`
+- `/data/{bag}/{item}`
 - `/organizations`
 - `/organizations/{org}`
 - `/environments`
@@ -86,6 +89,9 @@ With that in place, signed requests can successfully hit:
 - `/organizations/{org}/environments/{name}/nodes`
 - `/nodes`
 - `/nodes/{name}`
+- `/organizations/{org}/data`
+- `/organizations/{org}/data/{bag}`
+- `/organizations/{org}/data/{bag}/{item}`
 - `/organizations/{org}/search`
 - `/organizations/{org}/search/{index}`
 - `/organizations/{org}/roles`
@@ -99,7 +105,7 @@ With that in place, signed requests can successfully hit:
 - `/organizations/{org}/clients/{name}/keys`
 - `/organizations/{org}/clients/{name}/keys/{key}`
 
-The in-memory search compatibility layer currently exposes the built-in Chef indexes for `client`, `environment`, `node`, and `role`, with GET search and POST partial search support across those object types.
+The in-memory search compatibility layer currently exposes the built-in Chef indexes for `client`, `environment`, `node`, and `role`, with GET search and POST partial search support across those object types. Data bag search/index coverage is still pending.
 
 Typical commands once a Go toolchain is available:
 
