@@ -145,6 +145,18 @@ type CreateKeyInput struct {
 	ExpirationDate string
 }
 
+type UpdateKeyInput struct {
+	Name           *string
+	PublicKey      *string
+	CreateKey      *bool
+	ExpirationDate *string
+}
+
+type UpdateKeyResult struct {
+	KeyMaterial KeyMaterial
+	Renamed     bool
+}
+
 type organizationState struct {
 	org        Organization
 	clients    map[string]Client
@@ -311,6 +323,20 @@ func (s *Service) DeleteUserKey(name, keyName string) error {
 		Type: "user",
 		Name: name,
 	}, keyName)
+}
+
+func (s *Service) UpdateUserKey(name, keyName string, input UpdateKeyInput) (UpdateKeyResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, ok := s.users[name]; !ok {
+		return UpdateKeyResult{}, ErrNotFound
+	}
+
+	return s.updateNamedKeyLocked(authn.Principal{
+		Type: "user",
+		Name: name,
+	}, keyName, s.userKeys[name], input)
 }
 
 func (s *Service) CreateUser(input CreateUserInput) (User, *KeyMaterial, error) {
@@ -586,6 +612,39 @@ func (s *Service) DeleteClientKey(orgName, clientName, keyName string) error {
 		Name:         clientName,
 		Organization: orgName,
 	}, keyName)
+}
+
+func (s *Service) UpdateClientKey(orgName, clientName, keyName string, input UpdateKeyInput) (UpdateKeyResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	org, ok := s.orgs[orgName]
+	if !ok {
+		return UpdateKeyResult{}, ErrNotFound
+	}
+	if _, ok := org.clients[clientName]; !ok {
+		return UpdateKeyResult{}, ErrNotFound
+	}
+
+	result, err := s.updateNamedKeyLocked(authn.Principal{
+		Type:         "client",
+		Name:         clientName,
+		Organization: orgName,
+	}, keyName, org.clientKeys[clientName], input)
+	if err != nil {
+		return UpdateKeyResult{}, err
+	}
+
+	client := org.clients[clientName]
+	switch {
+	case keyName == "default" && result.KeyMaterial.Name != "default":
+		client.PublicKey = ""
+	case result.KeyMaterial.Name == "default":
+		client.PublicKey = result.KeyMaterial.PublicKeyPEM
+	}
+	org.clients[clientName] = client
+
+	return result, nil
 }
 
 func (s *Service) CreateClient(orgName string, input CreateClientInput) (Client, *KeyMaterial, error) {
@@ -908,6 +967,127 @@ func (s *Service) createNamedKeyLocked(principal authn.Principal, existing map[s
 		PrivateKeyPEM:  privateKeyPEM,
 		PublicKeyPEM:   publicKeyPEM,
 		ExpirationDate: expirationDate,
+	}, nil
+}
+
+func (s *Service) updateNamedKeyLocked(principal authn.Principal, currentName string, existing map[string]KeyRecord, input UpdateKeyInput) (UpdateKeyResult, error) {
+	principal, err := normalizeKeyPrincipal(principal)
+	if err != nil {
+		return UpdateKeyResult{}, err
+	}
+
+	current, ok := existing[currentName]
+	if !ok {
+		return UpdateKeyResult{}, ErrNotFound
+	}
+	if input.Name == nil && input.PublicKey == nil && input.CreateKey == nil && input.ExpirationDate == nil {
+		return UpdateKeyResult{}, fmt.Errorf("%w: update payload must include at least one field", ErrInvalidInput)
+	}
+
+	targetName := currentName
+	if input.Name != nil {
+		targetName = strings.TrimSpace(*input.Name)
+		if targetName == "" {
+			return UpdateKeyResult{}, fmt.Errorf("%w: key name is required", ErrInvalidInput)
+		}
+		if !validNamePattern.MatchString(targetName) {
+			return UpdateKeyResult{}, fmt.Errorf("%w: key name contains invalid characters", ErrInvalidInput)
+		}
+		if targetName != currentName {
+			if _, exists := existing[targetName]; exists {
+				return UpdateKeyResult{}, ErrConflict
+			}
+		}
+	}
+
+	createKey := input.CreateKey != nil && *input.CreateKey
+	if createKey && input.PublicKey != nil {
+		return UpdateKeyResult{}, fmt.Errorf("%w: public_key and create_key cannot both be set", ErrInvalidInput)
+	}
+	if input.CreateKey != nil && !*input.CreateKey && input.PublicKey == nil && input.Name == nil && input.ExpirationDate == nil {
+		return UpdateKeyResult{}, fmt.Errorf("%w: update payload must include at least one field", ErrInvalidInput)
+	}
+
+	expirationDate := current.ExpirationDate
+	expiresAt := current.ExpiresAt
+	if input.ExpirationDate != nil {
+		expirationDate, expiresAt, _, err = parseExpirationDate(*input.ExpirationDate)
+		if err != nil {
+			return UpdateKeyResult{}, err
+		}
+	}
+
+	publicKeyPEM := current.PublicKeyPEM
+	var (
+		privateKeyPEM string
+		publicKey     *rsa.PublicKey
+	)
+
+	switch {
+	case createKey:
+		privateKeyPEM, publicKeyPEM, publicKey, err = generateRSAKeyPair()
+		if err != nil {
+			return UpdateKeyResult{}, err
+		}
+	case input.PublicKey != nil:
+		publicKeyPEM = strings.TrimSpace(*input.PublicKey)
+		if publicKeyPEM == "" {
+			return UpdateKeyResult{}, fmt.Errorf("%w: public key is required", ErrInvalidInput)
+		}
+		publicKey, err = authn.ParseRSAPublicKeyPEM([]byte(publicKeyPEM))
+		if err != nil {
+			return UpdateKeyResult{}, fmt.Errorf("%w: parse public key: %v", ErrInvalidInput, err)
+		}
+	default:
+		publicKey, err = authn.ParseRSAPublicKeyPEM([]byte(publicKeyPEM))
+		if err != nil {
+			return UpdateKeyResult{}, fmt.Errorf("parse stored public key: %w", err)
+		}
+	}
+
+	if targetName != currentName {
+		if err := s.keyStore.Put(authn.Key{
+			ID:        targetName,
+			Principal: principal,
+			PublicKey: publicKey,
+			ExpiresAt: expiresAt,
+		}); err != nil {
+			return UpdateKeyResult{}, err
+		}
+		if err := s.keyStore.Delete(principal, currentName); err != nil {
+			return UpdateKeyResult{}, err
+		}
+		delete(existing, currentName)
+	} else {
+		if err := s.keyStore.Put(authn.Key{
+			ID:        currentName,
+			Principal: principal,
+			PublicKey: publicKey,
+			ExpiresAt: expiresAt,
+		}); err != nil {
+			return UpdateKeyResult{}, err
+		}
+	}
+
+	record := KeyRecord{
+		Name:           targetName,
+		URI:            keyURI(principal, targetName),
+		PublicKeyPEM:   publicKeyPEM,
+		ExpirationDate: expirationDate,
+		Expired:        isExpiredTime(expiresAt),
+		ExpiresAt:      expiresAt,
+	}
+	s.recordKeyLocked(principal, record)
+
+	return UpdateKeyResult{
+		KeyMaterial: KeyMaterial{
+			Name:           targetName,
+			URI:            record.URI,
+			PrivateKeyPEM:  privateKeyPEM,
+			PublicKeyPEM:   publicKeyPEM,
+			ExpirationDate: expirationDate,
+		},
+		Renamed: targetName != currentName,
 	}, nil
 }
 

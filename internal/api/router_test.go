@@ -519,6 +519,184 @@ func TestUserKeysEndpointDeleteRemovesAuthentication(t *testing.T) {
 	}
 }
 
+func TestUserKeysEndpointUpdateRenamesKey(t *testing.T) {
+	router := newTestRouter(t)
+	publicKeyPEM := mustMarshalPublicKeyPEM(t, &mustParsePrivateKey(t).PublicKey)
+
+	createUserBody := []byte(`{"username":"rainbow","display_name":"Rainbow Dash"}`)
+	createUserReq := httptest.NewRequest(http.MethodPost, "/users", bytes.NewReader(createUserBody))
+	applySignedHeaders(t, createUserReq, "pivotal", "", http.MethodPost, "/users", createUserBody, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	createUserRec := httptest.NewRecorder()
+	router.ServeHTTP(createUserRec, createUserReq)
+
+	if createUserRec.Code != http.StatusCreated {
+		t.Fatalf("create user status = %d, want %d", createUserRec.Code, http.StatusCreated)
+	}
+
+	createKeyBody := []byte(`{"name":"alt","public_key":` + strconv.Quote(publicKeyPEM) + `,"expiration_date":"infinity"}`)
+	createKeyReq := httptest.NewRequest(http.MethodPost, "/users/rainbow/keys", bytes.NewReader(createKeyBody))
+	applySignedHeaders(t, createKeyReq, "pivotal", "", http.MethodPost, "/users/rainbow/keys", createKeyBody, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	createKeyRec := httptest.NewRecorder()
+	router.ServeHTTP(createKeyRec, createKeyReq)
+
+	if createKeyRec.Code != http.StatusCreated {
+		t.Fatalf("create key status = %d, want %d", createKeyRec.Code, http.StatusCreated)
+	}
+
+	updateBody := []byte(`{"name":"renamed","public_key":` + strconv.Quote(publicKeyPEM) + `,"expiration_date":"2049-12-24T21:00:00Z"}`)
+	updateReq := httptest.NewRequest(http.MethodPut, "/users/rainbow/keys/alt", bytes.NewReader(updateBody))
+	applySignedHeaders(t, updateReq, "pivotal", "", http.MethodPut, "/users/rainbow/keys/alt", updateBody, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	updateRec := httptest.NewRecorder()
+	router.ServeHTTP(updateRec, updateReq)
+
+	if updateRec.Code != http.StatusCreated {
+		t.Fatalf("update status = %d, want %d", updateRec.Code, http.StatusCreated)
+	}
+	if updateRec.Header().Get("Location") != "/users/rainbow/keys/renamed" {
+		t.Fatalf("Location = %q, want %q", updateRec.Header().Get("Location"), "/users/rainbow/keys/renamed")
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(updateRec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if payload["name"] != "renamed" {
+		t.Fatalf("name = %v, want %q", payload["name"], "renamed")
+	}
+	if payload["expiration_date"] != "2049-12-24T21:00:00Z" {
+		t.Fatalf("expiration_date = %v, want %q", payload["expiration_date"], "2049-12-24T21:00:00Z")
+	}
+
+	oldReq := httptest.NewRequest(http.MethodGet, "/users/rainbow/keys/alt", nil)
+	applySignedHeaders(t, oldReq, "pivotal", "", http.MethodGet, "/users/rainbow/keys/alt", nil, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	oldRec := httptest.NewRecorder()
+	router.ServeHTTP(oldRec, oldReq)
+
+	if oldRec.Code != http.StatusNotFound {
+		t.Fatalf("old key GET status = %d, want %d", oldRec.Code, http.StatusNotFound)
+	}
+}
+
+func TestUserKeysEndpointUpdateCreateKeyAuthenticates(t *testing.T) {
+	router := newTestRouter(t)
+	publicKeyPEM := mustMarshalPublicKeyPEM(t, &mustParsePrivateKey(t).PublicKey)
+
+	createUserBody := []byte(`{"username":"rainbow","display_name":"Rainbow Dash"}`)
+	createUserReq := httptest.NewRequest(http.MethodPost, "/users", bytes.NewReader(createUserBody))
+	applySignedHeaders(t, createUserReq, "pivotal", "", http.MethodPost, "/users", createUserBody, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	createUserRec := httptest.NewRecorder()
+	router.ServeHTTP(createUserRec, createUserReq)
+
+	if createUserRec.Code != http.StatusCreated {
+		t.Fatalf("create user status = %d, want %d", createUserRec.Code, http.StatusCreated)
+	}
+
+	createKeyBody := []byte(`{"name":"alt","public_key":` + strconv.Quote(publicKeyPEM) + `,"expiration_date":"infinity"}`)
+	createKeyReq := httptest.NewRequest(http.MethodPost, "/users/rainbow/keys", bytes.NewReader(createKeyBody))
+	applySignedHeaders(t, createKeyReq, "pivotal", "", http.MethodPost, "/users/rainbow/keys", createKeyBody, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	createKeyRec := httptest.NewRecorder()
+	router.ServeHTTP(createKeyRec, createKeyReq)
+
+	if createKeyRec.Code != http.StatusCreated {
+		t.Fatalf("create key status = %d, want %d", createKeyRec.Code, http.StatusCreated)
+	}
+
+	updateBody := []byte(`{"create_key":true}`)
+	updateReq := httptest.NewRequest(http.MethodPut, "/users/rainbow/keys/alt", bytes.NewReader(updateBody))
+	applySignedHeaders(t, updateReq, "pivotal", "", http.MethodPut, "/users/rainbow/keys/alt", updateBody, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	updateRec := httptest.NewRecorder()
+	router.ServeHTTP(updateRec, updateReq)
+
+	if updateRec.Code != http.StatusOK {
+		t.Fatalf("update status = %d, want %d", updateRec.Code, http.StatusOK)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(updateRec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	privateKey, err := authn.ParseRSAPrivateKeyPEM([]byte(payload["private_key"].(string)))
+	if err != nil {
+		t.Fatalf("ParseRSAPrivateKeyPEM() error = %v", err)
+	}
+
+	getReq := httptest.NewRequest(http.MethodGet, "/users/rainbow", nil)
+	applySignedHeadersWithPrivateKey(t, getReq, privateKey, "rainbow", "", http.MethodGet, "/users/rainbow", nil, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	getRec := httptest.NewRecorder()
+	router.ServeHTTP(getRec, getReq)
+
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("GET status = %d, want %d, body = %s", getRec.Code, http.StatusOK, getRec.Body.String())
+	}
+}
+
+func TestUserKeysEndpointRejectsEmptyUpdateBody(t *testing.T) {
+	router := newTestRouter(t)
+	publicKeyPEM := mustMarshalPublicKeyPEM(t, &mustParsePrivateKey(t).PublicKey)
+
+	createUserBody := []byte(`{"username":"rainbow","display_name":"Rainbow Dash"}`)
+	createUserReq := httptest.NewRequest(http.MethodPost, "/users", bytes.NewReader(createUserBody))
+	applySignedHeaders(t, createUserReq, "pivotal", "", http.MethodPost, "/users", createUserBody, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	createUserRec := httptest.NewRecorder()
+	router.ServeHTTP(createUserRec, createUserReq)
+
+	if createUserRec.Code != http.StatusCreated {
+		t.Fatalf("create user status = %d, want %d", createUserRec.Code, http.StatusCreated)
+	}
+
+	createKeyBody := []byte(`{"name":"alt","public_key":` + strconv.Quote(publicKeyPEM) + `,"expiration_date":"infinity"}`)
+	createKeyReq := httptest.NewRequest(http.MethodPost, "/users/rainbow/keys", bytes.NewReader(createKeyBody))
+	applySignedHeaders(t, createKeyReq, "pivotal", "", http.MethodPost, "/users/rainbow/keys", createKeyBody, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	createKeyRec := httptest.NewRecorder()
+	router.ServeHTTP(createKeyRec, createKeyReq)
+
+	if createKeyRec.Code != http.StatusCreated {
+		t.Fatalf("create key status = %d, want %d", createKeyRec.Code, http.StatusCreated)
+	}
+
+	updateReq := httptest.NewRequest(http.MethodPut, "/users/rainbow/keys/alt", bytes.NewReader([]byte(`{}`)))
+	applySignedHeaders(t, updateReq, "pivotal", "", http.MethodPut, "/users/rainbow/keys/alt", []byte(`{}`), signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	updateRec := httptest.NewRecorder()
+	router.ServeHTTP(updateRec, updateReq)
+
+	if updateRec.Code != http.StatusBadRequest {
+		t.Fatalf("update status = %d, want %d", updateRec.Code, http.StatusBadRequest)
+	}
+}
+
 func TestOrganizationsEndpointCreatesBootstrapArtifacts(t *testing.T) {
 	router := newTestRouter(t)
 	body := []byte(`{"name":"canterlot","full_name":"Canterlot","org_type":"Business"}`)
@@ -815,6 +993,118 @@ func TestOrgClientKeysEndpointDeleteRemovesAuthentication(t *testing.T) {
 
 	if getRec.Code != http.StatusUnauthorized {
 		t.Fatalf("GET status = %d, want %d", getRec.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestOrgClientKeysEndpointUpdateRenamesKey(t *testing.T) {
+	router := newTestRouter(t)
+	publicKeyPEM := mustMarshalPublicKeyPEM(t, &mustParsePrivateKey(t).PublicKey)
+
+	createClientBody := []byte(`{"name":"twilight","public_key":` + strconv.Quote(publicKeyPEM) + `}`)
+	createClientReq := httptest.NewRequest(http.MethodPost, "/organizations/ponyville/clients", bytes.NewReader(createClientBody))
+	applySignedHeaders(t, createClientReq, "silent-bob", "", http.MethodPost, "/organizations/ponyville/clients", createClientBody, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	createClientRec := httptest.NewRecorder()
+	router.ServeHTTP(createClientRec, createClientReq)
+
+	if createClientRec.Code != http.StatusCreated {
+		t.Fatalf("create client status = %d, want %d", createClientRec.Code, http.StatusCreated)
+	}
+
+	createKeyBody := []byte(`{"name":"alt","public_key":` + strconv.Quote(publicKeyPEM) + `,"expiration_date":"infinity"}`)
+	createKeyReq := httptest.NewRequest(http.MethodPost, "/organizations/ponyville/clients/twilight/keys", bytes.NewReader(createKeyBody))
+	applySignedHeaders(t, createKeyReq, "silent-bob", "", http.MethodPost, "/organizations/ponyville/clients/twilight/keys", createKeyBody, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	createKeyRec := httptest.NewRecorder()
+	router.ServeHTTP(createKeyRec, createKeyReq)
+
+	if createKeyRec.Code != http.StatusCreated {
+		t.Fatalf("create key status = %d, want %d", createKeyRec.Code, http.StatusCreated)
+	}
+
+	updateBody := []byte(`{"name":"renamed","public_key":` + strconv.Quote(publicKeyPEM) + `,"expiration_date":"2049-12-24T21:00:00Z"}`)
+	updateReq := httptest.NewRequest(http.MethodPut, "/organizations/ponyville/clients/twilight/keys/alt", bytes.NewReader(updateBody))
+	applySignedHeaders(t, updateReq, "silent-bob", "", http.MethodPut, "/organizations/ponyville/clients/twilight/keys/alt", updateBody, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	updateRec := httptest.NewRecorder()
+	router.ServeHTTP(updateRec, updateReq)
+
+	if updateRec.Code != http.StatusCreated {
+		t.Fatalf("update status = %d, want %d", updateRec.Code, http.StatusCreated)
+	}
+	if updateRec.Header().Get("Location") != "/organizations/ponyville/clients/twilight/keys/renamed" {
+		t.Fatalf("Location = %q, want %q", updateRec.Header().Get("Location"), "/organizations/ponyville/clients/twilight/keys/renamed")
+	}
+}
+
+func TestOrgClientKeysEndpointUpdateCreateKeyAuthenticates(t *testing.T) {
+	router := newTestRouter(t)
+	publicKeyPEM := mustMarshalPublicKeyPEM(t, &mustParsePrivateKey(t).PublicKey)
+
+	createClientBody := []byte(`{"name":"twilight","public_key":` + strconv.Quote(publicKeyPEM) + `}`)
+	createClientReq := httptest.NewRequest(http.MethodPost, "/organizations/ponyville/clients", bytes.NewReader(createClientBody))
+	applySignedHeaders(t, createClientReq, "silent-bob", "", http.MethodPost, "/organizations/ponyville/clients", createClientBody, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	createClientRec := httptest.NewRecorder()
+	router.ServeHTTP(createClientRec, createClientReq)
+
+	if createClientRec.Code != http.StatusCreated {
+		t.Fatalf("create client status = %d, want %d", createClientRec.Code, http.StatusCreated)
+	}
+
+	createKeyBody := []byte(`{"name":"alt","public_key":` + strconv.Quote(publicKeyPEM) + `,"expiration_date":"infinity"}`)
+	createKeyReq := httptest.NewRequest(http.MethodPost, "/organizations/ponyville/clients/twilight/keys", bytes.NewReader(createKeyBody))
+	applySignedHeaders(t, createKeyReq, "silent-bob", "", http.MethodPost, "/organizations/ponyville/clients/twilight/keys", createKeyBody, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	createKeyRec := httptest.NewRecorder()
+	router.ServeHTTP(createKeyRec, createKeyReq)
+
+	if createKeyRec.Code != http.StatusCreated {
+		t.Fatalf("create key status = %d, want %d", createKeyRec.Code, http.StatusCreated)
+	}
+
+	updateBody := []byte(`{"create_key":true}`)
+	updateReq := httptest.NewRequest(http.MethodPut, "/organizations/ponyville/clients/twilight/keys/alt", bytes.NewReader(updateBody))
+	applySignedHeaders(t, updateReq, "silent-bob", "", http.MethodPut, "/organizations/ponyville/clients/twilight/keys/alt", updateBody, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	updateRec := httptest.NewRecorder()
+	router.ServeHTTP(updateRec, updateReq)
+
+	if updateRec.Code != http.StatusOK {
+		t.Fatalf("update status = %d, want %d", updateRec.Code, http.StatusOK)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(updateRec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	privateKey, err := authn.ParseRSAPrivateKeyPEM([]byte(payload["private_key"].(string)))
+	if err != nil {
+		t.Fatalf("ParseRSAPrivateKeyPEM() error = %v", err)
+	}
+
+	getReq := httptest.NewRequest(http.MethodGet, "/organizations/ponyville/clients/twilight", nil)
+	applySignedHeadersWithPrivateKey(t, getReq, privateKey, "twilight", "ponyville", http.MethodGet, "/organizations/ponyville/clients/twilight", nil, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	getRec := httptest.NewRecorder()
+	router.ServeHTTP(getRec, getReq)
+
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("GET status = %d, want %d, body = %s", getRec.Code, http.StatusOK, getRec.Body.String())
 	}
 }
 
