@@ -365,6 +365,10 @@ func isDefaultOrgSearchPath(path string) bool {
 	return path == "/search" || path == "/search/" || strings.HasPrefix(path, "/search/")
 }
 
+func isDefaultOrgSandboxPath(path string) bool {
+	return path == "/sandboxes" || path == "/sandboxes/" || strings.HasPrefix(path, "/sandboxes/")
+}
+
 func isDefaultOrgDataPath(path string) bool {
 	return path == "/data" || path == "/data/" || strings.HasPrefix(path, "/data/")
 }
@@ -384,6 +388,7 @@ func isDefaultOrgScopedPath(path string) bool {
 		isDefaultOrgRolePath(path) ||
 		isDefaultOrgClientPath(path) ||
 		isDefaultOrgSearchPath(path) ||
+		isDefaultOrgSandboxPath(path) ||
 		isDefaultOrgDataPath(path) ||
 		isDefaultOrgPolicyPath(path)
 }

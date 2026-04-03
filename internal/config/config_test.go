@@ -12,6 +12,7 @@ func TestLoadFromEnvDefaults(t *testing.T) {
 	t.Setenv("OPENCOOK_SHUTDOWN_TIMEOUT", "")
 	t.Setenv("OPENCOOK_AUTH_SKEW", "")
 	t.Setenv("OPENCOOK_MAX_AUTH_BODY_BYTES", "")
+	t.Setenv("OPENCOOK_MAX_BLOB_UPLOAD_BYTES", "")
 	t.Setenv("OPENCOOK_BOOTSTRAP_MODE", "")
 	t.Setenv("OPENCOOK_BOOTSTRAP_REQUESTOR_NAME", "")
 	t.Setenv("OPENCOOK_BOOTSTRAP_REQUESTOR_TYPE", "")
@@ -47,6 +48,10 @@ func TestLoadFromEnvDefaults(t *testing.T) {
 		t.Fatalf("MaxAuthBodyBytes = %d, want %d", cfg.MaxAuthBodyBytes, DefaultMaxAuthBodyBytes)
 	}
 
+	if cfg.MaxBlobUploadBytes != DefaultMaxBlobUploadBytes {
+		t.Fatalf("MaxBlobUploadBytes = %d, want %d", cfg.MaxBlobUploadBytes, DefaultMaxBlobUploadBytes)
+	}
+
 	if !cfg.BootstrapMode {
 		t.Fatalf("BootstrapMode = %v, want true", cfg.BootstrapMode)
 	}
@@ -70,6 +75,19 @@ func TestLoadFromEnvMaxAuthBodyBytes(t *testing.T) {
 
 	if cfg.MaxAuthBodyBytes != 2048 {
 		t.Fatalf("MaxAuthBodyBytes = %d, want %d", cfg.MaxAuthBodyBytes, 2048)
+	}
+}
+
+func TestLoadFromEnvMaxBlobUploadBytes(t *testing.T) {
+	t.Setenv("OPENCOOK_MAX_BLOB_UPLOAD_BYTES", "4096")
+
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatalf("LoadFromEnv() error = %v", err)
+	}
+
+	if cfg.MaxBlobUploadBytes != 4096 {
+		t.Fatalf("MaxBlobUploadBytes = %d, want %d", cfg.MaxBlobUploadBytes, 4096)
 	}
 }
 

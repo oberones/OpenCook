@@ -12,6 +12,7 @@ The project is currently in its compatibility-foundation phase. This repository 
 - in-memory bootstrap state for users, organizations, clients, groups, containers, and ACLs
 - initial authenticated endpoints for users, organizations, clients, ACL inspection, actor key lifecycle, nodes, environments, roles, data bags, and compatibility search
 - policyfile compatibility routes for policies, revisions, and policy-group assignments on both default-org and explicit-org paths
+- the first sandbox/blob slice with in-memory sandbox lifecycle and checksum uploads
 - docs for architecture decisions, milestones, and compatibility tracking
 - a starting test layout for contract-driven development
 
@@ -45,7 +46,7 @@ The project is currently in its compatibility-foundation phase. This repository 
 2. Org, user, client, and ACL bootstrap flows
 3. Remaining core object CRUD and deeper object parity
 4. Search provider and indexing compatibility on OpenSearch
-5. Cookbook, sandbox, and blob storage flows
+5. Cookbook, artifact, and universe compatibility on top of the sandbox/blob slice
 
 ## Local Development
 
@@ -59,6 +60,7 @@ export OPENCOOK_BOOTSTRAP_REQUESTOR_TYPE=user
 export OPENCOOK_BOOTSTRAP_PUBLIC_KEY_PATH=/path/to/public.pem
 export OPENCOOK_DEFAULT_ORGANIZATION=ponyville
 export OPENCOOK_MAX_AUTH_BODY_BYTES=8388608
+export OPENCOOK_MAX_BLOB_UPLOAD_BYTES=67108864
 ```
 
 With that in place, signed requests can successfully hit:
@@ -83,6 +85,8 @@ With that in place, signed requests can successfully hit:
 - `/roles/{name}`
 - `/roles/{name}/environments`
 - `/roles/{name}/environments/{environment}`
+- `/sandboxes`
+- `/sandboxes/{id}`
 - `/search`
 - `/search/{index}`
 - `/organizations/{org}/environments`
@@ -113,6 +117,8 @@ With that in place, signed requests can successfully hit:
 - `/organizations/{org}/roles/{name}`
 - `/organizations/{org}/roles/{name}/environments`
 - `/organizations/{org}/roles/{name}/environments/{environment}`
+- `/organizations/{org}/sandboxes`
+- `/organizations/{org}/sandboxes/{id}`
 - `/organizations/{org}/nodes`
 - `/organizations/{org}/nodes/{name}`
 - `/organizations/{org}/clients`
@@ -123,6 +129,8 @@ With that in place, signed requests can successfully hit:
 The in-memory search compatibility layer currently exposes the built-in Chef indexes for `client`, `environment`, `node`, and `role`, plus per-data-bag indexes, with GET search and POST partial search support across those object types. Broader Lucene-style query parity and OpenSearch-backed indexing are still pending.
 
 The current policyfile slice is live on both the default-org and explicit-org routes for `/policies` and `/policy_groups`. It now round-trips richer upstream-shaped policy payloads, validates more of the cookbook-lock and solution-dependency structure, and keeps node `policy_name` and `policy_group` behavior compatibility-safe as searchable fields rather than hard foreign keys.
+
+The first sandbox compatibility slice is now live too. Signed callers can create and commit sandboxes through `/sandboxes` and `/organizations/{org}/sandboxes`, and the returned checksum entries expose absolute upload URLs under `/_blob/checksums/{checksum}` backed by the current in-memory blob store. Cookbook metadata, cookbook artifacts, and universe endpoints are still pending follow-on slices.
 
 Typical commands once a Go toolchain is available:
 

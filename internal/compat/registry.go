@@ -40,8 +40,8 @@ func NewDefaultRegistry() Registry {
 				Name:     "cookbooks-and-blobs",
 				Owner:    "blob",
 				Phase:    "phase-4",
-				Patterns: []string{"/sandboxes", "/sandboxes/", "/cookbooks", "/cookbooks/", "/cookbook_artifacts", "/cookbook_artifacts/", "/universe"},
-				Notes:    "Cookbook upload, checksum tracking, and object storage compatibility.",
+				Patterns: []string{"/sandboxes", "/sandboxes/", "/sandboxes/{id}", "/sandboxes/{id}/", "/organizations/{org}/sandboxes", "/organizations/{org}/sandboxes/", "/organizations/{org}/sandboxes/{id}", "/organizations/{org}/sandboxes/{id}/", "/cookbooks", "/cookbooks/", "/cookbook_artifacts", "/cookbook_artifacts/", "/universe"},
+				Notes:    "Sandbox upload flow, cookbook upload, checksum tracking, and object storage compatibility.",
 			},
 			{
 				Name:     "search-and-policy",

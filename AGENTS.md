@@ -108,6 +108,14 @@ Implemented so far:
   - policy-group assignment create/update/delete
   - richer canonical payload round-tripping for `named_run_lists`, nested cookbook-lock metadata, and `solution_dependencies`
   - node policy refs remain searchable compatibility fields, not foreign keys
+- the first sandbox/blob slice:
+  - `/sandboxes`
+  - `/sandboxes/{id}`
+  - `/organizations/{org}/sandboxes`
+  - `/organizations/{org}/sandboxes/{id}`
+  - signed sandbox create and commit flows
+  - absolute checksum upload URLs under `/_blob/checksums/{checksum}`
+  - in-memory checksum blob storage with hash validation and upload size limits
 - the first search-facing slice:
   - `/search`
   - `/search/{client,environment,node,role}`
@@ -144,7 +152,8 @@ Current architectural reality:
 
 - the API surface is partly real and partly scaffolded
 - bootstrap and key lifecycle state are in-memory compatibility implementations
-- PostgreSQL, OpenSearch, and blob layers still have placeholders or early scaffolding
+- PostgreSQL and OpenSearch are still placeholders or early scaffolding
+- the blob layer now has an in-memory compatibility implementation for sandbox checksum uploads, but production S3-compatible behavior is still pending
 
 Do not mistake the current in-memory implementation for the final persistence architecture.
 
@@ -173,7 +182,7 @@ High-level package roles:
 - `internal/search`
   - future OpenSearch-backed compatibility layer
 - `internal/blob`
-  - future Bookshelf/S3-compatible blob behavior
+  - current in-memory blob compatibility storage and future Bookshelf/S3-compatible behavior
 
 ## Compatibility Rules
 
@@ -308,7 +317,7 @@ These areas are still intentionally incomplete:
 - deeper node and environment compatibility such as cookbook constraint edge cases and linked object behavior
 - deeper role compatibility such as run-list normalization and linked environment behavior
 - broader search semantics beyond the current in-memory compatibility layer, especially richer Lucene-style query translation and wider object coverage
-- Bookshelf/sandbox/cookbook flows
+- deeper Bookshelf/cookbook flows beyond the initial sandbox and checksum-upload slice
 - operational parity and migration tooling
 
-The next likely major slice is deeper policyfile compatibility and broader search parity beyond the current compatibility subset, not more speculative infrastructure work.
+The next likely major slice is cookbook metadata, cookbook artifacts, and universe parity on top of the new sandbox/blob groundwork.
