@@ -51,15 +51,17 @@ As of 2026-04-03, OpenCook has moved past pure scaffolding and into the first co
 - the first data bag slice is now live with `/data`, `/data/{bag}`, and `/data/{bag}/{item}` on both default-org and explicit-org routes
 - data bag item create, update, and delete flows now reproduce Chef-style response wrapping and not-found/conflict messages
 - the first search-facing slice is now live with `/search` and `/search/{client,environment,node,role}` over the in-memory compatibility state
-- partial search is now implemented for clients, environments, nodes, and roles
+- `/search` now also advertises live per-data-bag indexes, and `/search/{bag}` now supports Chef-style data bag search results
+- partial search is now implemented for clients, environments, nodes, roles, and data bags
 - search responses are now filtered through the current read ACL model
 - default-org search results for clients now point at live `/clients/...` URLs
+- the in-memory search layer now covers simple `AND`/`NOT` matching and escaped-slash prefix queries for the current compatibility slice
 - compatibility tracking docs and route inventory are in place and being updated alongside code
 
 Current focus:
 
 - preserve API-version-sensitive actor key behavior without carrying forward Chef licensing concerns
-- deepen search query translation and wider object coverage, especially data bag search/index semantics and richer query behavior
+- deepen search query translation beyond the current simple compatibility subset and widen object/index coverage further
 - replace the in-memory bootstrap layer with PostgreSQL-backed persistence after the contracts stabilize
 
 ## What Exists Upstream

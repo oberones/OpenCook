@@ -105,7 +105,7 @@ With that in place, signed requests can successfully hit:
 - `/organizations/{org}/clients/{name}/keys`
 - `/organizations/{org}/clients/{name}/keys/{key}`
 
-The in-memory search compatibility layer currently exposes the built-in Chef indexes for `client`, `environment`, `node`, and `role`, with GET search and POST partial search support across those object types. Data bag search/index coverage is still pending.
+The in-memory search compatibility layer currently exposes the built-in Chef indexes for `client`, `environment`, `node`, and `role`, plus per-data-bag indexes, with GET search and POST partial search support across those object types. Broader Lucene-style query parity and OpenSearch-backed indexing are still pending.
 
 Typical commands once a Go toolchain is available:
 
