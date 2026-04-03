@@ -410,6 +410,10 @@ func cloneValue(value any) any {
 			out[idx] = cloneValue(typed[idx])
 		}
 		return out
+	case []string:
+		out := make([]string, len(typed))
+		copy(out, typed)
+		return out
 	default:
 		return typed
 	}

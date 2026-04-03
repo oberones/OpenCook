@@ -254,6 +254,79 @@ func TestSearchNodeEndpointSupportsFullPartialAndPagination(t *testing.T) {
 	}
 }
 
+func TestSearchNodeEndpointSupportsPolicyFieldQueriesWithoutPolicyForeignKeys(t *testing.T) {
+	router := newTestRouter(t)
+
+	body := mustMarshalSearchNodePayload(t, "pinkie", map[string]any{}, map[string]any{}, []string{"base"})
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("json.Unmarshal(node payload) error = %v", err)
+	}
+	payload["policy_name"] = "appserver"
+	payload["policy_group"] = "dev"
+	body = mustMarshalDataBagJSON(t, payload)
+
+	createReq := httptest.NewRequest(http.MethodPost, "/nodes", bytes.NewReader(body))
+	applySignedHeaders(t, createReq, "silent-bob", "", http.MethodPost, "/nodes", body, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	createRec := httptest.NewRecorder()
+	router.ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("create policy-aware node status = %d, want %d, body = %s", createRec.Code, http.StatusCreated, createRec.Body.String())
+	}
+
+	searchReq := httptest.NewRequest(http.MethodGet, "/search/node?q=policy_name:appserver%20AND%20policy_group:dev", nil)
+	applySignedHeaders(t, searchReq, "silent-bob", "", http.MethodGet, "/search/node", nil, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	searchRec := httptest.NewRecorder()
+	router.ServeHTTP(searchRec, searchReq)
+	if searchRec.Code != http.StatusOK {
+		t.Fatalf("search node by policy fields status = %d, want %d, body = %s", searchRec.Code, http.StatusOK, searchRec.Body.String())
+	}
+
+	var searchPayload map[string]any
+	if err := json.Unmarshal(searchRec.Body.Bytes(), &searchPayload); err != nil {
+		t.Fatalf("json.Unmarshal(policy search payload) error = %v", err)
+	}
+	rows := searchPayload["rows"].([]any)
+	if len(rows) != 1 {
+		t.Fatalf("rows len = %d, want 1 (%v)", len(rows), rows)
+	}
+	row := rows[0].(map[string]any)
+	if row["policy_name"] != "appserver" || row["policy_group"] != "dev" {
+		t.Fatalf("policy fields = %v/%v, want appserver/dev", row["policy_name"], row["policy_group"])
+	}
+
+	partialBody := []byte(`{"policy_name":["policy_name"],"policy_group":["policy_group"]}`)
+	partialReq := httptest.NewRequest(http.MethodPost, "/search/node?q=name:pinkie", bytes.NewReader(partialBody))
+	applySignedHeaders(t, partialReq, "silent-bob", "", http.MethodPost, "/search/node", partialBody, signDescription{
+		Version:   "1.3",
+		Algorithm: "sha256",
+	}, "2026-04-02T15:04:05Z")
+	partialRec := httptest.NewRecorder()
+	router.ServeHTTP(partialRec, partialReq)
+	if partialRec.Code != http.StatusOK {
+		t.Fatalf("partial node search by policy fields status = %d, want %d, body = %s", partialRec.Code, http.StatusOK, partialRec.Body.String())
+	}
+
+	var partialPayload map[string]any
+	if err := json.Unmarshal(partialRec.Body.Bytes(), &partialPayload); err != nil {
+		t.Fatalf("json.Unmarshal(partial policy search payload) error = %v", err)
+	}
+	partialRows := partialPayload["rows"].([]any)
+	if len(partialRows) != 1 {
+		t.Fatalf("partial rows len = %d, want 1 (%v)", len(partialRows), partialRows)
+	}
+	data := partialRows[0].(map[string]any)["data"].(map[string]any)
+	if data["policy_name"] != "appserver" || data["policy_group"] != "dev" {
+		t.Fatalf("partial policy fields = %v/%v, want appserver/dev", data["policy_name"], data["policy_group"])
+	}
+}
+
 func TestSearchClientEndpointSupportsFullAndPartialSearch(t *testing.T) {
 	router := newTestRouter(t)
 

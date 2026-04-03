@@ -88,7 +88,7 @@ Implemented so far:
   - `/clients/{name}/keys`
   - default-org and explicit-org client routing for reads
   - default-org and explicit-org client create/delete flows
-- the first policyfile slice:
+- the current policyfile slice:
   - `/policies`
   - `/policies/{name}`
   - `/policies/{name}/revisions`
@@ -96,9 +96,18 @@ Implemented so far:
   - `/policy_groups`
   - `/policy_groups/{group}`
   - `/policy_groups/{group}/policies/{name}`
+  - `/organizations/{org}/policies`
+  - `/organizations/{org}/policies/{name}`
+  - `/organizations/{org}/policies/{name}/revisions`
+  - `/organizations/{org}/policies/{name}/revisions/{revision}`
+  - `/organizations/{org}/policy_groups`
+  - `/organizations/{org}/policy_groups/{group}`
+  - `/organizations/{org}/policy_groups/{group}/policies/{name}`
   - policy revision create/get/delete
   - policy-group list/get/delete
   - policy-group assignment create/update/delete
+  - richer canonical payload round-tripping for `named_run_lists`, nested cookbook-lock metadata, and `solution_dependencies`
+  - node policy refs remain searchable compatibility fields, not foreign keys
 - the first search-facing slice:
   - `/search`
   - `/search/{client,environment,node,role}`
