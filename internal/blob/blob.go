@@ -6,6 +6,7 @@ import (
 )
 
 var ErrNotFound = errors.New("blob not found")
+var ErrInvalidInput = errors.New("invalid blob input")
 
 type Status struct {
 	Backend    string `json:"backend"`

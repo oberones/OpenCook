@@ -58,7 +58,7 @@ func (s *MemoryStore) Get(_ context.Context, key string) ([]byte, error) {
 func (s *MemoryStore) Put(_ context.Context, req PutRequest) (PutResult, error) {
 	key := strings.TrimSpace(req.Key)
 	if key == "" {
-		return PutResult{}, ErrNotFound
+		return PutResult{}, ErrInvalidInput
 	}
 
 	body := make([]byte, len(req.Body))

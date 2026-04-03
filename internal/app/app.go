@@ -2,11 +2,13 @@ package app
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/oberones/OpenCook/internal/api"
 	"github.com/oberones/OpenCook/internal/authn"
@@ -49,18 +51,24 @@ func New(cfg config.Config, logger *log.Logger, build version.Info) (*Applicatio
 		AllowedClockSkew: &authSkew,
 	})
 	authzAuthorizer := authz.NewACLAuthorizer(bootstrapState)
+	blobUploadSecret, err := randomBytes(32)
+	if err != nil {
+		return nil, fmt.Errorf("generate blob upload secret: %w", err)
+	}
 
 	handler := api.NewRouter(api.Dependencies{
-		Logger:    logger,
-		Config:    cfg,
-		Version:   build,
-		Compat:    compatRegistry,
-		Authn:     authnVerifier,
-		Authz:     authzAuthorizer,
-		Bootstrap: bootstrapState,
-		Blob:      blobStore,
-		Search:    searchIndex,
-		Postgres:  postgresStore,
+		Logger:           logger,
+		Config:           cfg,
+		Version:          build,
+		Compat:           compatRegistry,
+		Now:              time.Now,
+		Authn:            authnVerifier,
+		Authz:            authzAuthorizer,
+		Bootstrap:        bootstrapState,
+		Blob:             blobStore,
+		BlobUploadSecret: blobUploadSecret,
+		Search:           searchIndex,
+		Postgres:         postgresStore,
 	})
 
 	server := &http.Server{
@@ -137,6 +145,14 @@ func resolveSuperuserName(cfg config.Config) string {
 		return cfg.BootstrapRequestorName
 	}
 	return "pivotal"
+}
+
+func randomBytes(size int) ([]byte, error) {
+	bytes := make([]byte, size)
+	if _, err := rand.Read(bytes); err != nil {
+		return nil, err
+	}
+	return bytes, nil
 }
 
 func (a *Application) Run(ctx context.Context) error {
