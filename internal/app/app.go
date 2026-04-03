@@ -40,6 +40,9 @@ func New(cfg config.Config, logger *log.Logger, build version.Info) (*Applicatio
 	}
 	if principal, ok := bootstrapPrincipalFromConfig(cfg); ok {
 		bootstrapState.SeedPrincipal(principal)
+		if err := seedBootstrapRequestorState(bootstrapState, cfg, principal); err != nil {
+			return nil, err
+		}
 	}
 	authSkew := cfg.AuthSkew
 	authnVerifier := authn.NewChefVerifier(keyStore, authn.Options{
@@ -98,6 +101,23 @@ func seedBootstrapRequestor(store *authn.MemoryKeyStore, cfg config.Config) erro
 		},
 		PublicKey: publicKey,
 	})
+}
+
+func seedBootstrapRequestorState(state *bootstrap.Service, cfg config.Config, principal authn.Principal) error {
+	if state == nil || principal.Type != "user" || cfg.BootstrapRequestorName == "" || cfg.BootstrapRequestorPublicKeyPath == "" {
+		return nil
+	}
+
+	data, err := os.ReadFile(cfg.BootstrapRequestorPublicKeyPath)
+	if err != nil {
+		return fmt.Errorf("read bootstrap public key for state seed: %w", err)
+	}
+
+	if err := state.SeedPublicKey(principal, cfg.BootstrapRequestorKeyID, string(data)); err != nil {
+		return fmt.Errorf("seed bootstrap requestor state: %w", err)
+	}
+
+	return nil
 }
 
 func bootstrapPrincipalFromConfig(cfg config.Config) (authn.Principal, bool) {

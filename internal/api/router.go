@@ -63,9 +63,13 @@ func NewRouter(deps Dependencies) http.Handler {
 	mux.HandleFunc("/organizations/{org}/containers/{name}/_acl", srv.withAuthn("org-container-acl", srv.handleOrgContainerACL))
 	mux.HandleFunc("/users", srv.withAuthn("users-root", srv.handleUsers))
 	mux.HandleFunc("/users/", srv.withAuthn("users-named", srv.handleUsers))
+	mux.HandleFunc("/users/{name}/keys", srv.withAuthn("user-keys-root", srv.handleUserKeys))
+	mux.HandleFunc("/users/{name}/keys/", srv.withAuthn("user-keys-routes", srv.handleUserKeys))
 	mux.HandleFunc("/users/{name}/_acl", srv.withAuthn("user-acl", srv.handleUserACL))
 	mux.HandleFunc("/organizations/{org}/clients", srv.withAuthn("org-clients", srv.handleOrgClients))
 	mux.HandleFunc("/organizations/{org}/clients/", srv.withAuthn("org-client-named", srv.handleOrgClients))
+	mux.HandleFunc("/organizations/{org}/clients/{name}/keys", srv.withAuthn("org-client-keys-root", srv.handleOrgClientKeys))
+	mux.HandleFunc("/organizations/{org}/clients/{name}/keys/", srv.withAuthn("org-client-keys-routes", srv.handleOrgClientKeys))
 	mux.HandleFunc("/organizations/{org}/clients/{name}/_acl", srv.withAuthn("org-client-acl", srv.handleOrgClientACL))
 
 	for _, surface := range deps.Compat.Surfaces() {
@@ -93,10 +97,10 @@ func (s *server) handleRoot(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"service":       s.deps.Config.ServiceName,
-		"phase":         "scaffold",
+		"phase":         "compatibility-foundation",
 		"version":       s.deps.Version,
 		"compat_routes": s.deps.Compat.RouteCount(),
-		"next":          "implement request signing compatibility slice",
+		"next":          "expand key lifecycle semantics and persist bootstrap flows in postgres",
 	})
 }
 
@@ -480,7 +484,7 @@ func flattenHeaders(header http.Header) map[string]string {
 
 func isImplementedPattern(pattern string) bool {
 	switch pattern {
-	case "/users", "/users/", "/organizations/", "/organizations/{org}/clients", "/organizations/{org}/clients/":
+	case "/users", "/users/", "/users/{name}/keys", "/users/{name}/keys/", "/organizations", "/organizations/", "/organizations/{org}/clients", "/organizations/{org}/clients/", "/organizations/{org}/clients/{name}/keys", "/organizations/{org}/clients/{name}/keys/":
 		return true
 	default:
 		return false
@@ -535,7 +539,7 @@ func (s *server) statusPayload(mode string) map[string]any {
 		"mode":        mode,
 		"service":     s.deps.Config.ServiceName,
 		"environment": s.deps.Config.Environment,
-		"phase":       "scaffold",
+		"phase":       "compatibility-foundation",
 		"version":     s.deps.Version,
 		"config":      s.deps.Config.Redacted(),
 		"compatibility": map[string]any{

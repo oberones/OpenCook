@@ -31,6 +31,21 @@ This roadmap is based on a review of the upstream Chef Infra Server repository a
 - `dev-docs/bookshelf-sigv4-flow.txt`
 - `oc-chef-pedant/`
 
+## Current Progress Snapshot
+
+As of 2026-04-02, OpenCook has moved past pure scaffolding and into the first compatibility slices:
+
+- Chef request signing verification is implemented in Go and enforced on the first authenticated routes
+- initial user, organization, client, group, container, and ACL bootstrap flows are working in an in-memory compatibility layer
+- org bootstrap creates validator clients with default key material
+- compatibility tracking docs and route inventory are in place and being updated alongside code
+
+Current focus:
+
+- expand `/keys` compatibility behavior for users and organization clients
+- preserve API-version-sensitive actor key behavior without carrying forward Chef licensing concerns
+- replace the in-memory bootstrap layer with PostgreSQL-backed persistence after the contracts stabilize
+
 ## What Exists Upstream
 
 Chef Infra Server is not one service today. It is a group of cooperating components:
