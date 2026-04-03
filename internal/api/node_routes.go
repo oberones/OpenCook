@@ -353,6 +353,10 @@ func isDefaultOrgEnvironmentPath(path string) bool {
 	return path == "/environments" || path == "/environments/" || strings.HasPrefix(path, "/environments/")
 }
 
+func isDefaultOrgRolePath(path string) bool {
+	return path == "/roles" || path == "/roles/" || strings.HasPrefix(path, "/roles/")
+}
+
 func isDefaultOrgScopedPath(path string) bool {
-	return isDefaultOrgNodePath(path) || isDefaultOrgEnvironmentPath(path)
+	return isDefaultOrgNodePath(path) || isDefaultOrgEnvironmentPath(path) || isDefaultOrgRolePath(path)
 }

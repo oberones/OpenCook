@@ -33,8 +33,8 @@ func NewDefaultRegistry() Registry {
 				Name:     "infra-objects",
 				Owner:    "api",
 				Phase:    "phase-4",
-				Patterns: []string{"/clients", "/clients/", "/nodes", "/nodes/", "/organizations/{org}/nodes", "/organizations/{org}/nodes/", "/environments", "/environments/", "/environments/{name}/nodes", "/environments/{name}/nodes/", "/organizations/{org}/environments", "/organizations/{org}/environments/", "/organizations/{org}/environments/{name}/nodes", "/organizations/{org}/environments/{name}/nodes/", "/roles", "/roles/", "/data", "/data/"},
-				Notes:    "Core Chef object CRUD and organization-scoped default routes.",
+				Patterns: []string{"/clients", "/clients/", "/nodes", "/nodes/", "/organizations/{org}/nodes", "/organizations/{org}/nodes/", "/environments", "/environments/", "/environments/{name}/nodes", "/environments/{name}/nodes/", "/organizations/{org}/environments", "/organizations/{org}/environments/", "/organizations/{org}/environments/{name}/nodes", "/organizations/{org}/environments/{name}/nodes/", "/roles", "/roles/", "/roles/{name}/environments", "/roles/{name}/environments/", "/roles/{name}/environments/{environment}", "/roles/{name}/environments/{environment}/", "/organizations/{org}/roles", "/organizations/{org}/roles/", "/organizations/{org}/roles/{name}/environments", "/organizations/{org}/roles/{name}/environments/", "/organizations/{org}/roles/{name}/environments/{environment}", "/organizations/{org}/roles/{name}/environments/{environment}/", "/data", "/data/"},
+				Notes:    "Core Chef object CRUD and organization-scoped default routes, including role environment resolution.",
 			},
 			{
 				Name:     "cookbooks-and-blobs",
