@@ -264,7 +264,7 @@ func (s *server) authnOrganization(r *http.Request) string {
 	if org != "" {
 		return org
 	}
-	if !isDefaultOrgNodePath(r.URL.Path) {
+	if !isDefaultOrgScopedPath(r.URL.Path) {
 		return ""
 	}
 
@@ -347,4 +347,12 @@ func nodeURLForResponse(org, name, basePath string) string {
 
 func isDefaultOrgNodePath(path string) bool {
 	return path == "/nodes" || path == "/nodes/" || strings.HasPrefix(path, "/nodes/")
+}
+
+func isDefaultOrgEnvironmentPath(path string) bool {
+	return path == "/environments" || path == "/environments/" || strings.HasPrefix(path, "/environments/")
+}
+
+func isDefaultOrgScopedPath(path string) bool {
+	return isDefaultOrgNodePath(path) || isDefaultOrgEnvironmentPath(path)
 }

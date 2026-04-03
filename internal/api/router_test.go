@@ -1459,6 +1459,252 @@ func TestNodesEndpointUsesConfiguredDefaultOrganization(t *testing.T) {
 	}
 }
 
+func TestEnvironmentsEndpointListCreateGetAndHead(t *testing.T) {
+	router := newTestRouter(t)
+
+	listReq := httptest.NewRequest(http.MethodGet, "/environments", nil)
+	applySignedHeaders(t, listReq, "silent-bob", "", http.MethodGet, "/environments", nil, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	listRec := httptest.NewRecorder()
+	router.ServeHTTP(listRec, listReq)
+
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("list environments status = %d, want %d", listRec.Code, http.StatusOK)
+	}
+
+	var listPayload map[string]string
+	if err := json.Unmarshal(listRec.Body.Bytes(), &listPayload); err != nil {
+		t.Fatalf("json.Unmarshal(list environments) error = %v", err)
+	}
+	if listPayload["_default"] != "/environments/_default" {
+		t.Fatalf("_default uri = %q, want %q", listPayload["_default"], "/environments/_default")
+	}
+
+	createBody := mustMarshalEnvironmentPayload(t, "production")
+	createReq := httptest.NewRequest(http.MethodPost, "/environments", bytes.NewReader(createBody))
+	applySignedHeaders(t, createReq, "silent-bob", "", http.MethodPost, "/environments", createBody, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:10Z")
+	createRec := httptest.NewRecorder()
+	router.ServeHTTP(createRec, createReq)
+
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("create environment status = %d, want %d, body = %s", createRec.Code, http.StatusCreated, createRec.Body.String())
+	}
+
+	var createPayload map[string]any
+	if err := json.Unmarshal(createRec.Body.Bytes(), &createPayload); err != nil {
+		t.Fatalf("json.Unmarshal(create environment) error = %v", err)
+	}
+	if createPayload["uri"] != "/environments/production" {
+		t.Fatalf("uri = %v, want %q", createPayload["uri"], "/environments/production")
+	}
+
+	getReq := httptest.NewRequest(http.MethodGet, "/environments/production", nil)
+	applySignedHeaders(t, getReq, "silent-bob", "", http.MethodGet, "/environments/production", nil, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:15Z")
+	getRec := httptest.NewRecorder()
+	router.ServeHTTP(getRec, getReq)
+
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("get environment status = %d, want %d", getRec.Code, http.StatusOK)
+	}
+
+	var getPayload map[string]any
+	if err := json.Unmarshal(getRec.Body.Bytes(), &getPayload); err != nil {
+		t.Fatalf("json.Unmarshal(get environment) error = %v", err)
+	}
+	if getPayload["name"] != "production" {
+		t.Fatalf("name = %v, want %q", getPayload["name"], "production")
+	}
+	if getPayload["json_class"] != "Chef::Environment" {
+		t.Fatalf("json_class = %v, want %q", getPayload["json_class"], "Chef::Environment")
+	}
+
+	headReq := httptest.NewRequest(http.MethodHead, "/environments/production", nil)
+	applySignedHeaders(t, headReq, "silent-bob", "", http.MethodHead, "/environments/production", nil, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:20Z")
+	headRec := httptest.NewRecorder()
+	router.ServeHTTP(headRec, headReq)
+
+	if headRec.Code != http.StatusOK {
+		t.Fatalf("head environment status = %d, want %d", headRec.Code, http.StatusOK)
+	}
+	if headRec.Body.Len() != 0 {
+		t.Fatalf("head environment body length = %d, want 0", headRec.Body.Len())
+	}
+}
+
+func TestEnvironmentsEndpointUpdateRenamesEnvironment(t *testing.T) {
+	router := newTestRouter(t)
+	createBody := mustMarshalEnvironmentPayload(t, "production")
+
+	createReq := httptest.NewRequest(http.MethodPost, "/environments", bytes.NewReader(createBody))
+	applySignedHeaders(t, createReq, "silent-bob", "", http.MethodPost, "/environments", createBody, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	createRec := httptest.NewRecorder()
+	router.ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("create environment status = %d, want %d, body = %s", createRec.Code, http.StatusCreated, createRec.Body.String())
+	}
+
+	updateBody := mustMarshalEnvironmentPayload(t, "staging")
+	updateReq := httptest.NewRequest(http.MethodPut, "/environments/production", bytes.NewReader(updateBody))
+	applySignedHeaders(t, updateReq, "silent-bob", "", http.MethodPut, "/environments/production", updateBody, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:10Z")
+	updateRec := httptest.NewRecorder()
+	router.ServeHTTP(updateRec, updateReq)
+
+	if updateRec.Code != http.StatusCreated {
+		t.Fatalf("update environment status = %d, want %d, body = %s", updateRec.Code, http.StatusCreated, updateRec.Body.String())
+	}
+	if updateRec.Header().Get("Location") != "/environments/staging" {
+		t.Fatalf("Location = %q, want %q", updateRec.Header().Get("Location"), "/environments/staging")
+	}
+
+	oldReq := httptest.NewRequest(http.MethodGet, "/environments/production", nil)
+	applySignedHeaders(t, oldReq, "silent-bob", "", http.MethodGet, "/environments/production", nil, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:15Z")
+	oldRec := httptest.NewRecorder()
+	router.ServeHTTP(oldRec, oldReq)
+
+	if oldRec.Code != http.StatusNotFound {
+		t.Fatalf("old environment status = %d, want %d", oldRec.Code, http.StatusNotFound)
+	}
+
+	newReq := httptest.NewRequest(http.MethodGet, "/environments/staging", nil)
+	applySignedHeaders(t, newReq, "silent-bob", "", http.MethodGet, "/environments/staging", nil, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:20Z")
+	newRec := httptest.NewRecorder()
+	router.ServeHTTP(newRec, newReq)
+
+	if newRec.Code != http.StatusOK {
+		t.Fatalf("new environment status = %d, want %d", newRec.Code, http.StatusOK)
+	}
+}
+
+func TestEnvironmentsEndpointDefaultEnvironmentIsImmutable(t *testing.T) {
+	router := newTestRouter(t)
+
+	deleteReq := httptest.NewRequest(http.MethodDelete, "/environments/_default", nil)
+	applySignedHeaders(t, deleteReq, "silent-bob", "", http.MethodDelete, "/environments/_default", nil, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	deleteRec := httptest.NewRecorder()
+	router.ServeHTTP(deleteRec, deleteReq)
+
+	if deleteRec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("delete _default status = %d, want %d", deleteRec.Code, http.StatusMethodNotAllowed)
+	}
+
+	var payload map[string][]string
+	if err := json.Unmarshal(deleteRec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal(delete _default) error = %v", err)
+	}
+	if len(payload["error"]) != 1 || payload["error"][0] != "The '_default' environment cannot be modified." {
+		t.Fatalf("error payload = %v, want immutable _default message", payload)
+	}
+}
+
+func TestEnvironmentNodesEndpointFiltersNodes(t *testing.T) {
+	router := newTestRouter(t)
+	createEnvironmentBody := mustMarshalEnvironmentPayload(t, "production")
+
+	createEnvironmentReq := httptest.NewRequest(http.MethodPost, "/environments", bytes.NewReader(createEnvironmentBody))
+	applySignedHeaders(t, createEnvironmentReq, "silent-bob", "", http.MethodPost, "/environments", createEnvironmentBody, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	createEnvironmentRec := httptest.NewRecorder()
+	router.ServeHTTP(createEnvironmentRec, createEnvironmentReq)
+	if createEnvironmentRec.Code != http.StatusCreated {
+		t.Fatalf("create environment status = %d, want %d, body = %s", createEnvironmentRec.Code, http.StatusCreated, createEnvironmentRec.Body.String())
+	}
+
+	prodNodeBody := mustMarshalNodePayloadWithEnvironment(t, "twilight", "production")
+	prodNodeReq := httptest.NewRequest(http.MethodPost, "/nodes", bytes.NewReader(prodNodeBody))
+	applySignedHeaders(t, prodNodeReq, "silent-bob", "", http.MethodPost, "/nodes", prodNodeBody, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:10Z")
+	prodNodeRec := httptest.NewRecorder()
+	router.ServeHTTP(prodNodeRec, prodNodeReq)
+	if prodNodeRec.Code != http.StatusCreated {
+		t.Fatalf("create prod node status = %d, want %d, body = %s", prodNodeRec.Code, http.StatusCreated, prodNodeRec.Body.String())
+	}
+
+	defaultNodeBody := mustMarshalNodePayload(t, "rainbow")
+	defaultNodeReq := httptest.NewRequest(http.MethodPost, "/nodes", bytes.NewReader(defaultNodeBody))
+	applySignedHeaders(t, defaultNodeReq, "silent-bob", "", http.MethodPost, "/nodes", defaultNodeBody, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:15Z")
+	defaultNodeRec := httptest.NewRecorder()
+	router.ServeHTTP(defaultNodeRec, defaultNodeReq)
+	if defaultNodeRec.Code != http.StatusCreated {
+		t.Fatalf("create default node status = %d, want %d, body = %s", defaultNodeRec.Code, http.StatusCreated, defaultNodeRec.Body.String())
+	}
+
+	listReq := httptest.NewRequest(http.MethodGet, "/environments/production/nodes", nil)
+	applySignedHeaders(t, listReq, "silent-bob", "", http.MethodGet, "/environments/production/nodes", nil, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:20Z")
+	listRec := httptest.NewRecorder()
+	router.ServeHTTP(listRec, listReq)
+
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("list environment nodes status = %d, want %d", listRec.Code, http.StatusOK)
+	}
+
+	var payload map[string]string
+	if err := json.Unmarshal(listRec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal(environment nodes) error = %v", err)
+	}
+	if len(payload) != 1 {
+		t.Fatalf("len(payload) = %d, want 1: %v", len(payload), payload)
+	}
+	if payload["twilight"] != "/nodes/twilight" {
+		t.Fatalf("twilight uri = %q, want %q", payload["twilight"], "/nodes/twilight")
+	}
+	if _, ok := payload["rainbow"]; ok {
+		t.Fatalf("unexpected default-environment node in filtered list: %v", payload)
+	}
+
+	headReq := httptest.NewRequest(http.MethodHead, "/organizations/ponyville/environments/production/nodes", nil)
+	applySignedHeaders(t, headReq, "silent-bob", "", http.MethodHead, "/organizations/ponyville/environments/production/nodes", nil, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:25Z")
+	headReq.SetPathValue("org", "ponyville")
+	headReq.SetPathValue("name", "production")
+	headRec := httptest.NewRecorder()
+	router.ServeHTTP(headRec, headReq)
+
+	if headRec.Code != http.StatusOK {
+		t.Fatalf("head environment nodes status = %d, want %d", headRec.Code, http.StatusOK)
+	}
+	if headRec.Body.Len() != 0 {
+		t.Fatalf("head environment nodes body length = %d, want 0", headRec.Body.Len())
+	}
+}
+
 func TestUsersEndpointRejectsOversizedBodyBeforeVerification(t *testing.T) {
 	router := newTestRouterWithConfig(t, config.Config{
 		ServiceName:      "opencook",
@@ -1738,13 +1984,17 @@ func createOrgForTest(t *testing.T, router http.Handler, orgName string) {
 }
 
 func mustMarshalNodePayload(t *testing.T, name string) []byte {
+	return mustMarshalNodePayloadWithEnvironment(t, name, "_default")
+}
+
+func mustMarshalNodePayloadWithEnvironment(t *testing.T, name, environment string) []byte {
 	t.Helper()
 
 	body, err := json.Marshal(map[string]any{
 		"name":             name,
 		"json_class":       "Chef::Node",
 		"chef_type":        "node",
-		"chef_environment": "_default",
+		"chef_environment": environment,
 		"override":         map[string]any{},
 		"normal":           map[string]any{"is_anyone": "no"},
 		"default":          map[string]any{},
@@ -1753,6 +2003,25 @@ func mustMarshalNodePayload(t *testing.T, name string) []byte {
 	})
 	if err != nil {
 		t.Fatalf("json.Marshal(node payload) error = %v", err)
+	}
+
+	return body
+}
+
+func mustMarshalEnvironmentPayload(t *testing.T, name string) []byte {
+	t.Helper()
+
+	body, err := json.Marshal(map[string]any{
+		"name":                name,
+		"json_class":          "Chef::Environment",
+		"chef_type":           "environment",
+		"description":         "",
+		"cookbook_versions":   map[string]string{},
+		"default_attributes":  map[string]any{},
+		"override_attributes": map[string]any{},
+	})
+	if err != nil {
+		t.Fatalf("json.Marshal(environment payload) error = %v", err)
 	}
 
 	return body
