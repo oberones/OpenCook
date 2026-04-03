@@ -82,16 +82,22 @@ Implemented so far:
   - `/roles/{name}/environments`
   - `/roles/{name}/environments/{environment}`
   - default-org and explicit-org routing
+- the first default-org client compatibility slice:
+  - `/clients`
+  - `/clients/{name}`
+  - `/clients/{name}/keys`
+  - default-org and explicit-org client routing for reads
+  - default-org and explicit-org client create/delete flows
 - the first search-facing slice:
   - `/search`
-  - `/search/{environment,node,role}`
+  - `/search/{client,environment,node,role}`
   - `/organizations/{org}/search`
-  - `/organizations/{org}/search/{environment,node,role}`
+  - `/organizations/{org}/search/{client,environment,node,role}`
   - GET search results
   - POST partial search results
   - ACL-filtered search responses
   - merged node attributes for search-facing partial search
-- actor key lifecycle for users and org-scoped clients:
+- actor key lifecycle for users and clients:
   - list
   - get
   - create
@@ -266,8 +272,8 @@ These areas are still intentionally incomplete:
 - core Chef object CRUD such as data bags and the remaining object surface beyond nodes, environments, and roles
 - deeper node and environment compatibility such as cookbook constraint edge cases and linked object behavior
 - deeper role compatibility such as run-list normalization and linked environment behavior
-- broader search semantics beyond the current in-memory compatibility layer
+- broader search semantics beyond the current in-memory compatibility layer, especially query translation and data-bag coverage
 - Bookshelf/sandbox/cookbook flows
 - operational parity and migration tooling
 
-The next likely major slice is deeper node/environment/role search semantics or the next adjacent object API such as data bags, not more speculative infrastructure work.
+The next likely major slice is broader search parity or the next adjacent object API such as data bags, not more speculative infrastructure work.

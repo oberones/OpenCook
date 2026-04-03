@@ -15,7 +15,7 @@ Status: in progress
 
 - Chef header signing verification is implemented and enforced on the first real endpoints
 - in-memory key lookup is implemented for signed request verification
-- `/keys` list, create, update, and delete behavior is implemented for users and organization clients
+- `/keys` list, create, update, and delete behavior is implemented for users and clients, including default-org and org-scoped client key routes
 - key expiration is now enforced during request verification
 - API version edge cases and broader actor/resource compatibility semantics are still pending
 - fixture-based canonical request coverage still needs to be expanded
@@ -39,6 +39,7 @@ Status: in progress
 - `/environments/{name}/nodes` is live and filters the current node compatibility state
 - in-memory role list/get/head/create/update/delete behavior is implemented
 - `/roles/{name}/environments` and `/roles/{name}/environments/{environment}` are live, including `_default` run-list resolution
+- default-org and explicit-org client read/create/delete routes are now available too
 - default-org and explicit-org node routes are both available for the first object slice
 - default-org and explicit-org environment routes are now available too
 - default-org and explicit-org role routes are now available too
@@ -50,11 +51,12 @@ Status: in progress
 
 Status: in progress
 
-- in-memory compatibility search is live for `environment`, `node`, and `role`
+- in-memory compatibility search is live for `client`, `environment`, `node`, and `role`
 - `/search` and `/organizations/{org}/search` now advertise the currently implemented indexes
-- GET search and POST partial search now support environment, node, and role queries
+- GET search and POST partial search now support client, environment, node, and role queries
 - search results are filtered through current read authz before pagination is applied
 - node partial search now reflects merged attribute precedence for search-facing behavior
+- default-org client search results now point at live `/clients/...` routes instead of org-only URLs
 - OpenSearch-backed indexing, provider capability handling, and reindex tooling are still pending
 
 ## Milestone 6: Cookbook and Blob Workflows
