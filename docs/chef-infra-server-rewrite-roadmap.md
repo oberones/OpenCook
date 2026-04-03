@@ -40,13 +40,16 @@ As of 2026-04-02, OpenCook has moved past pure scaffolding and into the first co
 - org bootstrap creates validator clients with default key material
 - actor key lifecycle now supports list, create, update, delete, and expiration-aware authentication behavior
 - the first core object slice is live with in-memory node list/get/head/create/update/delete behavior
+- the adjacent environment slice is now live with `_default`, list/get/head/create/update/delete, and rename-capable `PUT`
+- environment-scoped node listing is implemented via `/environments/{name}/nodes`
 - default-org and explicit-org node routes now resolve against the same org-scoped compatibility state
+- default-org and explicit-org environment routes now resolve against the same org-scoped compatibility state
 - compatibility tracking docs and route inventory are in place and being updated alongside code
 
 Current focus:
 
 - preserve API-version-sensitive actor key behavior without carrying forward Chef licensing concerns
-- deepen node compatibility around environment/search behavior and continue into adjacent core object APIs
+- deepen node and environment compatibility around search, cookbook constraints, and adjacent object APIs
 - replace the in-memory bootstrap layer with PostgreSQL-backed persistence after the contracts stabilize
 
 ## What Exists Upstream
