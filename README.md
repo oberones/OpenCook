@@ -10,7 +10,7 @@ The project is currently in its compatibility-foundation phase. This repository 
 - compatibility surface inventory wired into the HTTP server
 - Chef request-signing verification with test coverage
 - in-memory bootstrap state for users, organizations, clients, groups, containers, and ACLs
-- initial authenticated endpoints for users, organizations, clients, ACL inspection, actor key lifecycle, nodes, and environments
+- initial authenticated endpoints for users, organizations, clients, ACL inspection, actor key lifecycle, nodes, environments, and roles
 - docs for architecture decisions, milestones, and compatibility tracking
 - a starting test layout for contract-driven development
 
@@ -42,7 +42,7 @@ The project is currently in its compatibility-foundation phase. This repository 
 
 1. Request signing and key management compatibility
 2. Org, user, client, and ACL bootstrap flows
-3. Roles, data bags, and remaining core object CRUD
+3. Data bags and remaining core object CRUD
 4. Search/indexing compatibility on OpenSearch
 5. Cookbook, sandbox, and blob storage flows
 
@@ -71,11 +71,19 @@ With that in place, signed requests can successfully hit:
 - `/environments`
 - `/environments/{name}`
 - `/environments/{name}/nodes`
+- `/roles`
+- `/roles/{name}`
+- `/roles/{name}/environments`
+- `/roles/{name}/environments/{environment}`
 - `/organizations/{org}/environments`
 - `/organizations/{org}/environments/{name}`
 - `/organizations/{org}/environments/{name}/nodes`
 - `/nodes`
 - `/nodes/{name}`
+- `/organizations/{org}/roles`
+- `/organizations/{org}/roles/{name}`
+- `/organizations/{org}/roles/{name}/environments`
+- `/organizations/{org}/roles/{name}/environments/{environment}`
 - `/organizations/{org}/nodes`
 - `/organizations/{org}/nodes/{name}`
 - `/organizations/{org}/clients`

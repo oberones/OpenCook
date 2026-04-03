@@ -37,10 +37,13 @@ Status: in progress
 - in-memory environment list/get/head/create/update/delete behavior is implemented, including `_default`
 - environment `PUT` now supports Chef-style full replacement and rename semantics
 - `/environments/{name}/nodes` is live and filters the current node compatibility state
+- in-memory role list/get/head/create/update/delete behavior is implemented
+- `/roles/{name}/environments` and `/roles/{name}/environments/{environment}` are live, including `_default` run-list resolution
 - default-org and explicit-org node routes are both available for the first object slice
 - default-org and explicit-org environment routes are now available too
+- default-org and explicit-org role routes are now available too
 - creator-aware node ACLs now allow clients to manage their own node objects
-- roles, data bags, and the rest of the object surface still need follow-on slices
+- data bags and the rest of the object surface still need follow-on slices
 - PostgreSQL-backed persistence for object APIs is still pending
 
 ## Milestone 5: Search Compatibility
