@@ -88,6 +88,17 @@ Implemented so far:
   - `/clients/{name}/keys`
   - default-org and explicit-org client routing for reads
   - default-org and explicit-org client create/delete flows
+- the first policyfile slice:
+  - `/policies`
+  - `/policies/{name}`
+  - `/policies/{name}/revisions`
+  - `/policies/{name}/revisions/{revision}`
+  - `/policy_groups`
+  - `/policy_groups/{group}`
+  - `/policy_groups/{group}/policies/{name}`
+  - policy revision create/get/delete
+  - policy-group list/get/delete
+  - policy-group assignment create/update/delete
 - the first search-facing slice:
   - `/search`
   - `/search/{client,environment,node,role}`
@@ -291,4 +302,4 @@ These areas are still intentionally incomplete:
 - Bookshelf/sandbox/cookbook flows
 - operational parity and migration tooling
 
-The next likely major slice is broader search parity beyond the current compatibility subset, or the next adjacent API surface, not more speculative infrastructure work.
+The next likely major slice is deeper policyfile compatibility and broader search parity beyond the current compatibility subset, not more speculative infrastructure work.

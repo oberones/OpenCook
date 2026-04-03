@@ -106,3 +106,28 @@ func TestNewDefaultRegistryIncludesDataBagRoutes(t *testing.T) {
 		}
 	}
 }
+
+func TestNewDefaultRegistryIncludesPolicyRoutes(t *testing.T) {
+	registry := NewDefaultRegistry()
+
+	patterns := make(map[string]struct{})
+	for _, surface := range registry.Surfaces() {
+		for _, pattern := range surface.Patterns {
+			patterns[pattern] = struct{}{}
+		}
+	}
+
+	for _, pattern := range []string{
+		"/policies",
+		"/policies/{name}",
+		"/policies/{name}/revisions",
+		"/policies/{name}/revisions/{revision}",
+		"/policy_groups",
+		"/policy_groups/{group}",
+		"/policy_groups/{group}/policies/{name}",
+	} {
+		if _, ok := patterns[pattern]; !ok {
+			t.Fatalf("pattern %q missing from compatibility registry", pattern)
+		}
+	}
+}
