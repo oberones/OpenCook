@@ -77,6 +77,49 @@ func TestSeedPublicKeyRejectsEmptyPublicKey(t *testing.T) {
 	}
 }
 
+func TestDeleteClientFailsBeforeMutatingStateWhenKeyDeletionFails(t *testing.T) {
+	service := NewService(authn.NewMemoryKeyStore(), Options{SuperuserName: "pivotal"})
+	publicKeyPEM := mustGeneratePublicKeyPEM(t)
+
+	service.SeedPrincipal(authn.Principal{Type: "user", Name: "silent-bob"})
+	if err := service.SeedPublicKey(authn.Principal{Type: "user", Name: "silent-bob"}, "default", publicKeyPEM); err != nil {
+		t.Fatalf("SeedPublicKey(silent-bob) error = %v", err)
+	}
+	if _, _, _, err := service.CreateOrganization(CreateOrganizationInput{
+		Name:      "ponyville",
+		FullName:  "Ponyville",
+		OrgType:   "Business",
+		OwnerName: "silent-bob",
+	}); err != nil {
+		t.Fatalf("CreateOrganization() error = %v", err)
+	}
+	if _, _, err := service.CreateClient("ponyville", CreateClientInput{
+		Name:      "twilight",
+		PublicKey: publicKeyPEM,
+	}); err != nil {
+		t.Fatalf("CreateClient() error = %v", err)
+	}
+
+	service.mu.Lock()
+	service.orgs["ponyville"].clientKeys["twilight"][""] = KeyRecord{Name: "", PublicKeyPEM: publicKeyPEM}
+	service.mu.Unlock()
+
+	if _, err := service.DeleteClient("ponyville", "twilight"); err == nil {
+		t.Fatalf("DeleteClient() error = nil, want key deletion failure")
+	}
+
+	if _, ok := service.GetClient("ponyville", "twilight"); !ok {
+		t.Fatalf("client was removed despite key deletion failure")
+	}
+	keys, orgExists, clientExists := service.ListClientKeys("ponyville", "twilight")
+	if !orgExists || !clientExists {
+		t.Fatalf("client keys missing after failed delete: org=%v client=%v", orgExists, clientExists)
+	}
+	if len(keys) == 0 {
+		t.Fatalf("client keys unexpectedly removed after failed delete")
+	}
+}
+
 func mustGeneratePublicKeyPEM(t *testing.T) string {
 	t.Helper()
 
