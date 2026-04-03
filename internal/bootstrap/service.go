@@ -722,14 +722,6 @@ func (s *Service) DeleteClient(orgName, clientName string) (Client, error) {
 		return Client{}, ErrNotFound
 	}
 
-	delete(org.clients, clientName)
-	delete(org.acls, clientACLKey(clientName))
-
-	group := org.groups["clients"]
-	group.Clients = withoutString(group.Clients, clientName)
-	group.Actors = uniqueSorted(append(group.Users, group.Clients...))
-	org.groups["clients"] = group
-
 	if keys, ok := org.clientKeys[clientName]; ok {
 		principal := authn.Principal{
 			Type:         "client",
@@ -737,10 +729,20 @@ func (s *Service) DeleteClient(orgName, clientName string) (Client, error) {
 			Organization: orgName,
 		}
 		for keyName := range keys {
-			_ = s.keyStore.Delete(principal, keyName)
+			if err := s.keyStore.Delete(principal, keyName); err != nil {
+				return Client{}, fmt.Errorf("delete client key %q: %w", keyName, err)
+			}
 		}
-		delete(org.clientKeys, clientName)
 	}
+
+	delete(org.clients, clientName)
+	delete(org.acls, clientACLKey(clientName))
+	delete(org.clientKeys, clientName)
+
+	group := org.groups["clients"]
+	group.Clients = withoutString(group.Clients, clientName)
+	group.Actors = uniqueSorted(append(group.Users, group.Clients...))
+	org.groups["clients"] = group
 
 	return client, nil
 }

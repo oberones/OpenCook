@@ -1,6 +1,7 @@
 package api
 
 import (
+	"errors"
 	"net/http"
 	"strings"
 
@@ -151,6 +152,14 @@ func (s *server) handleClientDelete(w http.ResponseWriter, r *http.Request, stat
 		return
 	}
 
+	if _, exists := state.GetClient(org, name); !exists {
+		writeJSON(w, http.StatusNotFound, apiError{
+			Error:   "not_found",
+			Message: "client not found",
+		})
+		return
+	}
+
 	if !s.authorizeRequest(w, r, authz.ActionDelete, authz.Resource{
 		Type:         "client",
 		Name:         name,
@@ -160,6 +169,13 @@ func (s *server) handleClientDelete(w http.ResponseWriter, r *http.Request, stat
 	}
 
 	client, err := state.DeleteClient(org, name)
+	if errors.Is(err, bootstrap.ErrNotFound) {
+		writeJSON(w, http.StatusNotFound, apiError{
+			Error:   "not_found",
+			Message: "client not found",
+		})
+		return
+	}
 	if !s.writeBootstrapError(w, err) {
 		return
 	}

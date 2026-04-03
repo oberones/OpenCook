@@ -268,6 +268,30 @@ func TestClientsEndpointUsesDefaultOrganizationAlias(t *testing.T) {
 
 }
 
+func TestClientsEndpointDeleteMissingClientReturnsClientSpecificNotFound(t *testing.T) {
+	router := newTestRouter(t)
+	req := httptest.NewRequest(http.MethodDelete, "/clients/missing", nil)
+	applySignedHeaders(t, req, "silent-bob", "", http.MethodDelete, "/clients/missing", nil, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusNotFound, rec.Body.String())
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal(delete missing client) error = %v", err)
+	}
+	if payload["message"] != "client not found" {
+		t.Fatalf("message = %v, want %q", payload["message"], "client not found")
+	}
+}
+
 func TestUsersEndpointCreatesUserWithPrivateKey(t *testing.T) {
 	router := newTestRouter(t)
 	body := []byte(`{"username":"rainbow","display_name":"Rainbow Dash"}`)
