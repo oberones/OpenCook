@@ -82,6 +82,15 @@ Implemented so far:
   - `/roles/{name}/environments`
   - `/roles/{name}/environments/{environment}`
   - default-org and explicit-org routing
+- the first search-facing slice:
+  - `/search`
+  - `/search/{environment,node,role}`
+  - `/organizations/{org}/search`
+  - `/organizations/{org}/search/{environment,node,role}`
+  - GET search results
+  - POST partial search results
+  - ACL-filtered search responses
+  - merged node attributes for search-facing partial search
 - actor key lifecycle for users and org-scoped clients:
   - list
   - get
@@ -253,11 +262,12 @@ These areas are still intentionally incomplete:
 
 - deeper API-version-specific semantics beyond the current actor-key surface
 - PostgreSQL-backed persistence
-- OpenSearch-backed indexing and query behavior
+- OpenSearch-backed indexing and provider capability behavior
 - core Chef object CRUD such as data bags and the remaining object surface beyond nodes, environments, and roles
-- deeper node and environment compatibility such as search indexing, cookbook constraint edge cases, and linked object behavior
+- deeper node and environment compatibility such as cookbook constraint edge cases and linked object behavior
 - deeper role compatibility such as run-list normalization and linked environment behavior
+- broader search semantics beyond the current in-memory compatibility layer
 - Bookshelf/sandbox/cookbook flows
 - operational parity and migration tooling
 
-The next likely major slice is deeper node/environment/role compatibility or the next adjacent object API such as data bags, not more speculative infrastructure work.
+The next likely major slice is deeper node/environment/role search semantics or the next adjacent object API such as data bags, not more speculative infrastructure work.

@@ -47,8 +47,8 @@ func NewDefaultRegistry() Registry {
 				Name:     "search-and-policy",
 				Owner:    "search",
 				Phase:    "phase-5",
-				Patterns: []string{"/search", "/search/", "/policies", "/policies/", "/policy_groups", "/policy_groups/"},
-				Notes:    "Document expansion, OpenSearch-backed indexing, and policy APIs.",
+				Patterns: []string{"/search", "/search/", "/search/{index}", "/search/{index}/", "/organizations/{org}/search", "/organizations/{org}/search/", "/organizations/{org}/search/{index}", "/organizations/{org}/search/{index}/", "/policies", "/policies/", "/policy_groups", "/policy_groups/"},
+				Notes:    "Document expansion, search query compatibility, and policy APIs.",
 			},
 			{
 				Name:     "api-versioning-and-ops",

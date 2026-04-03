@@ -2202,7 +2202,7 @@ func newTestRouterWithOverrides(t *testing.T, cfg config.Config, logger *log.Log
 		Authz:     authz.NewACLAuthorizer(state),
 		Bootstrap: state,
 		Blob:      blob.NewNoopStore(""),
-		Search:    search.NewNoopIndex(""),
+		Search:    search.NewMemoryIndex(state, ""),
 		Postgres:  pg.New(""),
 	})
 }
@@ -2240,7 +2240,7 @@ func newTestRouterWithoutBootstrap(t *testing.T) http.Handler {
 		}),
 		Authz:    authz.NoopAuthorizer{},
 		Blob:     blob.NewNoopStore(""),
-		Search:   search.NewNoopIndex(""),
+		Search:   search.NewMemoryIndex(nil, ""),
 		Postgres: pg.New(""),
 	})
 }

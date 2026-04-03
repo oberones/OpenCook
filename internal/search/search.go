@@ -1,6 +1,10 @@
 package search
 
-import "context"
+import (
+	"context"
+
+	"github.com/oberones/OpenCook/internal/authz"
+)
 
 type Status struct {
 	Backend    string `json:"backend"`
@@ -9,20 +13,28 @@ type Status struct {
 }
 
 type Query struct {
-	Index string
-	Q     string
-	Start int
-	Rows  int
+	Organization string
+	Index        string
+	Q            string
 }
 
 type Result struct {
-	Total int      `json:"total"`
-	IDs   []string `json:"ids"`
+	Documents []Document `json:"documents"`
+}
+
+type Document struct {
+	Index    string
+	Name     string
+	Object   map[string]any
+	Partial  map[string]any
+	Fields   map[string][]string
+	Resource authz.Resource
 }
 
 type Index interface {
 	Name() string
 	Status() Status
+	Indexes(context.Context, string) ([]string, error)
 	Search(context.Context, Query) (Result, error)
 }
 
@@ -52,6 +64,10 @@ func (i NoopIndex) Status() Status {
 		Configured: true,
 		Message:    "OpenSearch adapter scaffold only",
 	}
+}
+
+func (i NoopIndex) Indexes(_ context.Context, _ string) ([]string, error) {
+	return nil, nil
 }
 
 func (i NoopIndex) Search(_ context.Context, _ Query) (Result, error) {
