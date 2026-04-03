@@ -58,4 +58,3 @@ func (s NoopStore) Status() Status {
 		Message:    "blob storage adapter scaffold only",
 	}
 }
-

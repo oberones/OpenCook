@@ -19,4 +19,3 @@ func Current() Info {
 		BuiltAt: BuiltAt,
 	}
 }
-

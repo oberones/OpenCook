@@ -15,10 +15,11 @@ type Config struct {
 	ReadTimeout     time.Duration
 	WriteTimeout    time.Duration
 	ShutdownTimeout time.Duration
+	AuthSkew        time.Duration
 	BootstrapMode   bool
 
-	PostgresDSN   string
-	OpenSearchURL string
+	PostgresDSN    string
+	OpenSearchURL  string
 	BlobStorageURL string
 }
 
@@ -38,6 +39,11 @@ func LoadFromEnv() (Config, error) {
 		return Config{}, err
 	}
 
+	authSkew, err := envDuration("OPENCOOK_AUTH_SKEW", 15*time.Minute)
+	if err != nil {
+		return Config{}, err
+	}
+
 	bootstrapMode, err := envBool("OPENCOOK_BOOTSTRAP_MODE", true)
 	if err != nil {
 		return Config{}, err
@@ -50,6 +56,7 @@ func LoadFromEnv() (Config, error) {
 		ReadTimeout:     readTimeout,
 		WriteTimeout:    writeTimeout,
 		ShutdownTimeout: shutdownTimeout,
+		AuthSkew:        authSkew,
 		BootstrapMode:   bootstrapMode,
 		PostgresDSN:     strings.TrimSpace(os.Getenv("OPENCOOK_POSTGRES_DSN")),
 		OpenSearchURL:   strings.TrimSpace(os.Getenv("OPENCOOK_OPENSEARCH_URL")),
@@ -59,16 +66,17 @@ func LoadFromEnv() (Config, error) {
 
 func (c Config) Redacted() map[string]string {
 	return map[string]string{
-		"service_name":       c.ServiceName,
-		"environment":        c.Environment,
-		"listen_address":     c.ListenAddress,
-		"read_timeout":       c.ReadTimeout.String(),
-		"write_timeout":      c.WriteTimeout.String(),
-		"shutdown_timeout":   c.ShutdownTimeout.String(),
-		"bootstrap_mode":     strconv.FormatBool(c.BootstrapMode),
-		"postgres_dsn":       redact(c.PostgresDSN),
-		"opensearch_url":     redact(c.OpenSearchURL),
-		"blob_storage_url":   redact(c.BlobStorageURL),
+		"service_name":     c.ServiceName,
+		"environment":      c.Environment,
+		"listen_address":   c.ListenAddress,
+		"read_timeout":     c.ReadTimeout.String(),
+		"write_timeout":    c.WriteTimeout.String(),
+		"shutdown_timeout": c.ShutdownTimeout.String(),
+		"auth_skew":        c.AuthSkew.String(),
+		"bootstrap_mode":   strconv.FormatBool(c.BootstrapMode),
+		"postgres_dsn":     redact(c.PostgresDSN),
+		"opensearch_url":   redact(c.OpenSearchURL),
+		"blob_storage_url": redact(c.BlobStorageURL),
 	}
 }
 
@@ -117,4 +125,3 @@ func redact(value string) string {
 	}
 	return value[:4] + "..."
 }
-
