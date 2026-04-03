@@ -230,6 +230,78 @@ func TestCookbookEndpointsListLatestRecipesUniverseAndV2VersionView(t *testing.T
 	}
 }
 
+func TestCookbookArtifactEndpointsSupportRootLevelAllFiles(t *testing.T) {
+	router := newTestRouter(t)
+	checksum := uploadCookbookChecksum(t, router, []byte("name 'demo'"))
+
+	createReq := newSignedJSONRequest(t, http.MethodPut, "/cookbook_artifacts/demo/1111111111111111111111111111111111111111", mustMarshalSandboxJSON(t, map[string]any{
+		"name":       "demo",
+		"identifier": "1111111111111111111111111111111111111111",
+		"version":    "1.2.3",
+		"chef_type":  "cookbook_version",
+		"metadata": map[string]any{
+			"version":      "1.2.3",
+			"name":         "demo",
+			"dependencies": map[string]any{},
+			"recipes":      map[string]any{},
+		},
+		"all_files": []any{
+			map[string]any{
+				"name":        "metadata.rb",
+				"path":        "metadata.rb",
+				"checksum":    checksum,
+				"specificity": "default",
+			},
+		},
+	}))
+	createRec := httptest.NewRecorder()
+	router.ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("create artifact status = %d, want %d, body = %s", createRec.Code, http.StatusCreated, createRec.Body.String())
+	}
+
+	legacyGetReq := newSignedJSONRequest(t, http.MethodGet, "/cookbook_artifacts/demo/1111111111111111111111111111111111111111", nil)
+	legacyGetRec := httptest.NewRecorder()
+	router.ServeHTTP(legacyGetRec, legacyGetReq)
+	if legacyGetRec.Code != http.StatusOK {
+		t.Fatalf("legacy get artifact status = %d, want %d, body = %s", legacyGetRec.Code, http.StatusOK, legacyGetRec.Body.String())
+	}
+	var legacyPayload map[string]any
+	if err := json.Unmarshal(legacyGetRec.Body.Bytes(), &legacyPayload); err != nil {
+		t.Fatalf("json.Unmarshal(legacy get artifact) error = %v", err)
+	}
+	rootFiles := legacyPayload["root_files"].([]any)
+	if len(rootFiles) != 1 {
+		t.Fatalf("root_files len = %d, want 1 (%v)", len(rootFiles), rootFiles)
+	}
+	if got := rootFiles[0].(map[string]any)["path"]; got != "metadata.rb" {
+		t.Fatalf("root_files[0].path = %v, want %q", got, "metadata.rb")
+	}
+
+	v2GetReq := newSignedJSONRequest(t, http.MethodGet, "/cookbook_artifacts/demo/1111111111111111111111111111111111111111", nil)
+	v2GetReq.Header.Set("X-Ops-Server-API-Version", "2")
+	v2GetRec := httptest.NewRecorder()
+	router.ServeHTTP(v2GetRec, v2GetReq)
+	if v2GetRec.Code != http.StatusOK {
+		t.Fatalf("v2 get artifact status = %d, want %d, body = %s", v2GetRec.Code, http.StatusOK, v2GetRec.Body.String())
+	}
+	var v2Payload map[string]any
+	if err := json.Unmarshal(v2GetRec.Body.Bytes(), &v2Payload); err != nil {
+		t.Fatalf("json.Unmarshal(v2 get artifact) error = %v", err)
+	}
+	allFiles := v2Payload["all_files"].([]any)
+	if len(allFiles) != 1 {
+		t.Fatalf("all_files len = %d, want 1 (%v)", len(allFiles), allFiles)
+	}
+	file := allFiles[0].(map[string]any)
+	if file["name"] != "metadata.rb" {
+		t.Fatalf("all_files[0].name = %v, want %q", file["name"], "metadata.rb")
+	}
+	if file["path"] != "metadata.rb" {
+		t.Fatalf("all_files[0].path = %v, want %q", file["path"], "metadata.rb")
+	}
+}
+
 func uploadCookbookChecksum(t *testing.T, router http.Handler, content []byte) string {
 	t.Helper()
 
