@@ -13,7 +13,7 @@ The project is currently in its compatibility-foundation phase. This repository 
 - initial authenticated endpoints for users, organizations, clients, ACL inspection, actor key lifecycle, nodes, environments, roles, data bags, and compatibility search
 - policyfile compatibility routes for policies, revisions, and policy-group assignments on both default-org and explicit-org paths
 - sandbox/blob compatibility with in-memory sandbox lifecycle plus signed checksum uploads and downloads
-- the cookbook compatibility slice with cookbook artifact lifecycle, writable cookbook versions, cookbook read views, and universe responses
+- the cookbook compatibility slice with cookbook artifact lifecycle, writable cookbook versions, frozen/force update behavior, cookbook read views, and universe responses
 - docs for architecture decisions, milestones, and compatibility tracking
 - a starting test layout for contract-driven development
 
@@ -152,7 +152,7 @@ The current policyfile slice is live on both the default-org and explicit-org ro
 
 The sandbox compatibility slice is live too. Signed callers can create and commit sandboxes through `/sandboxes` and `/organizations/{org}/sandboxes`, and the returned checksum entries expose absolute signed upload URLs under `/_blob/checksums/{checksum}` backed by the current in-memory blob store.
 
-The cookbook compatibility slice is also live. Signed callers can create, update, read, and delete cookbook versions through `/cookbooks` and `/organizations/{org}/cookbooks`, create/read/delete cookbook artifacts through `/cookbook_artifacts` and `/organizations/{org}/cookbook_artifacts`, and fetch `/universe` metadata. Cookbook version responses now preserve Chef-style `json_class` and `cookbook_name` fields plus API-version-sensitive v0/v2 file shaping, and returned cookbook file URLs are signed direct blob URLs backed by the same in-memory compatibility store. Remaining cookbook work is now the deeper edge cases like frozen/force behavior, broader pedant coverage, and production S3-compatible blob storage.
+The cookbook compatibility slice is also live. Signed callers can create, update, read, and delete cookbook versions through `/cookbooks` and `/organizations/{org}/cookbooks`, create/read/delete cookbook artifacts through `/cookbook_artifacts` and `/organizations/{org}/cookbook_artifacts`, and fetch `/universe` metadata. Cookbook version responses now preserve Chef-style `json_class` and `cookbook_name` fields plus API-version-sensitive v0/v2 file shaping, frozen cookbook versions now reject mutation unless `?force=` is used and remain frozen even after forced updates, and returned cookbook file URLs are signed direct blob URLs backed by the same in-memory compatibility store. Remaining cookbook work is now the deeper pedant-shaped merge/default edge cases and production S3-compatible blob storage.
 
 Typical commands once a Go toolchain is available:
 

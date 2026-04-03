@@ -114,7 +114,32 @@ type UpsertCookbookVersionInput struct {
 	Name           string
 	Version        string
 	Payload        map[string]any
+	Force          bool
 	ChecksumExists func(string) (bool, error)
+}
+
+type FrozenCookbookError struct {
+	Name    string
+	Version string
+}
+
+func (e *FrozenCookbookError) Error() string {
+	return fmt.Sprintf("The cookbook %s at version %s is frozen. Use the 'force' option to override.", e.Name, e.Version)
+}
+
+func (e *FrozenCookbookError) Unwrap() error {
+	return ErrConflict
+}
+
+type MissingChecksumError struct {
+	Checksum string
+}
+
+func (e *MissingChecksumError) Error() string {
+	if strings.TrimSpace(e.Checksum) == "" {
+		return "Manifest has a checksum that hasn't been uploaded."
+	}
+	return fmt.Sprintf("Manifest has checksum %s but it hasn't yet been uploaded", e.Checksum)
 }
 
 func (s *Service) ListCookbookArtifacts(orgName string) (map[string][]CookbookArtifact, bool) {
@@ -337,7 +362,16 @@ func (s *Service) UpsertCookbookVersion(orgName string, input UpsertCookbookVers
 		versions = make(map[string]CookbookVersion)
 		org.cookbooks[version.CookbookName] = versions
 	}
-	_, exists := versions[version.Version]
+	existing, exists := versions[version.Version]
+	if exists && existing.Frozen && !input.Force {
+		return CookbookVersion{}, false, &FrozenCookbookError{
+			Name:    existing.CookbookName,
+			Version: existing.Version,
+		}
+	}
+	if exists && existing.Frozen {
+		version.Frozen = true
+	}
 	versions[version.Version] = version
 	return copyCookbookVersion(version), !exists, nil
 }
@@ -596,10 +630,28 @@ func normalizeCookbookMetadata(value any) (map[string]any, error) {
 		}
 		metadata["name"] = strings.TrimSpace(name)
 	}
+	for _, field := range []string{"description", "long_description", "maintainer", "maintainer_email", "license"} {
+		if rawField, ok := metadata[field]; ok {
+			text, ok := rawField.(string)
+			if !ok {
+				return nil, &ValidationError{Messages: []string{fmt.Sprintf("Field 'metadata.%s' invalid", field)}}
+			}
+			metadata[field] = text
+		}
+	}
 
-	for _, section := range []string{"dependencies", "attributes", "recipes", "platforms"} {
+	for _, section := range []string{"attributes", "recipes"} {
 		if rawSection, ok := metadata[section]; ok {
 			normalized, err := normalizeCookbookMetadataMap(section, rawSection)
+			if err != nil {
+				return nil, err
+			}
+			metadata[section] = normalized
+		}
+	}
+	for _, section := range []string{"platforms", "dependencies", "recommendations", "suggestions", "conflicting", "replacing"} {
+		if rawSection, ok := metadata[section]; ok {
+			normalized, err := normalizeCookbookConstraintMap(section, rawSection)
 			if err != nil {
 				return nil, err
 			}
@@ -627,6 +679,31 @@ func normalizeCookbookMetadataMap(section string, value any) (map[string]any, er
 	sort.Strings(keys)
 	for _, key := range keys {
 		out[key] = cloneValue(raw[key])
+	}
+	return out, nil
+}
+
+func normalizeCookbookConstraintMap(section string, value any) (map[string]any, error) {
+	raw, ok := value.(map[string]any)
+	if !ok {
+		return nil, &ValidationError{Messages: []string{fmt.Sprintf("Field 'metadata.%s' invalid", section)}}
+	}
+
+	out := make(map[string]any, len(raw))
+	keys := make([]string, 0, len(raw))
+	for key := range raw {
+		if !validNamePattern.MatchString(key) {
+			return nil, &ValidationError{Messages: []string{fmt.Sprintf("Invalid key '%s' for metadata.%s", key, section)}}
+		}
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		text, ok := raw[key].(string)
+		if !ok || !validCookbookConstraintPattern.MatchString(text) {
+			return nil, &ValidationError{Messages: []string{fmt.Sprintf("Invalid value '%s' for metadata.%s", cookbookMetadataValueString(raw[key]), section)}}
+		}
+		out[key] = text
 	}
 	return out, nil
 }
@@ -717,7 +794,7 @@ func normalizeCookbookFile(segment string, raw map[string]any, checksumExists fu
 			return CookbookFile{}, err
 		}
 		if !exists {
-			return CookbookFile{}, &ValidationError{Messages: []string{"Manifest has a checksum that hasn't been uploaded."}}
+			return CookbookFile{}, &MissingChecksumError{Checksum: checksum}
 		}
 	}
 
@@ -875,6 +952,15 @@ func invalidCookbookNameMessage(name string) string {
 
 func invalidCookbookVersionMessage(version string) string {
 	return fmt.Sprintf("Invalid cookbook version '%s'.", version)
+}
+
+func cookbookMetadataValueString(value any) string {
+	switch value.(type) {
+	case map[string]any, map[string]string:
+		return "{[]}"
+	default:
+		return fmt.Sprintf("%v", value)
+	}
 }
 
 func compareCookbookVersions(left, right string) int {
