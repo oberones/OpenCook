@@ -56,6 +56,7 @@ func (v *ChefVerifier) Verify(ctx context.Context, req RequestContext) (Verifica
 	if req.ServerAPIVersion == "" {
 		req.ServerAPIVersion = v.opts.DefaultServerAPIVersion
 	}
+	now := v.opts.Now().UTC()
 
 	principalHint := Principal{
 		Type:         "unknown",
@@ -63,7 +64,7 @@ func (v *ChefVerifier) Verify(ctx context.Context, req RequestContext) (Verifica
 		Organization: req.Organization,
 	}
 
-	parsed, err := parseRequest(req, v.opts.Now().UTC(), v.allowedClockSkew())
+	parsed, err := parseRequest(req, now, v.allowedClockSkew())
 	if err != nil {
 		return VerificationResult{
 			Authenticated: false,
@@ -80,6 +81,7 @@ func (v *ChefVerifier) Verify(ctx context.Context, req RequestContext) (Verifica
 			Principal:     principalHint,
 		}, newError(ErrorKindKeyStoreFailure, fmt.Sprintf("key lookup failed: %v", err))
 	}
+	keys = filterKeysByTime(keys, now)
 
 	if len(keys) == 0 {
 		return VerificationResult{
@@ -119,6 +121,21 @@ func (v *ChefVerifier) Verify(ctx context.Context, req RequestContext) (Verifica
 		SignVersion:   parsed.Sign.Version,
 		Algorithm:     parsed.Sign.Algorithm,
 	}, newError(ErrorKindBadSignature, "signature verification failed")
+}
+
+func filterKeysByTime(keys []Key, now time.Time) []Key {
+	if len(keys) == 0 {
+		return nil
+	}
+
+	out := make([]Key, 0, len(keys))
+	for _, key := range keys {
+		if key.ExpiresAt != nil && !key.ExpiresAt.After(now) {
+			continue
+		}
+		out = append(out, key)
+	}
+	return out
 }
 
 func (v *ChefVerifier) allowedClockSkew() time.Duration {

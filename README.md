@@ -10,7 +10,7 @@ The project is currently in its compatibility-foundation phase. This repository 
 - compatibility surface inventory wired into the HTTP server
 - Chef request-signing verification with test coverage
 - in-memory bootstrap state for users, organizations, clients, groups, containers, and ACLs
-- initial authenticated endpoints for users, organizations, clients, ACL inspection, and actor key lookup
+- initial authenticated endpoints for users, organizations, clients, ACL inspection, and actor key lifecycle
 - docs for architecture decisions, milestones, and compatibility tracking
 - a starting test layout for contract-driven development
 

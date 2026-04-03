@@ -242,6 +242,46 @@ func TestChefVerifierRequestorNotFound(t *testing.T) {
 	}
 }
 
+func TestChefVerifierUsesInjectedClockForKeyExpiration(t *testing.T) {
+	privateKey := mustParsePrivateKey(t)
+	store := NewMemoryKeyStore()
+	expiresAt := mustParseTime(t, "2010-01-01T00:00:00Z")
+	if err := store.Put(Key{
+		ID: "default",
+		Principal: Principal{
+			Type: "user",
+			Name: "silent-bob",
+		},
+		PublicKey: &privateKey.PublicKey,
+		ExpiresAt: &expiresAt,
+	}); err != nil {
+		t.Fatalf("store.Put() error = %v", err)
+	}
+
+	timestamp := "2000-01-01T00:00:00Z"
+	verifier := NewChefVerifier(store, Options{
+		AllowedClockSkew: durationPtr(15 * time.Minute),
+		Now: func() time.Time {
+			return mustParseTime(t, timestamp).Add(30 * time.Second)
+		},
+	})
+
+	result, err := verifier.Verify(context.Background(), RequestContext{
+		Method: "GET",
+		Path:   "/users",
+		Headers: manufactureSignedHeaders(t, privateKey, "silent-bob", "GET", "/users", nil, signDescription{
+			Version:   "1.1",
+			Algorithm: "sha1",
+		}, timestamp, defaultServerAPIVersion),
+	})
+	if err != nil {
+		t.Fatalf("Verify() error = %v", err)
+	}
+	if !result.Authenticated {
+		t.Fatal("Verify() returned unauthenticated result")
+	}
+}
+
 func TestParseSignDescriptionAcceptsLegacyAndModernFormats(t *testing.T) {
 	tests := []struct {
 		name      string

@@ -3,6 +3,7 @@ package authn
 import (
 	"context"
 	"crypto/rsa"
+	"time"
 )
 
 type Principal struct {
@@ -15,6 +16,7 @@ type Key struct {
 	ID        string
 	Principal Principal
 	PublicKey *rsa.PublicKey
+	ExpiresAt *time.Time
 }
 
 type RequestContext struct {
