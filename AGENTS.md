@@ -97,6 +97,16 @@ Implemented so far:
   - POST partial search results
   - ACL-filtered search responses
   - merged node attributes for search-facing partial search
+- the first data bag slice:
+  - `/data`
+  - `/data/{bag}`
+  - `/data/{bag}/{item}`
+  - `/organizations/{org}/data`
+  - `/organizations/{org}/data/{bag}`
+  - `/organizations/{org}/data/{bag}/{item}`
+  - bag list/get/create/delete
+  - item get/create/update/delete
+  - Chef-style item wrapper/error response shaping
 - actor key lifecycle for users and clients:
   - list
   - get
@@ -269,11 +279,11 @@ These areas are still intentionally incomplete:
 - deeper API-version-specific semantics beyond the current actor-key surface
 - PostgreSQL-backed persistence
 - OpenSearch-backed indexing and provider capability behavior
-- core Chef object CRUD such as data bags and the remaining object surface beyond nodes, environments, and roles
+- remaining core Chef object CRUD beyond nodes, environments, roles, and data bags
 - deeper node and environment compatibility such as cookbook constraint edge cases and linked object behavior
 - deeper role compatibility such as run-list normalization and linked environment behavior
 - broader search semantics beyond the current in-memory compatibility layer, especially query translation and data-bag coverage
 - Bookshelf/sandbox/cookbook flows
 - operational parity and migration tooling
 
-The next likely major slice is broader search parity or the next adjacent object API such as data bags, not more speculative infrastructure work.
+The next likely major slice is broader search parity, especially data-bag-aware indexing and richer query semantics, not more speculative infrastructure work.

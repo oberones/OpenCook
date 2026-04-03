@@ -33,7 +33,7 @@ This roadmap is based on a review of the upstream Chef Infra Server repository a
 
 ## Current Progress Snapshot
 
-As of 2026-04-02, OpenCook has moved past pure scaffolding and into the first compatibility slices:
+As of 2026-04-03, OpenCook has moved past pure scaffolding and into the first compatibility slices:
 
 - Chef request signing verification is implemented in Go and enforced on the first authenticated routes
 - initial user, organization, client, group, container, and ACL bootstrap flows are working in an in-memory compatibility layer
@@ -48,6 +48,8 @@ As of 2026-04-02, OpenCook has moved past pure scaffolding and into the first co
 - role environment endpoints are implemented via `/roles/{name}/environments` and `/roles/{name}/environments/{environment}`
 - default-org and explicit-org role routes now resolve against the same org-scoped compatibility state
 - default-org client routes are now live for `/clients`, `/clients/{name}`, and `/clients/{name}/keys`
+- the first data bag slice is now live with `/data`, `/data/{bag}`, and `/data/{bag}/{item}` on both default-org and explicit-org routes
+- data bag item create, update, and delete flows now reproduce Chef-style response wrapping and not-found/conflict messages
 - the first search-facing slice is now live with `/search` and `/search/{client,environment,node,role}` over the in-memory compatibility state
 - partial search is now implemented for clients, environments, nodes, and roles
 - search responses are now filtered through the current read ACL model
@@ -57,7 +59,7 @@ As of 2026-04-02, OpenCook has moved past pure scaffolding and into the first co
 Current focus:
 
 - preserve API-version-sensitive actor key behavior without carrying forward Chef licensing concerns
-- deepen search query translation and wider object coverage while starting the next adjacent object APIs such as data bags
+- deepen search query translation and wider object coverage, especially data bag search/index semantics and richer query behavior
 - replace the in-memory bootstrap layer with PostgreSQL-backed persistence after the contracts stabilize
 
 ## What Exists Upstream

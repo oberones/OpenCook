@@ -162,6 +162,8 @@ type organizationState struct {
 	org        Organization
 	clients    map[string]Client
 	clientKeys map[string]map[string]KeyRecord
+	dataBags   map[string]DataBag
+	dataBagItems map[string]map[string]DataBagItem
 	envs       map[string]Environment
 	nodes      map[string]Node
 	roles      map[string]Role
@@ -438,15 +440,17 @@ func (s *Service) CreateOrganization(input CreateOrganizationInput) (Organizatio
 	}
 
 	state := &organizationState{
-		org:        org,
-		clients:    make(map[string]Client),
-		clientKeys: make(map[string]map[string]KeyRecord),
-		envs:       make(map[string]Environment),
-		nodes:      make(map[string]Node),
-		roles:      make(map[string]Role),
-		groups:     make(map[string]Group),
-		containers: make(map[string]Container),
-		acls:       make(map[string]authz.ACL),
+		org:          org,
+		clients:      make(map[string]Client),
+		clientKeys:   make(map[string]map[string]KeyRecord),
+		dataBags:     make(map[string]DataBag),
+		dataBagItems: make(map[string]map[string]DataBagItem),
+		envs:         make(map[string]Environment),
+		nodes:        make(map[string]Node),
+		roles:        make(map[string]Role),
+		groups:       make(map[string]Group),
+		containers:   make(map[string]Container),
+		acls:         make(map[string]authz.ACL),
 	}
 
 	s.orgs[org.Name] = state
@@ -844,6 +848,13 @@ func (s *Service) ResolveACL(_ context.Context, resource authz.Resource) (authz.
 			return authz.ACL{}, false, nil
 		}
 		acl, ok := org.acls[clientACLKey(resource.Name)]
+		return acl, ok, nil
+	case "data_bag":
+		org, ok := s.orgs[resource.Organization]
+		if !ok {
+			return authz.ACL{}, false, nil
+		}
+		acl, ok := org.acls[dataBagACLKey(resource.Name)]
 		return acl, ok, nil
 	case "environment":
 		org, ok := s.orgs[resource.Organization]
