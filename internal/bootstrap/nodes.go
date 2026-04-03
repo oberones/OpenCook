@@ -337,20 +337,29 @@ func validateNodeMapField(field string, value any) (map[string]any, error) {
 }
 
 func validateRunList(value any) ([]string, error) {
-	raw, ok := value.([]any)
-	if !ok {
+	switch raw := value.(type) {
+	case []string:
+		out := make([]string, 0, len(raw))
+		for _, item := range raw {
+			if !isValidRunListItem(item) {
+				return nil, &ValidationError{Messages: []string{"Field 'run_list' is not a valid run list"}}
+			}
+			out = append(out, item)
+		}
+		return out, nil
+	case []any:
+		out := make([]string, 0, len(raw))
+		for _, item := range raw {
+			text, ok := item.(string)
+			if !ok || !isValidRunListItem(text) {
+				return nil, &ValidationError{Messages: []string{"Field 'run_list' is not a valid run list"}}
+			}
+			out = append(out, text)
+		}
+		return out, nil
+	default:
 		return nil, &ValidationError{Messages: []string{"Field 'run_list' is not a valid run list"}}
 	}
-
-	out := make([]string, 0, len(raw))
-	for _, item := range raw {
-		text, ok := item.(string)
-		if !ok || !isValidRunListItem(text) {
-			return nil, &ValidationError{Messages: []string{"Field 'run_list' is not a valid run list"}}
-		}
-		out = append(out, text)
-	}
-	return out, nil
 }
 
 func isValidRunListItem(value string) bool {

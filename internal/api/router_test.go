@@ -1192,6 +1192,21 @@ func TestNodesEndpointCreateListGetAndHead(t *testing.T) {
 	if headRec.Body.Len() != 0 {
 		t.Fatalf("head node body length = %d, want 0", headRec.Body.Len())
 	}
+
+	collectionHeadReq := httptest.NewRequest(http.MethodHead, "/nodes", nil)
+	applySignedHeaders(t, collectionHeadReq, "silent-bob", "", http.MethodHead, "/nodes", nil, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:25Z")
+	collectionHeadRec := httptest.NewRecorder()
+	router.ServeHTTP(collectionHeadRec, collectionHeadReq)
+
+	if collectionHeadRec.Code != http.StatusOK {
+		t.Fatalf("head nodes collection status = %d, want %d", collectionHeadRec.Code, http.StatusOK)
+	}
+	if collectionHeadRec.Body.Len() != 0 {
+		t.Fatalf("head nodes collection body length = %d, want 0", collectionHeadRec.Body.Len())
+	}
 }
 
 func TestNodesEndpointUpdateRejectsNameMismatch(t *testing.T) {
@@ -1426,6 +1441,21 @@ func TestNodesEndpointUsesConfiguredDefaultOrganization(t *testing.T) {
 
 	if explicitRec.Code != http.StatusOK {
 		t.Fatalf("explicit get node status = %d, want %d", explicitRec.Code, http.StatusOK)
+	}
+
+	explicitHeadReq := httptest.NewRequest(http.MethodHead, "/organizations/canterlot/nodes", nil)
+	applySignedHeaders(t, explicitHeadReq, "pivotal", "", http.MethodHead, "/organizations/canterlot/nodes", nil, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:20Z")
+	explicitHeadRec := httptest.NewRecorder()
+	router.ServeHTTP(explicitHeadRec, explicitHeadReq)
+
+	if explicitHeadRec.Code != http.StatusOK {
+		t.Fatalf("explicit head nodes collection status = %d, want %d", explicitHeadRec.Code, http.StatusOK)
+	}
+	if explicitHeadRec.Body.Len() != 0 {
+		t.Fatalf("explicit head nodes collection body length = %d, want 0", explicitHeadRec.Body.Len())
 	}
 }
 

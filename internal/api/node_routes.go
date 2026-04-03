@@ -108,6 +108,19 @@ func (s *server) handleNodeGet(w http.ResponseWriter, r *http.Request, state *bo
 }
 
 func (s *server) handleNodeHead(w http.ResponseWriter, r *http.Request, state *bootstrap.Service, org, basePath string) {
+	if matchesCollectionPath(r.URL.Path, basePath) {
+		if !s.authorizeRequest(w, r, authz.ActionRead, authz.Resource{
+			Type:         "container",
+			Name:         "nodes",
+			Organization: org,
+		}) {
+			return
+		}
+
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
 	name, ok := pathTail(r.URL.Path, basePath+"/")
 	if !ok {
 		w.WriteHeader(http.StatusNotFound)
