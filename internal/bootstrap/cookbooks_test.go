@@ -49,12 +49,15 @@ func TestCreateCookbookArtifactRejectsMissingUploadedChecksum(t *testing.T) {
 		t.Fatal("CreateCookbookArtifact() error = nil, want validation error")
 	}
 
-	var validationErr *ValidationError
-	if !errors.As(err, &validationErr) {
-		t.Fatalf("CreateCookbookArtifact() error = %T, want *ValidationError", err)
+	var checksumErr *MissingChecksumError
+	if !errors.As(err, &checksumErr) {
+		t.Fatalf("CreateCookbookArtifact() error = %T, want *MissingChecksumError", err)
 	}
-	if len(validationErr.Messages) != 1 || validationErr.Messages[0] != "Manifest has a checksum that hasn't been uploaded." {
-		t.Fatalf("validation messages = %v, want missing checksum message", validationErr.Messages)
+	if checksumErr.Checksum != "8288b67da0793b5abec709d6226e6b73" {
+		t.Fatalf("checksum = %q, want missing checksum", checksumErr.Checksum)
+	}
+	if checksumErr.Error() != "Manifest has checksum 8288b67da0793b5abec709d6226e6b73 but it hasn't yet been uploaded" {
+		t.Fatalf("error message = %q, want checksum-specific message", checksumErr.Error())
 	}
 }
 
@@ -269,6 +272,185 @@ func TestUpsertCookbookVersionAllowsMetadataNameChange(t *testing.T) {
 	}
 	if got := version.Metadata["name"]; got != "renamed-app" {
 		t.Fatalf("metadata.name = %v, want %q", got, "renamed-app")
+	}
+}
+
+func TestUpsertCookbookVersionRejectsFrozenUpdateWithoutForce(t *testing.T) {
+	service := newTestBootstrapService(t)
+	createTestCookbookOrg(t, service)
+
+	createTestCookbookVersion(t, service, "ponyville", "app", "1.2.3", map[string]any{
+		"description": "first",
+	}, nil)
+
+	payload := cookbookVersionTestPayload("app", "1.2.3", map[string]any{
+		"description": "frozen",
+	}, nil)
+	payload["frozen?"] = true
+	if _, _, err := service.UpsertCookbookVersion("ponyville", UpsertCookbookVersionInput{
+		Name:    "app",
+		Version: "1.2.3",
+		Payload: payload,
+		ChecksumExists: func(string) (bool, error) {
+			return true, nil
+		},
+	}); err != nil {
+		t.Fatalf("freeze UpsertCookbookVersion() error = %v", err)
+	}
+
+	updatePayload := cookbookVersionTestPayload("app", "1.2.3", map[string]any{
+		"description": "second",
+	}, nil)
+	updatePayload["frozen?"] = false
+	_, _, err := service.UpsertCookbookVersion("ponyville", UpsertCookbookVersionInput{
+		Name:    "app",
+		Version: "1.2.3",
+		Payload: updatePayload,
+		ChecksumExists: func(string) (bool, error) {
+			return true, nil
+		},
+	})
+	if err == nil {
+		t.Fatal("UpsertCookbookVersion() error = nil, want frozen conflict")
+	}
+
+	var frozenErr *FrozenCookbookError
+	if !errors.As(err, &frozenErr) {
+		t.Fatalf("UpsertCookbookVersion() error = %T, want *FrozenCookbookError", err)
+	}
+	if frozenErr.Error() != "The cookbook app at version 1.2.3 is frozen. Use the 'force' option to override." {
+		t.Fatalf("error message = %q, want frozen conflict", frozenErr.Error())
+	}
+
+	version, ok, found := service.GetCookbookVersion("ponyville", "app", "1.2.3")
+	if !ok || !found {
+		t.Fatalf("GetCookbookVersion() = ok:%v found:%v, want true/true", ok, found)
+	}
+	if got := version.Metadata["description"]; got != "frozen" {
+		t.Fatalf("metadata.description = %v, want frozen value", got)
+	}
+	if !version.Frozen {
+		t.Fatal("version.Frozen = false, want true")
+	}
+}
+
+func TestUpsertCookbookVersionForceKeepsFrozenState(t *testing.T) {
+	service := newTestBootstrapService(t)
+	createTestCookbookOrg(t, service)
+
+	payload := cookbookVersionTestPayload("app", "1.2.3", map[string]any{
+		"description": "first",
+	}, nil)
+	payload["frozen?"] = true
+	if _, _, err := service.UpsertCookbookVersion("ponyville", UpsertCookbookVersionInput{
+		Name:    "app",
+		Version: "1.2.3",
+		Payload: payload,
+		ChecksumExists: func(string) (bool, error) {
+			return true, nil
+		},
+	}); err != nil {
+		t.Fatalf("freeze UpsertCookbookVersion() error = %v", err)
+	}
+
+	updatePayload := cookbookVersionTestPayload("app", "1.2.3", map[string]any{
+		"description": "second",
+	}, nil)
+	updatePayload["frozen?"] = false
+	version, created, err := service.UpsertCookbookVersion("ponyville", UpsertCookbookVersionInput{
+		Name:    "app",
+		Version: "1.2.3",
+		Payload: updatePayload,
+		Force:   true,
+		ChecksumExists: func(string) (bool, error) {
+			return true, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("forced UpsertCookbookVersion() error = %v", err)
+	}
+	if created {
+		t.Fatal("UpsertCookbookVersion() created = true, want false")
+	}
+	if !version.Frozen {
+		t.Fatal("version.Frozen = false, want true")
+	}
+	if got := version.Metadata["description"]; got != "second" {
+		t.Fatalf("metadata.description = %v, want updated value", got)
+	}
+}
+
+func TestUpsertCookbookVersionValidatesPedantMetadataShapes(t *testing.T) {
+	service := newTestBootstrapService(t)
+	createTestCookbookOrg(t, service)
+
+	tests := []struct {
+		name    string
+		mutate  func(map[string]any)
+		message string
+	}{
+		{
+			name: "description type",
+			mutate: func(payload map[string]any) {
+				payload["metadata"].(map[string]any)["description"] = 1
+			},
+			message: "Field 'metadata.description' invalid",
+		},
+		{
+			name: "long_description type",
+			mutate: func(payload map[string]any) {
+				payload["metadata"].(map[string]any)["long_description"] = false
+			},
+			message: "Field 'metadata.long_description' invalid",
+		},
+		{
+			name: "dependencies section type",
+			mutate: func(payload map[string]any) {
+				payload["metadata"].(map[string]any)["dependencies"] = []any{"foo"}
+			},
+			message: "Field 'metadata.dependencies' invalid",
+		},
+		{
+			name: "dependencies constraint value",
+			mutate: func(payload map[string]any) {
+				payload["metadata"].(map[string]any)["dependencies"] = map[string]any{"apt": "s395dss@#"}
+			},
+			message: "Invalid value 's395dss@#' for metadata.dependencies",
+		},
+		{
+			name: "platforms invalid nested value",
+			mutate: func(payload map[string]any) {
+				payload["metadata"].(map[string]any)["platforms"] = map[string]any{"ubuntu": map[string]any{}}
+			},
+			message: "Invalid value '{[]}' for metadata.platforms",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			payload := cookbookVersionTestPayload("app", "1.2.3", nil, nil)
+			tc.mutate(payload)
+
+			_, _, err := service.UpsertCookbookVersion("ponyville", UpsertCookbookVersionInput{
+				Name:    "app",
+				Version: "1.2.3",
+				Payload: payload,
+				ChecksumExists: func(string) (bool, error) {
+					return true, nil
+				},
+			})
+			if err == nil {
+				t.Fatal("UpsertCookbookVersion() error = nil, want validation error")
+			}
+
+			var validationErr *ValidationError
+			if !errors.As(err, &validationErr) {
+				t.Fatalf("UpsertCookbookVersion() error = %T, want *ValidationError", err)
+			}
+			if len(validationErr.Messages) != 1 || validationErr.Messages[0] != tc.message {
+				t.Fatalf("validation messages = %v, want %q", validationErr.Messages, tc.message)
+			}
+		})
 	}
 }
 

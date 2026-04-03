@@ -403,11 +403,12 @@ func (s *server) handleNamedCookbookVersion(w http.ResponseWriter, r *http.Reque
 			Name:    name,
 			Version: version,
 			Payload: payload,
+			Force:   isCookbookForce(r),
 			ChecksumExists: func(checksum string) (bool, error) {
 				return s.blobExists(r.Context(), checksum)
 			},
 		})
-		if !writeCookbookVersionError(w, err, name, version) {
+		if !writeCookbookVersionError(s, w, err, name, version, found) {
 			return
 		}
 		status := http.StatusOK
@@ -429,7 +430,7 @@ func (s *server) handleNamedCookbookVersion(w http.ResponseWriter, r *http.Reque
 		}
 
 		cookbookVersion, err := state.DeleteCookbookVersion(org, name, version)
-		if !writeCookbookVersionError(w, err, name, version) {
+		if !writeCookbookVersionError(s, w, err, name, version, false) {
 			return
 		}
 		writeJSON(w, http.StatusOK, s.renderCookbookVersionResponse(r, org, cookbookVersion))
@@ -798,18 +799,39 @@ func parseCookbookNumVersions(r *http.Request) (int, bool, bool, bool) {
 	return parsed, false, true, true
 }
 
-func writeCookbookVersionError(w http.ResponseWriter, err error, name, version string) bool {
+func isCookbookForce(r *http.Request) bool {
+	values, ok := r.URL.Query()["force"]
+	if !ok {
+		return false
+	}
+	if len(values) == 0 {
+		return true
+	}
+	return values[0] != "false"
+}
+
+func writeCookbookVersionError(s *server, w http.ResponseWriter, err error, name, version string, update bool) bool {
 	if err == nil {
 		return true
 	}
 
 	var validationErr *bootstrap.ValidationError
+	var checksumErr *bootstrap.MissingChecksumError
 	switch {
+	case errors.As(err, &checksumErr):
+		message := "Manifest has a checksum that hasn't been uploaded."
+		if update {
+			message = checksumErr.Error()
+		}
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": []string{message}})
 	case errors.As(err, &validationErr):
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": validationErr.Messages})
+	case errors.Is(err, bootstrap.ErrConflict):
+		writeJSON(w, http.StatusConflict, map[string]any{"error": []string{err.Error()}})
 	case errors.Is(err, bootstrap.ErrNotFound):
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": cookbookVersionNotFound(name, version)})
 	default:
+		s.logf("cookbook compatibility failure for %s/%s: %v", name, version, err)
 		writeJSON(w, http.StatusInternalServerError, apiError{
 			Error:   "cookbook_failed",
 			Message: "internal cookbook compatibility error",
@@ -870,7 +892,10 @@ func (s *server) writeCookbookArtifactError(w http.ResponseWriter, err error, na
 	}
 
 	var validationErr *bootstrap.ValidationError
+	var checksumErr *bootstrap.MissingChecksumError
 	switch {
+	case errors.As(err, &checksumErr):
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": []string{"Manifest has a checksum that hasn't been uploaded."}})
 	case errors.As(err, &validationErr):
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": validationErr.Messages})
 	case errors.Is(err, bootstrap.ErrConflict):
