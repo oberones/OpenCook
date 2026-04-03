@@ -52,10 +52,18 @@ func NewRouter(deps Dependencies) http.Handler {
 	mux.HandleFunc("/readyz", srv.handleReady)
 	mux.HandleFunc("/internal/contracts/routes", srv.handleRouteContract)
 	mux.HandleFunc("/internal/authn/capabilities", srv.handleAuthnCapabilities)
+	mux.HandleFunc("/environments", srv.withAuthn("environments-root", srv.handleEnvironments))
+	mux.HandleFunc("/environments/", srv.withAuthn("environments-routes", srv.handleEnvironments))
+	mux.HandleFunc("/environments/{name}/nodes", srv.withAuthn("environment-nodes-root", srv.handleEnvironmentNodes))
+	mux.HandleFunc("/environments/{name}/nodes/", srv.withAuthn("environment-nodes-routes", srv.handleEnvironmentNodes))
 	mux.HandleFunc("/nodes", srv.withAuthn("nodes-root", srv.handleNodes))
 	mux.HandleFunc("/nodes/", srv.withAuthn("nodes-routes", srv.handleNodes))
 	mux.HandleFunc("/organizations", srv.withAuthn("organizations-root", srv.handleOrganizations))
 	mux.HandleFunc("/organizations/", srv.withAuthn("organizations-routes", srv.handleOrganizations))
+	mux.HandleFunc("/organizations/{org}/environments", srv.withAuthn("org-environments-root", srv.handleEnvironments))
+	mux.HandleFunc("/organizations/{org}/environments/", srv.withAuthn("org-environments-routes", srv.handleEnvironments))
+	mux.HandleFunc("/organizations/{org}/environments/{name}/nodes", srv.withAuthn("org-environment-nodes-root", srv.handleEnvironmentNodes))
+	mux.HandleFunc("/organizations/{org}/environments/{name}/nodes/", srv.withAuthn("org-environment-nodes-routes", srv.handleEnvironmentNodes))
 	mux.HandleFunc("/organizations/{org}/nodes", srv.withAuthn("org-nodes-root", srv.handleNodes))
 	mux.HandleFunc("/organizations/{org}/nodes/", srv.withAuthn("org-nodes-routes", srv.handleNodes))
 	mux.HandleFunc("/organizations/{org}/_acl", srv.withAuthn("org-acl", srv.handleOrgACL))
@@ -104,7 +112,7 @@ func (s *server) handleRoot(w http.ResponseWriter, r *http.Request) {
 		"phase":         "compatibility-foundation",
 		"version":       s.deps.Version,
 		"compat_routes": s.deps.Compat.RouteCount(),
-		"next":          "expand node CRUD semantics and persist compatibility slices in postgres",
+		"next":          "expand environment and node compatibility semantics and persist compatibility slices in postgres",
 	})
 }
 
@@ -488,7 +496,7 @@ func flattenHeaders(header http.Header) map[string]string {
 
 func isImplementedPattern(pattern string) bool {
 	switch pattern {
-	case "/users", "/users/", "/users/{name}/keys", "/users/{name}/keys/", "/organizations", "/organizations/", "/nodes", "/nodes/", "/organizations/{org}/nodes", "/organizations/{org}/nodes/", "/organizations/{org}/clients", "/organizations/{org}/clients/", "/organizations/{org}/clients/{name}/keys", "/organizations/{org}/clients/{name}/keys/":
+	case "/users", "/users/", "/users/{name}/keys", "/users/{name}/keys/", "/organizations", "/organizations/", "/environments", "/environments/", "/environments/{name}/nodes", "/environments/{name}/nodes/", "/organizations/{org}/environments", "/organizations/{org}/environments/", "/organizations/{org}/environments/{name}/nodes", "/organizations/{org}/environments/{name}/nodes/", "/nodes", "/nodes/", "/organizations/{org}/nodes", "/organizations/{org}/nodes/", "/organizations/{org}/clients", "/organizations/{org}/clients/", "/organizations/{org}/clients/{name}/keys", "/organizations/{org}/clients/{name}/keys/":
 		return true
 	default:
 		return false
