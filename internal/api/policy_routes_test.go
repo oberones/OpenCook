@@ -1,10 +1,15 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/oberones/OpenCook/internal/authn"
+	"github.com/oberones/OpenCook/internal/authz"
+	"github.com/oberones/OpenCook/internal/bootstrap"
 )
 
 func TestPoliciesAndPolicyGroupsEndpointsSupportCoreLifecycle(t *testing.T) {
@@ -289,6 +294,102 @@ func TestPolicyEndpointsRejectMismatchedName(t *testing.T) {
 	}
 }
 
+func TestPolicyGroupAssignmentPutRequiresPoliciesCreateWhenIntroducingPolicy(t *testing.T) {
+	router, state := newSearchTestRouterWithAuthorizer(t, func(state *bootstrap.Service) authz.Authorizer {
+		return denyingPolicyMutationAuthorizer{
+			base: authz.NewACLAuthorizer(state),
+			deny: map[string]struct{}{
+				"create:container:policies": {},
+			},
+		}
+	})
+
+	body := mustMarshalPolicyJSON(t, minimalPolicyPayload("appserver", "6666666666666666666666666666666666666666"))
+	req := newSignedJSONRequest(t, http.MethodPut, "/policy_groups/dev/policies/appserver", body)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("create policy via assignment status = %d, want %d, body = %s", rec.Code, http.StatusForbidden, rec.Body.String())
+	}
+
+	_, orgExists, policyExists := state.GetPolicy("ponyville", "appserver")
+	if !orgExists {
+		t.Fatal("orgExists = false, want true")
+	}
+	if policyExists {
+		t.Fatal("policyExists = true, want false after denied request")
+	}
+}
+
+func TestPolicyGroupAssignmentPutRequiresPolicyUpdateWhenIntroducingNewRevision(t *testing.T) {
+	router, state := newSearchTestRouterWithAuthorizer(t, func(state *bootstrap.Service) authz.Authorizer {
+		return denyingPolicyMutationAuthorizer{
+			base: authz.NewACLAuthorizer(state),
+			deny: map[string]struct{}{
+				"update:policy:appserver": {},
+			},
+		}
+	})
+
+	if _, err := state.CreatePolicyRevision("ponyville", "appserver", bootstrap.CreatePolicyRevisionInput{
+		Payload: minimalPolicyPayload("appserver", "7777777777777777777777777777777777777777"),
+		Creator: authn.Principal{Type: "user", Name: "silent-bob"},
+	}); err != nil {
+		t.Fatalf("CreatePolicyRevision() error = %v", err)
+	}
+
+	body := mustMarshalPolicyJSON(t, minimalPolicyPayload("appserver", "8888888888888888888888888888888888888888"))
+	req := newSignedJSONRequest(t, http.MethodPut, "/policy_groups/dev/policies/appserver", body)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("create new revision via assignment status = %d, want %d, body = %s", rec.Code, http.StatusForbidden, rec.Body.String())
+	}
+
+	_, _, _, exists := state.GetPolicyGroupAssignment("ponyville", "dev", "appserver")
+	if exists {
+		t.Fatal("assignment exists = true, want false after denied request")
+	}
+}
+
+func TestPolicyGroupAssignmentPutAllowsReusingExistingRevisionWithoutPolicyUpdate(t *testing.T) {
+	router, state := newSearchTestRouterWithAuthorizer(t, func(state *bootstrap.Service) authz.Authorizer {
+		return denyingPolicyMutationAuthorizer{
+			base: authz.NewACLAuthorizer(state),
+			deny: map[string]struct{}{
+				"update:policy:appserver": {},
+			},
+		}
+	})
+
+	revisionID := "9999999999999999999999999999999999999999"
+	if _, err := state.CreatePolicyRevision("ponyville", "appserver", bootstrap.CreatePolicyRevisionInput{
+		Payload: minimalPolicyPayload("appserver", revisionID),
+		Creator: authn.Principal{Type: "user", Name: "silent-bob"},
+	}); err != nil {
+		t.Fatalf("CreatePolicyRevision() error = %v", err)
+	}
+
+	body := mustMarshalPolicyJSON(t, minimalPolicyPayload("appserver", revisionID))
+	req := newSignedJSONRequest(t, http.MethodPut, "/policy_groups/dev/policies/appserver", body)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("reuse existing revision via assignment status = %d, want %d, body = %s", rec.Code, http.StatusCreated, rec.Body.String())
+	}
+
+	revision, _, _, exists := state.GetPolicyGroupAssignment("ponyville", "dev", "appserver")
+	if !exists {
+		t.Fatal("assignment exists = false, want true")
+	}
+	if revision.RevisionID != revisionID {
+		t.Fatalf("assigned revision_id = %q, want %q", revision.RevisionID, revisionID)
+	}
+}
+
 func minimalPolicyPayload(name, revisionID string) map[string]any {
 	return map[string]any{
 		"name":        name,
@@ -301,6 +402,26 @@ func minimalPolicyPayload(name, revisionID string) map[string]any {
 			},
 		},
 	}
+}
+
+type denyingPolicyMutationAuthorizer struct {
+	base authz.Authorizer
+	deny map[string]struct{}
+}
+
+func (a denyingPolicyMutationAuthorizer) Name() string {
+	return "denying-policy-mutation-test"
+}
+
+func (a denyingPolicyMutationAuthorizer) Authorize(ctx context.Context, subject authz.Subject, action authz.Action, resource authz.Resource) (authz.Decision, error) {
+	key := string(action) + ":" + resource.Type + ":" + resource.Name
+	if _, denied := a.deny[key]; denied {
+		return authz.Decision{Allowed: false, Reason: "denied for test"}, nil
+	}
+	if a.base == nil {
+		return authz.Decision{Allowed: true, Reason: "no base authorizer"}, nil
+	}
+	return a.base.Authorize(ctx, subject, action, resource)
 }
 
 func mustMarshalPolicyJSON(t *testing.T, payload map[string]any) []byte {

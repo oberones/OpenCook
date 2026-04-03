@@ -461,6 +461,28 @@ func (s *server) handlePolicyGroupAssignment(w http.ResponseWriter, r *http.Requ
 			return
 		}
 
+		plan, err := state.PreviewPolicyGroupAssignment(org, policyName, payload)
+		if !s.writePolicyError(w, err) {
+			return
+		}
+		if plan.CreatesPolicy {
+			if !s.authorizeRequest(w, r, authz.ActionCreate, authz.Resource{
+				Type:         "container",
+				Name:         "policies",
+				Organization: org,
+			}) {
+				return
+			}
+		} else if plan.CreatesRevision {
+			if !s.authorizeRequest(w, r, authz.ActionUpdate, authz.Resource{
+				Type:         "policy",
+				Name:         plan.Revision.Name,
+				Organization: org,
+			}) {
+				return
+			}
+		}
+
 		requestor, _ := requestorFromContext(r.Context())
 		revision, created, err := state.UpsertPolicyGroupAssignment(org, groupName, policyName, bootstrap.UpdatePolicyGroupAssignmentInput{
 			Payload: payload,

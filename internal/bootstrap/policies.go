@@ -2,6 +2,7 @@ package bootstrap
 
 import (
 	"fmt"
+	"reflect"
 	"regexp"
 	"sort"
 	"strings"
@@ -21,6 +22,12 @@ type PolicyRevision struct {
 type PolicyGroup struct {
 	Name     string            `json:"name"`
 	Policies map[string]string `json:"policies"`
+}
+
+type PolicyAssignmentPlan struct {
+	Revision        PolicyRevision
+	CreatesPolicy   bool
+	CreatesRevision bool
 }
 
 type CreatePolicyRevisionInput struct {
@@ -290,6 +297,18 @@ func (s *Service) GetPolicyGroupAssignment(orgName, groupName, policyName string
 	return copyPolicyRevision(revision), true, true, true
 }
 
+func (s *Service) PreviewPolicyGroupAssignment(orgName, targetPolicyName string, payload map[string]any) (PolicyAssignmentPlan, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	org, ok := s.orgs[orgName]
+	if !ok {
+		return PolicyAssignmentPlan{}, ErrNotFound
+	}
+
+	return previewPolicyGroupAssignmentLocked(org, targetPolicyName, payload)
+}
+
 func (s *Service) UpsertPolicyGroupAssignment(orgName, groupName, targetPolicyName string, input UpdatePolicyGroupAssignmentInput) (PolicyRevision, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -299,13 +318,14 @@ func (s *Service) UpsertPolicyGroupAssignment(orgName, groupName, targetPolicyNa
 		return PolicyRevision{}, false, ErrNotFound
 	}
 
-	revision, err := normalizePolicyPayload(input.Payload, targetPolicyName)
+	plan, err := previewPolicyGroupAssignmentLocked(org, targetPolicyName, input.Payload)
 	if err != nil {
 		return PolicyRevision{}, false, err
 	}
+	revision := plan.Revision
 
 	revisions := ensurePolicyRevisions(org.policies, revision.Name)
-	if _, ok := revisions[revision.RevisionID]; !ok {
+	if plan.CreatesRevision {
 		revisions[revision.RevisionID] = revision
 	}
 	if _, ok := org.acls[policyACLKey(revision.Name)]; !ok {
@@ -425,6 +445,41 @@ func normalizePolicyPayload(payload map[string]any, targetName string) (PolicyRe
 		Name:       name,
 		RevisionID: revisionID,
 		Payload:    normalized,
+	}, nil
+}
+
+func previewPolicyGroupAssignmentLocked(org *organizationState, targetPolicyName string, payload map[string]any) (PolicyAssignmentPlan, error) {
+	revision, err := normalizePolicyPayload(payload, targetPolicyName)
+	if err != nil {
+		return PolicyAssignmentPlan{}, err
+	}
+
+	revisions, policyExists := org.policies[revision.Name]
+	if !policyExists {
+		return PolicyAssignmentPlan{
+			Revision:        revision,
+			CreatesPolicy:   true,
+			CreatesRevision: true,
+		}, nil
+	}
+
+	stored, revisionExists := revisions[revision.RevisionID]
+	if !revisionExists {
+		return PolicyAssignmentPlan{
+			Revision:        revision,
+			CreatesPolicy:   false,
+			CreatesRevision: true,
+		}, nil
+	}
+
+	if !reflect.DeepEqual(stored.Payload, revision.Payload) {
+		return PolicyAssignmentPlan{}, fmt.Errorf("%w: policy revision payload differs from stored revision", ErrConflict)
+	}
+
+	return PolicyAssignmentPlan{
+		Revision:        copyPolicyRevision(stored),
+		CreatesPolicy:   false,
+		CreatesRevision: false,
 	}, nil
 }
 

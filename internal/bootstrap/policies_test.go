@@ -81,6 +81,57 @@ func TestCreatePolicyRevisionRejectsInvalidRunList(t *testing.T) {
 	}
 }
 
+func TestUpsertPolicyGroupAssignmentRejectsConflictingExistingRevision(t *testing.T) {
+	state := newPolicyTestService(t)
+
+	originalPayload := map[string]any{
+		"name":        "appserver",
+		"revision_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		"run_list":    []any{"recipe[demo::default]"},
+		"cookbook_locks": map[string]any{
+			"demo": map[string]any{
+				"identifier": "f04cc40faf628253fe7d9566d66a1733fb1afbe9",
+				"version":    "1.2.3",
+			},
+		},
+	}
+	if _, err := state.CreatePolicyRevision("ponyville", "appserver", CreatePolicyRevisionInput{
+		Payload: originalPayload,
+		Creator: authn.Principal{Type: "user", Name: "silent-bob"},
+	}); err != nil {
+		t.Fatalf("CreatePolicyRevision() error = %v", err)
+	}
+
+	conflictingPayload := map[string]any{
+		"name":        "appserver",
+		"revision_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		"run_list":    []any{"recipe[demo::other]"},
+		"cookbook_locks": map[string]any{
+			"demo": map[string]any{
+				"identifier": "f04cc40faf628253fe7d9566d66a1733fb1afbe9",
+				"version":    "9.9.9",
+			},
+		},
+	}
+
+	_, _, err := state.UpsertPolicyGroupAssignment("ponyville", "dev", "appserver", UpdatePolicyGroupAssignmentInput{
+		Payload: conflictingPayload,
+		Creator: authn.Principal{Type: "user", Name: "silent-bob"},
+	})
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("UpsertPolicyGroupAssignment() error = %v, want ErrConflict", err)
+	}
+
+	stored, orgExists, policyExists, revisionExists := state.GetPolicyRevision("ponyville", "appserver", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+	if !orgExists || !policyExists || !revisionExists {
+		t.Fatalf("GetPolicyRevision existence = %t/%t/%t, want true/true/true", orgExists, policyExists, revisionExists)
+	}
+	runList := stored.Payload["run_list"].([]any)
+	if len(runList) != 1 || runList[0] != "recipe[demo::default]" {
+		t.Fatalf("stored run_list = %v, want original payload to remain", runList)
+	}
+}
+
 func newPolicyTestService(t *testing.T) *Service {
 	t.Helper()
 
