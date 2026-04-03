@@ -52,6 +52,7 @@ type Service struct {
 	superuserName string
 	users         map[string]User
 	userACLs      map[string]authz.ACL
+	userKeys      map[string]map[string]KeyRecord
 	orgs          map[string]*organizationState
 }
 
@@ -104,6 +105,14 @@ type KeyMaterial struct {
 	ExpirationDate string `json:"expiration_date"`
 }
 
+type KeyRecord struct {
+	Name           string `json:"name"`
+	URI            string `json:"uri"`
+	PublicKeyPEM   string `json:"public_key"`
+	ExpirationDate string `json:"expiration_date"`
+	Expired        bool   `json:"expired"`
+}
+
 type CreateUserInput struct {
 	Username    string
 	DisplayName string
@@ -130,6 +139,7 @@ type CreateClientInput struct {
 type organizationState struct {
 	org        Organization
 	clients    map[string]Client
+	clientKeys map[string]map[string]KeyRecord
 	groups     map[string]Group
 	containers map[string]Container
 	acls       map[string]authz.ACL
@@ -150,6 +160,7 @@ func NewService(keyStore *authn.MemoryKeyStore, opts Options) *Service {
 		superuserName: superuser,
 		users:         make(map[string]User),
 		userACLs:      make(map[string]authz.ACL),
+		userKeys:      make(map[string]map[string]KeyRecord),
 		orgs:          make(map[string]*organizationState),
 	}
 	s.ensureUserLocked(superuser)
@@ -171,6 +182,49 @@ func (s *Service) SeedPrincipal(principal authn.Principal) {
 	s.ensureUserLocked(principal.Name)
 }
 
+func (s *Service) SeedPublicKey(principal authn.Principal, name, publicKeyPEM string) error {
+	principal, err := normalizeKeyPrincipal(principal)
+	if err != nil {
+		return err
+	}
+
+	name = strings.TrimSpace(name)
+	if name == "" {
+		name = "default"
+	}
+	publicKeyPEM = strings.TrimSpace(publicKeyPEM)
+	if publicKeyPEM == "" {
+		return fmt.Errorf("%w: public key is required", ErrInvalidInput)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if principal.Type == "user" {
+		s.ensureUserLocked(principal.Name)
+	} else {
+		org, ok := s.orgs[principal.Organization]
+		if !ok {
+			return ErrNotFound
+		}
+		client, ok := org.clients[principal.Name]
+		if !ok {
+			return ErrNotFound
+		}
+		client.PublicKey = publicKeyPEM
+		org.clients[principal.Name] = client
+	}
+
+	s.recordKeyLocked(principal, KeyRecord{
+		Name:           name,
+		URI:            keyURI(principal, name),
+		PublicKeyPEM:   publicKeyPEM,
+		ExpirationDate: "infinity",
+		Expired:        false,
+	})
+	return nil
+}
+
 func (s *Service) ListUsers() map[string]string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -188,6 +242,29 @@ func (s *Service) GetUser(name string) (User, bool) {
 
 	user, ok := s.users[name]
 	return user, ok
+}
+
+func (s *Service) ListUserKeys(name string) ([]KeyRecord, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if _, ok := s.users[name]; !ok {
+		return nil, false
+	}
+
+	return sortedKeyRecords(s.userKeys[name]), true
+}
+
+func (s *Service) GetUserKey(name, keyName string) (KeyRecord, bool, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if _, ok := s.users[name]; !ok {
+		return KeyRecord{}, false, false
+	}
+
+	record, ok := s.userKeys[name][keyName]
+	return record, true, ok
 }
 
 func (s *Service) CreateUser(input CreateUserInput) (User, *KeyMaterial, error) {
@@ -287,10 +364,13 @@ func (s *Service) CreateOrganization(input CreateOrganizationInput) (Organizatio
 	state := &organizationState{
 		org:        org,
 		clients:    make(map[string]Client),
+		clientKeys: make(map[string]map[string]KeyRecord),
 		groups:     make(map[string]Group),
 		containers: make(map[string]Container),
 		acls:       make(map[string]authz.ACL),
 	}
+
+	s.orgs[org.Name] = state
 
 	for _, container := range defaultContainers {
 		state.containers[container] = Container{
@@ -315,6 +395,7 @@ func (s *Service) CreateOrganization(input CreateOrganizationInput) (Organizatio
 		Organization: org.Name,
 	}, "")
 	if err != nil {
+		delete(s.orgs, org.Name)
 		return Organization{}, Client{}, nil, err
 	}
 
@@ -334,8 +415,6 @@ func (s *Service) CreateOrganization(input CreateOrganizationInput) (Organizatio
 	clientsGroup.Clients = uniqueSorted(append(clientsGroup.Clients, validatorName))
 	clientsGroup.Actors = uniqueSorted(append(clientsGroup.Users, clientsGroup.Clients...))
 	state.groups["clients"] = clientsGroup
-
-	s.orgs[org.Name] = state
 
 	return org, validator, keyMaterial, nil
 }
@@ -367,6 +446,37 @@ func (s *Service) GetClient(orgName, clientName string) (Client, bool) {
 
 	client, ok := org.clients[clientName]
 	return client, ok
+}
+
+func (s *Service) ListClientKeys(orgName, clientName string) ([]KeyRecord, bool, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	org, ok := s.orgs[orgName]
+	if !ok {
+		return nil, false, false
+	}
+	if _, ok := org.clients[clientName]; !ok {
+		return nil, true, false
+	}
+
+	return sortedKeyRecords(org.clientKeys[clientName]), true, true
+}
+
+func (s *Service) GetClientKey(orgName, clientName, keyName string) (KeyRecord, bool, bool, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	org, ok := s.orgs[orgName]
+	if !ok {
+		return KeyRecord{}, false, false, false
+	}
+	if _, ok := org.clients[clientName]; !ok {
+		return KeyRecord{}, true, false, false
+	}
+
+	record, ok := org.clientKeys[clientName][keyName]
+	return record, true, true, ok
 }
 
 func (s *Service) CreateClient(orgName string, input CreateClientInput) (Client, *KeyMaterial, error) {
@@ -565,11 +675,15 @@ func (s *Service) ensureUserLocked(username string) {
 }
 
 func (s *Service) keyMaterialForPrincipalLocked(principal authn.Principal, providedPublicKey string) (*KeyMaterial, error) {
+	principal, err := normalizeKeyPrincipal(principal)
+	if err != nil {
+		return nil, err
+	}
+
 	publicKeyPEM := strings.TrimSpace(providedPublicKey)
 	var (
 		privateKeyPEM string
 		publicKey     *rsa.PublicKey
-		err           error
 	)
 
 	if publicKeyPEM != "" {
@@ -592,10 +706,16 @@ func (s *Service) keyMaterialForPrincipalLocked(principal authn.Principal, provi
 		return nil, err
 	}
 
-	uri := "/users/" + principal.Name + "/keys/default"
-	if principal.Organization != "" {
-		uri = "/organizations/" + principal.Organization + "/clients/" + principal.Name + "/keys/default"
+	uri := keyURI(principal, "default")
+
+	record := KeyRecord{
+		Name:           "default",
+		URI:            uri,
+		PublicKeyPEM:   publicKeyPEM,
+		ExpirationDate: "infinity",
+		Expired:        false,
 	}
+	s.recordKeyLocked(principal, record)
 
 	return &KeyMaterial{
 		Name:           "default",
@@ -604,6 +724,25 @@ func (s *Service) keyMaterialForPrincipalLocked(principal authn.Principal, provi
 		PublicKeyPEM:   publicKeyPEM,
 		ExpirationDate: "infinity",
 	}, nil
+}
+
+func (s *Service) recordKeyLocked(principal authn.Principal, record KeyRecord) {
+	if principal.Organization == "" {
+		if _, ok := s.userKeys[principal.Name]; !ok {
+			s.userKeys[principal.Name] = make(map[string]KeyRecord)
+		}
+		s.userKeys[principal.Name][record.Name] = record
+		return
+	}
+
+	org, ok := s.orgs[principal.Organization]
+	if !ok {
+		return
+	}
+	if _, ok := org.clientKeys[principal.Name]; !ok {
+		org.clientKeys[principal.Name] = make(map[string]KeyRecord)
+	}
+	org.clientKeys[principal.Name][record.Name] = record
 }
 
 func defaultGroups(superuserName, ownerName, orgName string) map[string]Group {
@@ -769,6 +908,38 @@ func generateRSAKeyPair() (string, string, *rsa.PublicKey, error) {
 	return string(privateKeyPEM), string(publicKeyPEM), &privateKey.PublicKey, nil
 }
 
+func normalizeKeyPrincipal(principal authn.Principal) (authn.Principal, error) {
+	principal.Type = strings.TrimSpace(principal.Type)
+	principal.Name = strings.TrimSpace(principal.Name)
+	principal.Organization = strings.TrimSpace(principal.Organization)
+
+	if principal.Name == "" {
+		return authn.Principal{}, fmt.Errorf("%w: principal name is required", ErrInvalidInput)
+	}
+
+	switch principal.Type {
+	case "user":
+		if principal.Organization != "" {
+			return authn.Principal{}, fmt.Errorf("%w: user principals must not be organization-scoped", ErrInvalidInput)
+		}
+	case "client":
+		if principal.Organization == "" {
+			return authn.Principal{}, fmt.Errorf("%w: client principals require an organization", ErrInvalidInput)
+		}
+	default:
+		return authn.Principal{}, fmt.Errorf("%w: unsupported principal type %q", ErrInvalidInput, principal.Type)
+	}
+
+	return principal, nil
+}
+
+func keyURI(principal authn.Principal, keyName string) string {
+	if principal.Organization != "" {
+		return "/organizations/" + principal.Organization + "/clients/" + principal.Name + "/keys/" + keyName
+	}
+	return "/users/" + principal.Name + "/keys/" + keyName
+}
+
 func organizationACLKey() string {
 	return "organization"
 }
@@ -799,6 +970,24 @@ func uniqueSorted(values []string) []string {
 		out = append(out, value)
 	}
 	sort.Strings(out)
+	return out
+}
+
+func sortedKeyRecords(in map[string]KeyRecord) []KeyRecord {
+	if len(in) == 0 {
+		return nil
+	}
+
+	keys := make([]string, 0, len(in))
+	for name := range in {
+		keys = append(keys, name)
+	}
+	sort.Strings(keys)
+
+	out := make([]KeyRecord, 0, len(keys))
+	for _, name := range keys {
+		out = append(out, in[name])
+	}
 	return out
 }
 

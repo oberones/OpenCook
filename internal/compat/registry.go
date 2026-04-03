@@ -19,14 +19,14 @@ func NewDefaultRegistry() Registry {
 				Name:     "users-and-keys",
 				Owner:    "authn",
 				Phase:    "phase-3",
-				Patterns: []string{"/users", "/users/", "/authenticate_user", "/system_recovery"},
+				Patterns: []string{"/users", "/users/", "/users/{name}/keys", "/users/{name}/keys/", "/authenticate_user", "/system_recovery"},
 				Notes:    "Chef request signing, API version behavior, and /keys semantics land here.",
 			},
 			{
 				Name:     "organizations",
 				Owner:    "authz",
 				Phase:    "phase-3",
-				Patterns: []string{"/organizations/", "/internal-organizations/"},
+				Patterns: []string{"/organizations", "/organizations/", "/organizations/{org}/clients/{name}/keys", "/organizations/{org}/clients/{name}/keys/", "/internal-organizations/"},
 				Notes:    "Org bootstrap, association flows, and default ACL creation.",
 			},
 			{
