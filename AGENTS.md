@@ -72,6 +72,16 @@ Implemented so far:
   - update
   - delete
   - default-org and explicit-org routing
+- the first role slice:
+  - list
+  - get
+  - head
+  - create
+  - update
+  - delete
+  - `/roles/{name}/environments`
+  - `/roles/{name}/environments/{environment}`
+  - default-org and explicit-org routing
 - actor key lifecycle for users and org-scoped clients:
   - list
   - get
@@ -244,9 +254,10 @@ These areas are still intentionally incomplete:
 - deeper API-version-specific semantics beyond the current actor-key surface
 - PostgreSQL-backed persistence
 - OpenSearch-backed indexing and query behavior
-- core Chef object CRUD such as nodes, roles, environments, and data bags
+- core Chef object CRUD such as data bags and the remaining object surface beyond nodes, environments, and roles
 - deeper node and environment compatibility such as search indexing, cookbook constraint edge cases, and linked object behavior
+- deeper role compatibility such as run-list normalization and linked environment behavior
 - Bookshelf/sandbox/cookbook flows
 - operational parity and migration tooling
 
-The next likely major slice is deeper node/environment compatibility or the next adjacent object API, not more speculative infrastructure work.
+The next likely major slice is deeper node/environment/role compatibility or the next adjacent object API such as data bags, not more speculative infrastructure work.
