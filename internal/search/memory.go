@@ -50,11 +50,19 @@ func (i MemoryIndex) Indexes(_ context.Context, org string) ([]string, error) {
 	}
 
 	indexes := append([]string(nil), builtInIndexes...)
+	seen := make(map[string]struct{}, len(indexes))
+	for _, name := range indexes {
+		seen[name] = struct{}{}
+	}
 	dataBags, ok := i.state.ListDataBags(org)
 	if !ok {
 		return nil, ErrOrganizationNotFound
 	}
 	for _, name := range sortedKeys(dataBags) {
+		if _, exists := seen[name]; exists {
+			continue
+		}
+		seen[name] = struct{}{}
 		indexes = append(indexes, name)
 	}
 
@@ -436,8 +444,13 @@ func matchesQuery(doc Document, query string) bool {
 }
 
 func matchesAndExpression(fields map[string][]string, expression string) bool {
+	if strings.TrimSpace(expression) == "" {
+		return false
+	}
+
 	terms := strings.Split(expression, " AND ")
 	positiveSeen := false
+	processedTerm := false
 	for _, rawTerm := range terms {
 		rawTerm = strings.TrimSpace(rawTerm)
 		if rawTerm == "" {
@@ -457,6 +470,7 @@ func matchesAndExpression(fields map[string][]string, expression string) bool {
 			continue
 		}
 
+		processedTerm = true
 		matched := matchesTerm(fields, rawTerm)
 		if negated {
 			if matched {
@@ -471,7 +485,7 @@ func matchesAndExpression(fields map[string][]string, expression string) bool {
 		}
 	}
 
-	return positiveSeen || len(terms) > 0
+	return positiveSeen || processedTerm
 }
 
 func matchesTerm(fields map[string][]string, term string) bool {

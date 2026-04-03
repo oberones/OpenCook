@@ -79,6 +79,32 @@ func TestMemoryIndexIndexesIncludeDataBags(t *testing.T) {
 	}
 }
 
+func TestMemoryIndexIndexesDeduplicateBuiltInNameCollisions(t *testing.T) {
+	state := newSearchTestState(t)
+	if _, err := state.CreateDataBag("ponyville", bootstrap.CreateDataBagInput{
+		Payload: map[string]any{"name": "client"},
+		Creator: authn.Principal{Type: "user", Name: "pivotal"},
+	}); err != nil {
+		t.Fatalf("CreateDataBag() error = %v", err)
+	}
+
+	index := NewMemoryIndex(state, "")
+	indexes, err := index.Indexes(context.Background(), "ponyville")
+	if err != nil {
+		t.Fatalf("Indexes() error = %v", err)
+	}
+
+	clientCount := 0
+	for _, name := range indexes {
+		if name == "client" {
+			clientCount++
+		}
+	}
+	if clientCount != 1 {
+		t.Fatalf("client index count = %d, want 1 (%v)", clientCount, indexes)
+	}
+}
+
 func TestMemoryIndexSearchReturnsNotFoundForUnknownOrganization(t *testing.T) {
 	state := bootstrap.NewService(authn.NewMemoryKeyStore(), bootstrap.Options{SuperuserName: "pivotal"})
 	index := NewMemoryIndex(state, "")
@@ -183,6 +209,31 @@ func TestMemoryIndexSearchSupportsEscapedSlashAndAndNotTerms(t *testing.T) {
 	}
 	if result.Documents[0].Name != "foo" {
 		t.Fatalf("escaped slash document name = %q, want %q", result.Documents[0].Name, "foo")
+	}
+}
+
+func TestMatchesAndExpressionRejectsEmptyExpressions(t *testing.T) {
+	fields := map[string][]string{
+		"name": {"twilight"},
+	}
+
+	if matchesAndExpression(fields, "") {
+		t.Fatal("matchesAndExpression(\"\") = true, want false")
+	}
+	if matchesAndExpression(fields, "   ") {
+		t.Fatal("matchesAndExpression(whitespace) = true, want false")
+	}
+}
+
+func TestMatchesQueryDoesNotTreatEmptyOrClauseAsMatchAll(t *testing.T) {
+	doc := Document{
+		Fields: map[string][]string{
+			"name": {"twilight"},
+		},
+	}
+
+	if matchesQuery(doc, "name:rainbow OR ") {
+		t.Fatal(`matchesQuery("name:rainbow OR ") = true, want false`)
 	}
 }
 
