@@ -11,6 +11,7 @@ import (
 var (
 	validCookbookArtifactIdentifierPattern = regexp.MustCompile(`^[a-f0-9]{40}$`)
 	validCookbookVersionPattern            = regexp.MustCompile(`^\d+(?:\.\d+){0,2}(?:\.[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*)?$`)
+	validCookbookRouteVersionPattern       = regexp.MustCompile(`^\d+\.\d+\.\d+$`)
 )
 
 var allowedCookbookArtifactKeys = map[string]struct{}{
@@ -30,6 +31,26 @@ var allowedCookbookArtifactKeys = map[string]struct{}{
 	"resources":   {},
 	"providers":   {},
 	"root_files":  {},
+}
+
+var allowedCookbookKeys = map[string]struct{}{
+	"name":          {},
+	"cookbook_name": {},
+	"version":       {},
+	"json_class":    {},
+	"chef_type":     {},
+	"frozen?":       {},
+	"metadata":      {},
+	"all_files":     {},
+	"recipes":       {},
+	"definitions":   {},
+	"libraries":     {},
+	"attributes":    {},
+	"files":         {},
+	"templates":     {},
+	"resources":     {},
+	"providers":     {},
+	"root_files":    {},
 }
 
 var cookbookLegacySegments = []string{
@@ -62,12 +83,14 @@ type CookbookArtifact struct {
 }
 
 type CookbookVersion struct {
-	Name     string         `json:"name"`
-	Version  string         `json:"version"`
-	ChefType string         `json:"chef_type"`
-	Frozen   bool           `json:"frozen"`
-	Metadata map[string]any `json:"metadata"`
-	AllFiles []CookbookFile `json:"all_files"`
+	Name         string         `json:"name"`
+	CookbookName string         `json:"cookbook_name"`
+	Version      string         `json:"version"`
+	JSONClass    string         `json:"json_class"`
+	ChefType     string         `json:"chef_type"`
+	Frozen       bool           `json:"frozen"`
+	Metadata     map[string]any `json:"metadata"`
+	AllFiles     []CookbookFile `json:"all_files"`
 }
 
 type CookbookVersionRef struct {
@@ -83,6 +106,13 @@ type UniverseEntry struct {
 type CreateCookbookArtifactInput struct {
 	Name           string
 	Identifier     string
+	Payload        map[string]any
+	ChecksumExists func(string) (bool, error)
+}
+
+type UpsertCookbookVersionInput struct {
+	Name           string
+	Version        string
 	Payload        map[string]any
 	ChecksumExists func(string) (bool, error)
 }
@@ -205,8 +235,8 @@ func (s *Service) ListCookbookVersions(orgName string) (map[string][]CookbookVer
 		return nil, false
 	}
 
-	out := make(map[string][]CookbookVersionRef, len(org.cookbookArtifacts))
-	for name, versions := range org.cookbookArtifacts {
+	out := make(map[string][]CookbookVersionRef, len(org.cookbooks))
+	for name, versions := range org.cookbooks {
 		out[name] = cookbookVersionRefs(versions)
 	}
 	return out, true
@@ -221,7 +251,7 @@ func (s *Service) ListCookbookVersionsByName(orgName, name string) ([]CookbookVe
 		return nil, false, false
 	}
 
-	versions, ok := org.cookbookArtifacts[strings.TrimSpace(name)]
+	versions, ok := org.cookbooks[strings.TrimSpace(name)]
 	if !ok {
 		return nil, true, false
 	}
@@ -238,13 +268,13 @@ func (s *Service) GetCookbookVersion(orgName, name, version string) (CookbookVer
 		return CookbookVersion{}, false, false
 	}
 
-	versions, ok := org.cookbookArtifacts[strings.TrimSpace(name)]
+	versions, ok := org.cookbooks[strings.TrimSpace(name)]
 	if !ok {
 		return CookbookVersion{}, true, false
 	}
 
 	version = strings.TrimSpace(version)
-	if version == "_latest" {
+	if version == "_latest" || version == "latest" {
 		refs := cookbookVersionRefs(versions)
 		if len(refs) == 0 {
 			return CookbookVersion{}, true, false
@@ -252,9 +282,9 @@ func (s *Service) GetCookbookVersion(orgName, name, version string) (CookbookVer
 		version = refs[0].Version
 	}
 
-	artifact, ok := cookbookArtifactForVersion(versions, version)
+	cookbookVersion, ok := versions[version]
 	if ok {
-		return cookbookVersionFromArtifact(artifact), true, true
+		return copyCookbookVersion(cookbookVersion), true, true
 	}
 
 	return CookbookVersion{}, true, false
@@ -269,23 +299,177 @@ func (s *Service) CookbookUniverse(orgName string) (map[string][]UniverseEntry, 
 		return nil, false
 	}
 
-	out := make(map[string][]UniverseEntry, len(org.cookbookArtifacts))
-	for name, versions := range org.cookbookArtifacts {
+	out := make(map[string][]UniverseEntry, len(org.cookbooks))
+	for name, versions := range org.cookbooks {
 		refs := cookbookVersionRefs(versions)
 		entries := make([]UniverseEntry, 0, len(refs))
 		for _, ref := range refs {
-			artifact, ok := cookbookArtifactForVersion(versions, ref.Version)
+			version, ok := versions[ref.Version]
 			if !ok {
 				continue
 			}
 			entries = append(entries, UniverseEntry{
-				Version:      artifact.Version,
-				Dependencies: cookbookMetadataDependencies(artifact.Metadata),
+				Version:      version.Version,
+				Dependencies: cookbookMetadataDependencies(version.Metadata),
 			})
 		}
 		out[name] = entries
 	}
 	return out, true
+}
+
+func (s *Service) UpsertCookbookVersion(orgName string, input UpsertCookbookVersionInput) (CookbookVersion, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	org, ok := s.orgs[orgName]
+	if !ok {
+		return CookbookVersion{}, false, ErrNotFound
+	}
+
+	version, err := normalizeCookbookVersionPayload(input.Name, input.Version, input.Payload, input.ChecksumExists)
+	if err != nil {
+		return CookbookVersion{}, false, err
+	}
+
+	versions := org.cookbooks[version.CookbookName]
+	if versions == nil {
+		versions = make(map[string]CookbookVersion)
+		org.cookbooks[version.CookbookName] = versions
+	}
+	_, exists := versions[version.Version]
+	versions[version.Version] = version
+	return copyCookbookVersion(version), !exists, nil
+}
+
+func (s *Service) DeleteCookbookVersion(orgName, name, version string) (CookbookVersion, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	org, ok := s.orgs[orgName]
+	if !ok {
+		return CookbookVersion{}, ErrNotFound
+	}
+
+	name = strings.TrimSpace(name)
+	version = strings.TrimSpace(version)
+	versions, ok := org.cookbooks[name]
+	if !ok {
+		return CookbookVersion{}, ErrNotFound
+	}
+
+	if version == "_latest" || version == "latest" {
+		refs := cookbookVersionRefs(versions)
+		if len(refs) == 0 {
+			return CookbookVersion{}, ErrNotFound
+		}
+		version = refs[0].Version
+	}
+
+	cookbookVersion, ok := versions[version]
+	if !ok {
+		return CookbookVersion{}, ErrNotFound
+	}
+
+	delete(versions, version)
+	if len(versions) == 0 {
+		delete(org.cookbooks, name)
+	}
+
+	return copyCookbookVersion(cookbookVersion), nil
+}
+
+func normalizeCookbookVersionPayload(name, version string, payload map[string]any, checksumExists func(string) (bool, error)) (CookbookVersion, error) {
+	name = strings.TrimSpace(name)
+	version = strings.TrimSpace(version)
+	if !validNamePattern.MatchString(name) {
+		return CookbookVersion{}, &ValidationError{Messages: []string{invalidCookbookNameMessage(name)}}
+	}
+	if !validCookbookRouteVersion(version) {
+		return CookbookVersion{}, &ValidationError{Messages: []string{invalidCookbookVersionMessage(version)}}
+	}
+
+	for key := range payload {
+		if _, ok := allowedCookbookKeys[key]; !ok {
+			return CookbookVersion{}, &ValidationError{Messages: []string{fmt.Sprintf("Invalid key %s in request body", key)}}
+		}
+	}
+
+	expectedName := name + "-" + version
+	rawName, ok := payload["name"]
+	if !ok {
+		return CookbookVersion{}, &ValidationError{Messages: []string{"Field 'name' invalid"}}
+	}
+	payloadName, ok := rawName.(string)
+	if !ok || strings.TrimSpace(payloadName) != expectedName {
+		return CookbookVersion{}, &ValidationError{Messages: []string{"Field 'name' invalid"}}
+	}
+
+	rawCookbookName, ok := payload["cookbook_name"]
+	if !ok {
+		return CookbookVersion{}, &ValidationError{Messages: []string{"Field 'name' invalid"}}
+	}
+	payloadCookbookName, ok := rawCookbookName.(string)
+	if !ok || strings.TrimSpace(payloadCookbookName) != name {
+		return CookbookVersion{}, &ValidationError{Messages: []string{"Field 'name' invalid"}}
+	}
+
+	if rawVersion, ok := payload["version"]; !ok {
+		return CookbookVersion{}, &ValidationError{Messages: []string{"Field 'name' invalid"}}
+	} else if payloadVersion, ok := rawVersion.(string); !ok || strings.TrimSpace(payloadVersion) != version {
+		return CookbookVersion{}, &ValidationError{Messages: []string{"Field 'name' invalid"}}
+	}
+
+	jsonClass := "Chef::CookbookVersion"
+	if rawJSONClass, ok := payload["json_class"]; ok {
+		text, ok := rawJSONClass.(string)
+		if !ok || strings.TrimSpace(text) != jsonClass {
+			return CookbookVersion{}, &ValidationError{Messages: []string{"Field 'json_class' invalid"}}
+		}
+	}
+
+	metadataValue, ok := payload["metadata"]
+	if !ok {
+		return CookbookVersion{}, &ValidationError{Messages: []string{"Field 'metadata.version' missing"}}
+	}
+	metadata, err := normalizeCookbookMetadata(metadataValue)
+	if err != nil {
+		return CookbookVersion{}, err
+	}
+
+	metadataVersion, ok := metadata["version"].(string)
+	if !ok || strings.TrimSpace(metadataVersion) != version {
+		return CookbookVersion{}, &ValidationError{Messages: []string{"Field 'name' invalid"}}
+	}
+	metadataName, ok := metadata["name"].(string)
+	if !ok || strings.TrimSpace(metadataName) != name {
+		return CookbookVersion{}, &ValidationError{Messages: []string{"Field 'name' invalid"}}
+	}
+
+	allFiles, err := normalizeCookbookFiles(payload, checksumExists)
+	if err != nil {
+		return CookbookVersion{}, err
+	}
+
+	cookbookVersion := CookbookVersion{
+		Name:         expectedName,
+		CookbookName: name,
+		Version:      version,
+		JSONClass:    jsonClass,
+		ChefType:     "cookbook_version",
+		Frozen:       false,
+		Metadata:     metadata,
+		AllFiles:     allFiles,
+	}
+	if frozenValue, ok := payload["frozen?"]; ok {
+		frozen, ok := frozenValue.(bool)
+		if !ok {
+			return CookbookVersion{}, &ValidationError{Messages: []string{"Field 'frozen?' invalid"}}
+		}
+		cookbookVersion.Frozen = frozen
+	}
+
+	return cookbookVersion, nil
 }
 
 func normalizeCookbookArtifactPayload(name, identifier string, payload map[string]any, checksumExists func(string) (bool, error)) (CookbookArtifact, error) {
@@ -395,7 +579,7 @@ func normalizeCookbookMetadata(value any) (map[string]any, error) {
 		metadata["version"] = strings.TrimSpace(versionString)
 	}
 
-	for _, section := range []string{"dependencies", "attributes", "recipes", "providing", "platforms"} {
+	for _, section := range []string{"dependencies", "attributes", "recipes", "platforms"} {
 		if rawSection, ok := metadata[section]; ok {
 			normalized, err := normalizeCookbookMetadataMap(section, rawSection)
 			if err != nil {
@@ -403,6 +587,9 @@ func normalizeCookbookMetadata(value any) (map[string]any, error) {
 			}
 			metadata[section] = normalized
 		}
+	}
+	if rawProviding, ok := metadata["providing"]; ok {
+		metadata["providing"] = cloneValue(rawProviding)
 	}
 
 	return metadata, nil
@@ -540,17 +727,12 @@ func normalizeCookbookFileString(raw map[string]any, field, segment string) (str
 	return text, nil
 }
 
-func cookbookVersionRefs(versions map[string]CookbookArtifact) []CookbookVersionRef {
-	seen := make(map[string]struct{}, len(versions))
+func cookbookVersionRefs(versions map[string]CookbookVersion) []CookbookVersionRef {
 	out := make([]CookbookVersionRef, 0, len(versions))
-	for _, artifact := range versions {
-		if _, ok := seen[artifact.Version]; ok {
-			continue
-		}
-		seen[artifact.Version] = struct{}{}
+	for _, version := range versions {
 		out = append(out, CookbookVersionRef{
-			Name:    artifact.Name,
-			Version: artifact.Version,
+			Name:    version.CookbookName,
+			Version: version.Version,
 		})
 	}
 
@@ -558,21 +740,6 @@ func cookbookVersionRefs(versions map[string]CookbookArtifact) []CookbookVersion
 		return compareCookbookVersions(out[i].Version, out[j].Version) > 0
 	})
 	return out
-}
-
-func cookbookArtifactForVersion(versions map[string]CookbookArtifact, version string) (CookbookArtifact, bool) {
-	identifiers := make([]string, 0, len(versions))
-	for identifier, artifact := range versions {
-		if artifact.Version == version {
-			identifiers = append(identifiers, identifier)
-		}
-	}
-	if len(identifiers) == 0 {
-		return CookbookArtifact{}, false
-	}
-
-	sort.Strings(identifiers)
-	return versions[identifiers[0]], true
 }
 
 func sortedCookbookArtifacts(in map[string]CookbookArtifact) []CookbookArtifact {
@@ -612,16 +779,18 @@ func copyCookbookArtifact(artifact CookbookArtifact) CookbookArtifact {
 	return out
 }
 
-func cookbookVersionFromArtifact(artifact CookbookArtifact) CookbookVersion {
+func copyCookbookVersion(version CookbookVersion) CookbookVersion {
 	out := CookbookVersion{
-		Name:     artifact.Name,
-		Version:  artifact.Version,
-		ChefType: artifact.ChefType,
-		Frozen:   artifact.Frozen,
-		Metadata: cloneMap(artifact.Metadata),
+		Name:         version.Name,
+		CookbookName: version.CookbookName,
+		Version:      version.Version,
+		JSONClass:    version.JSONClass,
+		ChefType:     version.ChefType,
+		Frozen:       version.Frozen,
+		Metadata:     cloneMap(version.Metadata),
 	}
-	if len(artifact.AllFiles) > 0 {
-		out.AllFiles = append([]CookbookFile(nil), artifact.AllFiles...)
+	if len(version.AllFiles) > 0 {
+		out.AllFiles = append([]CookbookFile(nil), version.AllFiles...)
 	}
 	return out
 }
@@ -666,6 +835,28 @@ func segmentPath(segment, name string) string {
 
 func validCookbookVersion(value string) bool {
 	return validCookbookVersionPattern.MatchString(strings.TrimSpace(value))
+}
+
+func validCookbookRouteVersion(value string) bool {
+	value = strings.TrimSpace(value)
+	if !validCookbookRouteVersionPattern.MatchString(value) {
+		return false
+	}
+
+	for _, part := range strings.Split(value, ".") {
+		if _, err := strconv.ParseInt(part, 10, 64); err != nil {
+			return false
+		}
+	}
+	return true
+}
+
+func invalidCookbookNameMessage(name string) string {
+	return fmt.Sprintf("Invalid cookbook name '%s' using regex: 'Malformed cookbook name. Must only contain A-Z, a-z, 0-9, _, . or -'.", name)
+}
+
+func invalidCookbookVersionMessage(version string) string {
+	return fmt.Sprintf("Invalid cookbook version '%s'.", version)
 }
 
 func compareCookbookVersions(left, right string) int {

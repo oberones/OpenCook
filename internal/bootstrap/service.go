@@ -162,6 +162,7 @@ type organizationState struct {
 	org               Organization
 	clients           map[string]Client
 	clientKeys        map[string]map[string]KeyRecord
+	cookbooks         map[string]map[string]CookbookVersion
 	cookbookArtifacts map[string]map[string]CookbookArtifact
 	dataBags          map[string]DataBag
 	dataBagItems      map[string]map[string]DataBagItem
@@ -447,6 +448,7 @@ func (s *Service) CreateOrganization(input CreateOrganizationInput) (Organizatio
 		org:               org,
 		clients:           make(map[string]Client),
 		clientKeys:        make(map[string]map[string]KeyRecord),
+		cookbooks:         make(map[string]map[string]CookbookVersion),
 		cookbookArtifacts: make(map[string]map[string]CookbookArtifact),
 		dataBags:          make(map[string]DataBag),
 		dataBagItems:      make(map[string]map[string]DataBagItem),
