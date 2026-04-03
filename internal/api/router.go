@@ -54,6 +54,8 @@ func NewRouter(deps Dependencies) http.Handler {
 	mux.HandleFunc("/internal/authn/capabilities", srv.handleAuthnCapabilities)
 	mux.HandleFunc("/clients", srv.withAuthn("clients-root", srv.handleClients))
 	mux.HandleFunc("/clients/", srv.withAuthn("clients-routes", srv.handleClients))
+	mux.HandleFunc("/data", srv.withAuthn("data-root", srv.handleData))
+	mux.HandleFunc("/data/", srv.withAuthn("data-routes", srv.handleData))
 	mux.HandleFunc("/environments", srv.withAuthn("environments-root", srv.handleEnvironments))
 	mux.HandleFunc("/environments/", srv.withAuthn("environments-routes", srv.handleEnvironments))
 	mux.HandleFunc("/environments/{name}/nodes", srv.withAuthn("environment-nodes-root", srv.handleEnvironmentNodes))
@@ -70,6 +72,8 @@ func NewRouter(deps Dependencies) http.Handler {
 	mux.HandleFunc("/roles/", srv.withAuthn("roles-routes", srv.handleRoles))
 	mux.HandleFunc("/organizations", srv.withAuthn("organizations-root", srv.handleOrganizations))
 	mux.HandleFunc("/organizations/", srv.withAuthn("organizations-routes", srv.handleOrganizations))
+	mux.HandleFunc("/organizations/{org}/data", srv.withAuthn("org-data-root", srv.handleData))
+	mux.HandleFunc("/organizations/{org}/data/", srv.withAuthn("org-data-routes", srv.handleData))
 	mux.HandleFunc("/organizations/{org}/environments", srv.withAuthn("org-environments-root", srv.handleEnvironments))
 	mux.HandleFunc("/organizations/{org}/environments/", srv.withAuthn("org-environments-routes", srv.handleEnvironments))
 	mux.HandleFunc("/organizations/{org}/environments/{name}/nodes", srv.withAuthn("org-environment-nodes-root", srv.handleEnvironmentNodes))
@@ -419,7 +423,7 @@ func flattenHeaders(header http.Header) map[string]string {
 
 func isImplementedPattern(pattern string) bool {
 	switch pattern {
-	case "/users", "/users/", "/users/{name}/keys", "/users/{name}/keys/", "/organizations", "/organizations/", "/clients", "/clients/", "/clients/{name}/keys", "/clients/{name}/keys/", "/environments", "/environments/", "/environments/{name}/nodes", "/environments/{name}/nodes/", "/organizations/{org}/environments", "/organizations/{org}/environments/", "/organizations/{org}/environments/{name}/nodes", "/organizations/{org}/environments/{name}/nodes/", "/nodes", "/nodes/", "/organizations/{org}/nodes", "/organizations/{org}/nodes/", "/search", "/search/", "/search/{index}", "/search/{index}/", "/organizations/{org}/search", "/organizations/{org}/search/", "/organizations/{org}/search/{index}", "/organizations/{org}/search/{index}/", "/roles", "/roles/", "/roles/{name}/environments", "/roles/{name}/environments/", "/roles/{name}/environments/{environment}", "/roles/{name}/environments/{environment}/", "/organizations/{org}/roles", "/organizations/{org}/roles/", "/organizations/{org}/roles/{name}/environments", "/organizations/{org}/roles/{name}/environments/", "/organizations/{org}/roles/{name}/environments/{environment}", "/organizations/{org}/roles/{name}/environments/{environment}/", "/organizations/{org}/clients", "/organizations/{org}/clients/", "/organizations/{org}/clients/{name}/keys", "/organizations/{org}/clients/{name}/keys/":
+	case "/users", "/users/", "/users/{name}/keys", "/users/{name}/keys/", "/organizations", "/organizations/", "/clients", "/clients/", "/clients/{name}/keys", "/clients/{name}/keys/", "/data", "/data/", "/organizations/{org}/data", "/organizations/{org}/data/", "/environments", "/environments/", "/environments/{name}/nodes", "/environments/{name}/nodes/", "/organizations/{org}/environments", "/organizations/{org}/environments/", "/organizations/{org}/environments/{name}/nodes", "/organizations/{org}/environments/{name}/nodes/", "/nodes", "/nodes/", "/organizations/{org}/nodes", "/organizations/{org}/nodes/", "/search", "/search/", "/search/{index}", "/search/{index}/", "/organizations/{org}/search", "/organizations/{org}/search/", "/organizations/{org}/search/{index}", "/organizations/{org}/search/{index}/", "/roles", "/roles/", "/roles/{name}/environments", "/roles/{name}/environments/", "/roles/{name}/environments/{environment}", "/roles/{name}/environments/{environment}/", "/organizations/{org}/roles", "/organizations/{org}/roles/", "/organizations/{org}/roles/{name}/environments", "/organizations/{org}/roles/{name}/environments/", "/organizations/{org}/roles/{name}/environments/{environment}", "/organizations/{org}/roles/{name}/environments/{environment}/", "/organizations/{org}/clients", "/organizations/{org}/clients/", "/organizations/{org}/clients/{name}/keys", "/organizations/{org}/clients/{name}/keys/":
 		return true
 	default:
 		return false
