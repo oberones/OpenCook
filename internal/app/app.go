@@ -29,7 +29,7 @@ type Application struct {
 func New(cfg config.Config, logger *log.Logger, build version.Info) (*Application, error) {
 	compatRegistry := compat.NewDefaultRegistry()
 	postgresStore := pg.New(cfg.PostgresDSN)
-	blobStore := blob.NewNoopStore(cfg.BlobStorageURL)
+	blobStore := blob.NewMemoryStore(cfg.BlobStorageURL)
 	keyStore := authn.NewMemoryKeyStore()
 	bootstrapState := bootstrap.NewService(keyStore, bootstrap.Options{
 		SuperuserName: resolveSuperuserName(cfg),

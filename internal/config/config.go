@@ -18,6 +18,7 @@ type Config struct {
 	ShutdownTimeout     time.Duration
 	AuthSkew            time.Duration
 	MaxAuthBodyBytes    int64
+	MaxBlobUploadBytes  int64
 	BootstrapMode       bool
 
 	PostgresDSN    string
@@ -32,6 +33,7 @@ type Config struct {
 }
 
 const DefaultMaxAuthBodyBytes int64 = 8 << 20
+const DefaultMaxBlobUploadBytes int64 = 64 << 20
 
 func LoadFromEnv() (Config, error) {
 	readTimeout, err := envDuration("OPENCOOK_READ_TIMEOUT", 15*time.Second)
@@ -62,6 +64,14 @@ func LoadFromEnv() (Config, error) {
 		return Config{}, fmt.Errorf("OPENCOOK_MAX_AUTH_BODY_BYTES: must be positive")
 	}
 
+	maxBlobUploadBytes, err := envInt64("OPENCOOK_MAX_BLOB_UPLOAD_BYTES", DefaultMaxBlobUploadBytes)
+	if err != nil {
+		return Config{}, err
+	}
+	if maxBlobUploadBytes <= 0 {
+		return Config{}, fmt.Errorf("OPENCOOK_MAX_BLOB_UPLOAD_BYTES: must be positive")
+	}
+
 	bootstrapMode, err := envBool("OPENCOOK_BOOTSTRAP_MODE", true)
 	if err != nil {
 		return Config{}, err
@@ -77,6 +87,7 @@ func LoadFromEnv() (Config, error) {
 		ShutdownTimeout:                 shutdownTimeout,
 		AuthSkew:                        authSkew,
 		MaxAuthBodyBytes:                maxAuthBodyBytes,
+		MaxBlobUploadBytes:              maxBlobUploadBytes,
 		BootstrapMode:                   bootstrapMode,
 		PostgresDSN:                     strings.TrimSpace(os.Getenv("OPENCOOK_POSTGRES_DSN")),
 		OpenSearchURL:                   strings.TrimSpace(os.Getenv("OPENCOOK_OPENSEARCH_URL")),
@@ -100,6 +111,7 @@ func (c Config) Redacted() map[string]string {
 		"shutdown_timeout":           c.ShutdownTimeout.String(),
 		"auth_skew":                  c.AuthSkew.String(),
 		"max_auth_body_bytes":        strconv.FormatInt(c.MaxAuthBodyBytes, 10),
+		"max_blob_upload_bytes":      strconv.FormatInt(c.MaxBlobUploadBytes, 10),
 		"bootstrap_mode":             strconv.FormatBool(c.BootstrapMode),
 		"bootstrap_requestor_name":   c.BootstrapRequestorName,
 		"bootstrap_requestor_type":   c.BootstrapRequestorType,

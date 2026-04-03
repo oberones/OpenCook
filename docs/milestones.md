@@ -69,9 +69,12 @@ Status: in progress
 
 ## Milestone 6: Cookbook and Blob Workflows
 
-- implement sandboxes and checksum lifecycle
-- integrate S3-compatible blob storage
-- support cookbook artifacts and universe endpoints
+Status: in progress
+
+- in-memory sandbox create and commit behavior is implemented on default-org and explicit-org routes
+- checksum upload URLs now point at a live in-memory blob store with content-hash validation and upload-size limits
+- cookbook metadata, cookbook artifacts, and universe endpoints are still pending
+- S3-compatible blob storage remains the target production mode after the compatibility contract settles
 
 ## Milestone 7: Operations and Migration
 

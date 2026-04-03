@@ -906,7 +906,7 @@ func newSearchTestRouterWithAuthorizer(t *testing.T, authorizerFactory func(*boo
 		}),
 		Authz:     authorizer,
 		Bootstrap: state,
-		Blob:      blob.NewNoopStore(""),
+		Blob:      blob.NewMemoryStore(""),
 		Search:    search.NewMemoryIndex(state, ""),
 		Postgres:  pg.New(""),
 	})

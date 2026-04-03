@@ -60,13 +60,15 @@ As of 2026-04-03, OpenCook has moved past pure scaffolding and into the first co
 - policy revision create/get/delete, policy-group listing, policy-group get/delete, and policy-group assignment flows are now working in the in-memory compatibility layer
 - policy payload normalization now preserves richer canonical structures like `named_run_lists`, nested cookbook-lock metadata, and `solution_dependencies`, with deeper validation around cookbook lock versions and shapes
 - node `policy_name` and `policy_group` semantics remain compatibility-safe searchable fields rather than newly enforced foreign keys
+- the first sandbox/blob slice is now live with signed sandbox create/commit flows, absolute checksum upload URLs, and in-memory checksum blob storage
+- sandbox commit now enforces upload completeness before marking a sandbox complete, matching the expected Chef-style lifecycle shape
 - compatibility tracking docs and route inventory are in place and being updated alongside code
 
 Current focus:
 
 - preserve API-version-sensitive actor key behavior without carrying forward Chef licensing concerns
 - deepen search query translation beyond the current simple compatibility subset and widen object/index coverage further
-- begin cookbook, sandbox, and blob compatibility slices
+- deepen cookbook/blob compatibility beyond the initial sandbox slice, especially cookbook metadata, cookbook artifacts, and universe behavior
 - replace the in-memory bootstrap layer with PostgreSQL-backed persistence after the contracts stabilize
 
 ## What Exists Upstream

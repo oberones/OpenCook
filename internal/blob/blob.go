@@ -1,6 +1,11 @@
 package blob
 
-import "context"
+import (
+	"context"
+	"errors"
+)
+
+var ErrNotFound = errors.New("blob not found")
 
 type Status struct {
 	Backend    string `json:"backend"`
@@ -29,6 +34,10 @@ type Getter interface {
 
 type Putter interface {
 	Put(context.Context, PutRequest) (PutResult, error)
+}
+
+type Checker interface {
+	Exists(context.Context, string) (bool, error)
 }
 
 type NoopStore struct {
