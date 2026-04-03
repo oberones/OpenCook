@@ -48,10 +48,14 @@ Status: in progress
 
 ## Milestone 5: Search Compatibility
 
-- implement document expansion
-- index and query via OpenSearch
-- preserve ACL-filtered result handling
-- add safe reindex tooling
+Status: in progress
+
+- in-memory compatibility search is live for `environment`, `node`, and `role`
+- `/search` and `/organizations/{org}/search` now advertise the currently implemented indexes
+- GET search and POST partial search now support environment, node, and role queries
+- search results are filtered through current read authz before pagination is applied
+- node partial search now reflects merged attribute precedence for search-facing behavior
+- OpenSearch-backed indexing, provider capability handling, and reindex tooling are still pending
 
 ## Milestone 6: Cookbook and Blob Workflows
 

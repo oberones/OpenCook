@@ -58,6 +58,10 @@ func NewRouter(deps Dependencies) http.Handler {
 	mux.HandleFunc("/environments/{name}/nodes/", srv.withAuthn("environment-nodes-routes", srv.handleEnvironmentNodes))
 	mux.HandleFunc("/nodes", srv.withAuthn("nodes-root", srv.handleNodes))
 	mux.HandleFunc("/nodes/", srv.withAuthn("nodes-routes", srv.handleNodes))
+	mux.HandleFunc("/search", srv.withAuthn("search-root", srv.handleSearchIndexes))
+	mux.HandleFunc("/search/", srv.withAuthn("search-root-trailing", srv.handleSearchIndexes))
+	mux.HandleFunc("/search/{index}", srv.withAuthn("search-index-root", srv.handleSearchQuery))
+	mux.HandleFunc("/search/{index}/", srv.withAuthn("search-index-routes", srv.handleSearchQuery))
 	mux.HandleFunc("/roles/{name}/environments", srv.withAuthn("role-environments-root", srv.handleRoleEnvironments))
 	mux.HandleFunc("/roles/{name}/environments/", srv.withAuthn("role-environments-routes", srv.handleRoleEnvironments))
 	mux.HandleFunc("/roles", srv.withAuthn("roles-root", srv.handleRoles))
@@ -70,6 +74,10 @@ func NewRouter(deps Dependencies) http.Handler {
 	mux.HandleFunc("/organizations/{org}/environments/{name}/nodes/", srv.withAuthn("org-environment-nodes-routes", srv.handleEnvironmentNodes))
 	mux.HandleFunc("/organizations/{org}/nodes", srv.withAuthn("org-nodes-root", srv.handleNodes))
 	mux.HandleFunc("/organizations/{org}/nodes/", srv.withAuthn("org-nodes-routes", srv.handleNodes))
+	mux.HandleFunc("/organizations/{org}/search", srv.withAuthn("org-search-root", srv.handleSearchIndexes))
+	mux.HandleFunc("/organizations/{org}/search/", srv.withAuthn("org-search-root-trailing", srv.handleSearchIndexes))
+	mux.HandleFunc("/organizations/{org}/search/{index}", srv.withAuthn("org-search-index-root", srv.handleSearchQuery))
+	mux.HandleFunc("/organizations/{org}/search/{index}/", srv.withAuthn("org-search-index-routes", srv.handleSearchQuery))
 	mux.HandleFunc("/organizations/{org}/roles/{name}/environments", srv.withAuthn("org-role-environments-root", srv.handleRoleEnvironments))
 	mux.HandleFunc("/organizations/{org}/roles/{name}/environments/", srv.withAuthn("org-role-environments-routes", srv.handleRoleEnvironments))
 	mux.HandleFunc("/organizations/{org}/roles", srv.withAuthn("org-roles-root", srv.handleRoles))
@@ -120,7 +128,7 @@ func (s *server) handleRoot(w http.ResponseWriter, r *http.Request) {
 		"phase":         "compatibility-foundation",
 		"version":       s.deps.Version,
 		"compat_routes": s.deps.Compat.RouteCount(),
-		"next":          "expand role/data compatibility semantics and connect core objects to search behavior before moving slices into postgres",
+		"next":          "deepen search semantics, add adjacent object APIs, and then move stabilized slices into postgres and opensearch-backed providers",
 	})
 }
 
@@ -504,7 +512,7 @@ func flattenHeaders(header http.Header) map[string]string {
 
 func isImplementedPattern(pattern string) bool {
 	switch pattern {
-	case "/users", "/users/", "/users/{name}/keys", "/users/{name}/keys/", "/organizations", "/organizations/", "/environments", "/environments/", "/environments/{name}/nodes", "/environments/{name}/nodes/", "/organizations/{org}/environments", "/organizations/{org}/environments/", "/organizations/{org}/environments/{name}/nodes", "/organizations/{org}/environments/{name}/nodes/", "/nodes", "/nodes/", "/organizations/{org}/nodes", "/organizations/{org}/nodes/", "/roles", "/roles/", "/roles/{name}/environments", "/roles/{name}/environments/", "/roles/{name}/environments/{environment}", "/roles/{name}/environments/{environment}/", "/organizations/{org}/roles", "/organizations/{org}/roles/", "/organizations/{org}/roles/{name}/environments", "/organizations/{org}/roles/{name}/environments/", "/organizations/{org}/roles/{name}/environments/{environment}", "/organizations/{org}/roles/{name}/environments/{environment}/", "/organizations/{org}/clients", "/organizations/{org}/clients/", "/organizations/{org}/clients/{name}/keys", "/organizations/{org}/clients/{name}/keys/":
+	case "/users", "/users/", "/users/{name}/keys", "/users/{name}/keys/", "/organizations", "/organizations/", "/environments", "/environments/", "/environments/{name}/nodes", "/environments/{name}/nodes/", "/organizations/{org}/environments", "/organizations/{org}/environments/", "/organizations/{org}/environments/{name}/nodes", "/organizations/{org}/environments/{name}/nodes/", "/nodes", "/nodes/", "/organizations/{org}/nodes", "/organizations/{org}/nodes/", "/search", "/search/", "/search/{index}", "/search/{index}/", "/organizations/{org}/search", "/organizations/{org}/search/", "/organizations/{org}/search/{index}", "/organizations/{org}/search/{index}/", "/roles", "/roles/", "/roles/{name}/environments", "/roles/{name}/environments/", "/roles/{name}/environments/{environment}", "/roles/{name}/environments/{environment}/", "/organizations/{org}/roles", "/organizations/{org}/roles/", "/organizations/{org}/roles/{name}/environments", "/organizations/{org}/roles/{name}/environments/", "/organizations/{org}/roles/{name}/environments/{environment}", "/organizations/{org}/roles/{name}/environments/{environment}/", "/organizations/{org}/clients", "/organizations/{org}/clients/", "/organizations/{org}/clients/{name}/keys", "/organizations/{org}/clients/{name}/keys/":
 		return true
 	default:
 		return false
