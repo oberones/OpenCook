@@ -291,19 +291,6 @@ func validateEnvironmentRunLists(value any) (map[string][]string, error) {
 	}
 }
 
-func roleEnvironmentNames(role Role) []string {
-	names := make([]string, 0, len(role.EnvRunLists)+1)
-	names = append(names, defaultEnvironmentName)
-	for envName := range role.EnvRunLists {
-		if envName == defaultEnvironmentName {
-			continue
-		}
-		names = append(names, envName)
-	}
-	sort.Strings(names[1:])
-	return names
-}
-
 func copyRole(role Role) Role {
 	return Role{
 		Name:               role.Name,
