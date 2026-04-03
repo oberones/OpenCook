@@ -2,8 +2,14 @@ package search
 
 import (
 	"context"
+	"errors"
 
 	"github.com/oberones/OpenCook/internal/authz"
+)
+
+var (
+	ErrNotFound    = errors.New("search target not found")
+	ErrUnavailable = errors.New("search backend unavailable")
 )
 
 type Status struct {
@@ -67,9 +73,9 @@ func (i NoopIndex) Status() Status {
 }
 
 func (i NoopIndex) Indexes(_ context.Context, _ string) ([]string, error) {
-	return nil, nil
+	return nil, ErrUnavailable
 }
 
 func (i NoopIndex) Search(_ context.Context, _ Query) (Result, error) {
-	return Result{}, nil
+	return Result{}, ErrUnavailable
 }

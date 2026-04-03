@@ -56,6 +56,31 @@ func TestSearchIndexesEndpointListsImplementedIndexes(t *testing.T) {
 	}
 }
 
+func TestSearchIndexesEndpointReturnsNotFoundForUnknownOrganization(t *testing.T) {
+	router := newTestRouter(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/organizations/missing/search", nil)
+	applySignedHeaders(t, req, "silent-bob", "", http.MethodGet, "/organizations/missing/search", nil, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	req.SetPathValue("org", "missing")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("search indexes missing org status = %d, want %d, body = %s", rec.Code, http.StatusNotFound, rec.Body.String())
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal(search indexes missing org) error = %v", err)
+	}
+	if payload["message"] != "organization not found" {
+		t.Fatalf("message = %v, want %q", payload["message"], "organization not found")
+	}
+}
+
 func TestSearchNodeEndpointSupportsFullPartialAndPagination(t *testing.T) {
 	router := newTestRouter(t)
 
@@ -194,6 +219,49 @@ func TestSearchNodeEndpointSupportsFullPartialAndPagination(t *testing.T) {
 	pagedRows, ok := pagedPayload["rows"].([]any)
 	if !ok || len(pagedRows) != 1 {
 		t.Fatalf("paged rows = %T %v, want one result", pagedPayload["rows"], pagedPayload["rows"])
+	}
+}
+
+func TestSearchQueryEndpointRejectsExtraPathSegments(t *testing.T) {
+	router := newTestRouter(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/search/node/extra?q=name:*", nil)
+	applySignedHeaders(t, req, "silent-bob", "", http.MethodGet, "/search/node/extra", nil, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	req.SetPathValue("index", "node")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("search extra segment status = %d, want %d, body = %s", rec.Code, http.StatusNotFound, rec.Body.String())
+	}
+}
+
+func TestSearchQueryEndpointReturnsNotFoundForUnknownOrganization(t *testing.T) {
+	router := newTestRouter(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/organizations/missing/search/node?q=name:*", nil)
+	applySignedHeaders(t, req, "silent-bob", "", http.MethodGet, "/organizations/missing/search/node", nil, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	req.SetPathValue("org", "missing")
+	req.SetPathValue("index", "node")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("search query missing org status = %d, want %d, body = %s", rec.Code, http.StatusNotFound, rec.Body.String())
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal(search query missing org) error = %v", err)
+	}
+	if payload["message"] != "organization not found" {
+		t.Fatalf("message = %v, want %q", payload["message"], "organization not found")
 	}
 }
 
