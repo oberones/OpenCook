@@ -369,11 +369,21 @@ func isDefaultOrgDataPath(path string) bool {
 	return path == "/data" || path == "/data/" || strings.HasPrefix(path, "/data/")
 }
 
+func isDefaultOrgPolicyPath(path string) bool {
+	return path == "/policies" ||
+		path == "/policies/" ||
+		path == "/policy_groups" ||
+		path == "/policy_groups/" ||
+		strings.HasPrefix(path, "/policies/") ||
+		strings.HasPrefix(path, "/policy_groups/")
+}
+
 func isDefaultOrgScopedPath(path string) bool {
 	return isDefaultOrgNodePath(path) ||
 		isDefaultOrgEnvironmentPath(path) ||
 		isDefaultOrgRolePath(path) ||
 		isDefaultOrgClientPath(path) ||
 		isDefaultOrgSearchPath(path) ||
-		isDefaultOrgDataPath(path)
+		isDefaultOrgDataPath(path) ||
+		isDefaultOrgPolicyPath(path)
 }

@@ -62,7 +62,9 @@ Status: in progress
 - default-org client search results now point at live `/clients/...` routes instead of org-only URLs
 - data bag search now mirrors Chef-style wrapper results and raw-item partial search behavior
 - simple `AND`/`NOT` matching and escaped-slash prefix handling are now covered for the in-memory compatibility layer
-- OpenSearch-backed indexing, deeper query translation, provider capability handling, and reindex tooling are still pending
+- the first default-org policyfile slice is now live for `/policies` and `/policy_groups`
+- in-memory policy revision storage, revision lookup, policy-group listing, and policy-group assignment flows are implemented
+- OpenSearch-backed indexing, deeper query translation, richer policyfile validation, provider capability handling, and reindex tooling are still pending
 
 ## Milestone 6: Cookbook and Blob Workflows
 
