@@ -31,9 +31,13 @@ Status: in progress
 
 ## Milestone 4: Core Object APIs
 
-- implement nodes, roles, environments, data bags, and clients
-- persist objects in PostgreSQL
-- make one complete read/write vertical slice production-like
+Status: in progress
+
+- in-memory node list/get/head/create/update/delete behavior is implemented
+- default-org and explicit-org node routes are both available for the first object slice
+- creator-aware node ACLs now allow clients to manage their own node objects
+- roles, environments, data bags, and the rest of the object surface still need follow-on slices
+- PostgreSQL-backed persistence for object APIs is still pending
 
 ## Milestone 5: Search Compatibility
 

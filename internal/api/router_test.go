@@ -1108,6 +1108,357 @@ func TestOrgClientKeysEndpointUpdateCreateKeyAuthenticates(t *testing.T) {
 	}
 }
 
+func TestNodesEndpointCreateListGetAndHead(t *testing.T) {
+	router := newTestRouter(t)
+	body := mustMarshalNodePayload(t, "twilight")
+
+	createReq := httptest.NewRequest(http.MethodPost, "/nodes", bytes.NewReader(body))
+	applySignedHeaders(t, createReq, "silent-bob", "", http.MethodPost, "/nodes", body, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	createRec := httptest.NewRecorder()
+	router.ServeHTTP(createRec, createReq)
+
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("create node status = %d, want %d, body = %s", createRec.Code, http.StatusCreated, createRec.Body.String())
+	}
+
+	var createPayload map[string]any
+	if err := json.Unmarshal(createRec.Body.Bytes(), &createPayload); err != nil {
+		t.Fatalf("json.Unmarshal(create node) error = %v", err)
+	}
+	if createPayload["uri"] != "/nodes/twilight" {
+		t.Fatalf("uri = %v, want %q", createPayload["uri"], "/nodes/twilight")
+	}
+
+	listReq := httptest.NewRequest(http.MethodGet, "/nodes", nil)
+	applySignedHeaders(t, listReq, "silent-bob", "", http.MethodGet, "/nodes", nil, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:10Z")
+	listRec := httptest.NewRecorder()
+	router.ServeHTTP(listRec, listReq)
+
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("list nodes status = %d, want %d", listRec.Code, http.StatusOK)
+	}
+
+	var listPayload map[string]string
+	if err := json.Unmarshal(listRec.Body.Bytes(), &listPayload); err != nil {
+		t.Fatalf("json.Unmarshal(list nodes) error = %v", err)
+	}
+	if listPayload["twilight"] != "/nodes/twilight" {
+		t.Fatalf("node uri = %q, want %q", listPayload["twilight"], "/nodes/twilight")
+	}
+
+	getReq := httptest.NewRequest(http.MethodGet, "/nodes/twilight", nil)
+	applySignedHeaders(t, getReq, "silent-bob", "", http.MethodGet, "/nodes/twilight", nil, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:15Z")
+	getRec := httptest.NewRecorder()
+	router.ServeHTTP(getRec, getReq)
+
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("get node status = %d, want %d", getRec.Code, http.StatusOK)
+	}
+
+	var getPayload map[string]any
+	if err := json.Unmarshal(getRec.Body.Bytes(), &getPayload); err != nil {
+		t.Fatalf("json.Unmarshal(get node) error = %v", err)
+	}
+	if getPayload["name"] != "twilight" {
+		t.Fatalf("name = %v, want %q", getPayload["name"], "twilight")
+	}
+	if getPayload["json_class"] != "Chef::Node" {
+		t.Fatalf("json_class = %v, want %q", getPayload["json_class"], "Chef::Node")
+	}
+	if getPayload["chef_environment"] != "_default" {
+		t.Fatalf("chef_environment = %v, want %q", getPayload["chef_environment"], "_default")
+	}
+
+	headReq := httptest.NewRequest(http.MethodHead, "/nodes/twilight", nil)
+	applySignedHeaders(t, headReq, "silent-bob", "", http.MethodHead, "/nodes/twilight", nil, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:20Z")
+	headRec := httptest.NewRecorder()
+	router.ServeHTTP(headRec, headReq)
+
+	if headRec.Code != http.StatusOK {
+		t.Fatalf("head node status = %d, want %d", headRec.Code, http.StatusOK)
+	}
+	if headRec.Body.Len() != 0 {
+		t.Fatalf("head node body length = %d, want 0", headRec.Body.Len())
+	}
+
+	collectionHeadReq := httptest.NewRequest(http.MethodHead, "/nodes", nil)
+	applySignedHeaders(t, collectionHeadReq, "silent-bob", "", http.MethodHead, "/nodes", nil, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:25Z")
+	collectionHeadRec := httptest.NewRecorder()
+	router.ServeHTTP(collectionHeadRec, collectionHeadReq)
+
+	if collectionHeadRec.Code != http.StatusOK {
+		t.Fatalf("head nodes collection status = %d, want %d", collectionHeadRec.Code, http.StatusOK)
+	}
+	if collectionHeadRec.Body.Len() != 0 {
+		t.Fatalf("head nodes collection body length = %d, want 0", collectionHeadRec.Body.Len())
+	}
+}
+
+func TestNodesEndpointUpdateRejectsNameMismatch(t *testing.T) {
+	router := newTestRouter(t)
+	createBody := mustMarshalNodePayload(t, "twilight")
+
+	createReq := httptest.NewRequest(http.MethodPost, "/nodes", bytes.NewReader(createBody))
+	applySignedHeaders(t, createReq, "silent-bob", "", http.MethodPost, "/nodes", createBody, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	createRec := httptest.NewRecorder()
+	router.ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("create node status = %d, want %d, body = %s", createRec.Code, http.StatusCreated, createRec.Body.String())
+	}
+
+	updateBody := []byte(`{"name":"rainbow","json_class":"Chef::Node"}`)
+	updateReq := httptest.NewRequest(http.MethodPut, "/nodes/twilight", bytes.NewReader(updateBody))
+	applySignedHeaders(t, updateReq, "silent-bob", "", http.MethodPut, "/nodes/twilight", updateBody, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:10Z")
+	updateRec := httptest.NewRecorder()
+	router.ServeHTTP(updateRec, updateReq)
+
+	if updateRec.Code != http.StatusBadRequest {
+		t.Fatalf("update node status = %d, want %d", updateRec.Code, http.StatusBadRequest)
+	}
+
+	var payload map[string][]string
+	if err := json.Unmarshal(updateRec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal(update node) error = %v", err)
+	}
+	if len(payload["error"]) != 1 || payload["error"][0] != "Node name mismatch." {
+		t.Fatalf("error payload = %v, want Node name mismatch", payload)
+	}
+}
+
+func TestNodesEndpointDeleteReturnsNode(t *testing.T) {
+	router := newTestRouter(t)
+	createBody := mustMarshalNodePayload(t, "twilight")
+
+	createReq := httptest.NewRequest(http.MethodPost, "/nodes", bytes.NewReader(createBody))
+	applySignedHeaders(t, createReq, "silent-bob", "", http.MethodPost, "/nodes", createBody, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	createRec := httptest.NewRecorder()
+	router.ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("create node status = %d, want %d, body = %s", createRec.Code, http.StatusCreated, createRec.Body.String())
+	}
+
+	deleteReq := httptest.NewRequest(http.MethodDelete, "/nodes/twilight", nil)
+	applySignedHeaders(t, deleteReq, "silent-bob", "", http.MethodDelete, "/nodes/twilight", nil, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:10Z")
+	deleteRec := httptest.NewRecorder()
+	router.ServeHTTP(deleteRec, deleteReq)
+
+	if deleteRec.Code != http.StatusOK {
+		t.Fatalf("delete node status = %d, want %d", deleteRec.Code, http.StatusOK)
+	}
+
+	var deletePayload map[string]any
+	if err := json.Unmarshal(deleteRec.Body.Bytes(), &deletePayload); err != nil {
+		t.Fatalf("json.Unmarshal(delete node) error = %v", err)
+	}
+	if deletePayload["name"] != "twilight" {
+		t.Fatalf("name = %v, want %q", deletePayload["name"], "twilight")
+	}
+
+	getReq := httptest.NewRequest(http.MethodGet, "/nodes/twilight", nil)
+	applySignedHeaders(t, getReq, "silent-bob", "", http.MethodGet, "/nodes/twilight", nil, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:15Z")
+	getRec := httptest.NewRecorder()
+	router.ServeHTTP(getRec, getReq)
+
+	if getRec.Code != http.StatusNotFound {
+		t.Fatalf("get deleted node status = %d, want %d", getRec.Code, http.StatusNotFound)
+	}
+}
+
+func TestOrgNodesEndpointClientCanUpdateOwnNode(t *testing.T) {
+	router := newTestRouter(t)
+	createClientBody := []byte(`{"name":"twilight","create_key":true}`)
+
+	createClientReq := httptest.NewRequest(http.MethodPost, "/organizations/ponyville/clients", bytes.NewReader(createClientBody))
+	applySignedHeaders(t, createClientReq, "silent-bob", "", http.MethodPost, "/organizations/ponyville/clients", createClientBody, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	createClientRec := httptest.NewRecorder()
+	router.ServeHTTP(createClientRec, createClientReq)
+
+	if createClientRec.Code != http.StatusCreated {
+		t.Fatalf("create client status = %d, want %d, body = %s", createClientRec.Code, http.StatusCreated, createClientRec.Body.String())
+	}
+
+	var clientPayload map[string]any
+	if err := json.Unmarshal(createClientRec.Body.Bytes(), &clientPayload); err != nil {
+		t.Fatalf("json.Unmarshal(create client) error = %v", err)
+	}
+
+	privateKeyPEM, ok := clientPayload["private_key"].(string)
+	if !ok || privateKeyPEM == "" {
+		t.Fatalf("private_key missing from create client payload: %v", clientPayload)
+	}
+
+	privateKey, err := authn.ParseRSAPrivateKeyPEM([]byte(privateKeyPEM))
+	if err != nil {
+		t.Fatalf("ParseRSAPrivateKeyPEM() error = %v", err)
+	}
+
+	createNodeBody := mustMarshalNodePayload(t, "twilight")
+	createNodeReq := httptest.NewRequest(http.MethodPost, "/organizations/ponyville/nodes", bytes.NewReader(createNodeBody))
+	applySignedHeadersWithPrivateKey(t, createNodeReq, privateKey, "twilight", "ponyville", http.MethodPost, "/organizations/ponyville/nodes", createNodeBody, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:10Z")
+	createNodeRec := httptest.NewRecorder()
+	router.ServeHTTP(createNodeRec, createNodeReq)
+
+	if createNodeRec.Code != http.StatusCreated {
+		t.Fatalf("create node as client status = %d, want %d, body = %s", createNodeRec.Code, http.StatusCreated, createNodeRec.Body.String())
+	}
+
+	updateNodeBody := []byte(`{"json_class":"Chef::Node","normal":{"role":"librarian"}}`)
+	updateNodeReq := httptest.NewRequest(http.MethodPut, "/organizations/ponyville/nodes/twilight", bytes.NewReader(updateNodeBody))
+	applySignedHeadersWithPrivateKey(t, updateNodeReq, privateKey, "twilight", "ponyville", http.MethodPut, "/organizations/ponyville/nodes/twilight", updateNodeBody, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:15Z")
+	updateNodeRec := httptest.NewRecorder()
+	router.ServeHTTP(updateNodeRec, updateNodeReq)
+
+	if updateNodeRec.Code != http.StatusOK {
+		t.Fatalf("update node as client status = %d, want %d, body = %s", updateNodeRec.Code, http.StatusOK, updateNodeRec.Body.String())
+	}
+
+	var nodePayload map[string]any
+	if err := json.Unmarshal(updateNodeRec.Body.Bytes(), &nodePayload); err != nil {
+		t.Fatalf("json.Unmarshal(update node) error = %v", err)
+	}
+	normal, ok := nodePayload["normal"].(map[string]any)
+	if !ok {
+		t.Fatalf("normal payload = %T, want map[string]any", nodePayload["normal"])
+	}
+	if normal["role"] != "librarian" {
+		t.Fatalf("normal.role = %v, want %q", normal["role"], "librarian")
+	}
+}
+
+func TestNodesEndpointRequiresOrganizationWhenAmbiguous(t *testing.T) {
+	router := newTestRouter(t)
+	createOrgForTest(t, router, "canterlot")
+
+	req := httptest.NewRequest(http.MethodGet, "/nodes", nil)
+	applySignedHeaders(t, req, "pivotal", "", http.MethodGet, "/nodes", nil, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("list nodes status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal(nodes ambiguity) error = %v", err)
+	}
+	if payload["error"] != "organization_required" {
+		t.Fatalf("error = %v, want %q", payload["error"], "organization_required")
+	}
+}
+
+func TestNodesEndpointUsesConfiguredDefaultOrganization(t *testing.T) {
+	router := newTestRouterWithConfig(t, config.Config{
+		ServiceName:         "opencook",
+		Environment:         "test",
+		AuthSkew:            15 * time.Minute,
+		DefaultOrganization: "canterlot",
+	})
+	createOrgForTest(t, router, "canterlot")
+
+	body := mustMarshalNodePayload(t, "shining-armor")
+	createReq := httptest.NewRequest(http.MethodPost, "/nodes", bytes.NewReader(body))
+	applySignedHeaders(t, createReq, "pivotal", "", http.MethodPost, "/nodes", body, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	createRec := httptest.NewRecorder()
+	router.ServeHTTP(createRec, createReq)
+
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("create node status = %d, want %d, body = %s", createRec.Code, http.StatusCreated, createRec.Body.String())
+	}
+
+	listReq := httptest.NewRequest(http.MethodGet, "/nodes", nil)
+	applySignedHeaders(t, listReq, "pivotal", "", http.MethodGet, "/nodes", nil, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:10Z")
+	listRec := httptest.NewRecorder()
+	router.ServeHTTP(listRec, listReq)
+
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("list nodes status = %d, want %d, body = %s", listRec.Code, http.StatusOK, listRec.Body.String())
+	}
+
+	var payload map[string]string
+	if err := json.Unmarshal(listRec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal(list nodes) error = %v", err)
+	}
+	if payload["shining-armor"] != "/nodes/shining-armor" {
+		t.Fatalf("node uri = %q, want %q", payload["shining-armor"], "/nodes/shining-armor")
+	}
+
+	explicitReq := httptest.NewRequest(http.MethodGet, "/organizations/canterlot/nodes/shining-armor", nil)
+	applySignedHeaders(t, explicitReq, "pivotal", "", http.MethodGet, "/organizations/canterlot/nodes/shining-armor", nil, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:15Z")
+	explicitRec := httptest.NewRecorder()
+	router.ServeHTTP(explicitRec, explicitReq)
+
+	if explicitRec.Code != http.StatusOK {
+		t.Fatalf("explicit get node status = %d, want %d", explicitRec.Code, http.StatusOK)
+	}
+
+	explicitHeadReq := httptest.NewRequest(http.MethodHead, "/organizations/canterlot/nodes", nil)
+	applySignedHeaders(t, explicitHeadReq, "pivotal", "", http.MethodHead, "/organizations/canterlot/nodes", nil, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:20Z")
+	explicitHeadRec := httptest.NewRecorder()
+	router.ServeHTTP(explicitHeadRec, explicitHeadReq)
+
+	if explicitHeadRec.Code != http.StatusOK {
+		t.Fatalf("explicit head nodes collection status = %d, want %d", explicitHeadRec.Code, http.StatusOK)
+	}
+	if explicitHeadRec.Body.Len() != 0 {
+		t.Fatalf("explicit head nodes collection body length = %d, want 0", explicitHeadRec.Body.Len())
+	}
+}
+
 func TestUsersEndpointRejectsOversizedBodyBeforeVerification(t *testing.T) {
 	router := newTestRouterWithConfig(t, config.Config{
 		ServiceName:      "opencook",
@@ -1384,6 +1735,27 @@ func createOrgForTest(t *testing.T, router http.Handler, orgName string) {
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("create org status = %d, want %d, body = %s", rec.Code, http.StatusCreated, rec.Body.String())
 	}
+}
+
+func mustMarshalNodePayload(t *testing.T, name string) []byte {
+	t.Helper()
+
+	body, err := json.Marshal(map[string]any{
+		"name":             name,
+		"json_class":       "Chef::Node",
+		"chef_type":        "node",
+		"chef_environment": "_default",
+		"override":         map[string]any{},
+		"normal":           map[string]any{"is_anyone": "no"},
+		"default":          map[string]any{},
+		"automatic":        map[string]any{},
+		"run_list":         []string{},
+	})
+	if err != nil {
+		t.Fatalf("json.Marshal(node payload) error = %v", err)
+	}
+
+	return body
 }
 
 func stringSliceFromAny(t *testing.T, value any) []string {

@@ -9,15 +9,16 @@ import (
 )
 
 type Config struct {
-	ServiceName      string
-	Environment      string
-	ListenAddress    string
-	ReadTimeout      time.Duration
-	WriteTimeout     time.Duration
-	ShutdownTimeout  time.Duration
-	AuthSkew         time.Duration
-	MaxAuthBodyBytes int64
-	BootstrapMode    bool
+	ServiceName         string
+	Environment         string
+	ListenAddress       string
+	DefaultOrganization string
+	ReadTimeout         time.Duration
+	WriteTimeout        time.Duration
+	ShutdownTimeout     time.Duration
+	AuthSkew            time.Duration
+	MaxAuthBodyBytes    int64
+	BootstrapMode       bool
 
 	PostgresDSN    string
 	OpenSearchURL  string
@@ -70,6 +71,7 @@ func LoadFromEnv() (Config, error) {
 		ServiceName:                     envString("OPENCOOK_SERVICE_NAME", "opencook"),
 		Environment:                     envString("OPENCOOK_ENV", "development"),
 		ListenAddress:                   envString("OPENCOOK_LISTEN_ADDRESS", ":4000"),
+		DefaultOrganization:             envString("OPENCOOK_DEFAULT_ORGANIZATION", ""),
 		ReadTimeout:                     readTimeout,
 		WriteTimeout:                    writeTimeout,
 		ShutdownTimeout:                 shutdownTimeout,
@@ -92,6 +94,7 @@ func (c Config) Redacted() map[string]string {
 		"service_name":               c.ServiceName,
 		"environment":                c.Environment,
 		"listen_address":             c.ListenAddress,
+		"default_organization":       c.DefaultOrganization,
 		"read_timeout":               c.ReadTimeout.String(),
 		"write_timeout":              c.WriteTimeout.String(),
 		"shutdown_timeout":           c.ShutdownTimeout.String(),
