@@ -38,11 +38,9 @@ func (s *server) handleSearchIndexes(w http.ResponseWriter, r *http.Request) {
 
 	indexes, err := s.deps.Search.Indexes(r.Context(), org)
 	if err != nil {
-		s.logf("search index listing failure: %v", err)
-		writeJSON(w, http.StatusInternalServerError, apiError{
-			Error:   "search_failed",
-			Message: "internal search compatibility error",
-		})
+		if !s.writeSearchError(w, err, "search index listing") {
+			return
+		}
 		return
 	}
 
@@ -77,6 +75,15 @@ func (s *server) handleSearchQuery(w http.ResponseWriter, r *http.Request) {
 	}
 
 	indexName := strings.TrimSpace(r.PathValue("index"))
+	indexPath := basePath + "/" + indexName
+	if !matchesCollectionPath(r.URL.Path, indexPath) {
+		writeJSON(w, http.StatusNotFound, apiError{
+			Error:   "not_found",
+			Message: "route not found in scaffold router",
+		})
+		return
+	}
+
 	resource, found := searchContainerResource(indexName, org)
 	if !found {
 		writeJSON(w, http.StatusNotFound, apiError{
@@ -109,11 +116,9 @@ func (s *server) handleSearchQuery(w http.ResponseWriter, r *http.Request) {
 		Q:            r.URL.Query().Get("q"),
 	})
 	if err != nil {
-		s.logf("search query failure for %s: %v", indexName, err)
-		writeJSON(w, http.StatusInternalServerError, apiError{
-			Error:   "search_failed",
-			Message: "internal search compatibility error",
-		})
+		if !s.writeSearchError(w, err, "search query "+indexName) {
+			return
+		}
 		return
 	}
 
@@ -168,6 +173,15 @@ func (s *server) handleSearchQuery(w http.ResponseWriter, r *http.Request) {
 func (s *server) resolveSearchRoute(w http.ResponseWriter, r *http.Request) (string, string, bool) {
 	org := strings.TrimSpace(r.PathValue("org"))
 	if org != "" {
+		if s.deps.Bootstrap != nil {
+			if _, exists := s.deps.Bootstrap.GetOrganization(org); !exists {
+				writeJSON(w, http.StatusNotFound, apiError{
+					Error:   "not_found",
+					Message: "organization not found",
+				})
+				return "", "", false
+			}
+		}
 		return org, "/organizations/" + org + "/search", true
 	}
 
@@ -263,8 +277,6 @@ func decodePartialSearchBody(w http.ResponseWriter, r *http.Request) (map[string
 	selectors := make(map[string][]string, len(payload))
 	for alias, value := range payload {
 		switch typed := value.(type) {
-		case []string:
-			selectors[alias] = append([]string(nil), typed...)
 		case []any:
 			path := make([]string, 0, len(typed))
 			for _, item := range typed {
@@ -288,6 +300,27 @@ func decodePartialSearchBody(w http.ResponseWriter, r *http.Request) (map[string
 		}
 	}
 	return selectors, true
+}
+
+func (s *server) writeSearchError(w http.ResponseWriter, err error, operation string) bool {
+	if err == nil {
+		return true
+	}
+
+	switch {
+	case errors.Is(err, search.ErrNotFound):
+		writeJSON(w, http.StatusNotFound, apiError{
+			Error:   "not_found",
+			Message: "organization not found",
+		})
+	default:
+		s.logf("%s failure: %v", operation, err)
+		writeJSON(w, http.StatusInternalServerError, apiError{
+			Error:   "search_failed",
+			Message: "internal search compatibility error",
+		})
+	}
+	return false
 }
 
 func applyPartialSearchSelectors(document map[string]any, selectors map[string][]string) map[string]any {

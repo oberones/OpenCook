@@ -41,13 +41,22 @@ func (i MemoryIndex) Status() Status {
 	}
 }
 
-func (i MemoryIndex) Indexes(_ context.Context, _ string) ([]string, error) {
+func (i MemoryIndex) Indexes(_ context.Context, org string) ([]string, error) {
+	if i.state == nil {
+		return nil, ErrUnavailable
+	}
+	if err := i.ensureOrganization(org); err != nil {
+		return nil, err
+	}
 	return append([]string(nil), builtInIndexes...), nil
 }
 
 func (i MemoryIndex) Search(_ context.Context, query Query) (Result, error) {
 	if i.state == nil {
-		return Result{}, fmt.Errorf("search state is not configured")
+		return Result{}, ErrUnavailable
+	}
+	if err := i.ensureOrganization(query.Organization); err != nil {
+		return Result{}, err
 	}
 
 	docs, err := i.documentsForQuery(query)
@@ -75,14 +84,14 @@ func (i MemoryIndex) documentsForQuery(query Query) ([]Document, error) {
 	case "role":
 		return i.roleDocuments(query.Organization)
 	default:
-		return nil, fmt.Errorf("unsupported search index %q", query.Index)
+		return nil, ErrNotFound
 	}
 }
 
 func (i MemoryIndex) environmentDocuments(org string) ([]Document, error) {
 	environments, ok := i.state.ListEnvironments(org)
 	if !ok {
-		return nil, fmt.Errorf("organization not found")
+		return nil, ErrNotFound
 	}
 
 	names := sortedKeys(environments)
@@ -112,7 +121,7 @@ func (i MemoryIndex) environmentDocuments(org string) ([]Document, error) {
 func (i MemoryIndex) nodeDocuments(org string) ([]Document, error) {
 	nodes, ok := i.state.ListNodes(org)
 	if !ok {
-		return nil, fmt.Errorf("organization not found")
+		return nil, ErrNotFound
 	}
 
 	names := sortedKeys(nodes)
@@ -142,7 +151,7 @@ func (i MemoryIndex) nodeDocuments(org string) ([]Document, error) {
 func (i MemoryIndex) roleDocuments(org string) ([]Document, error) {
 	roles, ok := i.state.ListRoles(org)
 	if !ok {
-		return nil, fmt.Errorf("organization not found")
+		return nil, ErrNotFound
 	}
 
 	names := sortedKeys(roles)
@@ -568,4 +577,17 @@ func sortedKeys(in map[string]string) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+func (i MemoryIndex) ensureOrganization(org string) error {
+	if i.state == nil {
+		return ErrUnavailable
+	}
+	if strings.TrimSpace(org) == "" {
+		return ErrNotFound
+	}
+	if _, ok := i.state.GetOrganization(org); !ok {
+		return ErrNotFound
+	}
+	return nil
 }
