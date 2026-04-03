@@ -48,7 +48,25 @@ func (i MemoryIndex) Indexes(_ context.Context, org string) ([]string, error) {
 	if err := i.ensureOrganization(org); err != nil {
 		return nil, err
 	}
-	return append([]string(nil), builtInIndexes...), nil
+
+	indexes := append([]string(nil), builtInIndexes...)
+	seen := make(map[string]struct{}, len(indexes))
+	for _, name := range indexes {
+		seen[name] = struct{}{}
+	}
+	dataBags, ok := i.state.ListDataBags(org)
+	if !ok {
+		return nil, ErrOrganizationNotFound
+	}
+	for _, name := range sortedKeys(dataBags) {
+		if _, exists := seen[name]; exists {
+			continue
+		}
+		seen[name] = struct{}{}
+		indexes = append(indexes, name)
+	}
+
+	return indexes, nil
 }
 
 func (i MemoryIndex) Search(_ context.Context, query Query) (Result, error) {
@@ -86,14 +104,14 @@ func (i MemoryIndex) documentsForQuery(query Query) ([]Document, error) {
 	case "role":
 		return i.roleDocuments(query.Organization)
 	default:
-		return nil, ErrNotFound
+		return i.dataBagDocuments(query.Organization, query.Index)
 	}
 }
 
 func (i MemoryIndex) clientDocuments(org string) ([]Document, error) {
 	clients, ok := i.state.ListClients(org)
 	if !ok {
-		return nil, ErrNotFound
+		return nil, ErrOrganizationNotFound
 	}
 
 	names := sortedKeys(clients)
@@ -123,7 +141,7 @@ func (i MemoryIndex) clientDocuments(org string) ([]Document, error) {
 func (i MemoryIndex) environmentDocuments(org string) ([]Document, error) {
 	environments, ok := i.state.ListEnvironments(org)
 	if !ok {
-		return nil, ErrNotFound
+		return nil, ErrOrganizationNotFound
 	}
 
 	names := sortedKeys(environments)
@@ -153,7 +171,7 @@ func (i MemoryIndex) environmentDocuments(org string) ([]Document, error) {
 func (i MemoryIndex) nodeDocuments(org string) ([]Document, error) {
 	nodes, ok := i.state.ListNodes(org)
 	if !ok {
-		return nil, ErrNotFound
+		return nil, ErrOrganizationNotFound
 	}
 
 	names := sortedKeys(nodes)
@@ -183,7 +201,7 @@ func (i MemoryIndex) nodeDocuments(org string) ([]Document, error) {
 func (i MemoryIndex) roleDocuments(org string) ([]Document, error) {
 	roles, ok := i.state.ListRoles(org)
 	if !ok {
-		return nil, ErrNotFound
+		return nil, ErrOrganizationNotFound
 	}
 
 	names := sortedKeys(roles)
@@ -203,6 +221,45 @@ func (i MemoryIndex) roleDocuments(org string) ([]Document, error) {
 			Resource: authz.Resource{
 				Type:         "role",
 				Name:         role.Name,
+				Organization: org,
+			},
+		})
+	}
+	return out, nil
+}
+
+func (i MemoryIndex) dataBagDocuments(org, bagName string) ([]Document, error) {
+	items, orgExists, bagExists := i.state.ListDataBagItems(org, bagName)
+	switch {
+	case !orgExists:
+		return nil, ErrOrganizationNotFound
+	case !bagExists:
+		return nil, ErrIndexNotFound
+	}
+
+	names := sortedKeys(items)
+	out := make([]Document, 0, len(names))
+	for _, name := range names {
+		item, itemOrgExists, itemBagExists, itemExists := i.state.GetDataBagItem(org, bagName, name)
+		switch {
+		case !itemOrgExists:
+			return nil, ErrOrganizationNotFound
+		case !itemBagExists:
+			return nil, ErrIndexNotFound
+		case !itemExists:
+			continue
+		}
+
+		object := dataBagItemObject(bagName, item)
+		out = append(out, Document{
+			Index:   bagName,
+			Name:    item.ID,
+			Object:  object,
+			Partial: cloneSearchMap(item.RawData),
+			Fields:  dataBagItemFields(item),
+			Resource: authz.Resource{
+				Type:         "data_bag",
+				Name:         bagName,
 				Organization: org,
 			},
 		})
@@ -289,6 +346,16 @@ func roleObject(role bootstrap.Role) map[string]any {
 	}
 }
 
+func dataBagItemObject(bagName string, item bootstrap.DataBagItem) map[string]any {
+	return map[string]any{
+		"name":       "data_bag_item_" + bagName + "_" + item.ID,
+		"json_class": "Chef::DataBagItem",
+		"chef_type":  "data_bag_item",
+		"data_bag":   bagName,
+		"raw_data":   cloneSearchMap(item.RawData),
+	}
+}
+
 func clientFields(client bootstrap.Client) map[string][]string {
 	fields := make(map[string][]string)
 	addField(fields, "name", client.Name)
@@ -356,6 +423,12 @@ func roleFields(role bootstrap.Role) map[string][]string {
 	return fields
 }
 
+func dataBagItemFields(item bootstrap.DataBagItem) map[string][]string {
+	fields := make(map[string][]string)
+	addFlattenedFields(fields, nil, item.RawData)
+	return fields
+}
+
 func matchesQuery(doc Document, query string) bool {
 	query = strings.TrimSpace(query)
 	if query == "" || query == "*:*" {
@@ -363,21 +436,62 @@ func matchesQuery(doc Document, query string) bool {
 	}
 
 	for _, clause := range strings.Split(query, " OR ") {
-		if matchesClause(doc.Fields, clause) {
+		if matchesAndExpression(doc.Fields, clause) {
 			return true
 		}
 	}
 	return false
 }
 
-func matchesClause(fields map[string][]string, clause string) bool {
-	clause = strings.TrimSpace(clause)
-	if clause == "" {
+func matchesAndExpression(fields map[string][]string, expression string) bool {
+	if strings.TrimSpace(expression) == "" {
 		return false
 	}
-	parts := strings.SplitN(clause, ":", 2)
+
+	terms := strings.Split(expression, " AND ")
+	positiveSeen := false
+	processedTerm := false
+	for _, rawTerm := range terms {
+		rawTerm = strings.TrimSpace(rawTerm)
+		if rawTerm == "" {
+			continue
+		}
+
+		negated := false
+		switch {
+		case strings.HasPrefix(rawTerm, "NOT "):
+			negated = true
+			rawTerm = strings.TrimSpace(strings.TrimPrefix(rawTerm, "NOT "))
+		case strings.HasPrefix(rawTerm, "-"):
+			negated = true
+			rawTerm = strings.TrimSpace(strings.TrimPrefix(rawTerm, "-"))
+		}
+		if rawTerm == "" {
+			continue
+		}
+
+		processedTerm = true
+		matched := matchesTerm(fields, rawTerm)
+		if negated {
+			if matched {
+				return false
+			}
+			continue
+		}
+
+		positiveSeen = true
+		if !matched {
+			return false
+		}
+	}
+
+	return positiveSeen || processedTerm
+}
+
+func matchesTerm(fields map[string][]string, term string) bool {
+	parts := strings.SplitN(term, ":", 2)
 	if len(parts) != 2 {
-		return false
+		return matchesAnyField(fields, unescapeQueryToken(strings.TrimSpace(term)))
 	}
 
 	field := unescapeQueryToken(strings.TrimSpace(parts[0]))
@@ -409,8 +523,35 @@ func matchesClause(fields map[string][]string, clause string) bool {
 	return false
 }
 
+func matchesAnyField(fields map[string][]string, value string) bool {
+	if value == "" {
+		return false
+	}
+
+	wildcard := strings.HasSuffix(value, "*")
+	if wildcard {
+		value = strings.TrimSuffix(value, "*")
+	}
+
+	for _, candidates := range fields {
+		for _, candidate := range candidates {
+			if wildcard {
+				if strings.HasPrefix(candidate, value) {
+					return true
+				}
+				continue
+			}
+			if candidate == value {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
 func unescapeQueryToken(value string) string {
-	replacer := strings.NewReplacer(`\:`, ":", `\[`, "[", `\]`, "]", `\@`, "@")
+	replacer := strings.NewReplacer(`\:`, ":", `\[`, "[", `\]`, "]", `\@`, "@", `\/`, "/")
 	return replacer.Replace(value)
 }
 
@@ -642,10 +783,10 @@ func (i MemoryIndex) ensureOrganization(org string) error {
 		return ErrUnavailable
 	}
 	if strings.TrimSpace(org) == "" {
-		return ErrNotFound
+		return ErrOrganizationNotFound
 	}
 	if _, ok := i.state.GetOrganization(org); !ok {
-		return ErrNotFound
+		return ErrOrganizationNotFound
 	}
 	return nil
 }

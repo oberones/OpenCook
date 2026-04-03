@@ -54,13 +54,15 @@ Status: in progress
 
 Status: in progress
 
-- in-memory compatibility search is live for `client`, `environment`, `node`, and `role`
-- `/search` and `/organizations/{org}/search` now advertise the currently implemented indexes
-- GET search and POST partial search now support client, environment, node, and role queries
+- in-memory compatibility search is live for `client`, `environment`, `node`, `role`, and per-data-bag indexes
+- `/search` and `/organizations/{org}/search` now advertise the currently implemented built-in indexes plus live data bag indexes
+- GET search and POST partial search now support client, environment, node, role, and data bag queries
 - search results are filtered through current read authz before pagination is applied
 - node partial search now reflects merged attribute precedence for search-facing behavior
 - default-org client search results now point at live `/clients/...` routes instead of org-only URLs
-- OpenSearch-backed indexing, provider capability handling, data-bag search coverage, and reindex tooling are still pending
+- data bag search now mirrors Chef-style wrapper results and raw-item partial search behavior
+- simple `AND`/`NOT` matching and escaped-slash prefix handling are now covered for the in-memory compatibility layer
+- OpenSearch-backed indexing, deeper query translation, provider capability handling, and reindex tooling are still pending
 
 ## Milestone 6: Cookbook and Blob Workflows
 
