@@ -6,6 +6,7 @@ func TestLoadFromEnvDefaults(t *testing.T) {
 	t.Setenv("OPENCOOK_SERVICE_NAME", "")
 	t.Setenv("OPENCOOK_ENV", "")
 	t.Setenv("OPENCOOK_LISTEN_ADDRESS", "")
+	t.Setenv("OPENCOOK_DEFAULT_ORGANIZATION", "")
 	t.Setenv("OPENCOOK_READ_TIMEOUT", "")
 	t.Setenv("OPENCOOK_WRITE_TIMEOUT", "")
 	t.Setenv("OPENCOOK_SHUTDOWN_TIMEOUT", "")
@@ -32,6 +33,10 @@ func TestLoadFromEnvDefaults(t *testing.T) {
 
 	if cfg.ListenAddress != ":4000" {
 		t.Fatalf("ListenAddress = %q, want %q", cfg.ListenAddress, ":4000")
+	}
+
+	if cfg.DefaultOrganization != "" {
+		t.Fatalf("DefaultOrganization = %q, want empty string", cfg.DefaultOrganization)
 	}
 
 	if cfg.AuthSkew.String() != "15m0s" {
@@ -65,5 +70,18 @@ func TestLoadFromEnvMaxAuthBodyBytes(t *testing.T) {
 
 	if cfg.MaxAuthBodyBytes != 2048 {
 		t.Fatalf("MaxAuthBodyBytes = %d, want %d", cfg.MaxAuthBodyBytes, 2048)
+	}
+}
+
+func TestLoadFromEnvDefaultOrganization(t *testing.T) {
+	t.Setenv("OPENCOOK_DEFAULT_ORGANIZATION", "ponyville")
+
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatalf("LoadFromEnv() error = %v", err)
+	}
+
+	if cfg.DefaultOrganization != "ponyville" {
+		t.Fatalf("DefaultOrganization = %q, want %q", cfg.DefaultOrganization, "ponyville")
 	}
 }

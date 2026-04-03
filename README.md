@@ -10,7 +10,7 @@ The project is currently in its compatibility-foundation phase. This repository 
 - compatibility surface inventory wired into the HTTP server
 - Chef request-signing verification with test coverage
 - in-memory bootstrap state for users, organizations, clients, groups, containers, and ACLs
-- initial authenticated endpoints for users, organizations, clients, ACL inspection, and actor key lifecycle
+- initial authenticated endpoints for users, organizations, clients, ACL inspection, actor key lifecycle, and nodes
 - docs for architecture decisions, milestones, and compatibility tracking
 - a starting test layout for contract-driven development
 
@@ -42,7 +42,7 @@ The project is currently in its compatibility-foundation phase. This repository 
 
 1. Request signing and key management compatibility
 2. Org, user, client, and ACL bootstrap flows
-3. Nodes and core object CRUD
+3. Roles, environments, data bags, and remaining core object CRUD
 4. Search/indexing compatibility on OpenSearch
 5. Cookbook, sandbox, and blob storage flows
 
@@ -56,6 +56,7 @@ To exercise the first authenticated HTTP endpoints locally, configure a bootstra
 export OPENCOOK_BOOTSTRAP_REQUESTOR_NAME=silent-bob
 export OPENCOOK_BOOTSTRAP_REQUESTOR_TYPE=user
 export OPENCOOK_BOOTSTRAP_PUBLIC_KEY_PATH=/path/to/public.pem
+export OPENCOOK_DEFAULT_ORGANIZATION=ponyville
 export OPENCOOK_MAX_AUTH_BODY_BYTES=8388608
 ```
 
@@ -67,6 +68,10 @@ With that in place, signed requests can successfully hit:
 - `/users/{name}/keys/{key}`
 - `/organizations`
 - `/organizations/{org}`
+- `/nodes`
+- `/nodes/{name}`
+- `/organizations/{org}/nodes`
+- `/organizations/{org}/nodes/{name}`
 - `/organizations/{org}/clients`
 - `/organizations/{org}/clients/{name}`
 - `/organizations/{org}/clients/{name}/keys`

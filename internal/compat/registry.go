@@ -33,7 +33,7 @@ func NewDefaultRegistry() Registry {
 				Name:     "infra-objects",
 				Owner:    "api",
 				Phase:    "phase-4",
-				Patterns: []string{"/clients", "/clients/", "/nodes", "/nodes/", "/roles", "/roles/", "/data", "/data/", "/environments", "/environments/"},
+				Patterns: []string{"/clients", "/clients/", "/nodes", "/nodes/", "/organizations/{org}/nodes", "/organizations/{org}/nodes/", "/roles", "/roles/", "/data", "/data/", "/environments", "/environments/"},
 				Notes:    "Core Chef object CRUD and organization-scoped default routes.",
 			},
 			{
