@@ -1,10 +1,12 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strings"
 
+	"github.com/oberones/OpenCook/internal/authn"
 	"github.com/oberones/OpenCook/internal/authz"
 	"github.com/oberones/OpenCook/internal/bootstrap"
 )
@@ -346,16 +348,7 @@ func (s *server) authorizeRequest(w http.ResponseWriter, r *http.Request, action
 		return false
 	}
 
-	subjectOrg := requestor.Organization
-	if subjectOrg == "" {
-		subjectOrg = resource.Organization
-	}
-
-	decision, err := s.deps.Authz.Authorize(r.Context(), authz.Subject{
-		Type:         requestor.Type,
-		Name:         requestor.Name,
-		Organization: subjectOrg,
-	}, action, resource)
+	allowed, err := s.authorizeRequestor(r.Context(), requestor, action, resource)
 	if err != nil {
 		s.logf("authz failure for %s %s/%s: %v", action, resource.Type, resource.Name, err)
 		writeJSON(w, http.StatusInternalServerError, apiError{
@@ -364,7 +357,7 @@ func (s *server) authorizeRequest(w http.ResponseWriter, r *http.Request, action
 		})
 		return false
 	}
-	if !decision.Allowed {
+	if !allowed {
 		writeJSON(w, http.StatusForbidden, apiError{
 			Error:   "forbidden",
 			Message: "requestor is not authorized for this resource",
@@ -372,6 +365,23 @@ func (s *server) authorizeRequest(w http.ResponseWriter, r *http.Request, action
 		return false
 	}
 	return true
+}
+
+func (s *server) authorizeRequestor(ctx context.Context, requestor authn.Principal, action authz.Action, resource authz.Resource) (bool, error) {
+	subjectOrg := requestor.Organization
+	if subjectOrg == "" {
+		subjectOrg = resource.Organization
+	}
+
+	decision, err := s.deps.Authz.Authorize(ctx, authz.Subject{
+		Type:         requestor.Type,
+		Name:         requestor.Name,
+		Organization: subjectOrg,
+	}, action, resource)
+	if err != nil {
+		return false, err
+	}
+	return decision.Allowed, nil
 }
 
 func (s *server) authorizeUserRead(w http.ResponseWriter, r *http.Request, name string) bool {

@@ -8,7 +8,7 @@ Use this document as the working checklist for each Chef Infra Server behavior a
 | Keys and API versions | `API_VERSIONING.md`, pedant versioned behaviors | Partial | `internal/authn`, `internal/api` | In progress | Actor `/keys` list/create/update/delete flows and expiration-aware auth are live; deeper v0/v1 semantics still need a dedicated pass |
 | Organizations and ACLs | Bifrost, org bootstrap specs | Partial | `internal/authz` | In progress | In-memory bootstrap and default ACL generation are live; persistence and wider membership flows remain |
 | Core Chef objects | `oc_erchef`, pedant object specs | Partial | `internal/api`, `internal/bootstrap`, `internal/store/pg` | In progress | Nodes, environments, and roles now have in-memory read/write slices, including `_default` environments, `/environments/{name}/nodes`, and `/roles/{name}/environments`; data bags, deeper run-list normalization, and PostgreSQL persistence still need follow-on work |
-| Search | `SEARCH_AND_INDEXING.md`, search specs | Pending | `internal/search` | Scaffolded | Preserve expansion format |
+| Search | `SEARCH_AND_INDEXING.md`, search specs | Partial | `internal/search`, `internal/api` | In progress | In-memory compatibility search is live for environments, nodes, and roles, including partial search and ACL filtering; OpenSearch-backed indexing and wider object coverage still need follow-on work |
 | Sandboxes and cookbooks | Bookshelf, cookbook specs | Pending | `internal/blob`, `internal/api` | Scaffolded | S3-compatible mode is important |
 | Operations | status and ctl flows | Pending | `internal/api`, future admin package | Scaffolded | Add reindex and repair later |
 
