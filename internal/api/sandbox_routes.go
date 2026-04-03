@@ -65,11 +65,75 @@ func (s *server) handleSandboxes(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) handleBlobChecksumUpload(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPut {
-		writeMethodNotAllowed(w, "method not allowed for blob checksum route", http.MethodPut)
+	checksum := strings.ToLower(strings.TrimSpace(r.PathValue("checksum")))
+	if !bootstrap.ValidSandboxChecksum(checksum) {
+		writeJSON(w, http.StatusBadRequest, apiError{
+			Error:   "invalid_checksum",
+			Message: "checksum path must be a valid hex md5 digest",
+		})
 		return
 	}
 
+	switch r.Method {
+	case http.MethodGet:
+		s.handleBlobChecksumDownload(w, r, checksum)
+	case http.MethodPut:
+		s.handleBlobChecksumUploadPut(w, r, checksum)
+	default:
+		writeMethodNotAllowed(w, "method not allowed for blob checksum route", http.MethodGet, http.MethodPut)
+	}
+}
+
+func (s *server) handleBlobChecksumDownload(w http.ResponseWriter, r *http.Request, checksum string) {
+	getter, ok := s.deps.Blob.(blob.Getter)
+	if !ok {
+		writeJSON(w, http.StatusServiceUnavailable, apiError{
+			Error:   "blob_unavailable",
+			Message: "blob download backend is not available",
+		})
+		return
+	}
+
+	org := strings.TrimSpace(r.URL.Query().Get("org"))
+	expires := strings.TrimSpace(r.URL.Query().Get("expires"))
+	signature := strings.TrimSpace(r.URL.Query().Get("signature"))
+	if org == "" || expires == "" || signature == "" {
+		writeJSON(w, http.StatusBadRequest, apiError{
+			Error:   "invalid_download_url",
+			Message: "download URL is missing required authorization context",
+		})
+		return
+	}
+	if err := s.verifyBlobURL(http.MethodGet, checksum, org, "", expires, signature); err != nil {
+		writeJSON(w, http.StatusForbidden, apiError{
+			Error:   "invalid_download_url",
+			Message: err.Error(),
+		})
+		return
+	}
+
+	body, err := getter.Get(r.Context(), checksum)
+	if err != nil {
+		if errors.Is(err, blob.ErrNotFound) {
+			writeJSON(w, http.StatusNotFound, apiError{
+				Error:   "not_found",
+				Message: "blob not found",
+			})
+			return
+		}
+		s.logf("blob download failed for checksum %s: %v", checksum, err)
+		writeJSON(w, http.StatusInternalServerError, apiError{
+			Error:   "blob_download_failed",
+			Message: "failed to load blob",
+		})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/octet-stream")
+	_, _ = w.Write(body)
+}
+
+func (s *server) handleBlobChecksumUploadPut(w http.ResponseWriter, r *http.Request, checksum string) {
 	state := s.deps.Bootstrap
 	if state == nil {
 		writeJSON(w, http.StatusInternalServerError, apiError{
@@ -88,15 +152,6 @@ func (s *server) handleBlobChecksumUpload(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	checksum := strings.ToLower(strings.TrimSpace(r.PathValue("checksum")))
-	if !bootstrap.ValidSandboxChecksum(checksum) {
-		writeJSON(w, http.StatusBadRequest, apiError{
-			Error:   "invalid_checksum",
-			Message: "checksum path must be a valid hex md5 digest",
-		})
-		return
-	}
-
 	org := strings.TrimSpace(r.URL.Query().Get("org"))
 	sandboxID := strings.TrimSpace(r.URL.Query().Get("sandbox_id"))
 	expires := strings.TrimSpace(r.URL.Query().Get("expires"))
@@ -108,7 +163,7 @@ func (s *server) handleBlobChecksumUpload(w http.ResponseWriter, r *http.Request
 		})
 		return
 	}
-	if err := s.verifySandboxUploadURL(checksum, org, sandboxID, expires, signature); err != nil {
+	if err := s.verifyBlobURL(http.MethodPut, checksum, org, sandboxID, expires, signature); err != nil {
 		writeJSON(w, http.StatusForbidden, apiError{
 			Error:   "invalid_upload_url",
 			Message: err.Error(),
@@ -347,28 +402,48 @@ func (s *server) sandboxUploadURL(r *http.Request, checksum, org, sandboxID stri
 	values.Set("org", org)
 	values.Set("sandbox_id", sandboxID)
 	values.Set("expires", strconv.FormatInt(expiresAt.Unix(), 10))
-	values.Set("signature", s.signSandboxUploadURL(checksum, org, sandboxID, expiresAt.Unix()))
+	values.Set("signature", s.signBlobURL(http.MethodPut, checksum, org, sandboxID, expiresAt.Unix()))
 	return absoluteURL(r, "/_blob/checksums/"+checksum) + "?" + values.Encode()
 }
 
-func (s *server) verifySandboxUploadURL(checksum, org, sandboxID, expires, signature string) error {
+func (s *server) blobDownloadURL(r *http.Request, checksum, org string) string {
+	expiresAt := s.now().Add(defaultBlobUploadURLTTL)
+	values := url.Values{}
+	values.Set("org", org)
+	values.Set("expires", strconv.FormatInt(expiresAt.Unix(), 10))
+	values.Set("signature", s.signBlobURL(http.MethodGet, checksum, org, "", expiresAt.Unix()))
+	return absoluteURL(r, "/_blob/checksums/"+checksum) + "?" + values.Encode()
+}
+
+func (s *server) verifyBlobURL(method, checksum, org, sandboxID, expires, signature string) error {
 	expiresAt, err := strconv.ParseInt(expires, 10, 64)
 	if err != nil {
+		if method == http.MethodGet {
+			return errors.New("download URL has an invalid expiration")
+		}
 		return errors.New("upload URL has an invalid expiration")
 	}
 	if s.now().Unix() > expiresAt {
+		if method == http.MethodGet {
+			return errors.New("download URL has expired")
+		}
 		return errors.New("upload URL has expired")
 	}
 
-	expected := s.signSandboxUploadURL(checksum, org, sandboxID, expiresAt)
+	expected := s.signBlobURL(method, checksum, org, sandboxID, expiresAt)
 	if !hmac.Equal([]byte(signature), []byte(expected)) {
+		if method == http.MethodGet {
+			return errors.New("download URL signature is invalid")
+		}
 		return errors.New("upload URL signature is invalid")
 	}
 	return nil
 }
 
-func (s *server) signSandboxUploadURL(checksum, org, sandboxID string, expiresAt int64) string {
+func (s *server) signBlobURL(method, checksum, org, sandboxID string, expiresAt int64) string {
 	mac := hmac.New(sha256.New, s.deps.BlobUploadSecret)
+	io.WriteString(mac, method)
+	io.WriteString(mac, "\n")
 	io.WriteString(mac, checksum)
 	io.WriteString(mac, "\n")
 	io.WriteString(mac, org)

@@ -116,6 +116,29 @@ Implemented so far:
   - signed sandbox create and commit flows
   - absolute checksum upload URLs under `/_blob/checksums/{checksum}`
   - in-memory checksum blob storage with hash validation and upload size limits
+- the first cookbook compatibility slice:
+  - `/cookbook_artifacts`
+  - `/cookbook_artifacts/{name}`
+  - `/cookbook_artifacts/{name}/{identifier}`
+  - `/cookbooks`
+  - `/cookbooks/_latest`
+  - `/cookbooks/_recipes`
+  - `/cookbooks/{name}`
+  - `/cookbooks/{name}/{version}`
+  - `/universe`
+  - `/organizations/{org}/cookbook_artifacts`
+  - `/organizations/{org}/cookbook_artifacts/{name}`
+  - `/organizations/{org}/cookbook_artifacts/{name}/{identifier}`
+  - `/organizations/{org}/cookbooks`
+  - `/organizations/{org}/cookbooks/_latest`
+  - `/organizations/{org}/cookbooks/_recipes`
+  - `/organizations/{org}/cookbooks/{name}`
+  - `/organizations/{org}/cookbooks/{name}/{version}`
+  - `/organizations/{org}/universe`
+  - cookbook artifact list/get/create/delete
+  - cookbook collection, latest, recipe, and named-version read views
+  - API-version-sensitive cookbook version shaping with legacy segments and v2 `all_files`
+  - signed direct blob URLs for cookbook file downloads
 - the first search-facing slice:
   - `/search`
   - `/search/{client,environment,node,role}`
@@ -153,7 +176,7 @@ Current architectural reality:
 - the API surface is partly real and partly scaffolded
 - bootstrap and key lifecycle state are in-memory compatibility implementations
 - PostgreSQL and OpenSearch are still placeholders or early scaffolding
-- the blob layer now has an in-memory compatibility implementation for sandbox checksum uploads, but production S3-compatible behavior is still pending
+- the blob layer now has an in-memory compatibility implementation for sandbox checksum uploads/downloads and cookbook file URLs, but production S3-compatible behavior is still pending
 
 Do not mistake the current in-memory implementation for the final persistence architecture.
 
@@ -317,7 +340,7 @@ These areas are still intentionally incomplete:
 - deeper node and environment compatibility such as cookbook constraint edge cases and linked object behavior
 - deeper role compatibility such as run-list normalization and linked environment behavior
 - broader search semantics beyond the current in-memory compatibility layer, especially richer Lucene-style query translation and wider object coverage
-- deeper Bookshelf/cookbook flows beyond the initial sandbox and checksum-upload slice
+- deeper Bookshelf/cookbook flows beyond the current cookbook read/artifact slice
 - operational parity and migration tooling
 
-The next likely major slice is cookbook metadata, cookbook artifacts, and universe parity on top of the new sandbox/blob groundwork.
+The next likely major slice is deeper cookbook mutation parity and production-ready object storage, or moving stabilized slices toward PostgreSQL/OpenSearch-backed providers.
