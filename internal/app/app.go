@@ -29,12 +29,12 @@ type Application struct {
 func New(cfg config.Config, logger *log.Logger, build version.Info) (*Application, error) {
 	compatRegistry := compat.NewDefaultRegistry()
 	postgresStore := pg.New(cfg.PostgresDSN)
-	searchIndex := search.NewNoopIndex(cfg.OpenSearchURL)
 	blobStore := blob.NewNoopStore(cfg.BlobStorageURL)
 	keyStore := authn.NewMemoryKeyStore()
 	bootstrapState := bootstrap.NewService(keyStore, bootstrap.Options{
 		SuperuserName: resolveSuperuserName(cfg),
 	})
+	searchIndex := search.NewMemoryIndex(bootstrapState, cfg.OpenSearchURL)
 	if err := seedBootstrapRequestor(keyStore, cfg); err != nil {
 		return nil, err
 	}

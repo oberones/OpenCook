@@ -1,0 +1,544 @@
+package api
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"log"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+	"time"
+
+	"github.com/oberones/OpenCook/internal/authn"
+	"github.com/oberones/OpenCook/internal/authz"
+	"github.com/oberones/OpenCook/internal/blob"
+	"github.com/oberones/OpenCook/internal/bootstrap"
+	"github.com/oberones/OpenCook/internal/compat"
+	"github.com/oberones/OpenCook/internal/config"
+	"github.com/oberones/OpenCook/internal/search"
+	"github.com/oberones/OpenCook/internal/store/pg"
+	"github.com/oberones/OpenCook/internal/version"
+)
+
+func TestSearchIndexesEndpointListsImplementedIndexes(t *testing.T) {
+	router := newTestRouter(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/search", nil)
+	applySignedHeaders(t, req, "silent-bob", "", http.MethodGet, "/search", nil, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("search index status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var payload map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal(search indexes) error = %v", err)
+	}
+
+	expected := map[string]string{
+		"environment": "/search/environment",
+		"node":        "/search/node",
+		"role":        "/search/role",
+	}
+	if len(payload) != len(expected) {
+		t.Fatalf("search indexes len = %d, want %d (%v)", len(payload), len(expected), payload)
+	}
+	for key, want := range expected {
+		if payload[key] != want {
+			t.Fatalf("search index %q = %q, want %q", key, payload[key], want)
+		}
+	}
+}
+
+func TestSearchIndexesEndpointReturnsNotFoundForUnknownOrganization(t *testing.T) {
+	router := newTestRouter(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/organizations/missing/search", nil)
+	applySignedHeaders(t, req, "silent-bob", "", http.MethodGet, "/organizations/missing/search", nil, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	req.SetPathValue("org", "missing")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("search indexes missing org status = %d, want %d, body = %s", rec.Code, http.StatusNotFound, rec.Body.String())
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal(search indexes missing org) error = %v", err)
+	}
+	if payload["message"] != "organization not found" {
+		t.Fatalf("message = %v, want %q", payload["message"], "organization not found")
+	}
+}
+
+func TestSearchNodeEndpointSupportsFullPartialAndPagination(t *testing.T) {
+	router := newTestRouter(t)
+
+	twilightBody := mustMarshalSearchNodePayload(t, "twilight", map[string]any{
+		"top": map[string]any{
+			"mid": map[string]any{
+				"bottom": "found_it_default",
+			},
+		},
+		"is": map[string]any{
+			"default": true,
+		},
+	}, map[string]any{
+		"top": map[string]any{
+			"mid": map[string]any{
+				"bottom": "found_it_normal",
+			},
+		},
+		"is": map[string]any{
+			"normal": true,
+		},
+	}, []string{"web"})
+	createTwilightReq := httptest.NewRequest(http.MethodPost, "/nodes", bytes.NewReader(twilightBody))
+	applySignedHeaders(t, createTwilightReq, "silent-bob", "", http.MethodPost, "/nodes", twilightBody, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	createTwilightRec := httptest.NewRecorder()
+	router.ServeHTTP(createTwilightRec, createTwilightReq)
+	if createTwilightRec.Code != http.StatusCreated {
+		t.Fatalf("create twilight status = %d, want %d, body = %s", createTwilightRec.Code, http.StatusCreated, createTwilightRec.Body.String())
+	}
+
+	rainbowBody := mustMarshalSearchNodePayload(t, "rainbow", map[string]any{}, map[string]any{}, []string{"base"})
+	createRainbowReq := httptest.NewRequest(http.MethodPost, "/nodes", bytes.NewReader(rainbowBody))
+	applySignedHeaders(t, createRainbowReq, "silent-bob", "", http.MethodPost, "/nodes", rainbowBody, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	createRainbowRec := httptest.NewRecorder()
+	router.ServeHTTP(createRainbowRec, createRainbowReq)
+	if createRainbowRec.Code != http.StatusCreated {
+		t.Fatalf("create rainbow status = %d, want %d, body = %s", createRainbowRec.Code, http.StatusCreated, createRainbowRec.Body.String())
+	}
+
+	searchReq := httptest.NewRequest(http.MethodGet, "/search/node?q=name:twi*", nil)
+	applySignedHeaders(t, searchReq, "silent-bob", "", http.MethodGet, "/search/node", nil, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	searchRec := httptest.NewRecorder()
+	router.ServeHTTP(searchRec, searchReq)
+
+	if searchRec.Code != http.StatusOK {
+		t.Fatalf("search node status = %d, want %d, body = %s", searchRec.Code, http.StatusOK, searchRec.Body.String())
+	}
+
+	var searchPayload map[string]any
+	if err := json.Unmarshal(searchRec.Body.Bytes(), &searchPayload); err != nil {
+		t.Fatalf("json.Unmarshal(search node) error = %v", err)
+	}
+	rows, ok := searchPayload["rows"].([]any)
+	if !ok || len(rows) != 1 {
+		t.Fatalf("search rows = %T %v, want one result", searchPayload["rows"], searchPayload["rows"])
+	}
+	row, ok := rows[0].(map[string]any)
+	if !ok {
+		t.Fatalf("search row = %T, want map[string]any", rows[0])
+	}
+	if row["name"] != "twilight" {
+		t.Fatalf("search row name = %v, want %q", row["name"], "twilight")
+	}
+	runList := stringSliceFromAny(t, row["run_list"])
+	if len(runList) != 1 || runList[0] != "recipe[web]" {
+		t.Fatalf("search run_list = %v, want [recipe[web]]", runList)
+	}
+
+	partialBody := []byte(`{"goal":["top","mid","bottom"],"we_found_default":["is","default"],"we_found_normal":["is","normal"]}`)
+	partialReq := httptest.NewRequest(http.MethodPost, "/search/node?q=name:twilight", bytes.NewReader(partialBody))
+	applySignedHeaders(t, partialReq, "silent-bob", "", http.MethodPost, "/search/node", partialBody, signDescription{
+		Version:   "1.3",
+		Algorithm: "sha256",
+	}, "2026-04-02T15:04:05Z")
+	partialRec := httptest.NewRecorder()
+	router.ServeHTTP(partialRec, partialReq)
+
+	if partialRec.Code != http.StatusOK {
+		t.Fatalf("partial search node status = %d, want %d, body = %s", partialRec.Code, http.StatusOK, partialRec.Body.String())
+	}
+
+	var partialPayload map[string]any
+	if err := json.Unmarshal(partialRec.Body.Bytes(), &partialPayload); err != nil {
+		t.Fatalf("json.Unmarshal(partial node) error = %v", err)
+	}
+	partialRows, ok := partialPayload["rows"].([]any)
+	if !ok || len(partialRows) != 1 {
+		t.Fatalf("partial rows = %T %v, want one result", partialPayload["rows"], partialPayload["rows"])
+	}
+	partialRow := partialRows[0].(map[string]any)
+	if partialRow["url"] != "/nodes/twilight" {
+		t.Fatalf("partial row url = %v, want %q", partialRow["url"], "/nodes/twilight")
+	}
+	data, ok := partialRow["data"].(map[string]any)
+	if !ok {
+		t.Fatalf("partial row data = %T, want map[string]any", partialRow["data"])
+	}
+	if data["goal"] != "found_it_normal" {
+		t.Fatalf("partial search goal = %v, want %q", data["goal"], "found_it_normal")
+	}
+	if data["we_found_default"] != true {
+		t.Fatalf("partial search we_found_default = %v, want true", data["we_found_default"])
+	}
+	if data["we_found_normal"] != true {
+		t.Fatalf("partial search we_found_normal = %v, want true", data["we_found_normal"])
+	}
+
+	pagedReq := httptest.NewRequest(http.MethodGet, "/search/node?q=name:*&rows=1&start=1", nil)
+	applySignedHeaders(t, pagedReq, "silent-bob", "", http.MethodGet, "/search/node", nil, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	pagedRec := httptest.NewRecorder()
+	router.ServeHTTP(pagedRec, pagedReq)
+
+	if pagedRec.Code != http.StatusOK {
+		t.Fatalf("paged search node status = %d, want %d, body = %s", pagedRec.Code, http.StatusOK, pagedRec.Body.String())
+	}
+
+	var pagedPayload map[string]any
+	if err := json.Unmarshal(pagedRec.Body.Bytes(), &pagedPayload); err != nil {
+		t.Fatalf("json.Unmarshal(paged node) error = %v", err)
+	}
+	if pagedPayload["total"] != float64(2) {
+		t.Fatalf("paged total = %v, want 2", pagedPayload["total"])
+	}
+	pagedRows, ok := pagedPayload["rows"].([]any)
+	if !ok || len(pagedRows) != 1 {
+		t.Fatalf("paged rows = %T %v, want one result", pagedPayload["rows"], pagedPayload["rows"])
+	}
+}
+
+func TestSearchQueryEndpointRejectsExtraPathSegments(t *testing.T) {
+	router := newTestRouter(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/search/node/extra?q=name:*", nil)
+	applySignedHeaders(t, req, "silent-bob", "", http.MethodGet, "/search/node/extra", nil, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	req.SetPathValue("index", "node")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("search extra segment status = %d, want %d, body = %s", rec.Code, http.StatusNotFound, rec.Body.String())
+	}
+}
+
+func TestSearchQueryEndpointReturnsNotFoundForUnknownOrganization(t *testing.T) {
+	router := newTestRouter(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/organizations/missing/search/node?q=name:*", nil)
+	applySignedHeaders(t, req, "silent-bob", "", http.MethodGet, "/organizations/missing/search/node", nil, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	req.SetPathValue("org", "missing")
+	req.SetPathValue("index", "node")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("search query missing org status = %d, want %d, body = %s", rec.Code, http.StatusNotFound, rec.Body.String())
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal(search query missing org) error = %v", err)
+	}
+	if payload["message"] != "organization not found" {
+		t.Fatalf("message = %v, want %q", payload["message"], "organization not found")
+	}
+}
+
+func TestSearchRoleAndEnvironmentEndpointsSupportFullAndPartialSearch(t *testing.T) {
+	router := newTestRouter(t)
+
+	environmentBody := []byte(`{"name":"production","json_class":"Chef::Environment","chef_type":"environment","description":"env-search-target","cookbook_versions":{},"default_attributes":{"top":{"middle":{"bottom":"found_it"}}},"override_attributes":{}}`)
+	environmentReq := httptest.NewRequest(http.MethodPost, "/environments", bytes.NewReader(environmentBody))
+	applySignedHeaders(t, environmentReq, "silent-bob", "", http.MethodPost, "/environments", environmentBody, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	environmentRec := httptest.NewRecorder()
+	router.ServeHTTP(environmentRec, environmentReq)
+	if environmentRec.Code != http.StatusCreated {
+		t.Fatalf("create environment status = %d, want %d, body = %s", environmentRec.Code, http.StatusCreated, environmentRec.Body.String())
+	}
+
+	roleBody := []byte(`{"name":"web","description":"role-search-target","json_class":"Chef::Role","chef_type":"role","default_attributes":{},"override_attributes":{"top":{"mid":{"bottom":"found_it"}}},"run_list":["base"],"env_run_lists":{}}`)
+	roleReq := httptest.NewRequest(http.MethodPost, "/roles", bytes.NewReader(roleBody))
+	applySignedHeaders(t, roleReq, "silent-bob", "", http.MethodPost, "/roles", roleBody, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	roleRec := httptest.NewRecorder()
+	router.ServeHTTP(roleRec, roleReq)
+	if roleRec.Code != http.StatusCreated {
+		t.Fatalf("create role status = %d, want %d, body = %s", roleRec.Code, http.StatusCreated, roleRec.Body.String())
+	}
+
+	roleSearchReq := httptest.NewRequest(http.MethodGet, "/search/role?q=name:web", nil)
+	applySignedHeaders(t, roleSearchReq, "silent-bob", "", http.MethodGet, "/search/role", nil, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	roleSearchRec := httptest.NewRecorder()
+	router.ServeHTTP(roleSearchRec, roleSearchReq)
+	if roleSearchRec.Code != http.StatusOK {
+		t.Fatalf("search role status = %d, want %d, body = %s", roleSearchRec.Code, http.StatusOK, roleSearchRec.Body.String())
+	}
+
+	var roleSearchPayload map[string]any
+	if err := json.Unmarshal(roleSearchRec.Body.Bytes(), &roleSearchPayload); err != nil {
+		t.Fatalf("json.Unmarshal(search role) error = %v", err)
+	}
+	roleRows := roleSearchPayload["rows"].([]any)
+	roleRow := roleRows[0].(map[string]any)
+	if roleRow["description"] != "role-search-target" {
+		t.Fatalf("role description = %v, want %q", roleRow["description"], "role-search-target")
+	}
+	roleRunList := stringSliceFromAny(t, roleRow["run_list"])
+	if len(roleRunList) != 1 || roleRunList[0] != "recipe[base]" {
+		t.Fatalf("role run_list = %v, want [recipe[base]]", roleRunList)
+	}
+
+	rolePartialBody := []byte(`{"goal":["override_attributes","top","mid","bottom"]}`)
+	rolePartialReq := httptest.NewRequest(http.MethodPost, "/organizations/ponyville/search/role?q=description:role-search-target", bytes.NewReader(rolePartialBody))
+	applySignedHeaders(t, rolePartialReq, "silent-bob", "", http.MethodPost, "/organizations/ponyville/search/role", rolePartialBody, signDescription{
+		Version:   "1.3",
+		Algorithm: "sha256",
+	}, "2026-04-02T15:04:05Z")
+	rolePartialRec := httptest.NewRecorder()
+	router.ServeHTTP(rolePartialRec, rolePartialReq)
+	if rolePartialRec.Code != http.StatusOK {
+		t.Fatalf("partial search role status = %d, want %d, body = %s", rolePartialRec.Code, http.StatusOK, rolePartialRec.Body.String())
+	}
+
+	var rolePartialPayload map[string]any
+	if err := json.Unmarshal(rolePartialRec.Body.Bytes(), &rolePartialPayload); err != nil {
+		t.Fatalf("json.Unmarshal(partial role) error = %v", err)
+	}
+	rolePartialRow := rolePartialPayload["rows"].([]any)[0].(map[string]any)
+	if rolePartialRow["url"] != "/organizations/ponyville/roles/web" {
+		t.Fatalf("partial role url = %v, want %q", rolePartialRow["url"], "/organizations/ponyville/roles/web")
+	}
+	rolePartialData := rolePartialRow["data"].(map[string]any)
+	if rolePartialData["goal"] != "found_it" {
+		t.Fatalf("partial role goal = %v, want %q", rolePartialData["goal"], "found_it")
+	}
+
+	environmentPartialBody := []byte(`{"goal":["default_attributes","top","middle","bottom"]}`)
+	environmentPartialReq := httptest.NewRequest(http.MethodPost, "/search/environment?q=description:env-search-target", bytes.NewReader(environmentPartialBody))
+	applySignedHeaders(t, environmentPartialReq, "silent-bob", "", http.MethodPost, "/search/environment", environmentPartialBody, signDescription{
+		Version:   "1.3",
+		Algorithm: "sha256",
+	}, "2026-04-02T15:04:05Z")
+	environmentPartialRec := httptest.NewRecorder()
+	router.ServeHTTP(environmentPartialRec, environmentPartialReq)
+	if environmentPartialRec.Code != http.StatusOK {
+		t.Fatalf("partial search environment status = %d, want %d, body = %s", environmentPartialRec.Code, http.StatusOK, environmentPartialRec.Body.String())
+	}
+
+	var environmentPartialPayload map[string]any
+	if err := json.Unmarshal(environmentPartialRec.Body.Bytes(), &environmentPartialPayload); err != nil {
+		t.Fatalf("json.Unmarshal(partial environment) error = %v", err)
+	}
+	environmentPartialRow := environmentPartialPayload["rows"].([]any)[0].(map[string]any)
+	environmentPartialData := environmentPartialRow["data"].(map[string]any)
+	if environmentPartialData["goal"] != "found_it" {
+		t.Fatalf("partial environment goal = %v, want %q", environmentPartialData["goal"], "found_it")
+	}
+}
+
+func TestSearchEndpointFiltersDeniedResults(t *testing.T) {
+	router, state := newSearchTestRouterWithAuthorizer(t, func(state *bootstrap.Service) authz.Authorizer {
+		return denyingSearchAuthorizer{
+			base: authz.NewACLAuthorizer(state),
+			denyRead: map[string]struct{}{
+				"role:secret": {},
+			},
+		}
+	})
+
+	if _, err := state.CreateRole("ponyville", bootstrap.CreateRoleInput{
+		Payload: map[string]any{
+			"name":                "web",
+			"description":         "visible",
+			"json_class":          "Chef::Role",
+			"chef_type":           "role",
+			"default_attributes":  map[string]any{},
+			"override_attributes": map[string]any{},
+			"run_list":            []string{},
+			"env_run_lists":       map[string]any{},
+		},
+		Creator: authn.Principal{Type: "user", Name: "silent-bob"},
+	}); err != nil {
+		t.Fatalf("CreateRole(web) error = %v", err)
+	}
+	if _, err := state.CreateRole("ponyville", bootstrap.CreateRoleInput{
+		Payload: map[string]any{
+			"name":                "secret",
+			"description":         "hidden",
+			"json_class":          "Chef::Role",
+			"chef_type":           "role",
+			"default_attributes":  map[string]any{},
+			"override_attributes": map[string]any{},
+			"run_list":            []string{},
+			"env_run_lists":       map[string]any{},
+		},
+		Creator: authn.Principal{Type: "user", Name: "silent-bob"},
+	}); err != nil {
+		t.Fatalf("CreateRole(secret) error = %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/search/role?q=name:*", nil)
+	applySignedHeaders(t, req, "silent-bob", "", http.MethodGet, "/search/role", nil, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("search role status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal(filtered search) error = %v", err)
+	}
+	rows := payload["rows"].([]any)
+	if len(rows) != 1 {
+		t.Fatalf("filtered search rows len = %d, want 1 (%v)", len(rows), rows)
+	}
+	row := rows[0].(map[string]any)
+	if row["name"] != "web" {
+		t.Fatalf("filtered search row name = %v, want %q", row["name"], "web")
+	}
+}
+
+type denyingSearchAuthorizer struct {
+	base     authz.Authorizer
+	denyRead map[string]struct{}
+}
+
+func (a denyingSearchAuthorizer) Name() string {
+	return "denying-search-test"
+}
+
+func (a denyingSearchAuthorizer) Authorize(ctx context.Context, subject authz.Subject, action authz.Action, resource authz.Resource) (authz.Decision, error) {
+	if action == authz.ActionRead {
+		if _, denied := a.denyRead[resource.Type+":"+resource.Name]; denied {
+			return authz.Decision{Allowed: false, Reason: "denied for test"}, nil
+		}
+	}
+	if a.base == nil {
+		return authz.Decision{Allowed: true, Reason: "no base authorizer"}, nil
+	}
+	return a.base.Authorize(ctx, subject, action, resource)
+}
+
+func newSearchTestRouterWithAuthorizer(t *testing.T, authorizerFactory func(*bootstrap.Service) authz.Authorizer) (http.Handler, *bootstrap.Service) {
+	t.Helper()
+
+	privateKey := mustParsePrivateKey(t)
+	store := authn.NewMemoryKeyStore()
+	mustPutKey(t, store, authn.Key{
+		ID: "default",
+		Principal: authn.Principal{
+			Type: "user",
+			Name: "silent-bob",
+		},
+		PublicKey: &privateKey.PublicKey,
+	})
+	mustPutKey(t, store, authn.Key{
+		ID: "default",
+		Principal: authn.Principal{
+			Type: "user",
+			Name: "pivotal",
+		},
+		PublicKey: &privateKey.PublicKey,
+	})
+
+	state := bootstrap.NewService(store, bootstrap.Options{SuperuserName: "pivotal"})
+	publicKeyPEM := mustMarshalPublicKeyPEM(t, &privateKey.PublicKey)
+	state.SeedPrincipal(authn.Principal{Type: "user", Name: "silent-bob"})
+	if err := state.SeedPublicKey(authn.Principal{Type: "user", Name: "silent-bob"}, "default", publicKeyPEM); err != nil {
+		t.Fatalf("SeedPublicKey(silent-bob) error = %v", err)
+	}
+	if err := state.SeedPublicKey(authn.Principal{Type: "user", Name: "pivotal"}, "default", publicKeyPEM); err != nil {
+		t.Fatalf("SeedPublicKey(pivotal) error = %v", err)
+	}
+	if _, _, _, err := state.CreateOrganization(bootstrap.CreateOrganizationInput{
+		Name:      "ponyville",
+		FullName:  "Ponyville",
+		OrgType:   "Business",
+		OwnerName: "silent-bob",
+	}); err != nil {
+		t.Fatalf("CreateOrganization() error = %v", err)
+	}
+	var authorizer authz.Authorizer = authz.NewACLAuthorizer(state)
+	if authorizerFactory != nil {
+		authorizer = authorizerFactory(state)
+	}
+
+	skew := 15 * time.Minute
+	router := NewRouter(Dependencies{
+		Logger: log.New(ioDiscard{}, "", 0),
+		Config: config.Config{
+			ServiceName:      "opencook",
+			Environment:      "test",
+			AuthSkew:         skew,
+			MaxAuthBodyBytes: config.DefaultMaxAuthBodyBytes,
+		},
+		Version: version.Current(),
+		Compat:  compat.NewDefaultRegistry(),
+		Authn: authn.NewChefVerifier(store, authn.Options{
+			AllowedClockSkew: &skew,
+			Now: func() time.Time {
+				return mustParseTime(t, "2026-04-02T15:04:35Z")
+			},
+		}),
+		Authz:     authorizer,
+		Bootstrap: state,
+		Blob:      blob.NewNoopStore(""),
+		Search:    search.NewMemoryIndex(state, ""),
+		Postgres:  pg.New(""),
+	})
+	return router, state
+}
+
+func mustMarshalSearchNodePayload(t *testing.T, name string, defaults, normal map[string]any, runList []string) []byte {
+	t.Helper()
+
+	body, err := json.Marshal(map[string]any{
+		"name":             name,
+		"json_class":       "Chef::Node",
+		"chef_type":        "node",
+		"chef_environment": "_default",
+		"override":         map[string]any{},
+		"normal":           normal,
+		"default":          defaults,
+		"automatic":        map[string]any{},
+		"run_list":         runList,
+	})
+	if err != nil {
+		t.Fatalf("json.Marshal(search node payload) error = %v", err)
+	}
+	return body
+}
