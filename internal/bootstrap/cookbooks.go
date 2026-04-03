@@ -407,17 +407,26 @@ func normalizeCookbookVersionPayload(name, version string, payload map[string]an
 
 	rawCookbookName, ok := payload["cookbook_name"]
 	if !ok {
-		return CookbookVersion{}, &ValidationError{Messages: []string{"Field 'name' invalid"}}
+		return CookbookVersion{}, &ValidationError{Messages: []string{"Field 'cookbook_name' missing"}}
 	}
 	payloadCookbookName, ok := rawCookbookName.(string)
-	if !ok || strings.TrimSpace(payloadCookbookName) != name {
-		return CookbookVersion{}, &ValidationError{Messages: []string{"Field 'name' invalid"}}
+	if !ok {
+		return CookbookVersion{}, &ValidationError{Messages: []string{"Field 'cookbook_name' invalid"}}
+	}
+	payloadCookbookName = strings.TrimSpace(payloadCookbookName)
+	if !validNamePattern.MatchString(payloadCookbookName) || payloadCookbookName != name {
+		return CookbookVersion{}, &ValidationError{Messages: []string{"Field 'cookbook_name' invalid"}}
 	}
 
-	if rawVersion, ok := payload["version"]; !ok {
-		return CookbookVersion{}, &ValidationError{Messages: []string{"Field 'name' invalid"}}
-	} else if payloadVersion, ok := rawVersion.(string); !ok || strings.TrimSpace(payloadVersion) != version {
-		return CookbookVersion{}, &ValidationError{Messages: []string{"Field 'name' invalid"}}
+	if rawVersion, ok := payload["version"]; ok {
+		payloadVersion, ok := rawVersion.(string)
+		if !ok {
+			return CookbookVersion{}, &ValidationError{Messages: []string{"Field 'version' invalid"}}
+		}
+		payloadVersion = strings.TrimSpace(payloadVersion)
+		if !validCookbookRouteVersion(payloadVersion) || payloadVersion != version {
+			return CookbookVersion{}, &ValidationError{Messages: []string{"Field 'version' invalid"}}
+		}
 	}
 
 	jsonClass := "Chef::CookbookVersion"
@@ -425,6 +434,12 @@ func normalizeCookbookVersionPayload(name, version string, payload map[string]an
 		text, ok := rawJSONClass.(string)
 		if !ok || strings.TrimSpace(text) != jsonClass {
 			return CookbookVersion{}, &ValidationError{Messages: []string{"Field 'json_class' invalid"}}
+		}
+	}
+	if rawChefType, ok := payload["chef_type"]; ok {
+		text, ok := rawChefType.(string)
+		if !ok || strings.TrimSpace(text) != "cookbook_version" {
+			return CookbookVersion{}, &ValidationError{Messages: []string{"Field 'chef_type' invalid"}}
 		}
 	}
 
@@ -439,11 +454,7 @@ func normalizeCookbookVersionPayload(name, version string, payload map[string]an
 
 	metadataVersion, ok := metadata["version"].(string)
 	if !ok || strings.TrimSpace(metadataVersion) != version {
-		return CookbookVersion{}, &ValidationError{Messages: []string{"Field 'name' invalid"}}
-	}
-	metadataName, ok := metadata["name"].(string)
-	if !ok || strings.TrimSpace(metadataName) != name {
-		return CookbookVersion{}, &ValidationError{Messages: []string{"Field 'name' invalid"}}
+		return CookbookVersion{}, &ValidationError{Messages: []string{"Field 'metadata.version' invalid"}}
 	}
 
 	allFiles, err := normalizeCookbookFiles(payload, checksumExists)
@@ -574,9 +585,16 @@ func normalizeCookbookMetadata(value any) (map[string]any, error) {
 	if version, ok := metadata["version"]; !ok {
 		return nil, &ValidationError{Messages: []string{"Field 'metadata.version' missing"}}
 	} else if versionString, ok := version.(string); !ok || !validCookbookVersion(versionString) {
-		return nil, &ValidationError{Messages: []string{"Field 'metadata.version' missing"}}
+		return nil, &ValidationError{Messages: []string{"Field 'metadata.version' invalid"}}
 	} else {
 		metadata["version"] = strings.TrimSpace(versionString)
+	}
+	if rawName, ok := metadata["name"]; ok {
+		name, ok := rawName.(string)
+		if !ok || !validNamePattern.MatchString(strings.TrimSpace(name)) {
+			return nil, &ValidationError{Messages: []string{"Field 'metadata.name' invalid"}}
+		}
+		metadata["name"] = strings.TrimSpace(name)
 	}
 
 	for _, section := range []string{"dependencies", "attributes", "recipes", "platforms"} {
