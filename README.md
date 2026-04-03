@@ -12,7 +12,8 @@ The project is currently in its compatibility-foundation phase. This repository 
 - in-memory bootstrap state for users, organizations, clients, groups, containers, and ACLs
 - initial authenticated endpoints for users, organizations, clients, ACL inspection, actor key lifecycle, nodes, environments, roles, data bags, and compatibility search
 - policyfile compatibility routes for policies, revisions, and policy-group assignments on both default-org and explicit-org paths
-- the first sandbox/blob slice with in-memory sandbox lifecycle and checksum uploads
+- sandbox/blob compatibility with in-memory sandbox lifecycle plus signed checksum uploads and downloads
+- the first cookbook compatibility slice with cookbook artifact lifecycle, cookbook read views, and universe responses
 - docs for architecture decisions, milestones, and compatibility tracking
 - a starting test layout for contract-driven development
 
@@ -47,6 +48,7 @@ The project is currently in its compatibility-foundation phase. This repository 
 3. Remaining core object CRUD and deeper object parity
 4. Search provider and indexing compatibility on OpenSearch
 5. Cookbook, artifact, and universe compatibility on top of the sandbox/blob slice
+6. Persistence and provider-backed compatibility on PostgreSQL, OpenSearch, and S3-compatible storage
 
 ## Local Development
 
@@ -87,6 +89,15 @@ With that in place, signed requests can successfully hit:
 - `/roles/{name}/environments/{environment}`
 - `/sandboxes`
 - `/sandboxes/{id}`
+- `/cookbook_artifacts`
+- `/cookbook_artifacts/{name}`
+- `/cookbook_artifacts/{name}/{identifier}`
+- `/cookbooks`
+- `/cookbooks/_latest`
+- `/cookbooks/_recipes`
+- `/cookbooks/{name}`
+- `/cookbooks/{name}/{version}`
+- `/universe`
 - `/search`
 - `/search/{index}`
 - `/organizations/{org}/environments`
@@ -119,6 +130,15 @@ With that in place, signed requests can successfully hit:
 - `/organizations/{org}/roles/{name}/environments/{environment}`
 - `/organizations/{org}/sandboxes`
 - `/organizations/{org}/sandboxes/{id}`
+- `/organizations/{org}/cookbook_artifacts`
+- `/organizations/{org}/cookbook_artifacts/{name}`
+- `/organizations/{org}/cookbook_artifacts/{name}/{identifier}`
+- `/organizations/{org}/cookbooks`
+- `/organizations/{org}/cookbooks/_latest`
+- `/organizations/{org}/cookbooks/_recipes`
+- `/organizations/{org}/cookbooks/{name}`
+- `/organizations/{org}/cookbooks/{name}/{version}`
+- `/organizations/{org}/universe`
 - `/organizations/{org}/nodes`
 - `/organizations/{org}/nodes/{name}`
 - `/organizations/{org}/clients`
@@ -130,7 +150,9 @@ The in-memory search compatibility layer currently exposes the built-in Chef ind
 
 The current policyfile slice is live on both the default-org and explicit-org routes for `/policies` and `/policy_groups`. It now round-trips richer upstream-shaped policy payloads, validates more of the cookbook-lock and solution-dependency structure, and keeps node `policy_name` and `policy_group` behavior compatibility-safe as searchable fields rather than hard foreign keys.
 
-The first sandbox compatibility slice is now live too. Signed callers can create and commit sandboxes through `/sandboxes` and `/organizations/{org}/sandboxes`, and the returned checksum entries expose absolute upload URLs under `/_blob/checksums/{checksum}` backed by the current in-memory blob store. Cookbook metadata, cookbook artifacts, and universe endpoints are still pending follow-on slices.
+The sandbox compatibility slice is live too. Signed callers can create and commit sandboxes through `/sandboxes` and `/organizations/{org}/sandboxes`, and the returned checksum entries expose absolute signed upload URLs under `/_blob/checksums/{checksum}` backed by the current in-memory blob store.
+
+The first cookbook compatibility slice is also live. Signed callers can create, read, and delete cookbook artifacts through `/cookbook_artifacts` and `/organizations/{org}/cookbook_artifacts`, browse cookbook read views through `/cookbooks` and `/organizations/{org}/cookbooks`, and fetch `/universe` metadata. Returned cookbook file URLs are signed direct blob URLs backed by the same in-memory compatibility store. Deeper cookbook mutation parity and production S3-compatible blob storage are still pending.
 
 Typical commands once a Go toolchain is available:
 
