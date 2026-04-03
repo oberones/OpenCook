@@ -86,14 +86,6 @@ func (s *server) handleCookbooks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !s.authorizeRequest(w, r, authz.ActionRead, authz.Resource{
-		Type:         "container",
-		Name:         "cookbooks",
-		Organization: org,
-	}) {
-		return
-	}
-
 	segments, ok := routeSegments(r.URL.Path, basePath)
 	if !ok {
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": cookbookVersionNotFound("cookbooks", "")})
@@ -267,6 +259,13 @@ func (s *server) handleCookbookCollection(w http.ResponseWriter, r *http.Request
 		writeMethodNotAllowed(w, "method not allowed for cookbooks route", http.MethodGet)
 		return
 	}
+	if !s.authorizeRequest(w, r, authz.ActionRead, authz.Resource{
+		Type:         "container",
+		Name:         "cookbooks",
+		Organization: org,
+	}) {
+		return
+	}
 
 	limit, allVersions, explicitLimit, ok := parseCookbookNumVersions(r)
 	if !ok {
@@ -285,6 +284,13 @@ func (s *server) handleCookbookLatestCollection(w http.ResponseWriter, r *http.R
 		writeMethodNotAllowed(w, "method not allowed for cookbooks route", http.MethodGet)
 		return
 	}
+	if !s.authorizeRequest(w, r, authz.ActionRead, authz.Resource{
+		Type:         "container",
+		Name:         "cookbooks",
+		Organization: org,
+	}) {
+		return
+	}
 
 	versions, _ := state.ListCookbookVersions(org)
 	writeJSON(w, http.StatusOK, renderCookbookLatestCollection(basePath, versions))
@@ -293,6 +299,13 @@ func (s *server) handleCookbookLatestCollection(w http.ResponseWriter, r *http.R
 func (s *server) handleCookbookRecipesCollection(w http.ResponseWriter, r *http.Request, state *bootstrap.Service, org string) {
 	if r.Method != http.MethodGet {
 		writeMethodNotAllowed(w, "method not allowed for cookbooks route", http.MethodGet)
+		return
+	}
+	if !s.authorizeRequest(w, r, authz.ActionRead, authz.Resource{
+		Type:         "container",
+		Name:         "cookbooks",
+		Organization: org,
+	}) {
 		return
 	}
 
@@ -317,6 +330,17 @@ func (s *server) handleNamedCookbookCollection(w http.ResponseWriter, r *http.Re
 		writeMethodNotAllowed(w, "method not allowed for cookbook route", http.MethodGet)
 		return
 	}
+	if !validCookbookName(name) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": []string{invalidCookbookNameMessage(name)}})
+		return
+	}
+	if !s.authorizeRequest(w, r, authz.ActionRead, authz.Resource{
+		Type:         "container",
+		Name:         "cookbooks",
+		Organization: org,
+	}) {
+		return
+	}
 
 	versions, orgExists, found := state.ListCookbookVersionsByName(org, name)
 	if !orgExists || !found {
@@ -328,18 +352,90 @@ func (s *server) handleNamedCookbookCollection(w http.ResponseWriter, r *http.Re
 }
 
 func (s *server) handleNamedCookbookVersion(w http.ResponseWriter, r *http.Request, state *bootstrap.Service, org, name, version string) {
-	if r.Method != http.MethodGet {
-		writeMethodNotAllowed(w, "method not allowed for cookbook version route", http.MethodGet)
+	if !validCookbookName(name) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": []string{invalidCookbookNameMessage(name)}})
 		return
 	}
+	switch r.Method {
+	case http.MethodGet:
+		if !validCookbookVersionPath(version, true) {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": []string{invalidCookbookVersionMessage(version)}})
+			return
+		}
+		if !s.authorizeRequest(w, r, authz.ActionRead, authz.Resource{
+			Type:         "container",
+			Name:         "cookbooks",
+			Organization: org,
+		}) {
+			return
+		}
 
-	cookbookVersion, orgExists, found := state.GetCookbookVersion(org, name, version)
-	if !orgExists || !found {
-		writeJSON(w, http.StatusNotFound, map[string]any{"error": cookbookVersionNotFound(name, version)})
-		return
+		cookbookVersion, orgExists, found := state.GetCookbookVersion(org, name, version)
+		if !orgExists || !found {
+			writeJSON(w, http.StatusNotFound, map[string]any{"error": cookbookVersionNotFound(name, version)})
+			return
+		}
+		writeJSON(w, http.StatusOK, s.renderCookbookVersionResponse(r, org, cookbookVersion))
+	case http.MethodPut:
+		if !validCookbookVersionPath(version, false) {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": []string{invalidCookbookVersionMessage(version)}})
+			return
+		}
+		_, _, found := state.GetCookbookVersion(org, name, version)
+		action := authz.ActionCreate
+		if found {
+			action = authz.ActionUpdate
+		}
+		if !s.authorizeRequest(w, r, action, authz.Resource{
+			Type:         "container",
+			Name:         "cookbooks",
+			Organization: org,
+		}) {
+			return
+		}
+
+		var payload map[string]any
+		if !decodeJSON(w, r, &payload) {
+			return
+		}
+
+		cookbookVersion, created, err := state.UpsertCookbookVersion(org, bootstrap.UpsertCookbookVersionInput{
+			Name:    name,
+			Version: version,
+			Payload: payload,
+			ChecksumExists: func(checksum string) (bool, error) {
+				return s.blobExists(r.Context(), checksum)
+			},
+		})
+		if !writeCookbookVersionError(w, err, name, version) {
+			return
+		}
+		status := http.StatusOK
+		if created {
+			status = http.StatusCreated
+		}
+		writeJSON(w, status, s.renderCookbookVersionWriteResponse(r, cookbookVersion))
+	case http.MethodDelete:
+		if !validCookbookVersionPath(version, true) {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": []string{invalidCookbookVersionMessage(version)}})
+			return
+		}
+		if !s.authorizeRequest(w, r, authz.ActionDelete, authz.Resource{
+			Type:         "container",
+			Name:         "cookbooks",
+			Organization: org,
+		}) {
+			return
+		}
+
+		cookbookVersion, err := state.DeleteCookbookVersion(org, name, version)
+		if !writeCookbookVersionError(w, err, name, version) {
+			return
+		}
+		writeJSON(w, http.StatusOK, s.renderCookbookVersionResponse(r, org, cookbookVersion))
+	default:
+		writeMethodNotAllowed(w, "method not allowed for cookbook version route", http.MethodGet, http.MethodPut, http.MethodDelete)
 	}
-
-	writeJSON(w, http.StatusOK, s.renderCookbookVersionResponse(r, org, cookbookVersion))
 }
 
 func (s *server) resolveCookbookScopedRoute(w http.ResponseWriter, r *http.Request, resource string) (string, string, bool) {
@@ -505,7 +601,7 @@ func (s *server) renderCookbookArtifactResponse(r *http.Request, org string, art
 	}
 
 	if requestedCookbookAPIVersion(r) >= 2 {
-		response["all_files"] = s.renderCookbookFiles(r, org, artifact.AllFiles, true)
+		response["all_files"] = s.renderCookbookFiles(r, org, artifact.AllFiles, true, true)
 		return response
 	}
 
@@ -528,20 +624,23 @@ func (s *server) renderCookbookArtifactResponse(r *http.Request, org string, art
 
 func (s *server) renderCookbookVersionResponse(r *http.Request, org string, version bootstrap.CookbookVersion) map[string]any {
 	response := map[string]any{
-		"name":      version.Name,
-		"version":   version.Version,
-		"chef_type": version.ChefType,
-		"frozen?":   version.Frozen,
-		"metadata":  cloneResponseMap(version.Metadata),
+		"name":          version.Name,
+		"cookbook_name": version.CookbookName,
+		"version":       version.Version,
+		"json_class":    version.JSONClass,
+		"chef_type":     version.ChefType,
+		"frozen?":       version.Frozen,
+		"metadata":      cloneResponseMap(version.Metadata),
 	}
 
 	if requestedCookbookAPIVersion(r) >= 2 {
-		response["all_files"] = s.renderCookbookFiles(r, org, version.AllFiles, true)
+		response["all_files"] = s.renderCookbookFiles(r, org, version.AllFiles, true, true)
 		return response
 	}
 
+	segmentFiles := make(map[string][]map[string]any)
 	for _, segment := range legacyCookbookSegments {
-		response[segment] = []map[string]any{}
+		segmentFiles[segment] = nil
 	}
 	for _, file := range version.AllFiles {
 		segment := cookbookFileSegment(file.Path)
@@ -552,12 +651,55 @@ func (s *server) renderCookbookVersionResponse(r *http.Request, org string, vers
 			"specificity": file.Specificity,
 			"url":         s.blobDownloadURL(r, file.Checksum, org),
 		}
-		response[segment] = append(response[segment].([]map[string]any), entry)
+		segmentFiles[segment] = append(segmentFiles[segment], entry)
+	}
+	for _, segment := range legacyCookbookSegments {
+		response[segment] = nonNilCookbookFileEntries(segmentFiles[segment])
 	}
 	return response
 }
 
-func (s *server) renderCookbookFiles(r *http.Request, org string, files []bootstrap.CookbookFile, useFullName bool) []map[string]any {
+func (s *server) renderCookbookVersionWriteResponse(r *http.Request, version bootstrap.CookbookVersion) map[string]any {
+	response := map[string]any{
+		"name":          version.Name,
+		"cookbook_name": version.CookbookName,
+		"version":       version.Version,
+		"json_class":    version.JSONClass,
+		"chef_type":     version.ChefType,
+		"frozen?":       version.Frozen,
+		"metadata":      cloneResponseMap(version.Metadata),
+	}
+
+	if requestedCookbookAPIVersion(r) >= 2 {
+		response["all_files"] = s.renderCookbookFiles(r, "", version.AllFiles, true, false)
+		return response
+	}
+
+	segmentFiles := make(map[string][]map[string]any)
+	for _, segment := range legacyCookbookSegments {
+		segmentFiles[segment] = nil
+	}
+	for _, file := range version.AllFiles {
+		segment := cookbookFileSegment(file.Path)
+		entry := map[string]any{
+			"name":        cookbookLegacyFileName(segment, file.Path),
+			"path":        file.Path,
+			"checksum":    file.Checksum,
+			"specificity": file.Specificity,
+		}
+		segmentFiles[segment] = append(segmentFiles[segment], entry)
+	}
+	response["recipes"] = nonNilCookbookFileEntries(segmentFiles["recipes"])
+	for _, segment := range legacyCookbookSegments {
+		if segment == "recipes" || len(segmentFiles[segment]) == 0 {
+			continue
+		}
+		response[segment] = segmentFiles[segment]
+	}
+	return response
+}
+
+func (s *server) renderCookbookFiles(r *http.Request, org string, files []bootstrap.CookbookFile, useFullName, includeURL bool) []map[string]any {
 	if len(files) == 0 {
 		return []map[string]any{}
 	}
@@ -568,15 +710,25 @@ func (s *server) renderCookbookFiles(r *http.Request, org string, files []bootst
 		if useFullName {
 			name = file.Path
 		}
-		out = append(out, map[string]any{
+		entry := map[string]any{
 			"name":        name,
 			"path":        file.Path,
 			"checksum":    file.Checksum,
 			"specificity": file.Specificity,
-			"url":         s.blobDownloadURL(r, file.Checksum, org),
-		})
+		}
+		if includeURL {
+			entry["url"] = s.blobDownloadURL(r, file.Checksum, org)
+		}
+		out = append(out, entry)
 	}
 	return out
+}
+
+func nonNilCookbookFileEntries(entries []map[string]any) []map[string]any {
+	if len(entries) == 0 {
+		return []map[string]any{}
+	}
+	return entries
 }
 
 func requestedCookbookAPIVersion(r *http.Request) int {
@@ -644,6 +796,72 @@ func parseCookbookNumVersions(r *http.Request) (int, bool, bool, bool) {
 		return 0, false, true, false
 	}
 	return parsed, false, true, true
+}
+
+func writeCookbookVersionError(w http.ResponseWriter, err error, name, version string) bool {
+	if err == nil {
+		return true
+	}
+
+	var validationErr *bootstrap.ValidationError
+	switch {
+	case errors.As(err, &validationErr):
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": validationErr.Messages})
+	case errors.Is(err, bootstrap.ErrNotFound):
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": cookbookVersionNotFound(name, version)})
+	default:
+		writeJSON(w, http.StatusInternalServerError, apiError{
+			Error:   "cookbook_failed",
+			Message: "internal cookbook compatibility error",
+		})
+	}
+	return false
+}
+
+func validCookbookName(name string) bool {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return false
+	}
+	for _, ch := range name {
+		switch {
+		case ch >= 'A' && ch <= 'Z':
+		case ch >= 'a' && ch <= 'z':
+		case ch >= '0' && ch <= '9':
+		case ch == '_', ch == '.', ch == '-':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func validCookbookVersionPath(version string, allowLatest bool) bool {
+	version = strings.TrimSpace(version)
+	if allowLatest && (version == "_latest" || version == "latest") {
+		return true
+	}
+	parts := strings.Split(version, ".")
+	if len(parts) != 3 {
+		return false
+	}
+	for _, part := range parts {
+		if part == "" {
+			return false
+		}
+		if _, err := strconv.ParseInt(part, 10, 64); err != nil {
+			return false
+		}
+	}
+	return true
+}
+
+func invalidCookbookNameMessage(name string) string {
+	return fmt.Sprintf("Invalid cookbook name '%s' using regex: 'Malformed cookbook name. Must only contain A-Z, a-z, 0-9, _, . or -'.", name)
+}
+
+func invalidCookbookVersionMessage(version string) string {
+	return fmt.Sprintf("Invalid cookbook version '%s'.", version)
 }
 
 func (s *server) writeCookbookArtifactError(w http.ResponseWriter, err error, name, identifier string) bool {

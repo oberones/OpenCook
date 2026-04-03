@@ -74,9 +74,10 @@ Status: in progress
 - in-memory sandbox create and commit behavior is implemented on default-org and explicit-org routes
 - signed checksum upload and download URLs now point at a live in-memory blob store with content-hash validation and upload-size limits
 - in-memory cookbook artifact list/get/create/delete behavior is implemented on default-org and explicit-org routes
+- cookbook version create/update/delete behavior is now implemented on default-org and explicit-org `/cookbooks/{name}/{version}` routes
 - `/cookbooks`, `/cookbooks/_latest`, `/cookbooks/_recipes`, named cookbook reads, and `/universe` are now live on default-org and explicit-org routes
-- cookbook version responses now preserve legacy segment views and API v2 `all_files` shaping
-- remaining cookbook mutation edge cases, production S3-compatible blob storage, and PostgreSQL-backed cookbook persistence are still pending
+- cookbook version responses now preserve `json_class`, `cookbook_name`, legacy segment views, and API v2 `all_files` shaping
+- remaining cookbook edge cases such as frozen/force behavior, production S3-compatible blob storage, and PostgreSQL-backed cookbook persistence are still pending
 - S3-compatible blob storage remains the target production mode after the compatibility contract settles
 
 ## Milestone 7: Operations and Migration
