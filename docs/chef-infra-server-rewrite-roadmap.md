@@ -56,11 +56,14 @@ As of 2026-04-03, OpenCook has moved past pure scaffolding and into the first co
 - search responses are now filtered through the current read ACL model
 - default-org search results for clients now point at live `/clients/...` URLs
 - the in-memory search layer now covers simple `AND`/`NOT` matching and escaped-slash prefix queries for the current compatibility slice
+- the first default-org policyfile slice is now live with `/policies`, `/policies/{name}`, `/policies/{name}/revisions`, `/policies/{name}/revisions/{revision}`, `/policy_groups`, and `/policy_groups/{group}/policies/{name}`
+- policy revision create/get/delete, policy-group listing, policy-group get/delete, and policy-group assignment flows are now working in the in-memory compatibility layer
 - compatibility tracking docs and route inventory are in place and being updated alongside code
 
 Current focus:
 
 - preserve API-version-sensitive actor key behavior without carrying forward Chef licensing concerns
+- deepen policyfile validation and fill in the remaining policy routes
 - deepen search query translation beyond the current simple compatibility subset and widen object/index coverage further
 - replace the in-memory bootstrap layer with PostgreSQL-backed persistence after the contracts stabilize
 

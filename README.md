@@ -11,6 +11,7 @@ The project is currently in its compatibility-foundation phase. This repository 
 - Chef request-signing verification with test coverage
 - in-memory bootstrap state for users, organizations, clients, groups, containers, and ACLs
 - initial authenticated endpoints for users, organizations, clients, ACL inspection, actor key lifecycle, nodes, environments, roles, data bags, and compatibility search
+- the first policyfile compatibility routes for policies, revisions, and policy-group assignments
 - docs for architecture decisions, milestones, and compatibility tracking
 - a starting test layout for contract-driven development
 
@@ -89,6 +90,13 @@ With that in place, signed requests can successfully hit:
 - `/organizations/{org}/environments/{name}/nodes`
 - `/nodes`
 - `/nodes/{name}`
+- `/policies`
+- `/policies/{name}`
+- `/policies/{name}/revisions`
+- `/policies/{name}/revisions/{revision}`
+- `/policy_groups`
+- `/policy_groups/{group}`
+- `/policy_groups/{group}/policies/{name}`
 - `/organizations/{org}/data`
 - `/organizations/{org}/data/{bag}`
 - `/organizations/{org}/data/{bag}/{item}`
@@ -106,6 +114,8 @@ With that in place, signed requests can successfully hit:
 - `/organizations/{org}/clients/{name}/keys/{key}`
 
 The in-memory search compatibility layer currently exposes the built-in Chef indexes for `client`, `environment`, `node`, and `role`, plus per-data-bag indexes, with GET search and POST partial search support across those object types. Broader Lucene-style query parity and OpenSearch-backed indexing are still pending.
+
+The first policyfile compatibility slice is now live on the default-org routes for `/policies` and `/policy_groups`, including revision storage, revision lookup, and policy-group assignment behavior. Wider policyfile validation and any eventual org-scoped aliases are still pending.
 
 Typical commands once a Go toolchain is available:
 
