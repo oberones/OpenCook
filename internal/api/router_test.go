@@ -160,13 +160,8 @@ func TestOrgClientsEndpointUsesOrgScopedLookup(t *testing.T) {
 		t.Fatalf("json.Unmarshal() error = %v", err)
 	}
 
-	if payload["organization"] != "ponyville" {
-		t.Fatalf("organization = %v, want %q", payload["organization"], "ponyville")
-	}
-
-	clients := payload["clients"].(map[string]any)
-	if _, ok := clients["org-validator"]; !ok {
-		t.Fatalf("clients did not include seeded org client, got %v", clients)
+	if _, ok := payload["org-validator"]; !ok {
+		t.Fatalf("clients did not include seeded org client, got %v", payload)
 	}
 }
 
@@ -190,8 +185,110 @@ func TestOrgClientsEndpointCollectionAcceptsTrailingSlash(t *testing.T) {
 		t.Fatalf("json.Unmarshal() error = %v", err)
 	}
 
-	if payload["clients"] == nil {
-		t.Fatalf("clients payload missing for trailing slash collection path")
+	if _, ok := payload["org-validator"]; !ok {
+		t.Fatalf("clients payload missing seeded org client for trailing slash collection path: %v", payload)
+	}
+}
+
+func TestClientsEndpointUsesDefaultOrganizationAlias(t *testing.T) {
+	router := newTestRouter(t)
+	body := []byte(`{"name":"twilight","create_key":true}`)
+	createReq := httptest.NewRequest(http.MethodPost, "/clients", bytes.NewReader(body))
+	applySignedHeaders(t, createReq, "silent-bob", "", http.MethodPost, "/clients", body, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	createRec := httptest.NewRecorder()
+	router.ServeHTTP(createRec, createReq)
+
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("create client status = %d, want %d, body = %s", createRec.Code, http.StatusCreated, createRec.Body.String())
+	}
+
+	var createPayload map[string]any
+	if err := json.Unmarshal(createRec.Body.Bytes(), &createPayload); err != nil {
+		t.Fatalf("json.Unmarshal(create client) error = %v", err)
+	}
+	if createPayload["uri"] != "/clients/twilight" {
+		t.Fatalf("create client uri = %v, want %q", createPayload["uri"], "/clients/twilight")
+	}
+	chefKey, ok := createPayload["chef_key"].(map[string]any)
+	if !ok {
+		t.Fatalf("chef_key payload missing: %v", createPayload)
+	}
+	if chefKey["uri"] != "/clients/twilight/keys/default" {
+		t.Fatalf("chef_key uri = %v, want %q", chefKey["uri"], "/clients/twilight/keys/default")
+	}
+
+	getReq := httptest.NewRequest(http.MethodGet, "/clients/twilight", nil)
+	applySignedHeaders(t, getReq, "silent-bob", "", http.MethodGet, "/clients/twilight", nil, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	getRec := httptest.NewRecorder()
+	router.ServeHTTP(getRec, getReq)
+
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("get client status = %d, want %d, body = %s", getRec.Code, http.StatusOK, getRec.Body.String())
+	}
+
+	var getPayload map[string]any
+	if err := json.Unmarshal(getRec.Body.Bytes(), &getPayload); err != nil {
+		t.Fatalf("json.Unmarshal(get client) error = %v", err)
+	}
+	if getPayload["orgname"] != "ponyville" {
+		t.Fatalf("client orgname = %v, want %q", getPayload["orgname"], "ponyville")
+	}
+	if getPayload["json_class"] != "Chef::ApiClient" {
+		t.Fatalf("client json_class = %v, want %q", getPayload["json_class"], "Chef::ApiClient")
+	}
+
+	listKeysReq := httptest.NewRequest(http.MethodGet, "/clients/twilight/keys", nil)
+	applySignedHeaders(t, listKeysReq, "silent-bob", "", http.MethodGet, "/clients/twilight/keys", nil, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	listKeysRec := httptest.NewRecorder()
+	router.ServeHTTP(listKeysRec, listKeysReq)
+
+	if listKeysRec.Code != http.StatusOK {
+		t.Fatalf("list client keys status = %d, want %d, body = %s", listKeysRec.Code, http.StatusOK, listKeysRec.Body.String())
+	}
+
+	var keysPayload []map[string]any
+	if err := json.Unmarshal(listKeysRec.Body.Bytes(), &keysPayload); err != nil {
+		t.Fatalf("json.Unmarshal(client keys) error = %v", err)
+	}
+	if len(keysPayload) != 1 {
+		t.Fatalf("client keys len = %d, want 1 (%v)", len(keysPayload), keysPayload)
+	}
+	if keysPayload[0]["uri"] != "/clients/twilight/keys/default" {
+		t.Fatalf("client key uri = %v, want %q", keysPayload[0]["uri"], "/clients/twilight/keys/default")
+	}
+
+}
+
+func TestClientsEndpointDeleteMissingClientReturnsClientSpecificNotFound(t *testing.T) {
+	router := newTestRouter(t)
+	req := httptest.NewRequest(http.MethodDelete, "/clients/missing", nil)
+	applySignedHeaders(t, req, "silent-bob", "", http.MethodDelete, "/clients/missing", nil, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusNotFound, rec.Body.String())
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal(delete missing client) error = %v", err)
+	}
+	if payload["message"] != "client not found" {
+		t.Fatalf("message = %v, want %q", payload["message"], "client not found")
 	}
 }
 

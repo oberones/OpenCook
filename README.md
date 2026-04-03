@@ -66,6 +66,10 @@ With that in place, signed requests can successfully hit:
 - `/users/{name}`
 - `/users/{name}/keys`
 - `/users/{name}/keys/{key}`
+- `/clients`
+- `/clients/{name}`
+- `/clients/{name}/keys`
+- `/clients/{name}/keys/{key}`
 - `/organizations`
 - `/organizations/{org}`
 - `/environments`
@@ -94,6 +98,8 @@ With that in place, signed requests can successfully hit:
 - `/organizations/{org}/clients/{name}`
 - `/organizations/{org}/clients/{name}/keys`
 - `/organizations/{org}/clients/{name}/keys/{key}`
+
+The in-memory search compatibility layer currently exposes the built-in Chef indexes for `client`, `environment`, `node`, and `role`, with GET search and POST partial search support across those object types.
 
 Typical commands once a Go toolchain is available:
 

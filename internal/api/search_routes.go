@@ -199,6 +199,8 @@ func (s *server) resolveSearchRoute(w http.ResponseWriter, r *http.Request) (str
 
 func searchContainerResource(indexName, org string) (authz.Resource, bool) {
 	switch indexName {
+	case "client":
+		return authz.Resource{Type: "container", Name: "clients", Organization: org}, true
 	case "environment":
 		return authz.Resource{Type: "container", Name: "environments", Organization: org}, true
 	case "node":
@@ -352,6 +354,11 @@ func partialSearchValue(document map[string]any, path []string) any {
 
 func searchDocumentURL(doc search.Document, org, basePath string) string {
 	switch doc.Index {
+	case "client":
+		if basePath == "/search" {
+			return "/clients/" + doc.Name
+		}
+		return "/organizations/" + org + "/clients/" + doc.Name
 	case "environment":
 		if basePath == "/search" {
 			return "/environments/" + doc.Name

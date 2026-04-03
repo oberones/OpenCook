@@ -47,15 +47,17 @@ As of 2026-04-02, OpenCook has moved past pure scaffolding and into the first co
 - the first role slice is now live with in-memory list/get/head/create/update/delete behavior
 - role environment endpoints are implemented via `/roles/{name}/environments` and `/roles/{name}/environments/{environment}`
 - default-org and explicit-org role routes now resolve against the same org-scoped compatibility state
-- the first search-facing slice is now live with `/search` and `/search/{environment,node,role}` over the in-memory compatibility state
-- partial search is now implemented for environments, nodes, and roles
+- default-org client routes are now live for `/clients`, `/clients/{name}`, and `/clients/{name}/keys`
+- the first search-facing slice is now live with `/search` and `/search/{client,environment,node,role}` over the in-memory compatibility state
+- partial search is now implemented for clients, environments, nodes, and roles
 - search responses are now filtered through the current read ACL model
+- default-org search results for clients now point at live `/clients/...` URLs
 - compatibility tracking docs and route inventory are in place and being updated alongside code
 
 Current focus:
 
 - preserve API-version-sensitive actor key behavior without carrying forward Chef licensing concerns
-- deepen node, environment, and role compatibility around run-list normalization, cookbook constraints, and broader search semantics while starting the next adjacent object APIs
+- deepen search query translation and wider object coverage while starting the next adjacent object APIs such as data bags
 - replace the in-memory bootstrap layer with PostgreSQL-backed persistence after the contracts stabilize
 
 ## What Exists Upstream

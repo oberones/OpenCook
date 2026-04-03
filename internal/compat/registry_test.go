@@ -64,3 +64,23 @@ func TestNewDefaultRegistryIncludesSearchRoutes(t *testing.T) {
 		}
 	}
 }
+
+func TestNewDefaultRegistryIncludesDefaultClientKeyRoutes(t *testing.T) {
+	registry := NewDefaultRegistry()
+
+	patterns := make(map[string]struct{})
+	for _, surface := range registry.Surfaces() {
+		for _, pattern := range surface.Patterns {
+			patterns[pattern] = struct{}{}
+		}
+	}
+
+	for _, pattern := range []string{
+		"/clients/{name}/keys",
+		"/clients/{name}/keys/",
+	} {
+		if _, ok := patterns[pattern]; !ok {
+			t.Fatalf("pattern %q missing from compatibility registry", pattern)
+		}
+	}
+}

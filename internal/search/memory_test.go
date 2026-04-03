@@ -28,6 +28,30 @@ func TestMemoryIndexIndexesReturnsNotFoundForUnknownOrganization(t *testing.T) {
 	}
 }
 
+func TestMemoryIndexIndexesIncludeClient(t *testing.T) {
+	state := bootstrap.NewService(authn.NewMemoryKeyStore(), bootstrap.Options{SuperuserName: "pivotal"})
+	if _, _, _, err := state.CreateOrganization(bootstrap.CreateOrganizationInput{
+		Name:      "ponyville",
+		FullName:  "Ponyville",
+		OrgType:   "Business",
+		OwnerName: "pivotal",
+	}); err != nil {
+		t.Fatalf("CreateOrganization() error = %v", err)
+	}
+
+	index := NewMemoryIndex(state, "")
+	indexes, err := index.Indexes(context.Background(), "ponyville")
+	if err != nil {
+		t.Fatalf("Indexes() error = %v", err)
+	}
+	if len(indexes) != 4 {
+		t.Fatalf("indexes len = %d, want 4 (%v)", len(indexes), indexes)
+	}
+	if indexes[0] != "client" {
+		t.Fatalf("indexes[0] = %q, want %q", indexes[0], "client")
+	}
+}
+
 func TestMemoryIndexSearchReturnsNotFoundForUnknownOrganization(t *testing.T) {
 	state := bootstrap.NewService(authn.NewMemoryKeyStore(), bootstrap.Options{SuperuserName: "pivotal"})
 	index := NewMemoryIndex(state, "")

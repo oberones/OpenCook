@@ -167,7 +167,7 @@ func (s *server) handleUserKeys(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *server) handleOrgClientKeys(w http.ResponseWriter, r *http.Request) {
+func (s *server) handleClientKeys(w http.ResponseWriter, r *http.Request) {
 	state := s.deps.Bootstrap
 	if state == nil {
 		writeJSON(w, http.StatusInternalServerError, apiError{
@@ -177,9 +177,12 @@ func (s *server) handleOrgClientKeys(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	org := r.PathValue("org")
+	org, clientBasePath, ok := s.resolveClientRoute(w, r)
+	if !ok {
+		return
+	}
 	name := r.PathValue("name")
-	basePath := "/organizations/" + org + "/clients/" + name + "/keys"
+	basePath := clientKeyBasePath(org, name, clientBasePath)
 
 	switch r.Method {
 	case http.MethodGet:
@@ -204,7 +207,7 @@ func (s *server) handleOrgClientKeys(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 
-			writeJSON(w, http.StatusOK, keyListPayload(keys))
+			writeJSON(w, http.StatusOK, clientFacingKeyListPayload(keys, basePath))
 			return
 		}
 
@@ -273,9 +276,10 @@ func (s *server) handleOrgClientKeys(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		w.Header().Set("Location", keyMaterial.URI)
+		location := basePath + "/" + keyMaterial.Name
+		w.Header().Set("Location", location)
 		response := map[string]any{
-			"uri": keyMaterial.URI,
+			"uri": location,
 		}
 		if keyMaterial.PrivateKeyPEM != "" {
 			response["private_key"] = keyMaterial.PrivateKeyPEM
@@ -329,7 +333,7 @@ func (s *server) handleOrgClientKeys(w http.ResponseWriter, r *http.Request) {
 
 		status, body := userFacingKeyUpdateResponse(result, payload)
 		if result.Renamed {
-			w.Header().Set("Location", result.KeyMaterial.URI)
+			w.Header().Set("Location", basePath+"/"+result.KeyMaterial.Name)
 		}
 		writeJSON(w, status, body)
 	default:

@@ -10,7 +10,7 @@ import (
 	"github.com/oberones/OpenCook/internal/bootstrap"
 )
 
-var builtInIndexes = []string{"environment", "node", "role"}
+var builtInIndexes = []string{"client", "environment", "node", "role"}
 
 type MemoryIndex struct {
 	state  *bootstrap.Service
@@ -77,6 +77,8 @@ func (i MemoryIndex) Search(_ context.Context, query Query) (Result, error) {
 
 func (i MemoryIndex) documentsForQuery(query Query) ([]Document, error) {
 	switch strings.TrimSpace(query.Index) {
+	case "client":
+		return i.clientDocuments(query.Organization)
 	case "environment":
 		return i.environmentDocuments(query.Organization)
 	case "node":
@@ -86,6 +88,36 @@ func (i MemoryIndex) documentsForQuery(query Query) ([]Document, error) {
 	default:
 		return nil, ErrNotFound
 	}
+}
+
+func (i MemoryIndex) clientDocuments(org string) ([]Document, error) {
+	clients, ok := i.state.ListClients(org)
+	if !ok {
+		return nil, ErrNotFound
+	}
+
+	names := sortedKeys(clients)
+	out := make([]Document, 0, len(names))
+	for _, name := range names {
+		client, exists := i.state.GetClient(org, name)
+		if !exists {
+			continue
+		}
+		object := clientObject(client)
+		out = append(out, Document{
+			Index:   "client",
+			Name:    client.Name,
+			Object:  object,
+			Partial: cloneSearchMap(object),
+			Fields:  clientFields(client),
+			Resource: authz.Resource{
+				Type:         "client",
+				Name:         client.Name,
+				Organization: org,
+			},
+		})
+	}
+	return out, nil
 }
 
 func (i MemoryIndex) environmentDocuments(org string) ([]Document, error) {
@@ -178,6 +210,21 @@ func (i MemoryIndex) roleDocuments(org string) ([]Document, error) {
 	return out, nil
 }
 
+func clientObject(client bootstrap.Client) map[string]any {
+	object := map[string]any{
+		"name":       client.Name,
+		"clientname": client.ClientName,
+		"json_class": "Chef::ApiClient",
+		"chef_type":  "client",
+		"orgname":    client.Organization,
+		"validator":  client.Validator,
+	}
+	if strings.TrimSpace(client.PublicKey) != "" {
+		object["public_key"] = client.PublicKey
+	}
+	return object
+}
+
 func environmentObject(env bootstrap.Environment) map[string]any {
 	return map[string]any{
 		"name":                env.Name,
@@ -240,6 +287,17 @@ func roleObject(role bootstrap.Role) map[string]any {
 		"run_list":            runListAny(normalizeRunList(role.RunList)),
 		"env_run_lists":       stringSliceMapToAny(normalizeEnvRunLists(role.EnvRunLists)),
 	}
+}
+
+func clientFields(client bootstrap.Client) map[string][]string {
+	fields := make(map[string][]string)
+	addField(fields, "name", client.Name)
+	addField(fields, "clientname", client.ClientName)
+	addField(fields, "json_class", "Chef::ApiClient")
+	addField(fields, "chef_type", "client")
+	addField(fields, "orgname", client.Organization)
+	addFlattenedFields(fields, nil, clientObject(client))
+	return fields
 }
 
 func environmentFields(env bootstrap.Environment) map[string][]string {

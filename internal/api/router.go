@@ -52,6 +52,8 @@ func NewRouter(deps Dependencies) http.Handler {
 	mux.HandleFunc("/readyz", srv.handleReady)
 	mux.HandleFunc("/internal/contracts/routes", srv.handleRouteContract)
 	mux.HandleFunc("/internal/authn/capabilities", srv.handleAuthnCapabilities)
+	mux.HandleFunc("/clients", srv.withAuthn("clients-root", srv.handleClients))
+	mux.HandleFunc("/clients/", srv.withAuthn("clients-routes", srv.handleClients))
 	mux.HandleFunc("/environments", srv.withAuthn("environments-root", srv.handleEnvironments))
 	mux.HandleFunc("/environments/", srv.withAuthn("environments-routes", srv.handleEnvironments))
 	mux.HandleFunc("/environments/{name}/nodes", srv.withAuthn("environment-nodes-root", srv.handleEnvironmentNodes))
@@ -94,10 +96,12 @@ func NewRouter(deps Dependencies) http.Handler {
 	mux.HandleFunc("/users/{name}/keys", srv.withAuthn("user-keys-root", srv.handleUserKeys))
 	mux.HandleFunc("/users/{name}/keys/", srv.withAuthn("user-keys-routes", srv.handleUserKeys))
 	mux.HandleFunc("/users/{name}/_acl", srv.withAuthn("user-acl", srv.handleUserACL))
-	mux.HandleFunc("/organizations/{org}/clients", srv.withAuthn("org-clients", srv.handleOrgClients))
-	mux.HandleFunc("/organizations/{org}/clients/", srv.withAuthn("org-client-named", srv.handleOrgClients))
-	mux.HandleFunc("/organizations/{org}/clients/{name}/keys", srv.withAuthn("org-client-keys-root", srv.handleOrgClientKeys))
-	mux.HandleFunc("/organizations/{org}/clients/{name}/keys/", srv.withAuthn("org-client-keys-routes", srv.handleOrgClientKeys))
+	mux.HandleFunc("/clients/{name}/keys", srv.withAuthn("client-keys-root", srv.handleClientKeys))
+	mux.HandleFunc("/clients/{name}/keys/", srv.withAuthn("client-keys-routes", srv.handleClientKeys))
+	mux.HandleFunc("/organizations/{org}/clients", srv.withAuthn("org-clients", srv.handleClients))
+	mux.HandleFunc("/organizations/{org}/clients/", srv.withAuthn("org-client-named", srv.handleClients))
+	mux.HandleFunc("/organizations/{org}/clients/{name}/keys", srv.withAuthn("org-client-keys-root", srv.handleClientKeys))
+	mux.HandleFunc("/organizations/{org}/clients/{name}/keys/", srv.withAuthn("org-client-keys-routes", srv.handleClientKeys))
 	mux.HandleFunc("/organizations/{org}/clients/{name}/_acl", srv.withAuthn("org-client-acl", srv.handleOrgClientACL))
 
 	for _, surface := range deps.Compat.Surfaces() {
@@ -278,8 +282,7 @@ func (s *server) handleUsers(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *server) handleOrgClients(w http.ResponseWriter, r *http.Request) {
-	requestor, _ := requestorFromContext(r.Context())
+func (s *server) handleClients(w http.ResponseWriter, r *http.Request) {
 	state := s.deps.Bootstrap
 	if state == nil {
 		writeJSON(w, http.StatusInternalServerError, apiError{
@@ -288,124 +291,28 @@ func (s *server) handleOrgClients(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	org := r.PathValue("org")
-	collectionPath := "/organizations/" + org + "/clients"
+
+	org, basePath, ok := s.resolveClientRoute(w, r)
+	if !ok {
+		return
+	}
+	if _, exists := state.GetOrganization(org); !exists {
+		writeJSON(w, http.StatusNotFound, apiError{
+			Error:   "not_found",
+			Message: "organization not found",
+		})
+		return
+	}
 
 	switch r.Method {
 	case http.MethodGet:
-		if _, ok := state.GetOrganization(org); !ok {
-			writeJSON(w, http.StatusNotFound, apiError{
-				Error:   "not_found",
-				Message: "organization not found",
-			})
-			return
-		}
-
-		if matchesCollectionPath(r.URL.Path, collectionPath) {
-			if !s.authorizeRequest(w, r, authz.ActionRead, authz.Resource{
-				Type:         "container",
-				Name:         "clients",
-				Organization: org,
-			}) {
-				return
-			}
-
-			clients, _ := state.ListClients(org)
-			writeJSON(w, http.StatusOK, map[string]any{
-				"organization": org,
-				"requestor":    requestor,
-				"clients":      clients,
-				"storage":      "memory-bootstrap",
-			})
-			return
-		}
-
-		name := strings.TrimPrefix(r.URL.Path, collectionPath+"/")
-		if name == "" || strings.Contains(name, "/") {
-			writeJSON(w, http.StatusNotFound, apiError{
-				Error:   "not_found",
-				Message: "route not found in scaffold router",
-			})
-			return
-		}
-
-		client, ok := state.GetClient(org, name)
-		if !ok {
-			writeJSON(w, http.StatusNotFound, apiError{
-				Error:   "not_found",
-				Message: "client not found",
-			})
-			return
-		}
-		if !s.authorizeClientRead(w, r, org, name) {
-			return
-		}
-
-		writeJSON(w, http.StatusOK, map[string]any{
-			"organization":   org,
-			"name":           client.Name,
-			"clientname":     client.ClientName,
-			"validator":      client.Validator,
-			"admin":          client.Admin,
-			"requestor":      requestor,
-			"uri":            client.URI,
-			"authn_status":   "verified",
-			"storage_status": "memory-bootstrap",
-		})
+		s.handleClientGet(w, r, state, org, basePath)
+	case http.MethodHead:
+		s.handleClientHead(w, r, state, org, basePath)
 	case http.MethodPost:
-		if !matchesCollectionPath(r.URL.Path, collectionPath) {
-			writeJSON(w, http.StatusNotFound, apiError{
-				Error:   "not_found",
-				Message: "route not found in scaffold router",
-			})
-			return
-		}
-
-		if !s.authorizeRequest(w, r, authz.ActionCreate, authz.Resource{
-			Type:         "container",
-			Name:         "clients",
-			Organization: org,
-		}) {
-			return
-		}
-
-		var payload struct {
-			Name       string `json:"name"`
-			ClientName string `json:"clientname"`
-			Validator  bool   `json:"validator"`
-			Admin      bool   `json:"admin"`
-			PublicKey  string `json:"public_key"`
-			CreateKey  bool   `json:"create_key"`
-		}
-		if !decodeJSON(w, r, &payload) {
-			return
-		}
-
-		name := payload.Name
-		if name == "" {
-			name = payload.ClientName
-		}
-
-		client, keyMaterial, err := state.CreateClient(org, bootstrap.CreateClientInput{
-			Name:      name,
-			Validator: payload.Validator,
-			Admin:     payload.Admin,
-			PublicKey: payload.PublicKey,
-		})
-		if !s.writeBootstrapError(w, err) {
-			return
-		}
-
-		response := map[string]any{
-			"uri": client.URI,
-		}
-		if keyMaterial != nil && keyMaterial.PrivateKeyPEM != "" {
-			response["private_key"] = keyMaterial.PrivateKeyPEM
-		}
-		if payload.CreateKey && keyMaterial != nil {
-			response["chef_key"] = keyMaterial
-		}
-		writeJSON(w, http.StatusCreated, response)
+		s.handleClientPost(w, r, state, org, basePath)
+	case http.MethodDelete:
+		s.handleClientDelete(w, r, state, org, basePath)
 	default:
 		writeJSON(w, http.StatusNotImplemented, map[string]any{
 			"error":   "not_implemented",
@@ -512,7 +419,7 @@ func flattenHeaders(header http.Header) map[string]string {
 
 func isImplementedPattern(pattern string) bool {
 	switch pattern {
-	case "/users", "/users/", "/users/{name}/keys", "/users/{name}/keys/", "/organizations", "/organizations/", "/environments", "/environments/", "/environments/{name}/nodes", "/environments/{name}/nodes/", "/organizations/{org}/environments", "/organizations/{org}/environments/", "/organizations/{org}/environments/{name}/nodes", "/organizations/{org}/environments/{name}/nodes/", "/nodes", "/nodes/", "/organizations/{org}/nodes", "/organizations/{org}/nodes/", "/search", "/search/", "/search/{index}", "/search/{index}/", "/organizations/{org}/search", "/organizations/{org}/search/", "/organizations/{org}/search/{index}", "/organizations/{org}/search/{index}/", "/roles", "/roles/", "/roles/{name}/environments", "/roles/{name}/environments/", "/roles/{name}/environments/{environment}", "/roles/{name}/environments/{environment}/", "/organizations/{org}/roles", "/organizations/{org}/roles/", "/organizations/{org}/roles/{name}/environments", "/organizations/{org}/roles/{name}/environments/", "/organizations/{org}/roles/{name}/environments/{environment}", "/organizations/{org}/roles/{name}/environments/{environment}/", "/organizations/{org}/clients", "/organizations/{org}/clients/", "/organizations/{org}/clients/{name}/keys", "/organizations/{org}/clients/{name}/keys/":
+	case "/users", "/users/", "/users/{name}/keys", "/users/{name}/keys/", "/organizations", "/organizations/", "/clients", "/clients/", "/clients/{name}/keys", "/clients/{name}/keys/", "/environments", "/environments/", "/environments/{name}/nodes", "/environments/{name}/nodes/", "/organizations/{org}/environments", "/organizations/{org}/environments/", "/organizations/{org}/environments/{name}/nodes", "/organizations/{org}/environments/{name}/nodes/", "/nodes", "/nodes/", "/organizations/{org}/nodes", "/organizations/{org}/nodes/", "/search", "/search/", "/search/{index}", "/search/{index}/", "/organizations/{org}/search", "/organizations/{org}/search/", "/organizations/{org}/search/{index}", "/organizations/{org}/search/{index}/", "/roles", "/roles/", "/roles/{name}/environments", "/roles/{name}/environments/", "/roles/{name}/environments/{environment}", "/roles/{name}/environments/{environment}/", "/organizations/{org}/roles", "/organizations/{org}/roles/", "/organizations/{org}/roles/{name}/environments", "/organizations/{org}/roles/{name}/environments/", "/organizations/{org}/roles/{name}/environments/{environment}", "/organizations/{org}/roles/{name}/environments/{environment}/", "/organizations/{org}/clients", "/organizations/{org}/clients/", "/organizations/{org}/clients/{name}/keys", "/organizations/{org}/clients/{name}/keys/":
 		return true
 	default:
 		return false
