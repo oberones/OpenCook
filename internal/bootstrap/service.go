@@ -161,6 +161,7 @@ type organizationState struct {
 	org        Organization
 	clients    map[string]Client
 	clientKeys map[string]map[string]KeyRecord
+	nodes      map[string]Node
 	groups     map[string]Group
 	containers map[string]Container
 	acls       map[string]authz.ACL
@@ -437,6 +438,7 @@ func (s *Service) CreateOrganization(input CreateOrganizationInput) (Organizatio
 		org:        org,
 		clients:    make(map[string]Client),
 		clientKeys: make(map[string]map[string]KeyRecord),
+		nodes:      make(map[string]Node),
 		groups:     make(map[string]Group),
 		containers: make(map[string]Container),
 		acls:       make(map[string]authz.ACL),
@@ -793,6 +795,13 @@ func (s *Service) ResolveACL(_ context.Context, resource authz.Resource) (authz.
 			return authz.ACL{}, false, nil
 		}
 		acl, ok := org.acls[clientACLKey(resource.Name)]
+		return acl, ok, nil
+	case "node":
+		org, ok := s.orgs[resource.Organization]
+		if !ok {
+			return authz.ACL{}, false, nil
+		}
+		acl, ok := org.acls[nodeACLKey(resource.Name)]
 		return acl, ok, nil
 	default:
 		return authz.ACL{}, false, nil

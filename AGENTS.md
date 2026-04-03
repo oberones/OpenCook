@@ -54,6 +54,14 @@ Implemented so far:
 - Chef request-signing verification
 - initial authenticated routing
 - in-memory bootstrap state for users, organizations, clients, groups, containers, and ACLs
+- the first core object slice for nodes:
+  - list
+  - get
+  - head
+  - create
+  - update
+  - delete
+  - default-org and explicit-org routing
 - actor key lifecycle for users and org-scoped clients:
   - list
   - get
@@ -227,7 +235,8 @@ These areas are still intentionally incomplete:
 - PostgreSQL-backed persistence
 - OpenSearch-backed indexing and query behavior
 - core Chef object CRUD such as nodes, roles, environments, and data bags
+- deeper node compatibility such as environment-filtered listing and search indexing
 - Bookshelf/sandbox/cookbook flows
 - operational parity and migration tooling
 
-The next likely major slice is nodes or another core object API, not more speculative infrastructure work.
+The next likely major slice is deeper node compatibility or the next adjacent object API, not more speculative infrastructure work.
