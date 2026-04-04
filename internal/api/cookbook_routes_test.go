@@ -120,13 +120,13 @@ func TestCookbookEndpointsListLatestRecipesUniverseAndV2VersionView(t *testing.T
 	checksumV1 := uploadCookbookChecksum(t, router, []byte("puts 'v1'"))
 	checksumV2 := uploadCookbookChecksum(t, router, []byte("puts 'v2'"))
 
-	createCookbookArtifact(t, router, "demo", "1111111111111111111111111111111111111111", "1.0.0", checksumV1, map[string]string{
+	createCookbookVersion(t, router, "demo", "1.0.0", checksumV1, map[string]string{
 		"apt": ">= 1.0.0",
 	})
-	createCookbookArtifact(t, router, "demo", "2222222222222222222222222222222222222222", "1.2.0", checksumV2, map[string]string{
+	createCookbookVersion(t, router, "demo", "1.2.0", checksumV2, map[string]string{
 		"apt": ">= 2.0.0",
 	})
-	createCookbookArtifact(t, router, "other", "3333333333333333333333333333333333333333", "0.1.0", "", nil)
+	createCookbookVersion(t, router, "other", "0.1.0", "", nil)
 
 	listReq := newSignedJSONRequest(t, http.MethodGet, "/cookbooks", nil)
 	listRec := httptest.NewRecorder()
@@ -205,6 +205,12 @@ func TestCookbookEndpointsListLatestRecipesUniverseAndV2VersionView(t *testing.T
 	if versionPayload["version"] != "1.2.0" {
 		t.Fatalf("version = %v, want %q", versionPayload["version"], "1.2.0")
 	}
+	if versionPayload["cookbook_name"] != "demo" {
+		t.Fatalf("cookbook_name = %v, want %q", versionPayload["cookbook_name"], "demo")
+	}
+	if versionPayload["json_class"] != "Chef::CookbookVersion" {
+		t.Fatalf("json_class = %v, want %q", versionPayload["json_class"], "Chef::CookbookVersion")
+	}
 	if _, ok := versionPayload["all_files"]; !ok {
 		t.Fatalf("v2 cookbook version payload missing all_files: %v", versionPayload)
 	}
@@ -227,6 +233,106 @@ func TestCookbookEndpointsListLatestRecipesUniverseAndV2VersionView(t *testing.T
 	deps := v12["dependencies"].(map[string]any)
 	if deps["apt"] != ">= 2.0.0" {
 		t.Fatalf("dependencies.apt = %v, want %q", deps["apt"], ">= 2.0.0")
+	}
+}
+
+func TestCookbookVersionEndpointsCreateUpdateAndDelete(t *testing.T) {
+	router := newTestRouter(t)
+	checksumV1 := uploadCookbookChecksum(t, router, []byte("puts 'hello v1'"))
+	checksumV2 := uploadCookbookChecksum(t, router, []byte("puts 'hello v2'"))
+
+	createReq := newSignedJSONRequest(t, http.MethodPut, "/cookbooks/demo/1.2.3", mustMarshalSandboxJSON(t, cookbookVersionPayload("demo", "1.2.3", checksumV1, map[string]string{
+		"apt": ">= 1.0.0",
+	})))
+	createRec := httptest.NewRecorder()
+	router.ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("create cookbook status = %d, want %d, body = %s", createRec.Code, http.StatusCreated, createRec.Body.String())
+	}
+
+	var createPayload map[string]any
+	if err := json.Unmarshal(createRec.Body.Bytes(), &createPayload); err != nil {
+		t.Fatalf("json.Unmarshal(create cookbook) error = %v", err)
+	}
+	if createPayload["name"] != "demo-1.2.3" {
+		t.Fatalf("create name = %v, want %q", createPayload["name"], "demo-1.2.3")
+	}
+	if createPayload["cookbook_name"] != "demo" {
+		t.Fatalf("create cookbook_name = %v, want %q", createPayload["cookbook_name"], "demo")
+	}
+
+	getReq := newSignedJSONRequest(t, http.MethodGet, "/cookbooks/demo/1.2.3", nil)
+	getRec := httptest.NewRecorder()
+	router.ServeHTTP(getRec, getReq)
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("get cookbook status = %d, want %d, body = %s", getRec.Code, http.StatusOK, getRec.Body.String())
+	}
+	var getPayload map[string]any
+	if err := json.Unmarshal(getRec.Body.Bytes(), &getPayload); err != nil {
+		t.Fatalf("json.Unmarshal(get cookbook) error = %v", err)
+	}
+	recipes := getPayload["recipes"].([]any)
+	if len(recipes) != 1 {
+		t.Fatalf("recipes len = %d, want 1 (%v)", len(recipes), recipes)
+	}
+	if _, ok := recipes[0].(map[string]any)["url"]; !ok {
+		t.Fatalf("recipe entry missing url: %v", recipes[0])
+	}
+	for _, segment := range []string{"attributes", "definitions", "files", "libraries", "providers", "resources", "root_files", "templates"} {
+		raw, ok := getPayload[segment]
+		if !ok {
+			t.Fatalf("legacy cookbook payload missing %q: %v", segment, getPayload)
+		}
+		entries, ok := raw.([]any)
+		if !ok {
+			t.Fatalf("legacy cookbook payload %q = %T, want []any", segment, raw)
+		}
+		if len(entries) != 0 {
+			t.Fatalf("legacy cookbook payload %q len = %d, want 0 (%v)", segment, len(entries), entries)
+		}
+	}
+
+	updateReq := newSignedJSONRequest(t, http.MethodPut, "/cookbooks/demo/1.2.3", mustMarshalSandboxJSON(t, cookbookVersionPayload("demo", "1.2.3", checksumV2, map[string]string{
+		"apt": ">= 2.0.0",
+	})))
+	updateRec := httptest.NewRecorder()
+	router.ServeHTTP(updateRec, updateReq)
+	if updateRec.Code != http.StatusOK {
+		t.Fatalf("update cookbook status = %d, want %d, body = %s", updateRec.Code, http.StatusOK, updateRec.Body.String())
+	}
+
+	updatedGetReq := newSignedJSONRequest(t, http.MethodGet, "/cookbooks/demo/1.2.3", nil)
+	updatedGetReq.Header.Set("X-Ops-Server-API-Version", "2")
+	updatedGetRec := httptest.NewRecorder()
+	router.ServeHTTP(updatedGetRec, updatedGetReq)
+	if updatedGetRec.Code != http.StatusOK {
+		t.Fatalf("updated get cookbook status = %d, want %d, body = %s", updatedGetRec.Code, http.StatusOK, updatedGetRec.Body.String())
+	}
+	var updatedPayload map[string]any
+	if err := json.Unmarshal(updatedGetRec.Body.Bytes(), &updatedPayload); err != nil {
+		t.Fatalf("json.Unmarshal(updated get cookbook) error = %v", err)
+	}
+	allFiles := updatedPayload["all_files"].([]any)
+	if len(allFiles) != 1 {
+		t.Fatalf("all_files len = %d, want 1 (%v)", len(allFiles), allFiles)
+	}
+	deps := updatedPayload["metadata"].(map[string]any)["dependencies"].(map[string]any)
+	if deps["apt"] != ">= 2.0.0" {
+		t.Fatalf("updated dependencies.apt = %v, want %q", deps["apt"], ">= 2.0.0")
+	}
+
+	deleteReq := newSignedJSONRequest(t, http.MethodDelete, "/cookbooks/demo/1.2.3", nil)
+	deleteRec := httptest.NewRecorder()
+	router.ServeHTTP(deleteRec, deleteReq)
+	if deleteRec.Code != http.StatusOK {
+		t.Fatalf("delete cookbook status = %d, want %d, body = %s", deleteRec.Code, http.StatusOK, deleteRec.Body.String())
+	}
+
+	missingReq := newSignedJSONRequest(t, http.MethodGet, "/cookbooks/demo/1.2.3", nil)
+	missingRec := httptest.NewRecorder()
+	router.ServeHTTP(missingRec, missingReq)
+	if missingRec.Code != http.StatusNotFound {
+		t.Fatalf("missing cookbook status = %d, want %d, body = %s", missingRec.Code, http.StatusNotFound, missingRec.Body.String())
 	}
 }
 
@@ -356,6 +462,17 @@ func createCookbookArtifact(t *testing.T, router http.Handler, name, identifier,
 	}
 }
 
+func createCookbookVersion(t *testing.T, router http.Handler, name, version, checksum string, dependencies map[string]string) {
+	t.Helper()
+
+	req := newSignedJSONRequest(t, http.MethodPut, "/cookbooks/"+name+"/"+version, mustMarshalSandboxJSON(t, cookbookVersionPayload(name, version, checksum, dependencies)))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create cookbook %s/%s status = %d, want %d, body = %s", name, version, rec.Code, http.StatusCreated, rec.Body.String())
+	}
+}
+
 func cookbookArtifactPayload(name, identifier, version, checksum string, dependencies map[string]string) map[string]any {
 	metadataDeps := map[string]any{}
 	for depName, constraint := range dependencies {
@@ -400,6 +517,56 @@ func cookbookArtifactPayload(name, identifier, version, checksum string, depende
 			"attributes":       map[string]any{},
 			"recipes":          metadataRecipes,
 			"providing":        map[string]any{name + "::default": ">= 0.0.0"},
+		},
+		"recipes":   recipes,
+		"all_files": allFiles,
+	}
+}
+
+func cookbookVersionPayload(name, version, checksum string, dependencies map[string]string) map[string]any {
+	metadataDeps := map[string]any{}
+	for depName, constraint := range dependencies {
+		metadataDeps[depName] = constraint
+	}
+
+	metadataRecipes := map[string]any{}
+	recipes := []any{}
+	allFiles := []any{}
+	if checksum != "" {
+		metadataRecipes[name+"::default"] = ""
+		legacyRecipe := map[string]any{
+			"name":        "default.rb",
+			"path":        "recipes/default.rb",
+			"checksum":    checksum,
+			"specificity": "default",
+		}
+		recipes = append(recipes, legacyRecipe)
+		allFiles = append(allFiles, map[string]any{
+			"name":        "recipes/default.rb",
+			"path":        "recipes/default.rb",
+			"checksum":    checksum,
+			"specificity": "default",
+		})
+	}
+
+	return map[string]any{
+		"name":          name + "-" + version,
+		"cookbook_name": name,
+		"version":       version,
+		"json_class":    "Chef::CookbookVersion",
+		"chef_type":     "cookbook_version",
+		"frozen?":       false,
+		"metadata": map[string]any{
+			"version":          version,
+			"name":             name,
+			"maintainer":       "OpenCook",
+			"maintainer_email": "opencook@example.com",
+			"description":      "compatibility cookbook",
+			"long_description": "compatibility cookbook",
+			"license":          "Apache-2.0",
+			"dependencies":     metadataDeps,
+			"attributes":       map[string]any{},
+			"recipes":          metadataRecipes,
 		},
 		"recipes":   recipes,
 		"all_files": allFiles,

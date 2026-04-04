@@ -60,42 +60,10 @@ func TestCreateCookbookArtifactRejectsMissingUploadedChecksum(t *testing.T) {
 
 func TestListCookbookVersionsOrdersLatestFirst(t *testing.T) {
 	service := newTestBootstrapService(t)
-	if _, _, _, err := service.CreateOrganization(CreateOrganizationInput{
-		Name:      "ponyville",
-		FullName:  "Ponyville",
-		OrgType:   "Business",
-		OwnerName: "pivotal",
-	}); err != nil {
-		t.Fatalf("CreateOrganization() error = %v", err)
-	}
-
-	for identifier, version := range map[string]string{
-		"1111111111111111111111111111111111111111": "1.0.0",
-		"2222222222222222222222222222222222222222": "1.2.0",
-		"3333333333333333333333333333333333333333": "1.2.0.beta.1",
-	} {
-		if _, err := service.CreateCookbookArtifact("ponyville", CreateCookbookArtifactInput{
-			Name:       "app",
-			Identifier: identifier,
-			Payload: map[string]any{
-				"name":       "app",
-				"identifier": identifier,
-				"version":    version,
-				"chef_type":  "cookbook_version",
-				"metadata": map[string]any{
-					"version":      version,
-					"name":         "app",
-					"dependencies": map[string]any{},
-					"recipes":      map[string]any{},
-				},
-			},
-			ChecksumExists: func(string) (bool, error) {
-				return true, nil
-			},
-		}); err != nil {
-			t.Fatalf("CreateCookbookArtifact(%s) error = %v", version, err)
-		}
-	}
+	createTestCookbookOrg(t, service)
+	createTestCookbookVersion(t, service, "ponyville", "app", "1.0.0", nil, nil)
+	createTestCookbookVersion(t, service, "ponyville", "app", "1.2.0", nil, nil)
+	createTestCookbookVersion(t, service, "ponyville", "app", "2.0.0", nil, nil)
 
 	versions, ok, found := service.ListCookbookVersionsByName("ponyville", "app")
 	if !ok || !found {
@@ -106,7 +74,7 @@ func TestListCookbookVersionsOrdersLatestFirst(t *testing.T) {
 	for _, version := range versions {
 		got = append(got, version.Version)
 	}
-	want := []string{"1.2.0", "1.2.0.beta.1", "1.0.0"}
+	want := []string{"2.0.0", "1.2.0", "1.0.0"}
 	if len(got) != len(want) {
 		t.Fatalf("versions len = %d, want %d (%v)", len(got), len(want), got)
 	}
@@ -117,15 +85,22 @@ func TestListCookbookVersionsOrdersLatestFirst(t *testing.T) {
 	}
 }
 
-func TestGetCookbookVersionChoosesLowestIdentifierForDuplicateVersion(t *testing.T) {
+func TestUpsertCookbookVersionUpdatesExistingVersion(t *testing.T) {
 	service := newTestBootstrapService(t)
 	createTestCookbookOrg(t, service)
 
-	createTestCookbookArtifact(t, service, "ponyville", "app", "2222222222222222222222222222222222222222", "1.2.3", map[string]any{
-		"description": "higher identifier",
-	})
-	createTestCookbookArtifact(t, service, "ponyville", "app", "1111111111111111111111111111111111111111", "1.2.3", map[string]any{
-		"description": "lower identifier",
+	createTestCookbookVersion(t, service, "ponyville", "app", "1.2.3", map[string]any{
+		"description": "first",
+	}, nil)
+	createTestCookbookVersion(t, service, "ponyville", "app", "1.2.3", map[string]any{
+		"description": "second",
+	}, []any{
+		map[string]any{
+			"name":        "recipes/default.rb",
+			"path":        "recipes/default.rb",
+			"checksum":    "8288b67da0793b5abec709d6226e6b73",
+			"specificity": "default",
+		},
 	})
 
 	version, ok, found := service.GetCookbookVersion("ponyville", "app", "1.2.3")
@@ -133,33 +108,11 @@ func TestGetCookbookVersionChoosesLowestIdentifierForDuplicateVersion(t *testing
 		t.Fatalf("GetCookbookVersion() = ok:%v found:%v, want true/true", ok, found)
 	}
 
-	if got := version.Metadata["description"]; got != "lower identifier" {
-		t.Fatalf("metadata.description = %v, want %q", got, "lower identifier")
+	if got := version.Metadata["description"]; got != "second" {
+		t.Fatalf("metadata.description = %v, want %q", got, "second")
 	}
-}
-
-func TestCookbookUniverseChoosesLowestIdentifierForDuplicateVersion(t *testing.T) {
-	service := newTestBootstrapService(t)
-	createTestCookbookOrg(t, service)
-
-	createTestCookbookArtifact(t, service, "ponyville", "app", "2222222222222222222222222222222222222222", "1.2.3", map[string]any{
-		"dependencies": map[string]any{"apt": ">= 1.0.0"},
-	})
-	createTestCookbookArtifact(t, service, "ponyville", "app", "1111111111111111111111111111111111111111", "1.2.3", map[string]any{
-		"dependencies": map[string]any{"apt": ">= 2.0.0"},
-	})
-
-	universe, ok := service.CookbookUniverse("ponyville")
-	if !ok {
-		t.Fatal("CookbookUniverse() = ok:false, want true")
-	}
-
-	entries := universe["app"]
-	if len(entries) != 1 {
-		t.Fatalf("entries len = %d, want 1 (%v)", len(entries), entries)
-	}
-	if got := entries[0].Dependencies["apt"]; got != ">= 2.0.0" {
-		t.Fatalf("dependencies.apt = %q, want %q", got, ">= 2.0.0")
+	if len(version.AllFiles) != 1 || version.AllFiles[0].Path != "recipes/default.rb" {
+		t.Fatalf("all_files = %v, want updated recipe payload", version.AllFiles)
 	}
 }
 
@@ -198,6 +151,124 @@ func TestNormalizeCookbookArtifactPayloadAcceptsRootLevelAllFiles(t *testing.T) 
 	}
 	if artifact.AllFiles[0].Name != "metadata.rb" {
 		t.Fatalf("all_files[0].name = %q, want %q", artifact.AllFiles[0].Name, "metadata.rb")
+	}
+}
+
+func TestCookbookUniverseUsesCookbookVersions(t *testing.T) {
+	service := newTestBootstrapService(t)
+	createTestCookbookOrg(t, service)
+
+	createTestCookbookVersion(t, service, "ponyville", "app", "1.0.0", map[string]any{
+		"dependencies": map[string]any{"apt": ">= 1.0.0"},
+	}, nil)
+	createTestCookbookVersion(t, service, "ponyville", "app", "1.2.0", map[string]any{
+		"dependencies": map[string]any{"apt": ">= 2.0.0"},
+	}, nil)
+
+	universe, ok := service.CookbookUniverse("ponyville")
+	if !ok {
+		t.Fatal("CookbookUniverse() = ok:false, want true")
+	}
+
+	entries := universe["app"]
+	if len(entries) != 2 {
+		t.Fatalf("entries len = %d, want 2 (%v)", len(entries), entries)
+	}
+	if got := entries[0].Dependencies["apt"]; got != ">= 2.0.0" {
+		t.Fatalf("dependencies.apt = %q, want %q", got, ">= 2.0.0")
+	}
+}
+
+func TestUpsertCookbookVersionReturnsFieldSpecificValidationMessages(t *testing.T) {
+	service := newTestBootstrapService(t)
+	createTestCookbookOrg(t, service)
+
+	tests := []struct {
+		name    string
+		mutate  func(map[string]any)
+		message string
+	}{
+		{
+			name: "missing cookbook_name",
+			mutate: func(payload map[string]any) {
+				delete(payload, "cookbook_name")
+			},
+			message: "Field 'cookbook_name' missing",
+		},
+		{
+			name: "invalid cookbook_name",
+			mutate: func(payload map[string]any) {
+				payload["cookbook_name"] = "new_name"
+			},
+			message: "Field 'cookbook_name' invalid",
+		},
+		{
+			name: "invalid version",
+			mutate: func(payload map[string]any) {
+				payload["version"] = "1.2"
+			},
+			message: "Field 'version' invalid",
+		},
+		{
+			name: "invalid metadata.version",
+			mutate: func(payload map[string]any) {
+				payload["metadata"].(map[string]any)["version"] = "1.2"
+			},
+			message: "Field 'metadata.version' invalid",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			payload := cookbookVersionTestPayload("app", "1.2.3", nil, nil)
+			tc.mutate(payload)
+
+			_, _, err := service.UpsertCookbookVersion("ponyville", UpsertCookbookVersionInput{
+				Name:    "app",
+				Version: "1.2.3",
+				Payload: payload,
+				ChecksumExists: func(string) (bool, error) {
+					return true, nil
+				},
+			})
+			if err == nil {
+				t.Fatal("UpsertCookbookVersion() error = nil, want validation error")
+			}
+
+			var validationErr *ValidationError
+			if !errors.As(err, &validationErr) {
+				t.Fatalf("UpsertCookbookVersion() error = %T, want *ValidationError", err)
+			}
+			if len(validationErr.Messages) != 1 || validationErr.Messages[0] != tc.message {
+				t.Fatalf("validation messages = %v, want %q", validationErr.Messages, tc.message)
+			}
+		})
+	}
+}
+
+func TestUpsertCookbookVersionAllowsMetadataNameChange(t *testing.T) {
+	service := newTestBootstrapService(t)
+	createTestCookbookOrg(t, service)
+
+	payload := cookbookVersionTestPayload("app", "1.2.3", map[string]any{
+		"name": "renamed-app",
+	}, nil)
+	version, created, err := service.UpsertCookbookVersion("ponyville", UpsertCookbookVersionInput{
+		Name:    "app",
+		Version: "1.2.3",
+		Payload: payload,
+		ChecksumExists: func(string) (bool, error) {
+			return true, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("UpsertCookbookVersion() error = %v", err)
+	}
+	if !created {
+		t.Fatal("UpsertCookbookVersion() created = false, want true")
+	}
+	if got := version.Metadata["name"]; got != "renamed-app" {
+		t.Fatalf("metadata.name = %v, want %q", got, "renamed-app")
 	}
 }
 
@@ -243,6 +314,46 @@ func createTestCookbookArtifact(t *testing.T, service *Service, org, name, ident
 	}); err != nil {
 		t.Fatalf("CreateCookbookArtifact(%s, %s, %s) error = %v", name, identifier, version, err)
 	}
+}
+
+func createTestCookbookVersion(t *testing.T, service *Service, org, name, version string, metadataOverrides map[string]any, allFiles []any) {
+	t.Helper()
+	payload := cookbookVersionTestPayload(name, version, metadataOverrides, allFiles)
+	if _, _, err := service.UpsertCookbookVersion(org, UpsertCookbookVersionInput{
+		Name:    name,
+		Version: version,
+		Payload: payload,
+		ChecksumExists: func(string) (bool, error) {
+			return true, nil
+		},
+	}); err != nil {
+		t.Fatalf("UpsertCookbookVersion(%s, %s) error = %v", name, version, err)
+	}
+}
+
+func cookbookVersionTestPayload(name, version string, metadataOverrides map[string]any, allFiles []any) map[string]any {
+	metadata := map[string]any{
+		"version":      version,
+		"name":         name,
+		"dependencies": map[string]any{},
+		"recipes":      map[string]any{},
+	}
+	for key, value := range metadataOverrides {
+		metadata[key] = value
+	}
+
+	payload := map[string]any{
+		"name":          name + "-" + version,
+		"cookbook_name": name,
+		"version":       version,
+		"json_class":    "Chef::CookbookVersion",
+		"chef_type":     "cookbook_version",
+		"metadata":      metadata,
+	}
+	if allFiles != nil {
+		payload["all_files"] = allFiles
+	}
+	return payload
 }
 
 func newTestBootstrapService(t *testing.T) *Service {

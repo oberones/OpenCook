@@ -136,8 +136,9 @@ Implemented so far:
   - `/organizations/{org}/cookbooks/{name}/{version}`
   - `/organizations/{org}/universe`
   - cookbook artifact list/get/create/delete
+  - cookbook version create/update/delete
   - cookbook collection, latest, recipe, and named-version read views
-  - API-version-sensitive cookbook version shaping with legacy segments and v2 `all_files`
+  - API-version-sensitive cookbook version shaping with `json_class`, `cookbook_name`, legacy segments, and v2 `all_files`
   - signed direct blob URLs for cookbook file downloads
 - the first search-facing slice:
   - `/search`
@@ -340,7 +341,7 @@ These areas are still intentionally incomplete:
 - deeper node and environment compatibility such as cookbook constraint edge cases and linked object behavior
 - deeper role compatibility such as run-list normalization and linked environment behavior
 - broader search semantics beyond the current in-memory compatibility layer, especially richer Lucene-style query translation and wider object coverage
-- deeper Bookshelf/cookbook flows beyond the current cookbook read/artifact slice
+- deeper Bookshelf/cookbook flows beyond the current cookbook write/read/artifact slice
 - operational parity and migration tooling
 
-The next likely major slice is deeper cookbook mutation parity and production-ready object storage, or moving stabilized slices toward PostgreSQL/OpenSearch-backed providers.
+The next likely major slice is deeper cookbook edge-case parity such as frozen/force and wider pedant coverage, or moving stabilized slices toward PostgreSQL/OpenSearch-backed providers.
