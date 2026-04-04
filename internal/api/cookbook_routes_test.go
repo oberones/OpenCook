@@ -336,6 +336,146 @@ func TestCookbookVersionEndpointsCreateUpdateAndDelete(t *testing.T) {
 	}
 }
 
+func TestCookbookVersionEndpointsHonorFrozenForce(t *testing.T) {
+	router := newTestRouter(t)
+	checksumV1 := uploadCookbookChecksum(t, router, []byte("puts 'hello v1'"))
+	checksumV2 := uploadCookbookChecksum(t, router, []byte("puts 'hello v2'"))
+
+	createCookbookVersion(t, router, "demo", "1.2.3", checksumV1, map[string]string{
+		"apt": ">= 1.0.0",
+	})
+
+	freezePayload := cookbookVersionPayload("demo", "1.2.3", checksumV1, map[string]string{
+		"apt": ">= 1.0.0",
+	})
+	freezePayload["frozen?"] = true
+	freezeReq := newSignedJSONRequest(t, http.MethodPut, "/cookbooks/demo/1.2.3", mustMarshalSandboxJSON(t, freezePayload))
+	freezeRec := httptest.NewRecorder()
+	router.ServeHTTP(freezeRec, freezeReq)
+	if freezeRec.Code != http.StatusOK {
+		t.Fatalf("freeze cookbook status = %d, want %d, body = %s", freezeRec.Code, http.StatusOK, freezeRec.Body.String())
+	}
+
+	updatePayload := cookbookVersionPayload("demo", "1.2.3", checksumV2, map[string]string{
+		"apt": ">= 2.0.0",
+	})
+	updatePayload["frozen?"] = false
+	updatePayload["metadata"].(map[string]any)["description"] = "this is different"
+
+	conflictReq := newSignedJSONRequest(t, http.MethodPut, "/cookbooks/demo/1.2.3", mustMarshalSandboxJSON(t, updatePayload))
+	conflictRec := httptest.NewRecorder()
+	router.ServeHTTP(conflictRec, conflictReq)
+	if conflictRec.Code != http.StatusConflict {
+		t.Fatalf("conflict cookbook status = %d, want %d, body = %s", conflictRec.Code, http.StatusConflict, conflictRec.Body.String())
+	}
+	var conflictPayload map[string]any
+	if err := json.Unmarshal(conflictRec.Body.Bytes(), &conflictPayload); err != nil {
+		t.Fatalf("json.Unmarshal(conflict) error = %v", err)
+	}
+	conflictErrors := conflictPayload["error"].([]any)
+	if len(conflictErrors) != 1 || conflictErrors[0] != "The cookbook demo at version 1.2.3 is frozen. Use the 'force' option to override." {
+		t.Fatalf("conflict errors = %v, want frozen message", conflictErrors)
+	}
+
+	getReq := newSignedJSONRequest(t, http.MethodGet, "/cookbooks/demo/1.2.3", nil)
+	getReq.Header.Set("X-Ops-Server-API-Version", "2")
+	getRec := httptest.NewRecorder()
+	router.ServeHTTP(getRec, getReq)
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("get frozen cookbook status = %d, want %d, body = %s", getRec.Code, http.StatusOK, getRec.Body.String())
+	}
+	var getPayload map[string]any
+	if err := json.Unmarshal(getRec.Body.Bytes(), &getPayload); err != nil {
+		t.Fatalf("json.Unmarshal(frozen get) error = %v", err)
+	}
+	if getPayload["frozen?"] != true {
+		t.Fatalf("frozen get payload = %v, want frozen true", getPayload["frozen?"])
+	}
+	if got := getPayload["metadata"].(map[string]any)["description"]; got == "this is different" {
+		t.Fatalf("metadata.description = %v, want original value after conflict", got)
+	}
+
+	forceBody := mustMarshalSandboxJSON(t, updatePayload)
+	forceReq := httptest.NewRequest(http.MethodPut, "/cookbooks/demo/1.2.3?force=true", bytes.NewReader(forceBody))
+	applySignedHeaders(t, forceReq, "silent-bob", "", http.MethodPut, "/cookbooks/demo/1.2.3", forceBody, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	forceRec := httptest.NewRecorder()
+	router.ServeHTTP(forceRec, forceReq)
+	if forceRec.Code != http.StatusOK {
+		t.Fatalf("force cookbook status = %d, want %d, body = %s", forceRec.Code, http.StatusOK, forceRec.Body.String())
+	}
+	var forcePayload map[string]any
+	if err := json.Unmarshal(forceRec.Body.Bytes(), &forcePayload); err != nil {
+		t.Fatalf("json.Unmarshal(force) error = %v", err)
+	}
+	if forcePayload["frozen?"] != true {
+		t.Fatalf("force payload frozen = %v, want true", forcePayload["frozen?"])
+	}
+
+	forcedGetReq := newSignedJSONRequest(t, http.MethodGet, "/cookbooks/demo/1.2.3", nil)
+	forcedGetReq.Header.Set("X-Ops-Server-API-Version", "2")
+	forcedGetRec := httptest.NewRecorder()
+	router.ServeHTTP(forcedGetRec, forcedGetReq)
+	if forcedGetRec.Code != http.StatusOK {
+		t.Fatalf("forced get cookbook status = %d, want %d, body = %s", forcedGetRec.Code, http.StatusOK, forcedGetRec.Body.String())
+	}
+	var forcedGetPayload map[string]any
+	if err := json.Unmarshal(forcedGetRec.Body.Bytes(), &forcedGetPayload); err != nil {
+		t.Fatalf("json.Unmarshal(forced get) error = %v", err)
+	}
+	if forcedGetPayload["frozen?"] != true {
+		t.Fatalf("forced get payload frozen = %v, want true", forcedGetPayload["frozen?"])
+	}
+	if got := forcedGetPayload["metadata"].(map[string]any)["description"]; got != "this is different" {
+		t.Fatalf("metadata.description = %v, want forced update", got)
+	}
+}
+
+func TestCookbookVersionEndpointsUseChecksumSpecificUpdateError(t *testing.T) {
+	router := newTestRouter(t)
+	checksum := uploadCookbookChecksum(t, router, []byte("puts 'hello v1'"))
+
+	createCookbookVersion(t, router, "demo", "1.2.3", checksum, map[string]string{
+		"apt": ">= 1.0.0",
+	})
+
+	updatePayload := cookbookVersionPayload("demo", "1.2.3", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", map[string]string{
+		"apt": ">= 2.0.0",
+	})
+	updateReq := newSignedJSONRequest(t, http.MethodPut, "/cookbooks/demo/1.2.3", mustMarshalSandboxJSON(t, updatePayload))
+	updateRec := httptest.NewRecorder()
+	router.ServeHTTP(updateRec, updateReq)
+	if updateRec.Code != http.StatusBadRequest {
+		t.Fatalf("update cookbook status = %d, want %d, body = %s", updateRec.Code, http.StatusBadRequest, updateRec.Body.String())
+	}
+
+	var updateErrorPayload map[string]any
+	if err := json.Unmarshal(updateRec.Body.Bytes(), &updateErrorPayload); err != nil {
+		t.Fatalf("json.Unmarshal(update error) error = %v", err)
+	}
+	updateErrors := updateErrorPayload["error"].([]any)
+	if len(updateErrors) != 1 || updateErrors[0] != "Manifest has checksum aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa but it hasn't yet been uploaded" {
+		t.Fatalf("update errors = %v, want checksum-specific message", updateErrors)
+	}
+
+	getReq := newSignedJSONRequest(t, http.MethodGet, "/cookbooks/demo/1.2.3", nil)
+	getReq.Header.Set("X-Ops-Server-API-Version", "2")
+	getRec := httptest.NewRecorder()
+	router.ServeHTTP(getRec, getReq)
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("get cookbook status = %d, want %d, body = %s", getRec.Code, http.StatusOK, getRec.Body.String())
+	}
+	var getPayload map[string]any
+	if err := json.Unmarshal(getRec.Body.Bytes(), &getPayload); err != nil {
+		t.Fatalf("json.Unmarshal(get after checksum failure) error = %v", err)
+	}
+	if got := getPayload["metadata"].(map[string]any)["dependencies"].(map[string]any)["apt"]; got != ">= 1.0.0" {
+		t.Fatalf("dependencies.apt = %v, want original value after failed update", got)
+	}
+}
+
 func TestCookbookArtifactEndpointsSupportRootLevelAllFiles(t *testing.T) {
 	router := newTestRouter(t)
 	checksum := uploadCookbookChecksum(t, router, []byte("name 'demo'"))
