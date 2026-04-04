@@ -897,11 +897,7 @@ func checksumSetKeys(set map[string]struct{}) []string {
 	return out
 }
 
-func (s *Service) unreferencedChecksumsLocked(candidates []string) []string {
-	if len(candidates) == 0 {
-		return nil
-	}
-
+func normalizedChecksumCandidateSet(candidates []string) map[string]struct{} {
 	remaining := make(map[string]struct{}, len(candidates))
 	for _, checksum := range candidates {
 		checksum = strings.ToLower(strings.TrimSpace(checksum))
@@ -910,6 +906,18 @@ func (s *Service) unreferencedChecksumsLocked(candidates []string) []string {
 		}
 		remaining[checksum] = struct{}{}
 	}
+	if len(remaining) == 0 {
+		return nil
+	}
+	return remaining
+}
+
+func (s *Service) unreferencedChecksumsLocked(candidates []string) []string {
+	if len(candidates) == 0 {
+		return nil
+	}
+
+	remaining := normalizedChecksumCandidateSet(candidates)
 	if len(remaining) == 0 {
 		return nil
 	}
@@ -922,16 +930,12 @@ func (s *Service) unreferencedChecksumsLocked(candidates []string) []string {
 		}
 		for _, versions := range org.cookbooks {
 			for _, version := range versions {
-				for _, checksum := range cookbookFileChecksums(version.AllFiles) {
-					delete(remaining, checksum)
-				}
+				deleteCookbookFileReferencesFromRemaining(remaining, version.AllFiles)
 			}
 		}
 		for _, artifacts := range org.cookbookArtifacts {
 			for _, artifact := range artifacts {
-				for _, checksum := range cookbookFileChecksums(artifact.AllFiles) {
-					delete(remaining, checksum)
-				}
+				deleteCookbookFileReferencesFromRemaining(remaining, artifact.AllFiles)
 			}
 		}
 		if len(remaining) == 0 {
@@ -940,6 +944,78 @@ func (s *Service) unreferencedChecksumsLocked(candidates []string) []string {
 	}
 
 	return checksumSetKeys(remaining)
+}
+
+func (s *Service) CleanupUnreferencedChecksums(candidates []string, cleanup func(string) error) error {
+	if cleanup == nil || len(candidates) == 0 {
+		return nil
+	}
+
+	remaining := normalizedChecksumCandidateSet(candidates)
+	if len(remaining) == 0 {
+		return nil
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for _, checksum := range checksumSetKeys(remaining) {
+		if s.checksumReferencedLocked(checksum) {
+			continue
+		}
+		if err := cleanup(checksum); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Service) checksumReferencedLocked(checksum string) bool {
+	checksum = strings.ToLower(strings.TrimSpace(checksum))
+	if checksum == "" {
+		return false
+	}
+
+	for _, org := range s.orgs {
+		for _, sandbox := range org.sandboxes {
+			for _, current := range sandbox.Checksums {
+				if strings.ToLower(strings.TrimSpace(current)) == checksum {
+					return true
+				}
+			}
+		}
+		for _, versions := range org.cookbooks {
+			for _, version := range versions {
+				if cookbookFilesContainChecksum(version.AllFiles, checksum) {
+					return true
+				}
+			}
+		}
+		for _, artifacts := range org.cookbookArtifacts {
+			for _, artifact := range artifacts {
+				if cookbookFilesContainChecksum(artifact.AllFiles, checksum) {
+					return true
+				}
+			}
+		}
+	}
+
+	return false
+}
+
+func deleteCookbookFileReferencesFromRemaining(remaining map[string]struct{}, files []CookbookFile) {
+	for _, file := range files {
+		delete(remaining, strings.ToLower(strings.TrimSpace(file.Checksum)))
+	}
+}
+
+func cookbookFilesContainChecksum(files []CookbookFile, checksum string) bool {
+	for _, file := range files {
+		if strings.ToLower(strings.TrimSpace(file.Checksum)) == checksum {
+			return true
+		}
+	}
+	return false
 }
 
 func sortedCookbookArtifacts(in map[string]CookbookArtifact) []CookbookArtifact {
