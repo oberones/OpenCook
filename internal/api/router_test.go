@@ -2289,18 +2289,23 @@ func newTestRouterWithOverrides(t *testing.T, cfg config.Config, logger *log.Log
 			},
 		})
 	}
+	now := func() time.Time {
+		return mustParseTime(t, "2026-04-02T15:04:35Z")
+	}
 
 	return NewRouter(Dependencies{
-		Logger:    logger,
-		Config:    cfg,
-		Version:   version.Current(),
-		Compat:    compat.NewDefaultRegistry(),
-		Authn:     verifier,
-		Authz:     authz.NewACLAuthorizer(state),
-		Bootstrap: state,
-		Blob:      blob.NewNoopStore(""),
-		Search:    search.NewMemoryIndex(state, ""),
-		Postgres:  pg.New(""),
+		Logger:           logger,
+		Config:           cfg,
+		Version:          version.Current(),
+		Compat:           compat.NewDefaultRegistry(),
+		Now:              now,
+		Authn:            verifier,
+		Authz:            authz.NewACLAuthorizer(state),
+		Bootstrap:        state,
+		Blob:             blob.NewMemoryStore(""),
+		BlobUploadSecret: []byte("test-blob-upload-secret"),
+		Search:           search.NewMemoryIndex(state, ""),
+		Postgres:         pg.New(""),
 	})
 }
 
@@ -2319,6 +2324,9 @@ func newTestRouterWithoutBootstrap(t *testing.T) http.Handler {
 	})
 
 	skew := 15 * time.Minute
+	now := func() time.Time {
+		return mustParseTime(t, "2026-04-02T15:04:35Z")
+	}
 	return NewRouter(Dependencies{
 		Logger: log.New(ioDiscard{}, "", 0),
 		Config: config.Config{
@@ -2329,16 +2337,16 @@ func newTestRouterWithoutBootstrap(t *testing.T) http.Handler {
 		},
 		Version: version.Current(),
 		Compat:  compat.NewDefaultRegistry(),
+		Now:     now,
 		Authn: authn.NewChefVerifier(store, authn.Options{
 			AllowedClockSkew: &skew,
-			Now: func() time.Time {
-				return mustParseTime(t, "2026-04-02T15:04:35Z")
-			},
+			Now:              now,
 		}),
-		Authz:    authz.NoopAuthorizer{},
-		Blob:     blob.NewNoopStore(""),
-		Search:   search.NewMemoryIndex(nil, ""),
-		Postgres: pg.New(""),
+		Authz:            authz.NoopAuthorizer{},
+		Blob:             blob.NewMemoryStore(""),
+		BlobUploadSecret: []byte("test-blob-upload-secret"),
+		Search:           search.NewMemoryIndex(nil, ""),
+		Postgres:         pg.New(""),
 	})
 }
 

@@ -167,6 +167,7 @@ type organizationState struct {
 	envs         map[string]Environment
 	nodes        map[string]Node
 	roles        map[string]Role
+	sandboxes    map[string]Sandbox
 	policies     map[string]map[string]PolicyRevision
 	policyGroups map[string]PolicyGroup
 	groups       map[string]Group
@@ -450,6 +451,7 @@ func (s *Service) CreateOrganization(input CreateOrganizationInput) (Organizatio
 		envs:         make(map[string]Environment),
 		nodes:        make(map[string]Node),
 		roles:        make(map[string]Role),
+		sandboxes:    make(map[string]Sandbox),
 		policies:     make(map[string]map[string]PolicyRevision),
 		policyGroups: make(map[string]PolicyGroup),
 		groups:       make(map[string]Group),
@@ -1321,7 +1323,7 @@ func defaultContainerACL(superuserName, container string) authz.ACL {
 			Delete: authz.Permission{Actors: []string{superuserName}, Groups: []string{"admins", "users"}},
 			Grant:  authz.Permission{Actors: []string{superuserName}, Groups: []string{"admins"}},
 		}
-	case "data", "roles", "environments", "cookbooks":
+	case "data", "roles", "environments", "cookbooks", "sandboxes":
 		return authz.ACL{
 			Create: authz.Permission{Actors: []string{superuserName}, Groups: []string{"admins", "users"}},
 			Read:   authz.Permission{Actors: []string{superuserName}, Groups: []string{"admins", "users", "clients"}},

@@ -888,6 +888,9 @@ func newSearchTestRouterWithAuthorizer(t *testing.T, authorizerFactory func(*boo
 	}
 
 	skew := 15 * time.Minute
+	now := func() time.Time {
+		return mustParseTime(t, "2026-04-02T15:04:35Z")
+	}
 	router := NewRouter(Dependencies{
 		Logger: log.New(ioDiscard{}, "", 0),
 		Config: config.Config{
@@ -898,17 +901,17 @@ func newSearchTestRouterWithAuthorizer(t *testing.T, authorizerFactory func(*boo
 		},
 		Version: version.Current(),
 		Compat:  compat.NewDefaultRegistry(),
+		Now:     now,
 		Authn: authn.NewChefVerifier(store, authn.Options{
 			AllowedClockSkew: &skew,
-			Now: func() time.Time {
-				return mustParseTime(t, "2026-04-02T15:04:35Z")
-			},
+			Now:              now,
 		}),
-		Authz:     authorizer,
-		Bootstrap: state,
-		Blob:      blob.NewNoopStore(""),
-		Search:    search.NewMemoryIndex(state, ""),
-		Postgres:  pg.New(""),
+		Authz:            authorizer,
+		Bootstrap:        state,
+		Blob:             blob.NewMemoryStore(""),
+		BlobUploadSecret: []byte("test-blob-upload-secret"),
+		Search:           search.NewMemoryIndex(state, ""),
+		Postgres:         pg.New(""),
 	})
 	return router, state
 }
