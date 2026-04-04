@@ -74,6 +74,7 @@ As of 2026-04-03, OpenCook has moved past pure scaffolding and into the first co
 - cookbook version conversion is now exercised across v0 and v2 upload/download paths, including the Chef-style segment-aware `all_files[].name` contract for root files and other segmented content
 - cookbook named filters now more closely match upstream pedant behavior, with `/cookbooks/_recipes` deriving names from the latest cookbook manifests and qualifying default recipes as just the cookbook name
 - environment-filtered cookbook and recipe views now honor environment cookbook constraints and named-cookbook default `num_versions` behavior on both default-org and explicit-org paths
+- cookbook version updates/deletes and cookbook artifact deletes now reclaim unreferenced checksum blobs while preserving shared checksum content still referenced elsewhere in the in-memory compatibility state
 - compatibility tracking docs and route inventory are in place and being updated alongside code
 
 Current focus:
