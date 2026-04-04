@@ -336,6 +336,49 @@ func TestDeleteCookbookArtifactWithReleasedChecksumsOnlyReleasesUnsharedChecksum
 	}
 }
 
+func TestCleanupUnreferencedChecksumsRechecksStateBeforeDeleting(t *testing.T) {
+	service := newTestBootstrapService(t)
+	createTestCookbookOrg(t, service)
+
+	checksum := "11111111111111111111111111111111"
+	createTestCookbookVersion(t, service, "ponyville", "app", "1.2.3", nil, []any{
+		map[string]any{
+			"name":        "recipes/default.rb",
+			"path":        "recipes/default.rb",
+			"checksum":    checksum,
+			"specificity": "default",
+		},
+	})
+
+	_, released, err := service.DeleteCookbookVersionWithReleasedChecksums("ponyville", "app", "1.2.3")
+	if err != nil {
+		t.Fatalf("DeleteCookbookVersionWithReleasedChecksums() error = %v", err)
+	}
+	if len(released) != 1 || released[0] != checksum {
+		t.Fatalf("released = %v, want [%s]", released, checksum)
+	}
+
+	createTestCookbookVersion(t, service, "ponyville", "other", "0.1.0", nil, []any{
+		map[string]any{
+			"name":        "recipes/default.rb",
+			"path":        "recipes/default.rb",
+			"checksum":    checksum,
+			"specificity": "default",
+		},
+	})
+
+	deleted := make([]string, 0)
+	if err := service.CleanupUnreferencedChecksums(released, func(checksum string) error {
+		deleted = append(deleted, checksum)
+		return nil
+	}); err != nil {
+		t.Fatalf("CleanupUnreferencedChecksums() error = %v", err)
+	}
+	if len(deleted) != 0 {
+		t.Fatalf("deleted = %v, want no deletions after checksum became referenced again", deleted)
+	}
+}
+
 func TestUpsertCookbookVersionReturnsFieldSpecificValidationMessages(t *testing.T) {
 	service := newTestBootstrapService(t)
 	createTestCookbookOrg(t, service)

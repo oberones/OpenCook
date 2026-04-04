@@ -490,8 +490,23 @@ func (s *server) cleanupBlobChecksums(ctx context.Context, checksums []string) {
 		return
 	}
 
+	deleteChecksum := func(checksum string) error {
+		err := deleter.Delete(ctx, checksum)
+		if errors.Is(err, blob.ErrNotFound) {
+			return nil
+		}
+		return err
+	}
+
+	if s.deps.Bootstrap != nil {
+		if err := s.deps.Bootstrap.CleanupUnreferencedChecksums(checksums, deleteChecksum); err != nil {
+			s.logf("blob cleanup failed: %v", err)
+		}
+		return
+	}
+
 	for _, checksum := range checksums {
-		if err := deleter.Delete(ctx, checksum); err != nil && !errors.Is(err, blob.ErrNotFound) {
+		if err := deleteChecksum(checksum); err != nil {
 			s.logf("blob cleanup failed for checksum %s: %v", checksum, err)
 		}
 	}
