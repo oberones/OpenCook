@@ -717,7 +717,7 @@ func (s *server) renderCookbookFiles(r *http.Request, org string, files []bootst
 	for _, file := range files {
 		name := file.Name
 		if useFullName {
-			name = file.Path
+			name = cookbookAllFilesName(file)
 		}
 		entry := map[string]any{
 			"name":        name,
@@ -892,6 +892,12 @@ func invalidCookbookNameMessage(name string) string {
 
 func invalidCookbookVersionMessage(version string) string {
 	return fmt.Sprintf("Invalid cookbook version '%s'.", version)
+}
+
+func cookbookAllFilesName(file bootstrap.CookbookFile) string {
+	segment := cookbookFileSegment(file.Path)
+	name := cookbookLegacyFileName(segment, file.Path)
+	return segment + "/" + name
 }
 
 func renderCookbookReadMetadata(name, version string, metadata map[string]any) map[string]any {

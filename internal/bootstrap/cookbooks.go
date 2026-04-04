@@ -785,7 +785,7 @@ func normalizeCookbookFile(segment string, raw map[string]any, checksumExists fu
 		}
 	}
 	if segment == "all_files" {
-		name = path
+		name = normalizeCookbookAllFilesStoredName(name)
 	}
 
 	if checksumExists != nil {
@@ -961,6 +961,14 @@ func cookbookMetadataValueString(value any) string {
 	default:
 		return fmt.Sprintf("%v", value)
 	}
+}
+
+func normalizeCookbookAllFilesStoredName(name string) string {
+	name = strings.TrimSpace(name)
+	if idx := strings.LastIndex(name, "/"); idx >= 0 {
+		return name[idx+1:]
+	}
+	return name
 }
 
 func compareCookbookVersions(left, right string) int {
