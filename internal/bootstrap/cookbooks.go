@@ -252,10 +252,9 @@ func (s *Service) GetCookbookVersion(orgName, name, version string) (CookbookVer
 		version = refs[0].Version
 	}
 
-	for _, artifact := range versions {
-		if artifact.Version == version {
-			return cookbookVersionFromArtifact(artifact), true, true
-		}
+	artifact, ok := cookbookArtifactForVersion(versions, version)
+	if ok {
+		return cookbookVersionFromArtifact(artifact), true, true
 	}
 
 	return CookbookVersion{}, true, false
@@ -275,16 +274,14 @@ func (s *Service) CookbookUniverse(orgName string) (map[string][]UniverseEntry, 
 		refs := cookbookVersionRefs(versions)
 		entries := make([]UniverseEntry, 0, len(refs))
 		for _, ref := range refs {
-			for _, artifact := range versions {
-				if artifact.Version != ref.Version {
-					continue
-				}
-				entries = append(entries, UniverseEntry{
-					Version:      artifact.Version,
-					Dependencies: cookbookMetadataDependencies(artifact.Metadata),
-				})
-				break
+			artifact, ok := cookbookArtifactForVersion(versions, ref.Version)
+			if !ok {
+				continue
 			}
+			entries = append(entries, UniverseEntry{
+				Version:      artifact.Version,
+				Dependencies: cookbookMetadataDependencies(artifact.Metadata),
+			})
 		}
 		out[name] = entries
 	}
@@ -501,12 +498,11 @@ func normalizeCookbookFile(segment string, raw map[string]any, checksumExists fu
 	}
 
 	if !strings.Contains(path, "/") {
-		if segment == "all_files" {
-			return CookbookFile{}, &ValidationError{Messages: []string{"Field 'all_files' invalid"}}
+		if segment != "all_files" {
+			path = segmentPath(segment, name)
 		}
-		path = segmentPath(segment, name)
 	}
-	if segment == "all_files" && name == path {
+	if segment == "all_files" {
 		name = path
 	}
 
@@ -518,10 +514,6 @@ func normalizeCookbookFile(segment string, raw map[string]any, checksumExists fu
 		if !exists {
 			return CookbookFile{}, &ValidationError{Messages: []string{"Manifest has a checksum that hasn't been uploaded."}}
 		}
-	}
-
-	if segment == "all_files" && name == "" {
-		name = path
 	}
 
 	return CookbookFile{
@@ -566,6 +558,21 @@ func cookbookVersionRefs(versions map[string]CookbookArtifact) []CookbookVersion
 		return compareCookbookVersions(out[i].Version, out[j].Version) > 0
 	})
 	return out
+}
+
+func cookbookArtifactForVersion(versions map[string]CookbookArtifact, version string) (CookbookArtifact, bool) {
+	identifiers := make([]string, 0, len(versions))
+	for identifier, artifact := range versions {
+		if artifact.Version == version {
+			identifiers = append(identifiers, identifier)
+		}
+	}
+	if len(identifiers) == 0 {
+		return CookbookArtifact{}, false
+	}
+
+	sort.Strings(identifiers)
+	return versions[identifiers[0]], true
 }
 
 func sortedCookbookArtifacts(in map[string]CookbookArtifact) []CookbookArtifact {
