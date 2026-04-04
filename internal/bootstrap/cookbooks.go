@@ -362,7 +362,12 @@ func (s *Service) UpsertCookbookVersionWithReleasedChecksums(orgName string, inp
 		return CookbookVersion{}, nil, false, ErrNotFound
 	}
 
-	version, err := normalizeCookbookVersionPayload(input.Name, input.Version, input.Payload, input.ChecksumExists)
+	routeName := strings.TrimSpace(input.Name)
+	routeVersion := strings.TrimSpace(input.Version)
+	existingVersions := org.cookbooks[routeName]
+	_, existsAtRoute := existingVersions[routeVersion]
+
+	version, err := normalizeCookbookVersionPayload(routeName, routeVersion, input.Payload, input.ChecksumExists, !existsAtRoute)
 	if err != nil {
 		return CookbookVersion{}, nil, false, err
 	}
@@ -432,7 +437,7 @@ func (s *Service) DeleteCookbookVersionWithReleasedChecksums(orgName, name, vers
 	return copyCookbookVersion(cookbookVersion), s.unreferencedChecksumsLocked(cookbookFileChecksums(cookbookVersion.AllFiles)), nil
 }
 
-func normalizeCookbookVersionPayload(name, version string, payload map[string]any, checksumExists func(string) (bool, error)) (CookbookVersion, error) {
+func normalizeCookbookVersionPayload(name, version string, payload map[string]any, checksumExists func(string) (bool, error), createMode bool) (CookbookVersion, error) {
 	name = strings.TrimSpace(name)
 	version = strings.TrimSpace(version)
 	if !validNamePattern.MatchString(name) {
@@ -467,7 +472,13 @@ func normalizeCookbookVersionPayload(name, version string, payload map[string]an
 		return CookbookVersion{}, &ValidationError{Messages: []string{"Field 'cookbook_name' invalid"}}
 	}
 	payloadCookbookName = strings.TrimSpace(payloadCookbookName)
-	if !validNamePattern.MatchString(payloadCookbookName) || payloadCookbookName != name {
+	if !validNamePattern.MatchString(payloadCookbookName) {
+		return CookbookVersion{}, &ValidationError{Messages: []string{"Field 'cookbook_name' invalid"}}
+	}
+	if payloadCookbookName != name {
+		if createMode {
+			return CookbookVersion{}, &ValidationError{Messages: []string{"Field 'name' invalid"}}
+		}
 		return CookbookVersion{}, &ValidationError{Messages: []string{"Field 'cookbook_name' invalid"}}
 	}
 
@@ -477,7 +488,13 @@ func normalizeCookbookVersionPayload(name, version string, payload map[string]an
 			return CookbookVersion{}, &ValidationError{Messages: []string{"Field 'version' invalid"}}
 		}
 		payloadVersion = strings.TrimSpace(payloadVersion)
-		if !validCookbookRouteVersion(payloadVersion) || payloadVersion != version {
+		if !validCookbookRouteVersion(payloadVersion) {
+			return CookbookVersion{}, &ValidationError{Messages: []string{"Field 'version' invalid"}}
+		}
+		if payloadVersion != version {
+			if createMode {
+				return CookbookVersion{}, &ValidationError{Messages: []string{"Field 'name' invalid"}}
+			}
 			return CookbookVersion{}, &ValidationError{Messages: []string{"Field 'version' invalid"}}
 		}
 	}
@@ -506,7 +523,14 @@ func normalizeCookbookVersionPayload(name, version string, payload map[string]an
 	}
 
 	metadataVersion, ok := metadata["version"].(string)
-	if !ok || strings.TrimSpace(metadataVersion) != version {
+	if !ok {
+		return CookbookVersion{}, &ValidationError{Messages: []string{"Field 'metadata.version' invalid"}}
+	}
+	metadataVersion = strings.TrimSpace(metadataVersion)
+	if metadataVersion != version {
+		if createMode {
+			return CookbookVersion{}, &ValidationError{Messages: []string{"Field 'name' invalid"}}
+		}
 		return CookbookVersion{}, &ValidationError{Messages: []string{"Field 'metadata.version' invalid"}}
 	}
 

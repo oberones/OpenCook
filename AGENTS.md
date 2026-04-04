@@ -142,6 +142,8 @@ Implemented so far:
   - cookbook collection, latest, recipe, and named-version read views
   - environment-filtered cookbook collection, named-cookbook, and recipe views
   - manifest-derived `_recipes` behavior with Chef-style default recipe qualification
+  - create-path cookbook validation parity for route/payload mismatch errors, with field-specific update-path validation preserved
+  - cookbook collection `num_versions` and `_latest` read-edge coverage
   - API-version-sensitive cookbook version shaping with `json_class`, `cookbook_name`, legacy segments, and v2 `all_files`
   - signed direct blob URLs for cookbook file downloads
   - cleanup of unreferenced checksum blobs after cookbook version and artifact mutations, while preserving shared checksum references
