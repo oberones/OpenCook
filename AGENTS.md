@@ -341,7 +341,7 @@ These areas are still intentionally incomplete:
 - deeper node and environment compatibility such as cookbook constraint edge cases and linked object behavior
 - deeper role compatibility such as run-list normalization and linked environment behavior
 - broader search semantics beyond the current in-memory compatibility layer, especially richer Lucene-style query translation and wider object coverage
-- deeper Bookshelf/cookbook flows beyond the current cookbook write/read/artifact slice
+- deeper Bookshelf/cookbook flows beyond the current cookbook write/read/artifact slice, especially metadata merge/default semantics and production blob providers
 - operational parity and migration tooling
 
-The next likely major slice is deeper cookbook edge-case parity such as frozen/force and wider pedant coverage, or moving stabilized slices toward PostgreSQL/OpenSearch-backed providers.
+The next likely major slice is the remaining cookbook pedant edge cases around metadata merge/default behavior, or moving stabilized slices toward PostgreSQL/OpenSearch-backed providers.
