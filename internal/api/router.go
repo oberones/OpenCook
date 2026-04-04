@@ -3,12 +3,14 @@ package api
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"io"
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/oberones/OpenCook/internal/authn"
 	"github.com/oberones/OpenCook/internal/authz"
@@ -22,16 +24,18 @@ import (
 )
 
 type Dependencies struct {
-	Logger    *log.Logger
-	Config    config.Config
-	Version   version.Info
-	Compat    compat.Registry
-	Authn     authn.Verifier
-	Authz     authz.Authorizer
-	Bootstrap *bootstrap.Service
-	Blob      blob.Store
-	Search    search.Index
-	Postgres  *pg.Store
+	Logger           *log.Logger
+	Config           config.Config
+	Version          version.Info
+	Compat           compat.Registry
+	Now              func() time.Time
+	Authn            authn.Verifier
+	Authz            authz.Authorizer
+	Bootstrap        *bootstrap.Service
+	Blob             blob.Store
+	BlobUploadSecret []byte
+	Search           search.Index
+	Postgres         *pg.Store
 }
 
 type server struct {
@@ -43,6 +47,16 @@ type contextKey string
 const authenticatedRequestorContextKey contextKey = "authenticated_requestor"
 
 func NewRouter(deps Dependencies) http.Handler {
+	if deps.Now == nil {
+		deps.Now = time.Now
+	}
+	if len(deps.BlobUploadSecret) == 0 {
+		deps.BlobUploadSecret = make([]byte, 32)
+		if _, err := rand.Read(deps.BlobUploadSecret); err != nil {
+			deps.BlobUploadSecret = []byte("opencook-fallback-blob-upload-secret")
+		}
+	}
+
 	srv := &server{deps: deps}
 	mux := http.NewServeMux()
 

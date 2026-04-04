@@ -2,7 +2,9 @@ package api
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/md5"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
@@ -11,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -19,6 +22,8 @@ import (
 	"github.com/oberones/OpenCook/internal/bootstrap"
 	"github.com/oberones/OpenCook/internal/config"
 )
+
+const defaultBlobUploadURLTTL = 15 * time.Minute
 
 func (s *server) handleSandboxes(w http.ResponseWriter, r *http.Request) {
 	state := s.deps.Bootstrap
@@ -94,10 +99,19 @@ func (s *server) handleBlobChecksumUpload(w http.ResponseWriter, r *http.Request
 
 	org := strings.TrimSpace(r.URL.Query().Get("org"))
 	sandboxID := strings.TrimSpace(r.URL.Query().Get("sandbox_id"))
-	if org == "" || sandboxID == "" {
+	expires := strings.TrimSpace(r.URL.Query().Get("expires"))
+	signature := strings.TrimSpace(r.URL.Query().Get("signature"))
+	if org == "" || sandboxID == "" || expires == "" || signature == "" {
 		writeJSON(w, http.StatusBadRequest, apiError{
 			Error:   "invalid_upload_url",
-			Message: "upload URL is missing sandbox context",
+			Message: "upload URL is missing required sandbox authorization context",
+		})
+		return
+	}
+	if err := s.verifySandboxUploadURL(checksum, org, sandboxID, expires, signature); err != nil {
+		writeJSON(w, http.StatusForbidden, apiError{
+			Error:   "invalid_upload_url",
+			Message: err.Error(),
 		})
 		return
 	}
@@ -145,6 +159,13 @@ func (s *server) handleBlobChecksumUpload(w http.ResponseWriter, r *http.Request
 		ContentType: r.Header.Get("Content-Type"),
 		Body:        body,
 	}); err != nil {
+		if errors.Is(err, blob.ErrInvalidInput) {
+			writeJSON(w, http.StatusBadRequest, apiError{
+				Error:   "invalid_blob_upload",
+				Message: "blob upload request is invalid",
+			})
+			return
+		}
 		s.logf("blob upload failed for checksum %s: %v", checksum, err)
 		writeJSON(w, http.StatusInternalServerError, apiError{
 			Error:   "blob_upload_failed",
@@ -211,7 +232,7 @@ func (s *server) handleNamedSandbox(w http.ResponseWriter, r *http.Request, stat
 		writeMethodNotAllowed(w, "method not allowed for sandbox route", http.MethodPut)
 		return
 	}
-	if !s.authorizeRequest(w, r, authz.ActionCreate, authz.Resource{
+	if !s.authorizeRequest(w, r, authz.ActionUpdate, authz.Resource{
 		Type:         "container",
 		Name:         "sandboxes",
 		Organization: org,
@@ -232,7 +253,7 @@ func (s *server) handleNamedSandbox(w http.ResponseWriter, r *http.Request, stat
 		return
 	}
 	if !payload.IsCompleted {
-		writeSandboxMessages(w, http.StatusBadRequest, `JSON body must contain key '"complete"' with value 'true'.`)
+		writeSandboxMessages(w, http.StatusBadRequest, `JSON body must contain key "is_completed" with value true.`)
 		return
 	}
 
@@ -298,7 +319,7 @@ func (s *server) sandboxCreateResponse(r *http.Request, org, basePath string, sa
 		if uploaded {
 			entry["needs_upload"] = false
 		} else {
-			entry["url"] = sandboxUploadURL(r, checksum, org, sandbox.ID)
+			entry["url"] = s.sandboxUploadURL(r, checksum, org, sandbox.ID)
 		}
 		checksumPayload[checksum] = entry
 	}
@@ -320,11 +341,49 @@ func sandboxCommitResponse(sandbox bootstrap.Sandbox) map[string]any {
 	}
 }
 
-func sandboxUploadURL(r *http.Request, checksum, org, sandboxID string) string {
+func (s *server) sandboxUploadURL(r *http.Request, checksum, org, sandboxID string) string {
+	expiresAt := s.now().Add(defaultBlobUploadURLTTL)
 	values := url.Values{}
 	values.Set("org", org)
 	values.Set("sandbox_id", sandboxID)
+	values.Set("expires", strconv.FormatInt(expiresAt.Unix(), 10))
+	values.Set("signature", s.signSandboxUploadURL(checksum, org, sandboxID, expiresAt.Unix()))
 	return absoluteURL(r, "/_blob/checksums/"+checksum) + "?" + values.Encode()
+}
+
+func (s *server) verifySandboxUploadURL(checksum, org, sandboxID, expires, signature string) error {
+	expiresAt, err := strconv.ParseInt(expires, 10, 64)
+	if err != nil {
+		return errors.New("upload URL has an invalid expiration")
+	}
+	if s.now().Unix() > expiresAt {
+		return errors.New("upload URL has expired")
+	}
+
+	expected := s.signSandboxUploadURL(checksum, org, sandboxID, expiresAt)
+	if !hmac.Equal([]byte(signature), []byte(expected)) {
+		return errors.New("upload URL signature is invalid")
+	}
+	return nil
+}
+
+func (s *server) signSandboxUploadURL(checksum, org, sandboxID string, expiresAt int64) string {
+	mac := hmac.New(sha256.New, s.deps.BlobUploadSecret)
+	io.WriteString(mac, checksum)
+	io.WriteString(mac, "\n")
+	io.WriteString(mac, org)
+	io.WriteString(mac, "\n")
+	io.WriteString(mac, sandboxID)
+	io.WriteString(mac, "\n")
+	io.WriteString(mac, strconv.FormatInt(expiresAt, 10))
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+func (s *server) now() time.Time {
+	if s.deps.Now != nil {
+		return s.deps.Now().UTC()
+	}
+	return time.Now().UTC()
 }
 
 func absoluteURL(r *http.Request, path string) string {

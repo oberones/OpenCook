@@ -2,15 +2,28 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"crypto/md5"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/oberones/OpenCook/internal/authn"
+	"github.com/oberones/OpenCook/internal/authz"
+	"github.com/oberones/OpenCook/internal/blob"
+	"github.com/oberones/OpenCook/internal/bootstrap"
+	"github.com/oberones/OpenCook/internal/compat"
+	"github.com/oberones/OpenCook/internal/config"
+	"github.com/oberones/OpenCook/internal/search"
+	"github.com/oberones/OpenCook/internal/store/pg"
+	"github.com/oberones/OpenCook/internal/version"
 )
 
 func TestSandboxesEndpointCreateUploadCommitAndReuseChecksum(t *testing.T) {
@@ -280,6 +293,252 @@ func TestBlobChecksumUploadRejectsChecksumMismatch(t *testing.T) {
 	if payload["error"] != "invalid_checksum" {
 		t.Fatalf("error = %v, want %q", payload["error"], "invalid_checksum")
 	}
+}
+
+func TestSandboxesEndpointCommitRejectsFalseIsCompletedWithCorrectFieldName(t *testing.T) {
+	router := newTestRouter(t)
+
+	checksum := checksumHex([]byte("fluttershy"))
+	createReq := newSignedJSONRequest(t, http.MethodPost, "/sandboxes", mustMarshalSandboxJSON(t, map[string]any{
+		"checksums": map[string]any{
+			checksum: nil,
+		},
+	}))
+	createRec := httptest.NewRecorder()
+	router.ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("create sandbox status = %d, want %d, body = %s", createRec.Code, http.StatusCreated, createRec.Body.String())
+	}
+
+	var createPayload map[string]any
+	if err := json.Unmarshal(createRec.Body.Bytes(), &createPayload); err != nil {
+		t.Fatalf("json.Unmarshal(create sandbox) error = %v", err)
+	}
+	sandboxID := createPayload["sandbox_id"].(string)
+
+	commitReq := newSignedJSONRequest(t, http.MethodPut, "/sandboxes/"+sandboxID, mustMarshalSandboxJSON(t, map[string]any{
+		"is_completed": false,
+	}))
+	commitRec := httptest.NewRecorder()
+	router.ServeHTTP(commitRec, commitReq)
+	if commitRec.Code != http.StatusBadRequest {
+		t.Fatalf("commit status = %d, want %d, body = %s", commitRec.Code, http.StatusBadRequest, commitRec.Body.String())
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(commitRec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal(commit sandbox) error = %v", err)
+	}
+	messages := payload["error"].([]any)
+	want := `JSON body must contain key "is_completed" with value true.`
+	if len(messages) != 1 || messages[0] != want {
+		t.Fatalf("error messages = %v, want %q", messages, want)
+	}
+}
+
+func TestSandboxesEndpointCommitUsesUpdateAuthorization(t *testing.T) {
+	fixedNow := mustParseTime(t, "2026-04-02T15:04:35Z")
+	now := func() time.Time { return fixedNow }
+	authorizer := &sandboxActionAuthorizer{allowed: map[authz.Action]bool{
+		authz.ActionUpdate: true,
+	}}
+	router, state := newSandboxRouterWithAuthorizer(t, now, authorizer)
+
+	sandbox, err := state.CreateSandbox("ponyville", bootstrap.CreateSandboxInput{
+		Checksums: []string{checksumHex([]byte("pinkie pie"))},
+	})
+	if err != nil {
+		t.Fatalf("CreateSandbox() error = %v", err)
+	}
+
+	req := newSignedJSONRequest(t, http.MethodPut, "/sandboxes/"+sandbox.ID, mustMarshalSandboxJSON(t, map[string]any{
+		"is_completed": true,
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusServiceUnavailable, rec.Body.String())
+	}
+	if authorizer.lastAction != authz.ActionUpdate {
+		t.Fatalf("lastAction = %q, want %q", authorizer.lastAction, authz.ActionUpdate)
+	}
+}
+
+func TestBlobChecksumUploadRequiresSignedUploadURL(t *testing.T) {
+	router := newTestRouter(t)
+
+	content := []byte("starlight glimmer")
+	checksum := checksumHex(content)
+	createReq := newSignedJSONRequest(t, http.MethodPost, "/sandboxes", mustMarshalSandboxJSON(t, map[string]any{
+		"checksums": map[string]any{
+			checksum: nil,
+		},
+	}))
+	createRec := httptest.NewRecorder()
+	router.ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("create sandbox status = %d, want %d, body = %s", createRec.Code, http.StatusCreated, createRec.Body.String())
+	}
+
+	var createPayload map[string]any
+	if err := json.Unmarshal(createRec.Body.Bytes(), &createPayload); err != nil {
+		t.Fatalf("json.Unmarshal(create sandbox) error = %v", err)
+	}
+	uploadURL := createPayload["checksums"].(map[string]any)[checksum].(map[string]any)["url"].(string)
+	parsed, err := url.Parse(uploadURL)
+	if err != nil {
+		t.Fatalf("url.Parse(uploadURL) error = %v", err)
+	}
+
+	values := parsed.Query()
+	values.Del("signature")
+	parsed.RawQuery = values.Encode()
+
+	uploadReq := httptest.NewRequest(http.MethodPut, parsed.String(), bytes.NewReader(content))
+	uploadRec := httptest.NewRecorder()
+	router.ServeHTTP(uploadRec, uploadReq)
+	if uploadRec.Code != http.StatusBadRequest && uploadRec.Code != http.StatusForbidden {
+		t.Fatalf("upload missing signature status = %d, want 400 or 403, body = %s", uploadRec.Code, uploadRec.Body.String())
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(uploadRec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal(upload missing signature) error = %v", err)
+	}
+	if payload["error"] != "invalid_upload_url" {
+		t.Fatalf("error = %v, want %q", payload["error"], "invalid_upload_url")
+	}
+}
+
+func TestBlobChecksumUploadRejectsExpiredUploadURL(t *testing.T) {
+	currentNow := mustParseTime(t, "2026-04-02T15:04:35Z")
+	now := func() time.Time { return currentNow }
+	router, _ := newSandboxRouterWithAuthorizer(t, now, &sandboxActionAuthorizer{allowed: map[authz.Action]bool{
+		authz.ActionCreate: true,
+		authz.ActionUpdate: true,
+		authz.ActionRead:   true,
+	}})
+
+	content := []byte("sunset shimmer")
+	checksum := checksumHex(content)
+	createReq := newSignedJSONRequest(t, http.MethodPost, "/sandboxes", mustMarshalSandboxJSON(t, map[string]any{
+		"checksums": map[string]any{
+			checksum: nil,
+		},
+	}))
+	createRec := httptest.NewRecorder()
+	router.ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("create sandbox status = %d, want %d, body = %s", createRec.Code, http.StatusCreated, createRec.Body.String())
+	}
+
+	var createPayload map[string]any
+	if err := json.Unmarshal(createRec.Body.Bytes(), &createPayload); err != nil {
+		t.Fatalf("json.Unmarshal(create sandbox) error = %v", err)
+	}
+	uploadURL := createPayload["checksums"].(map[string]any)[checksum].(map[string]any)["url"].(string)
+
+	currentNow = currentNow.Add(defaultBlobUploadURLTTL + time.Second)
+
+	uploadReq := httptest.NewRequest(http.MethodPut, uploadURL, bytes.NewReader(content))
+	uploadRec := httptest.NewRecorder()
+	router.ServeHTTP(uploadRec, uploadReq)
+	if uploadRec.Code != http.StatusForbidden {
+		t.Fatalf("upload expired status = %d, want %d, body = %s", uploadRec.Code, http.StatusForbidden, uploadRec.Body.String())
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(uploadRec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal(upload expired) error = %v", err)
+	}
+	if payload["error"] != "invalid_upload_url" {
+		t.Fatalf("error = %v, want %q", payload["error"], "invalid_upload_url")
+	}
+}
+
+type sandboxActionAuthorizer struct {
+	allowed    map[authz.Action]bool
+	lastAction authz.Action
+}
+
+func (a *sandboxActionAuthorizer) Name() string {
+	return "sandbox-action-authorizer"
+}
+
+func (a *sandboxActionAuthorizer) Authorize(_ context.Context, _ authz.Subject, action authz.Action, _ authz.Resource) (authz.Decision, error) {
+	a.lastAction = action
+	return authz.Decision{
+		Allowed: a.allowed[action],
+		Reason:  "test authorizer",
+	}, nil
+}
+
+func newSandboxRouterWithAuthorizer(t *testing.T, now func() time.Time, authorizer authz.Authorizer) (http.Handler, *bootstrap.Service) {
+	t.Helper()
+
+	privateKey := mustParsePrivateKey(t)
+	store := authn.NewMemoryKeyStore()
+	mustPutKey(t, store, authn.Key{
+		ID: "default",
+		Principal: authn.Principal{
+			Type: "user",
+			Name: "silent-bob",
+		},
+		PublicKey: &privateKey.PublicKey,
+	})
+	mustPutKey(t, store, authn.Key{
+		ID: "default",
+		Principal: authn.Principal{
+			Type: "user",
+			Name: "pivotal",
+		},
+		PublicKey: &privateKey.PublicKey,
+	})
+
+	state := bootstrap.NewService(store, bootstrap.Options{SuperuserName: "pivotal"})
+	publicKeyPEM := mustMarshalPublicKeyPEM(t, &privateKey.PublicKey)
+	state.SeedPrincipal(authn.Principal{Type: "user", Name: "silent-bob"})
+	if err := state.SeedPublicKey(authn.Principal{Type: "user", Name: "silent-bob"}, "default", publicKeyPEM); err != nil {
+		t.Fatalf("SeedPublicKey(silent-bob) error = %v", err)
+	}
+	if err := state.SeedPublicKey(authn.Principal{Type: "user", Name: "pivotal"}, "default", publicKeyPEM); err != nil {
+		t.Fatalf("SeedPublicKey(pivotal) error = %v", err)
+	}
+	if _, _, _, err := state.CreateOrganization(bootstrap.CreateOrganizationInput{
+		Name:      "ponyville",
+		FullName:  "Ponyville",
+		OrgType:   "Business",
+		OwnerName: "silent-bob",
+	}); err != nil {
+		t.Fatalf("CreateOrganization() error = %v", err)
+	}
+
+	skew := 15 * time.Minute
+	router := NewRouter(Dependencies{
+		Logger: log.New(ioDiscard{}, "", 0),
+		Config: config.Config{
+			ServiceName:      "opencook",
+			Environment:      "test",
+			AuthSkew:         skew,
+			MaxAuthBodyBytes: config.DefaultMaxAuthBodyBytes,
+		},
+		Version: version.Current(),
+		Compat:  compat.NewDefaultRegistry(),
+		Now:     now,
+		Authn: authn.NewChefVerifier(store, authn.Options{
+			AllowedClockSkew: &skew,
+			Now:              now,
+		}),
+		Authz:            authorizer,
+		Bootstrap:        state,
+		Blob:             blob.NewMemoryStore(""),
+		BlobUploadSecret: []byte("test-blob-upload-secret"),
+		Search:           search.NewMemoryIndex(state, ""),
+		Postgres:         pg.New(""),
+	})
+
+	return router, state
 }
 
 func mustMarshalSandboxJSON(t *testing.T, payload map[string]any) []byte {
