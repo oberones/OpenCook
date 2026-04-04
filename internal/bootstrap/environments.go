@@ -3,6 +3,7 @@ package bootstrap
 import (
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/oberones/OpenCook/internal/authn"
@@ -188,6 +189,176 @@ func (s *Service) ListEnvironmentNodes(orgName, environmentName string) (map[str
 		out[name] = nodeURI(orgName, name)
 	}
 	return out, true, true
+}
+
+func (s *Service) ListEnvironmentCookbookVersions(orgName, environmentName string, numVersions int, allVersions bool) (map[string][]CookbookVersionRef, bool, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	org, ok := s.orgs[orgName]
+	if !ok {
+		return nil, false, false
+	}
+
+	env, ok := org.envs[environmentName]
+	if !ok {
+		return nil, true, false
+	}
+
+	return environmentCookbookVersions(org.cookbooks, env, numVersions, allVersions), true, true
+}
+
+func (s *Service) GetEnvironmentCookbookVersions(orgName, environmentName, cookbookName string, numVersions int, allVersions bool) ([]CookbookVersionRef, bool, bool, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	org, ok := s.orgs[orgName]
+	if !ok {
+		return nil, false, false, false
+	}
+
+	env, ok := org.envs[environmentName]
+	if !ok {
+		return nil, true, false, false
+	}
+
+	versions, ok := org.cookbooks[strings.TrimSpace(cookbookName)]
+	if !ok {
+		return nil, true, true, false
+	}
+
+	refs := filterEnvironmentCookbookRefs(cookbookVersionRefs(versions), env.CookbookVersions[cookbookName])
+	return limitEnvironmentCookbookRefs(refs, numVersions, allVersions), true, true, true
+}
+
+func environmentCookbookVersions(cookbooks map[string]map[string]CookbookVersion, env Environment, numVersions int, allVersions bool) map[string][]CookbookVersionRef {
+	if len(cookbooks) == 0 {
+		return map[string][]CookbookVersionRef{}
+	}
+
+	if !allVersions && numVersions == 0 {
+		out := make(map[string][]CookbookVersionRef, len(cookbooks))
+		for name := range cookbooks {
+			out[name] = []CookbookVersionRef{}
+		}
+		return out
+	}
+
+	out := make(map[string][]CookbookVersionRef, len(cookbooks))
+	anyAllowed := false
+	for name, versions := range cookbooks {
+		refs := filterEnvironmentCookbookRefs(cookbookVersionRefs(versions), env.CookbookVersions[name])
+		refs = limitEnvironmentCookbookRefs(refs, numVersions, allVersions)
+		if len(refs) == 0 {
+			continue
+		}
+		out[name] = refs
+		anyAllowed = true
+	}
+
+	if anyAllowed {
+		return out
+	}
+
+	out = make(map[string][]CookbookVersionRef, len(cookbooks))
+	for name := range cookbooks {
+		out[name] = []CookbookVersionRef{}
+	}
+	return out
+}
+
+func filterEnvironmentCookbookRefs(refs []CookbookVersionRef, constraint string) []CookbookVersionRef {
+	constraint = strings.TrimSpace(constraint)
+	if constraint == "" || len(refs) == 0 {
+		return refs
+	}
+
+	out := make([]CookbookVersionRef, 0, len(refs))
+	for _, ref := range refs {
+		if cookbookConstraintMatches(ref.Version, constraint) {
+			out = append(out, ref)
+		}
+	}
+	return out
+}
+
+func limitEnvironmentCookbookRefs(refs []CookbookVersionRef, numVersions int, allVersions bool) []CookbookVersionRef {
+	if len(refs) == 0 {
+		return []CookbookVersionRef{}
+	}
+	if allVersions {
+		return append([]CookbookVersionRef(nil), refs...)
+	}
+	if numVersions <= 0 {
+		return []CookbookVersionRef{}
+	}
+	if len(refs) <= numVersions {
+		return append([]CookbookVersionRef(nil), refs...)
+	}
+	return append([]CookbookVersionRef(nil), refs[:numVersions]...)
+}
+
+func cookbookConstraintMatches(version, constraint string) bool {
+	op, target := parseCookbookConstraint(constraint)
+	switch op {
+	case ">":
+		return compareCookbookVersions(version, target) > 0
+	case ">=":
+		return compareCookbookVersions(version, target) >= 0
+	case "<":
+		return compareCookbookVersions(version, target) < 0
+	case "<=":
+		return compareCookbookVersions(version, target) <= 0
+	case "~>":
+		lowerOK := compareCookbookVersions(version, target) >= 0
+		if !lowerOK {
+			return false
+		}
+		return compareCookbookVersions(version, cookbookConstraintUpperBound(target)) < 0
+	default:
+		return compareCookbookVersions(version, target) == 0
+	}
+}
+
+func parseCookbookConstraint(constraint string) (string, string) {
+	parts := strings.Fields(strings.TrimSpace(constraint))
+	switch len(parts) {
+	case 0:
+		return "=", ""
+	case 1:
+		return "=", parts[0]
+	default:
+		return parts[0], parts[1]
+	}
+}
+
+func cookbookConstraintUpperBound(version string) string {
+	parts := strings.Split(strings.TrimSpace(version), ".")
+	ints := make([]int, 0, len(parts))
+	for _, part := range parts {
+		value, err := strconv.Atoi(part)
+		if err != nil {
+			return version
+		}
+		ints = append(ints, value)
+	}
+	for len(ints) < 3 {
+		ints = append(ints, 0)
+	}
+
+	switch len(parts) {
+	case 0:
+		return version
+	case 1, 2:
+		ints[0]++
+		ints[1] = 0
+		ints[2] = 0
+	default:
+		ints[1]++
+		ints[2] = 0
+	}
+
+	return fmt.Sprintf("%d.%d.%d", ints[0], ints[1], ints[2])
 }
 
 func normalizeEnvironmentPayload(payload map[string]any) (Environment, error) {

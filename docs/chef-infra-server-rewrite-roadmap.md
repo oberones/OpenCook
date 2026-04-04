@@ -42,6 +42,7 @@ As of 2026-04-03, OpenCook has moved past pure scaffolding and into the first co
 - the first core object slice is live with in-memory node list/get/head/create/update/delete behavior
 - the adjacent environment slice is now live with `_default`, list/get/head/create/update/delete, and rename-capable `PUT`
 - environment-scoped node listing is implemented via `/environments/{name}/nodes`
+- environment-scoped cookbook and recipe views are now implemented via `/environments/{name}/cookbooks`, `/environments/{name}/cookbooks/{cookbook}`, and `/environments/{name}/recipes`
 - default-org and explicit-org node routes now resolve against the same org-scoped compatibility state
 - default-org and explicit-org environment routes now resolve against the same org-scoped compatibility state
 - the first role slice is now live with in-memory list/get/head/create/update/delete behavior
@@ -72,13 +73,14 @@ As of 2026-04-03, OpenCook has moved past pure scaffolding and into the first co
 - cookbook version reads now return the narrower Chef-shaped metadata subset with upstream defaults inflated at read time while PUT responses remain exact echoes of the submitted payload
 - cookbook version conversion is now exercised across v0 and v2 upload/download paths, including the Chef-style segment-aware `all_files[].name` contract for root files and other segmented content
 - cookbook named filters now more closely match upstream pedant behavior, with `/cookbooks/_recipes` deriving names from the latest cookbook manifests and qualifying default recipes as just the cookbook name
+- environment-filtered cookbook and recipe views now honor environment cookbook constraints and named-cookbook default `num_versions` behavior on both default-org and explicit-org paths
 - compatibility tracking docs and route inventory are in place and being updated alongside code
 
 Current focus:
 
 - preserve API-version-sensitive actor key behavior without carrying forward Chef licensing concerns
 - deepen search query translation beyond the current simple compatibility subset and widen object/index coverage further
-- deepen cookbook/blob compatibility beyond the current cookbook write/read/artifact slice, especially the remaining cookbook pedant cases outside the current named-filter/latest/version read-write contract and production object storage behavior
+- deepen cookbook/blob compatibility beyond the current cookbook write/read/artifact slice, especially the remaining cookbook pedant cases outside the current environment-filtered/named-filter/latest/version read-write contract and production object storage behavior
 - replace the in-memory bootstrap layer with PostgreSQL-backed persistence after the contracts stabilize
 
 ## What Exists Upstream
