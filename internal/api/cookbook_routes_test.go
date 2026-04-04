@@ -535,6 +535,74 @@ func TestCookbookVersionEndpointsHonorFrozenForce(t *testing.T) {
 	}
 }
 
+func TestCookbookVersionEndpointsCleanUpReleasedChecksums(t *testing.T) {
+	router := newTestRouter(t)
+	oldChecksum := uploadCookbookChecksum(t, router, []byte("puts 'old body'"))
+	newChecksum := uploadCookbookChecksum(t, router, []byte("puts 'new body'"))
+
+	createCookbookVersion(t, router, "cleanup-demo", "1.2.3", oldChecksum, nil)
+
+	oldURL := cookbookFileURL(t, router, "/cookbooks/cleanup-demo/1.2.3")
+
+	updateReq := newSignedJSONRequest(t, http.MethodPut, "/cookbooks/cleanup-demo/1.2.3", mustMarshalSandboxJSON(t, cookbookVersionPayload("cleanup-demo", "1.2.3", newChecksum, nil)))
+	updateRec := httptest.NewRecorder()
+	router.ServeHTTP(updateRec, updateReq)
+	if updateRec.Code != http.StatusOK {
+		t.Fatalf("update cookbook status = %d, want %d, body = %s", updateRec.Code, http.StatusOK, updateRec.Body.String())
+	}
+
+	assertBlobDownloadStatus(t, router, oldURL, http.StatusNotFound)
+
+	newURL := cookbookFileURL(t, router, "/cookbooks/cleanup-demo/1.2.3")
+	assertBlobDownloadStatus(t, router, newURL, http.StatusOK)
+
+	deleteReq := newSignedJSONRequest(t, http.MethodDelete, "/cookbooks/cleanup-demo/1.2.3", nil)
+	deleteRec := httptest.NewRecorder()
+	router.ServeHTTP(deleteRec, deleteReq)
+	if deleteRec.Code != http.StatusOK {
+		t.Fatalf("delete cookbook status = %d, want %d, body = %s", deleteRec.Code, http.StatusOK, deleteRec.Body.String())
+	}
+
+	assertBlobDownloadStatus(t, router, newURL, http.StatusNotFound)
+}
+
+func TestCookbookArtifactDeleteCleanupPreservesSharedChecksums(t *testing.T) {
+	router := newTestRouter(t)
+	sharedChecksum := uploadCookbookChecksum(t, router, []byte("puts 'shared body'"))
+	uniqueChecksum := uploadCookbookChecksum(t, router, []byte("puts 'unique body'"))
+
+	createCookbookVersion(t, router, "shared-demo", "1.0.0", sharedChecksum, nil)
+	createCookbookArtifact(t, router, "shared-artifact", "1111111111111111111111111111111111111111", "1.0.0", sharedChecksum, nil)
+	createCookbookArtifact(t, router, "unique-artifact", "2222222222222222222222222222222222222222", "1.0.0", uniqueChecksum, nil)
+
+	sharedURL := cookbookFileURL(t, router, "/cookbooks/shared-demo/1.0.0")
+	uniqueURL := cookbookArtifactFileURL(t, router, "/cookbook_artifacts/unique-artifact/2222222222222222222222222222222222222222")
+
+	deleteUniqueReq := newSignedJSONRequest(t, http.MethodDelete, "/cookbook_artifacts/unique-artifact/2222222222222222222222222222222222222222", nil)
+	deleteUniqueRec := httptest.NewRecorder()
+	router.ServeHTTP(deleteUniqueRec, deleteUniqueReq)
+	if deleteUniqueRec.Code != http.StatusOK {
+		t.Fatalf("delete unique artifact status = %d, want %d, body = %s", deleteUniqueRec.Code, http.StatusOK, deleteUniqueRec.Body.String())
+	}
+	assertBlobDownloadStatus(t, router, uniqueURL, http.StatusNotFound)
+
+	deleteSharedArtifactReq := newSignedJSONRequest(t, http.MethodDelete, "/cookbook_artifacts/shared-artifact/1111111111111111111111111111111111111111", nil)
+	deleteSharedArtifactRec := httptest.NewRecorder()
+	router.ServeHTTP(deleteSharedArtifactRec, deleteSharedArtifactReq)
+	if deleteSharedArtifactRec.Code != http.StatusOK {
+		t.Fatalf("delete shared artifact status = %d, want %d, body = %s", deleteSharedArtifactRec.Code, http.StatusOK, deleteSharedArtifactRec.Body.String())
+	}
+	assertBlobDownloadStatus(t, router, sharedURL, http.StatusOK)
+
+	deleteCookbookReq := newSignedJSONRequest(t, http.MethodDelete, "/cookbooks/shared-demo/1.0.0", nil)
+	deleteCookbookRec := httptest.NewRecorder()
+	router.ServeHTTP(deleteCookbookRec, deleteCookbookReq)
+	if deleteCookbookRec.Code != http.StatusOK {
+		t.Fatalf("delete shared cookbook status = %d, want %d, body = %s", deleteCookbookRec.Code, http.StatusOK, deleteCookbookRec.Body.String())
+	}
+	assertBlobDownloadStatus(t, router, sharedURL, http.StatusNotFound)
+}
+
 func TestCookbookVersionEndpointsUseChecksumSpecificUpdateError(t *testing.T) {
 	router := newTestRouter(t)
 	checksum := uploadCookbookChecksum(t, router, []byte("puts 'hello v1'"))
@@ -860,6 +928,10 @@ func TestCookbookVersionEndpointsConvertBetweenV0AndV2(t *testing.T) {
 		t.Fatalf("delete status = %d, want %d, body = %s", deleteRec.Code, http.StatusOK, deleteRec.Body.String())
 	}
 
+	recipeChecksum = uploadCookbookChecksum(t, router, []byte("puts 'recipe contents'"))
+	rootChecksum = uploadCookbookChecksum(t, router, []byte("change log"))
+	templateChecksum = uploadCookbookChecksum(t, router, []byte("template body"))
+
 	v2Payload := map[string]any{
 		"name":          "vconv-2.0.0",
 		"cookbook_name": "vconv",
@@ -1016,6 +1088,60 @@ func uploadCookbookChecksum(t *testing.T, router http.Handler, content []byte) s
 	}
 
 	return checksum
+}
+
+func cookbookFileURL(t *testing.T, router http.Handler, path string) string {
+	t.Helper()
+
+	req := newSignedJSONRequest(t, http.MethodGet, path, nil)
+	req.Header.Set("X-Ops-Server-API-Version", "2")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET %s status = %d, want %d, body = %s", path, rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal(%s) error = %v", path, err)
+	}
+	allFiles := payload["all_files"].([]any)
+	if len(allFiles) == 0 {
+		t.Fatalf("%s all_files = %v, want at least one entry", path, payload["all_files"])
+	}
+	return allFiles[0].(map[string]any)["url"].(string)
+}
+
+func cookbookArtifactFileURL(t *testing.T, router http.Handler, path string) string {
+	t.Helper()
+
+	req := newSignedJSONRequest(t, http.MethodGet, path, nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET %s status = %d, want %d, body = %s", path, rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal(%s) error = %v", path, err)
+	}
+	recipes := payload["recipes"].([]any)
+	if len(recipes) == 0 {
+		t.Fatalf("%s recipes = %v, want at least one entry", path, payload["recipes"])
+	}
+	return recipes[0].(map[string]any)["url"].(string)
+}
+
+func assertBlobDownloadStatus(t *testing.T, router http.Handler, downloadURL string, want int) {
+	t.Helper()
+
+	req := httptest.NewRequest(http.MethodGet, downloadURL, nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != want {
+		t.Fatalf("GET %s status = %d, want %d, body = %s", downloadURL, rec.Code, want, rec.Body.String())
+	}
 }
 
 func createCookbookArtifact(t *testing.T, router http.Handler, name, identifier, version, checksum string, dependencies map[string]string) {

@@ -82,3 +82,19 @@ func (s *MemoryStore) Exists(_ context.Context, key string) (bool, error) {
 	_, ok := s.objects[strings.TrimSpace(key)]
 	return ok, nil
 }
+
+func (s *MemoryStore) Delete(_ context.Context, key string) error {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return ErrInvalidInput
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, ok := s.objects[key]; !ok {
+		return ErrNotFound
+	}
+	delete(s.objects, key)
+	return nil
+}
