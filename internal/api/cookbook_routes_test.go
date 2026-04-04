@@ -187,8 +187,27 @@ func TestCookbookEndpointsListLatestRecipesUniverseAndV2VersionView(t *testing.T
 	if err := json.Unmarshal(recipesRec.Body.Bytes(), &recipesPayload); err != nil {
 		t.Fatalf("json.Unmarshal(recipe list) error = %v", err)
 	}
-	if len(recipesPayload) == 0 || recipesPayload[0] != "demo::default" {
+	if len(recipesPayload) == 0 || recipesPayload[0] != "demo" {
 		t.Fatalf("recipes payload = %v, want latest recipe listing", recipesPayload)
+	}
+
+	namedReq := newSignedJSONRequest(t, http.MethodGet, "/cookbooks/demo", nil)
+	namedRec := httptest.NewRecorder()
+	router.ServeHTTP(namedRec, namedReq)
+	if namedRec.Code != http.StatusOK {
+		t.Fatalf("named cookbook status = %d, want %d, body = %s", namedRec.Code, http.StatusOK, namedRec.Body.String())
+	}
+	var namedPayload map[string]any
+	if err := json.Unmarshal(namedRec.Body.Bytes(), &namedPayload); err != nil {
+		t.Fatalf("json.Unmarshal(named cookbook) error = %v", err)
+	}
+	namedDemo := namedPayload["demo"].(map[string]any)
+	namedVersions := namedDemo["versions"].([]any)
+	if len(namedVersions) != 2 {
+		t.Fatalf("named cookbook versions len = %d, want 2 (%v)", len(namedVersions), namedVersions)
+	}
+	if namedVersions[0].(map[string]any)["version"] != "1.2.0" || namedVersions[1].(map[string]any)["version"] != "1.0.0" {
+		t.Fatalf("named cookbook versions = %v, want descending versions", namedVersions)
 	}
 
 	versionReq := newSignedJSONRequest(t, http.MethodGet, "/cookbooks/demo/_latest", nil)
@@ -233,6 +252,89 @@ func TestCookbookEndpointsListLatestRecipesUniverseAndV2VersionView(t *testing.T
 	deps := v12["dependencies"].(map[string]any)
 	if deps["apt"] != ">= 2.0.0" {
 		t.Fatalf("dependencies.apt = %v, want %q", deps["apt"], ">= 2.0.0")
+	}
+}
+
+func TestCookbookRecipesCollectionUsesLatestManifestAndDefaultNaming(t *testing.T) {
+	router := newTestRouter(t)
+
+	oldDefaultChecksum := uploadCookbookChecksum(t, router, []byte("puts 'old default'"))
+	oldLegacyChecksum := uploadCookbookChecksum(t, router, []byte("puts 'legacy recipe'"))
+	newDefaultChecksum := uploadCookbookChecksum(t, router, []byte("puts 'new default'"))
+	newUsersChecksum := uploadCookbookChecksum(t, router, []byte("puts 'users recipe'"))
+
+	oldPayload := cookbookVersionPayload("demo", "1.0.0", "", nil)
+	oldPayload["metadata"].(map[string]any)["recipes"] = map[string]any{
+		"demo::default": "",
+		"demo::legacy":  "",
+	}
+	oldPayload["all_files"] = []any{
+		map[string]any{
+			"name":        "recipes/default.rb",
+			"path":        "recipes/default.rb",
+			"checksum":    oldDefaultChecksum,
+			"specificity": "default",
+		},
+		map[string]any{
+			"name":        "recipes/legacy.rb",
+			"path":        "recipes/legacy.rb",
+			"checksum":    oldLegacyChecksum,
+			"specificity": "default",
+		},
+	}
+	oldCreateReq := newSignedJSONRequest(t, http.MethodPut, "/cookbooks/demo/1.0.0", mustMarshalSandboxJSON(t, oldPayload))
+	oldCreateRec := httptest.NewRecorder()
+	router.ServeHTTP(oldCreateRec, oldCreateReq)
+	if oldCreateRec.Code != http.StatusCreated {
+		t.Fatalf("old cookbook create status = %d, want %d, body = %s", oldCreateRec.Code, http.StatusCreated, oldCreateRec.Body.String())
+	}
+
+	newPayload := cookbookVersionPayload("demo", "2.0.0", "", nil)
+	newPayload["metadata"].(map[string]any)["recipes"] = map[string]any{
+		"demo::default": "",
+		"demo::ghost":   "",
+		"demo::users":   "",
+	}
+	newPayload["all_files"] = []any{
+		map[string]any{
+			"name":        "recipes/default.rb",
+			"path":        "recipes/default.rb",
+			"checksum":    newDefaultChecksum,
+			"specificity": "default",
+		},
+		map[string]any{
+			"name":        "recipes/users.rb",
+			"path":        "recipes/users.rb",
+			"checksum":    newUsersChecksum,
+			"specificity": "default",
+		},
+	}
+	newCreateReq := newSignedJSONRequest(t, http.MethodPut, "/cookbooks/demo/2.0.0", mustMarshalSandboxJSON(t, newPayload))
+	newCreateRec := httptest.NewRecorder()
+	router.ServeHTTP(newCreateRec, newCreateReq)
+	if newCreateRec.Code != http.StatusCreated {
+		t.Fatalf("new cookbook create status = %d, want %d, body = %s", newCreateRec.Code, http.StatusCreated, newCreateRec.Body.String())
+	}
+
+	recipesReq := newSignedJSONRequest(t, http.MethodGet, "/cookbooks/_recipes", nil)
+	recipesRec := httptest.NewRecorder()
+	router.ServeHTTP(recipesRec, recipesReq)
+	if recipesRec.Code != http.StatusOK {
+		t.Fatalf("recipe list status = %d, want %d, body = %s", recipesRec.Code, http.StatusOK, recipesRec.Body.String())
+	}
+
+	var recipesPayload []string
+	if err := json.Unmarshal(recipesRec.Body.Bytes(), &recipesPayload); err != nil {
+		t.Fatalf("json.Unmarshal(recipe list) error = %v", err)
+	}
+	want := []string{"demo", "demo::users"}
+	if len(recipesPayload) != len(want) {
+		t.Fatalf("recipes payload len = %d, want %d (%v)", len(recipesPayload), len(want), recipesPayload)
+	}
+	for idx := range want {
+		if recipesPayload[idx] != want[idx] {
+			t.Fatalf("recipes payload[%d] = %q, want %q (%v)", idx, recipesPayload[idx], want[idx], recipesPayload)
+		}
 	}
 }
 
