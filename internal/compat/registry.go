@@ -88,7 +88,7 @@ func NewDefaultRegistry() Registry {
 					"/organizations/{org}/universe",
 					"/organizations/{org}/universe/",
 				},
-				Notes: "Sandbox create/commit flow, signed blob upload/download URLs, cookbook artifact lifecycle, cookbook read views, and universe compatibility.",
+				Notes: "Sandbox create/commit flow, signed blob upload/download URLs, cookbook artifact lifecycle, writable cookbook version flows, cookbook read views, and universe compatibility.",
 			},
 			{
 				Name:     "search-and-policy",
