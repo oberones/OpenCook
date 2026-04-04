@@ -390,6 +390,150 @@ func TestPolicyGroupAssignmentPutAllowsReusingExistingRevisionWithoutPolicyUpdat
 	}
 }
 
+func TestOrgScopedPolicyRoutesUseOrgScopedURIsAndSupportHead(t *testing.T) {
+	router := newTestRouter(t)
+
+	revisionID := "abababababababababababababababababababab"
+	body := mustMarshalPolicyJSON(t, minimalPolicyPayload("appserver", revisionID))
+	putReq := newSignedJSONRequest(t, http.MethodPut, "/organizations/ponyville/policy_groups/dev/policies/appserver", body)
+	putRec := httptest.NewRecorder()
+	router.ServeHTTP(putRec, putReq)
+	if putRec.Code != http.StatusCreated {
+		t.Fatalf("org-scoped policy assignment status = %d, want %d, body = %s", putRec.Code, http.StatusCreated, putRec.Body.String())
+	}
+
+	policiesReq := newSignedJSONRequest(t, http.MethodGet, "/organizations/ponyville/policies", nil)
+	policiesRec := httptest.NewRecorder()
+	router.ServeHTTP(policiesRec, policiesReq)
+	if policiesRec.Code != http.StatusOK {
+		t.Fatalf("org-scoped list policies status = %d, want %d, body = %s", policiesRec.Code, http.StatusOK, policiesRec.Body.String())
+	}
+
+	var policiesPayload map[string]any
+	if err := json.Unmarshal(policiesRec.Body.Bytes(), &policiesPayload); err != nil {
+		t.Fatalf("json.Unmarshal(org-scoped policies) error = %v", err)
+	}
+	policyEntry := policiesPayload["appserver"].(map[string]any)
+	if policyEntry["uri"] != "/organizations/ponyville/policies/appserver" {
+		t.Fatalf("org-scoped policy uri = %v, want %q", policyEntry["uri"], "/organizations/ponyville/policies/appserver")
+	}
+
+	groupsReq := newSignedJSONRequest(t, http.MethodGet, "/organizations/ponyville/policy_groups", nil)
+	groupsRec := httptest.NewRecorder()
+	router.ServeHTTP(groupsRec, groupsReq)
+	if groupsRec.Code != http.StatusOK {
+		t.Fatalf("org-scoped list policy groups status = %d, want %d, body = %s", groupsRec.Code, http.StatusOK, groupsRec.Body.String())
+	}
+
+	var groupsPayload map[string]any
+	if err := json.Unmarshal(groupsRec.Body.Bytes(), &groupsPayload); err != nil {
+		t.Fatalf("json.Unmarshal(org-scoped policy groups) error = %v", err)
+	}
+	groupEntry := groupsPayload["dev"].(map[string]any)
+	if groupEntry["uri"] != "/organizations/ponyville/policy_groups/dev" {
+		t.Fatalf("org-scoped policy group uri = %v, want %q", groupEntry["uri"], "/organizations/ponyville/policy_groups/dev")
+	}
+
+	revisionHeadReq := newSignedJSONRequest(t, http.MethodHead, "/organizations/ponyville/policies/appserver/revisions/"+revisionID, nil)
+	revisionHeadRec := httptest.NewRecorder()
+	router.ServeHTTP(revisionHeadRec, revisionHeadReq)
+	if revisionHeadRec.Code != http.StatusOK {
+		t.Fatalf("org-scoped revision HEAD status = %d, want %d", revisionHeadRec.Code, http.StatusOK)
+	}
+
+	assignmentHeadReq := newSignedJSONRequest(t, http.MethodHead, "/organizations/ponyville/policy_groups/dev/policies/appserver", nil)
+	assignmentHeadRec := httptest.NewRecorder()
+	router.ServeHTTP(assignmentHeadRec, assignmentHeadReq)
+	if assignmentHeadRec.Code != http.StatusOK {
+		t.Fatalf("org-scoped assignment HEAD status = %d, want %d", assignmentHeadRec.Code, http.StatusOK)
+	}
+}
+
+func TestPolicyEndpointsRoundTripCanonicalPayload(t *testing.T) {
+	router := newTestRouter(t)
+
+	revisionID := "ecececececececececececececececececececec"
+	body := mustMarshalPolicyJSON(t, canonicalPolicyPayloadForAPI("appserver", revisionID))
+	createReq := newSignedJSONRequest(t, http.MethodPost, "/policies/appserver/revisions", body)
+	createRec := httptest.NewRecorder()
+	router.ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("create canonical policy revision status = %d, want %d, body = %s", createRec.Code, http.StatusCreated, createRec.Body.String())
+	}
+
+	getReq := newSignedJSONRequest(t, http.MethodGet, "/policies/appserver/revisions/"+revisionID, nil)
+	getRec := httptest.NewRecorder()
+	router.ServeHTTP(getRec, getReq)
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("get canonical policy revision status = %d, want %d, body = %s", getRec.Code, http.StatusOK, getRec.Body.String())
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(getRec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal(canonical policy revision) error = %v", err)
+	}
+	if payload["name"] != "appserver" {
+		t.Fatalf("name = %v, want %q", payload["name"], "appserver")
+	}
+	namedRunLists, ok := payload["named_run_lists"].(map[string]any)
+	if !ok {
+		t.Fatalf("named_run_lists = %T, want map[string]any", payload["named_run_lists"])
+	}
+	updateJenkins := stringSliceFromAny(t, namedRunLists["update_jenkins"])
+	if len(updateJenkins) != 1 || updateJenkins[0] != "recipe[policyfile_demo::other_recipe]" {
+		t.Fatalf("named_run_lists[update_jenkins] = %v, want canonical list", updateJenkins)
+	}
+	cookbookLocks := payload["cookbook_locks"].(map[string]any)
+	lock := cookbookLocks["policyfile_demo"].(map[string]any)
+	if lock["version"] != "0.1.0" {
+		t.Fatalf("version = %v, want %q", lock["version"], "0.1.0")
+	}
+	if _, ok := lock["scm_info"].(map[string]any); !ok {
+		t.Fatalf("scm_info = %T, want map[string]any", lock["scm_info"])
+	}
+	if _, ok := lock["source_options"].(map[string]any); !ok {
+		t.Fatalf("source_options = %T, want map[string]any", lock["source_options"])
+	}
+	if _, ok := payload["solution_dependencies"].(map[string]any); !ok {
+		t.Fatalf("solution_dependencies = %T, want map[string]any", payload["solution_dependencies"])
+	}
+	groupList := stringSliceFromAny(t, payload["policy_group_list"])
+	if len(groupList) != 0 {
+		t.Fatalf("policy_group_list = %v, want empty list", groupList)
+	}
+}
+
+func TestPolicyEndpointsRejectMissingCookbookLockVersion(t *testing.T) {
+	router := newTestRouter(t)
+
+	body := mustMarshalPolicyJSON(t, map[string]any{
+		"name":        "appserver",
+		"revision_id": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+		"run_list":    []any{"recipe[policyfile_demo::default]"},
+		"cookbook_locks": map[string]any{
+			"policyfile_demo": map[string]any{
+				"identifier": "f04cc40faf628253fe7d9566d66a1733fb1afbe9",
+			},
+		},
+	})
+	req := newSignedJSONRequest(t, http.MethodPost, "/policies/appserver/revisions", body)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("missing cookbook lock version status = %d, want %d, body = %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal(missing version response) error = %v", err)
+	}
+	messages := payload["error"].([]any)
+	if len(messages) != 1 || messages[0] != "Field 'version' missing" {
+		t.Fatalf("error messages = %v, want missing version validation", messages)
+	}
+}
+
 func minimalPolicyPayload(name, revisionID string) map[string]any {
 	return map[string]any{
 		"name":        name,
@@ -399,6 +543,45 @@ func minimalPolicyPayload(name, revisionID string) map[string]any {
 			"policyfile_demo": map[string]any{
 				"identifier": "f04cc40faf628253fe7d9566d66a1733fb1afbe9",
 				"version":    "1.2.3",
+			},
+		},
+	}
+}
+
+func canonicalPolicyPayloadForAPI(name, revisionID string) map[string]any {
+	return map[string]any{
+		"name":        name,
+		"revision_id": revisionID,
+		"run_list":    []any{"recipe[policyfile_demo::default]"},
+		"named_run_lists": map[string]any{
+			"update_jenkins": []any{"recipe[policyfile_demo::other_recipe]"},
+		},
+		"cookbook_locks": map[string]any{
+			"policyfile_demo": map[string]any{
+				"version":                   "0.1.0",
+				"identifier":                "f04cc40faf628253fe7d9566d66a1733fb1afbe9",
+				"dotted_decimal_identifier": "67638399371010690.23642238397896298.25512023620585",
+				"source":                    "cookbooks/policyfile_demo",
+				"cache_key":                 nil,
+				"scm_info": map[string]any{
+					"scm":                          "git",
+					"remote":                       "git@github.com:danielsdeleo/policyfile-jenkins-demo.git",
+					"revision":                     "edd40c30c4e0ebb3658abde4620597597d2e9c17",
+					"working_tree_clean":           false,
+					"published":                    false,
+					"synchronized_remote_branches": []any{},
+				},
+				"source_options": map[string]any{
+					"path": "cookbooks/policyfile_demo",
+				},
+			},
+		},
+		"solution_dependencies": map[string]any{
+			"Policyfile": []any{
+				[]any{"policyfile_demo", ">= 0.0.0"},
+			},
+			"dependencies": map[string]any{
+				"policyfile_demo (0.1.0)": []any{},
 			},
 		},
 	}
