@@ -182,6 +182,160 @@ func TestCookbookUniverseUsesCookbookVersions(t *testing.T) {
 	}
 }
 
+func TestUpsertCookbookVersionWithReleasedChecksumsTracksUnreferencedBlobs(t *testing.T) {
+	service := newTestBootstrapService(t)
+	createTestCookbookOrg(t, service)
+
+	shared := "11111111111111111111111111111111"
+	oldOnly := "22222222222222222222222222222222"
+	newOnly := "33333333333333333333333333333333"
+
+	createTestCookbookVersion(t, service, "ponyville", "shared", "0.1.0", nil, []any{
+		map[string]any{
+			"name":        "recipes/default.rb",
+			"path":        "recipes/default.rb",
+			"checksum":    shared,
+			"specificity": "default",
+		},
+	})
+	createTestCookbookVersion(t, service, "ponyville", "app", "1.2.3", nil, []any{
+		map[string]any{
+			"name":        "recipes/default.rb",
+			"path":        "recipes/default.rb",
+			"checksum":    shared,
+			"specificity": "default",
+		},
+		map[string]any{
+			"name":        "files/default/config",
+			"path":        "files/default/config",
+			"checksum":    oldOnly,
+			"specificity": "default",
+		},
+	})
+
+	version, released, created, err := service.UpsertCookbookVersionWithReleasedChecksums("ponyville", UpsertCookbookVersionInput{
+		Name:    "app",
+		Version: "1.2.3",
+		Payload: cookbookVersionTestPayload("app", "1.2.3", nil, []any{
+			map[string]any{
+				"name":        "recipes/default.rb",
+				"path":        "recipes/default.rb",
+				"checksum":    shared,
+				"specificity": "default",
+			},
+			map[string]any{
+				"name":        "files/default/updated",
+				"path":        "files/default/updated",
+				"checksum":    newOnly,
+				"specificity": "default",
+			},
+		}),
+		ChecksumExists: func(string) (bool, error) {
+			return true, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("UpsertCookbookVersionWithReleasedChecksums() error = %v", err)
+	}
+	if created {
+		t.Fatal("created = true, want false")
+	}
+	if version.Version != "1.2.3" {
+		t.Fatalf("version.Version = %q, want %q", version.Version, "1.2.3")
+	}
+	if len(released) != 1 || released[0] != oldOnly {
+		t.Fatalf("released = %v, want [%s]", released, oldOnly)
+	}
+}
+
+func TestDeleteCookbookVersionWithReleasedChecksumsKeepsSandboxReferencedBlob(t *testing.T) {
+	service := newTestBootstrapService(t)
+	createTestCookbookOrg(t, service)
+
+	checksum := "11111111111111111111111111111111"
+	createTestCookbookVersion(t, service, "ponyville", "app", "1.2.3", nil, []any{
+		map[string]any{
+			"name":        "recipes/default.rb",
+			"path":        "recipes/default.rb",
+			"checksum":    checksum,
+			"specificity": "default",
+		},
+	})
+	if _, err := service.CreateSandbox("ponyville", CreateSandboxInput{
+		Checksums: []string{checksum},
+	}); err != nil {
+		t.Fatalf("CreateSandbox() error = %v", err)
+	}
+
+	_, released, err := service.DeleteCookbookVersionWithReleasedChecksums("ponyville", "app", "1.2.3")
+	if err != nil {
+		t.Fatalf("DeleteCookbookVersionWithReleasedChecksums() error = %v", err)
+	}
+	if len(released) != 0 {
+		t.Fatalf("released = %v, want no cleanup while sandbox still references checksum", released)
+	}
+}
+
+func TestDeleteCookbookArtifactWithReleasedChecksumsOnlyReleasesUnsharedChecksums(t *testing.T) {
+	service := newTestBootstrapService(t)
+	createTestCookbookOrg(t, service)
+
+	shared := "11111111111111111111111111111111"
+	unique := "22222222222222222222222222222222"
+	createTestCookbookVersion(t, service, "ponyville", "app", "1.2.3", nil, []any{
+		map[string]any{
+			"name":        "recipes/default.rb",
+			"path":        "recipes/default.rb",
+			"checksum":    shared,
+			"specificity": "default",
+		},
+	})
+	artifactPayload := map[string]any{
+		"name":       "artifact-app",
+		"identifier": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		"version":    "1.2.3",
+		"chef_type":  "cookbook_version",
+		"metadata": map[string]any{
+			"version":      "1.2.3",
+			"name":         "artifact-app",
+			"dependencies": map[string]any{},
+			"recipes":      map[string]any{},
+		},
+		"all_files": []any{
+			map[string]any{
+				"name":        "recipes/default.rb",
+				"path":        "recipes/default.rb",
+				"checksum":    shared,
+				"specificity": "default",
+			},
+			map[string]any{
+				"name":        "files/default/only",
+				"path":        "files/default/only",
+				"checksum":    unique,
+				"specificity": "default",
+			},
+		},
+	}
+	if _, err := service.CreateCookbookArtifact("ponyville", CreateCookbookArtifactInput{
+		Name:       "artifact-app",
+		Identifier: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		Payload:    artifactPayload,
+		ChecksumExists: func(string) (bool, error) {
+			return true, nil
+		},
+	}); err != nil {
+		t.Fatalf("CreateCookbookArtifact() error = %v", err)
+	}
+
+	_, released, err := service.DeleteCookbookArtifactWithReleasedChecksums("ponyville", "artifact-app", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+	if err != nil {
+		t.Fatalf("DeleteCookbookArtifactWithReleasedChecksums() error = %v", err)
+	}
+	if len(released) != 1 || released[0] != unique {
+		t.Fatalf("released = %v, want [%s]", released, unique)
+	}
+}
+
 func TestUpsertCookbookVersionReturnsFieldSpecificValidationMessages(t *testing.T) {
 	service := newTestBootstrapService(t)
 	createTestCookbookOrg(t, service)

@@ -225,22 +225,27 @@ func (s *Service) CreateCookbookArtifact(orgName string, input CreateCookbookArt
 }
 
 func (s *Service) DeleteCookbookArtifact(orgName, name, identifier string) (CookbookArtifact, error) {
+	artifact, _, err := s.DeleteCookbookArtifactWithReleasedChecksums(orgName, name, identifier)
+	return artifact, err
+}
+
+func (s *Service) DeleteCookbookArtifactWithReleasedChecksums(orgName, name, identifier string) (CookbookArtifact, []string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	org, ok := s.orgs[orgName]
 	if !ok {
-		return CookbookArtifact{}, ErrNotFound
+		return CookbookArtifact{}, nil, ErrNotFound
 	}
 
 	versions, ok := org.cookbookArtifacts[strings.TrimSpace(name)]
 	if !ok {
-		return CookbookArtifact{}, ErrNotFound
+		return CookbookArtifact{}, nil, ErrNotFound
 	}
 
 	artifact, ok := versions[strings.TrimSpace(identifier)]
 	if !ok {
-		return CookbookArtifact{}, ErrNotFound
+		return CookbookArtifact{}, nil, ErrNotFound
 	}
 
 	delete(versions, artifact.Identifier)
@@ -248,7 +253,7 @@ func (s *Service) DeleteCookbookArtifact(orgName, name, identifier string) (Cook
 		delete(org.cookbookArtifacts, artifact.Name)
 	}
 
-	return copyCookbookArtifact(artifact), nil
+	return copyCookbookArtifact(artifact), s.unreferencedChecksumsLocked(cookbookFileChecksums(artifact.AllFiles)), nil
 }
 
 func (s *Service) ListCookbookVersions(orgName string) (map[string][]CookbookVersionRef, bool) {
@@ -344,17 +349,22 @@ func (s *Service) CookbookUniverse(orgName string) (map[string][]UniverseEntry, 
 }
 
 func (s *Service) UpsertCookbookVersion(orgName string, input UpsertCookbookVersionInput) (CookbookVersion, bool, error) {
+	version, _, created, err := s.UpsertCookbookVersionWithReleasedChecksums(orgName, input)
+	return version, created, err
+}
+
+func (s *Service) UpsertCookbookVersionWithReleasedChecksums(orgName string, input UpsertCookbookVersionInput) (CookbookVersion, []string, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	org, ok := s.orgs[orgName]
 	if !ok {
-		return CookbookVersion{}, false, ErrNotFound
+		return CookbookVersion{}, nil, false, ErrNotFound
 	}
 
 	version, err := normalizeCookbookVersionPayload(input.Name, input.Version, input.Payload, input.ChecksumExists)
 	if err != nil {
-		return CookbookVersion{}, false, err
+		return CookbookVersion{}, nil, false, err
 	}
 
 	versions := org.cookbooks[version.CookbookName]
@@ -364,7 +374,7 @@ func (s *Service) UpsertCookbookVersion(orgName string, input UpsertCookbookVers
 	}
 	existing, exists := versions[version.Version]
 	if exists && existing.Frozen && !input.Force {
-		return CookbookVersion{}, false, &FrozenCookbookError{
+		return CookbookVersion{}, nil, false, &FrozenCookbookError{
 			Name:    existing.CookbookName,
 			Version: existing.Version,
 		}
@@ -373,36 +383,45 @@ func (s *Service) UpsertCookbookVersion(orgName string, input UpsertCookbookVers
 		version.Frozen = true
 	}
 	versions[version.Version] = version
-	return copyCookbookVersion(version), !exists, nil
+	released := []string(nil)
+	if exists {
+		released = s.unreferencedChecksumsLocked(cookbookChecksumDifference(existing.AllFiles, version.AllFiles))
+	}
+	return copyCookbookVersion(version), released, !exists, nil
 }
 
 func (s *Service) DeleteCookbookVersion(orgName, name, version string) (CookbookVersion, error) {
+	cookbookVersion, _, err := s.DeleteCookbookVersionWithReleasedChecksums(orgName, name, version)
+	return cookbookVersion, err
+}
+
+func (s *Service) DeleteCookbookVersionWithReleasedChecksums(orgName, name, version string) (CookbookVersion, []string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	org, ok := s.orgs[orgName]
 	if !ok {
-		return CookbookVersion{}, ErrNotFound
+		return CookbookVersion{}, nil, ErrNotFound
 	}
 
 	name = strings.TrimSpace(name)
 	version = strings.TrimSpace(version)
 	versions, ok := org.cookbooks[name]
 	if !ok {
-		return CookbookVersion{}, ErrNotFound
+		return CookbookVersion{}, nil, ErrNotFound
 	}
 
 	if version == "_latest" || version == "latest" {
 		refs := cookbookVersionRefs(versions)
 		if len(refs) == 0 {
-			return CookbookVersion{}, ErrNotFound
+			return CookbookVersion{}, nil, ErrNotFound
 		}
 		version = refs[0].Version
 	}
 
 	cookbookVersion, ok := versions[version]
 	if !ok {
-		return CookbookVersion{}, ErrNotFound
+		return CookbookVersion{}, nil, ErrNotFound
 	}
 
 	delete(versions, version)
@@ -410,7 +429,7 @@ func (s *Service) DeleteCookbookVersion(orgName, name, version string) (Cookbook
 		delete(org.cookbooks, name)
 	}
 
-	return copyCookbookVersion(cookbookVersion), nil
+	return copyCookbookVersion(cookbookVersion), s.unreferencedChecksumsLocked(cookbookFileChecksums(cookbookVersion.AllFiles)), nil
 }
 
 func normalizeCookbookVersionPayload(name, version string, payload map[string]any, checksumExists func(string) (bool, error)) (CookbookVersion, error) {
@@ -835,6 +854,92 @@ func cookbookVersionRefs(versions map[string]CookbookVersion) []CookbookVersionR
 		return compareCookbookVersions(out[i].Version, out[j].Version) > 0
 	})
 	return out
+}
+
+func cookbookFileChecksums(files []CookbookFile) []string {
+	set := make(map[string]struct{}, len(files))
+	for _, file := range files {
+		checksum := strings.ToLower(strings.TrimSpace(file.Checksum))
+		if checksum == "" {
+			continue
+		}
+		set[checksum] = struct{}{}
+	}
+	return checksumSetKeys(set)
+}
+
+func cookbookChecksumDifference(existing, updated []CookbookFile) []string {
+	updatedSet := make(map[string]struct{}, len(updated))
+	for _, checksum := range cookbookFileChecksums(updated) {
+		updatedSet[checksum] = struct{}{}
+	}
+
+	released := make(map[string]struct{})
+	for _, checksum := range cookbookFileChecksums(existing) {
+		if _, ok := updatedSet[checksum]; ok {
+			continue
+		}
+		released[checksum] = struct{}{}
+	}
+	return checksumSetKeys(released)
+}
+
+func checksumSetKeys(set map[string]struct{}) []string {
+	if len(set) == 0 {
+		return nil
+	}
+
+	out := make([]string, 0, len(set))
+	for checksum := range set {
+		out = append(out, checksum)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func (s *Service) unreferencedChecksumsLocked(candidates []string) []string {
+	if len(candidates) == 0 {
+		return nil
+	}
+
+	remaining := make(map[string]struct{}, len(candidates))
+	for _, checksum := range candidates {
+		checksum = strings.ToLower(strings.TrimSpace(checksum))
+		if checksum == "" {
+			continue
+		}
+		remaining[checksum] = struct{}{}
+	}
+	if len(remaining) == 0 {
+		return nil
+	}
+
+	for _, org := range s.orgs {
+		for _, sandbox := range org.sandboxes {
+			for _, checksum := range sandbox.Checksums {
+				delete(remaining, strings.ToLower(strings.TrimSpace(checksum)))
+			}
+		}
+		for _, versions := range org.cookbooks {
+			for _, version := range versions {
+				for _, checksum := range cookbookFileChecksums(version.AllFiles) {
+					delete(remaining, checksum)
+				}
+			}
+		}
+		for _, artifacts := range org.cookbookArtifacts {
+			for _, artifact := range artifacts {
+				for _, checksum := range cookbookFileChecksums(artifact.AllFiles) {
+					delete(remaining, checksum)
+				}
+			}
+		}
+		if len(remaining) == 0 {
+			return nil
+		}
+	}
+
+	return checksumSetKeys(remaining)
 }
 
 func sortedCookbookArtifacts(in map[string]CookbookArtifact) []CookbookArtifact {

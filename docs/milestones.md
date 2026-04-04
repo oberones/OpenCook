@@ -84,6 +84,7 @@ Status: in progress
 - cookbook version conversion is now covered across v0 and v2 upload/download paths, including segment-aware `all_files[].name` behavior for root files
 - cookbook named filters and latest/version reads now reflect manifest-derived recipe names, including Chef-style default recipe qualification on `/cookbooks/_recipes`
 - environment-filtered cookbook and recipe views now honor cookbook constraints for both collection and named-cookbook routes
+- cookbook version updates/deletes and artifact deletes now clean up unreferenced checksum blobs while preserving shared checksums still referenced by other cookbooks, artifacts, or live sandboxes
 - production S3-compatible blob storage, PostgreSQL-backed cookbook persistence, and broader cookbook pedant coverage beyond the current environment-filtered/named-filter/latest/version read-write contract are still pending
 - S3-compatible blob storage remains the target production mode after the compatibility contract settles
 

@@ -484,6 +484,19 @@ func (s *server) blobExists(ctx context.Context, checksum string) (bool, error) 
 	return checker.Exists(ctx, checksum)
 }
 
+func (s *server) cleanupBlobChecksums(ctx context.Context, checksums []string) {
+	deleter, ok := s.deps.Blob.(blob.Deleter)
+	if !ok || len(checksums) == 0 {
+		return
+	}
+
+	for _, checksum := range checksums {
+		if err := deleter.Delete(ctx, checksum); err != nil && !errors.Is(err, blob.ErrNotFound) {
+			s.logf("blob cleanup failed for checksum %s: %v", checksum, err)
+		}
+	}
+}
+
 func (s *server) missingSandboxChecksums(ctx context.Context, sandbox bootstrap.Sandbox) ([]string, error) {
 	checker, ok := s.deps.Blob.(blob.Checker)
 	if !ok {

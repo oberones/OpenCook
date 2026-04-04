@@ -144,6 +144,7 @@ Implemented so far:
   - manifest-derived `_recipes` behavior with Chef-style default recipe qualification
   - API-version-sensitive cookbook version shaping with `json_class`, `cookbook_name`, legacy segments, and v2 `all_files`
   - signed direct blob URLs for cookbook file downloads
+  - cleanup of unreferenced checksum blobs after cookbook version and artifact mutations, while preserving shared checksum references
 - the first search-facing slice:
   - `/search`
   - `/search/{client,environment,node,role}`
