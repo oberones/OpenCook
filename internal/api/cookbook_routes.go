@@ -407,6 +407,12 @@ func (s *server) handleNamedCookbookVersion(w http.ResponseWriter, r *http.Reque
 		if !decodeJSON(w, r, &payload) {
 			return
 		}
+		if !found && hasCookbookCreateRoutePayloadMismatch(payload, name, version) {
+			writeJSON(w, http.StatusBadRequest, map[string]any{
+				"error": []string{"Field 'name' invalid"},
+			})
+			return
+		}
 
 		cookbookVersion, releasedChecksums, created, err := state.UpsertCookbookVersionWithReleasedChecksums(org, bootstrap.UpsertCookbookVersionInput{
 			Name:    name,
@@ -979,4 +985,31 @@ func cookbookCollectionBasePath(r *http.Request, org string) string {
 		return "/organizations/" + org + "/cookbooks"
 	}
 	return "/cookbooks"
+}
+
+func hasCookbookCreateRoutePayloadMismatch(payload map[string]any, name, version string) bool {
+	expectedName := name + "-" + version
+	if payloadStringMismatch(payload["name"], expectedName) {
+		return true
+	}
+	if payloadStringMismatch(payload["cookbook_name"], name) {
+		return true
+	}
+	if payloadStringMismatch(payload["version"], version) {
+		return true
+	}
+
+	metadata, ok := payload["metadata"].(map[string]any)
+	if !ok {
+		return false
+	}
+	return payloadStringMismatch(metadata["version"], version)
+}
+
+func payloadStringMismatch(value any, expected string) bool {
+	text, ok := value.(string)
+	if !ok {
+		return false
+	}
+	return strings.TrimSpace(text) != expected
 }
