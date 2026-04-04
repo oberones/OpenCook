@@ -278,6 +278,19 @@ func TestCookbookVersionEndpointsCreateUpdateAndDelete(t *testing.T) {
 	if _, ok := recipes[0].(map[string]any)["url"]; !ok {
 		t.Fatalf("recipe entry missing url: %v", recipes[0])
 	}
+	for _, segment := range []string{"attributes", "definitions", "files", "libraries", "providers", "resources", "root_files", "templates"} {
+		raw, ok := getPayload[segment]
+		if !ok {
+			t.Fatalf("legacy cookbook payload missing %q: %v", segment, getPayload)
+		}
+		entries, ok := raw.([]any)
+		if !ok {
+			t.Fatalf("legacy cookbook payload %q = %T, want []any", segment, raw)
+		}
+		if len(entries) != 0 {
+			t.Fatalf("legacy cookbook payload %q len = %d, want 0 (%v)", segment, len(entries), entries)
+		}
+	}
 
 	updateReq := newSignedJSONRequest(t, http.MethodPut, "/cookbooks/demo/1.2.3", mustMarshalSandboxJSON(t, cookbookVersionPayload("demo", "1.2.3", checksumV2, map[string]string{
 		"apt": ">= 2.0.0",

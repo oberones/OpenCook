@@ -653,12 +653,8 @@ func (s *server) renderCookbookVersionResponse(r *http.Request, org string, vers
 		}
 		segmentFiles[segment] = append(segmentFiles[segment], entry)
 	}
-	response["recipes"] = nonNilCookbookFileEntries(segmentFiles["recipes"])
 	for _, segment := range legacyCookbookSegments {
-		if segment == "recipes" || len(segmentFiles[segment]) == 0 {
-			continue
-		}
-		response[segment] = segmentFiles[segment]
+		response[segment] = nonNilCookbookFileEntries(segmentFiles[segment])
 	}
 	return response
 }

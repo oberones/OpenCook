@@ -179,6 +179,99 @@ func TestCookbookUniverseUsesCookbookVersions(t *testing.T) {
 	}
 }
 
+func TestUpsertCookbookVersionReturnsFieldSpecificValidationMessages(t *testing.T) {
+	service := newTestBootstrapService(t)
+	createTestCookbookOrg(t, service)
+
+	tests := []struct {
+		name    string
+		mutate  func(map[string]any)
+		message string
+	}{
+		{
+			name: "missing cookbook_name",
+			mutate: func(payload map[string]any) {
+				delete(payload, "cookbook_name")
+			},
+			message: "Field 'cookbook_name' missing",
+		},
+		{
+			name: "invalid cookbook_name",
+			mutate: func(payload map[string]any) {
+				payload["cookbook_name"] = "new_name"
+			},
+			message: "Field 'cookbook_name' invalid",
+		},
+		{
+			name: "invalid version",
+			mutate: func(payload map[string]any) {
+				payload["version"] = "1.2"
+			},
+			message: "Field 'version' invalid",
+		},
+		{
+			name: "invalid metadata.version",
+			mutate: func(payload map[string]any) {
+				payload["metadata"].(map[string]any)["version"] = "1.2"
+			},
+			message: "Field 'metadata.version' invalid",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			payload := cookbookVersionTestPayload("app", "1.2.3", nil, nil)
+			tc.mutate(payload)
+
+			_, _, err := service.UpsertCookbookVersion("ponyville", UpsertCookbookVersionInput{
+				Name:    "app",
+				Version: "1.2.3",
+				Payload: payload,
+				ChecksumExists: func(string) (bool, error) {
+					return true, nil
+				},
+			})
+			if err == nil {
+				t.Fatal("UpsertCookbookVersion() error = nil, want validation error")
+			}
+
+			var validationErr *ValidationError
+			if !errors.As(err, &validationErr) {
+				t.Fatalf("UpsertCookbookVersion() error = %T, want *ValidationError", err)
+			}
+			if len(validationErr.Messages) != 1 || validationErr.Messages[0] != tc.message {
+				t.Fatalf("validation messages = %v, want %q", validationErr.Messages, tc.message)
+			}
+		})
+	}
+}
+
+func TestUpsertCookbookVersionAllowsMetadataNameChange(t *testing.T) {
+	service := newTestBootstrapService(t)
+	createTestCookbookOrg(t, service)
+
+	payload := cookbookVersionTestPayload("app", "1.2.3", map[string]any{
+		"name": "renamed-app",
+	}, nil)
+	version, created, err := service.UpsertCookbookVersion("ponyville", UpsertCookbookVersionInput{
+		Name:    "app",
+		Version: "1.2.3",
+		Payload: payload,
+		ChecksumExists: func(string) (bool, error) {
+			return true, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("UpsertCookbookVersion() error = %v", err)
+	}
+	if !created {
+		t.Fatal("UpsertCookbookVersion() created = false, want true")
+	}
+	if got := version.Metadata["name"]; got != "renamed-app" {
+		t.Fatalf("metadata.name = %v, want %q", got, "renamed-app")
+	}
+}
+
 func createTestCookbookOrg(t *testing.T, service *Service) {
 	t.Helper()
 
@@ -225,7 +318,20 @@ func createTestCookbookArtifact(t *testing.T, service *Service, org, name, ident
 
 func createTestCookbookVersion(t *testing.T, service *Service, org, name, version string, metadataOverrides map[string]any, allFiles []any) {
 	t.Helper()
+	payload := cookbookVersionTestPayload(name, version, metadataOverrides, allFiles)
+	if _, _, err := service.UpsertCookbookVersion(org, UpsertCookbookVersionInput{
+		Name:    name,
+		Version: version,
+		Payload: payload,
+		ChecksumExists: func(string) (bool, error) {
+			return true, nil
+		},
+	}); err != nil {
+		t.Fatalf("UpsertCookbookVersion(%s, %s) error = %v", name, version, err)
+	}
+}
 
+func cookbookVersionTestPayload(name, version string, metadataOverrides map[string]any, allFiles []any) map[string]any {
 	metadata := map[string]any{
 		"version":      version,
 		"name":         name,
@@ -247,17 +353,7 @@ func createTestCookbookVersion(t *testing.T, service *Service, org, name, versio
 	if allFiles != nil {
 		payload["all_files"] = allFiles
 	}
-
-	if _, _, err := service.UpsertCookbookVersion(org, UpsertCookbookVersionInput{
-		Name:    name,
-		Version: version,
-		Payload: payload,
-		ChecksumExists: func(string) (bool, error) {
-			return true, nil
-		},
-	}); err != nil {
-		t.Fatalf("UpsertCookbookVersion(%s, %s) error = %v", name, version, err)
-	}
+	return payload
 }
 
 func newTestBootstrapService(t *testing.T) *Service {
