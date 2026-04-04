@@ -650,6 +650,7 @@ func TestCookbookVersionEndpointsConvertBetweenV0AndV2(t *testing.T) {
 	router := newTestRouter(t)
 	recipeChecksum := uploadCookbookChecksum(t, router, []byte("puts 'recipe contents'"))
 	rootChecksum := uploadCookbookChecksum(t, router, []byte("change log"))
+	templateChecksum := uploadCookbookChecksum(t, router, []byte("template body"))
 
 	v0Payload := map[string]any{
 		"name":          "vconv-1.2.3",
@@ -686,6 +687,14 @@ func TestCookbookVersionEndpointsConvertBetweenV0AndV2(t *testing.T) {
 				"specificity": "default",
 			},
 		},
+		"templates": []any{
+			map[string]any{
+				"name":        "config.erb",
+				"path":        "templates/default/config.erb",
+				"checksum":    templateChecksum,
+				"specificity": "default",
+			},
+		},
 	}
 
 	v0CreateReq := newSignedJSONRequest(t, http.MethodPut, "/cookbooks/vconv/1.2.3", mustMarshalSandboxJSON(t, v0Payload))
@@ -716,8 +725,8 @@ func TestCookbookVersionEndpointsConvertBetweenV0AndV2(t *testing.T) {
 		t.Fatalf("json.Unmarshal(v2 get) error = %v", err)
 	}
 	allFiles, ok := v2GetResponse["all_files"].([]any)
-	if !ok || len(allFiles) != 2 {
-		t.Fatalf("v2 all_files = %v, want 2 entries", v2GetResponse["all_files"])
+	if !ok || len(allFiles) != 3 {
+		t.Fatalf("v2 all_files = %v, want 3 entries", v2GetResponse["all_files"])
 	}
 	if _, ok := v2GetResponse["recipes"]; ok {
 		t.Fatalf("v2 get response unexpectedly included recipes: %v", v2GetResponse)
@@ -729,6 +738,11 @@ func TestCookbookVersionEndpointsConvertBetweenV0AndV2(t *testing.T) {
 	}
 	if _, ok := gotNames["recipes/default.rb"]; !ok {
 		t.Fatalf("v2 all_files missing recipe entry: %v", gotNames)
+	}
+	if template := gotNames["templates/config.erb"]; template == nil {
+		t.Fatalf("v2 all_files missing template entry: %v", gotNames)
+	} else if template["path"] != "templates/default/config.erb" {
+		t.Fatalf("v2 template path = %v, want %q", template["path"], "templates/default/config.erb")
 	}
 	if root := gotNames["root_files/CHANGELOG"]; root == nil {
 		t.Fatalf("v2 all_files missing root_files entry: %v", gotNames)
@@ -776,6 +790,12 @@ func TestCookbookVersionEndpointsConvertBetweenV0AndV2(t *testing.T) {
 				"checksum":    rootChecksum,
 				"specificity": "default",
 			},
+			map[string]any{
+				"name":        "templates/default/config.erb",
+				"path":        "templates/default/config.erb",
+				"checksum":    templateChecksum,
+				"specificity": "default",
+			},
 		},
 	}
 
@@ -792,18 +812,25 @@ func TestCookbookVersionEndpointsConvertBetweenV0AndV2(t *testing.T) {
 		t.Fatalf("json.Unmarshal(v2 create) error = %v", err)
 	}
 	v2CreatedFiles := v2CreateResponse["all_files"].([]any)
-	if len(v2CreatedFiles) != 2 {
-		t.Fatalf("v2 create all_files len = %d, want 2 (%v)", len(v2CreatedFiles), v2CreatedFiles)
+	if len(v2CreatedFiles) != 3 {
+		t.Fatalf("v2 create all_files len = %d, want 3 (%v)", len(v2CreatedFiles), v2CreatedFiles)
 	}
 	foundRootName := false
+	foundTemplateName := false
 	for _, raw := range v2CreatedFiles {
 		file := raw.(map[string]any)
 		if file["name"] == "root_files/CHANGELOG" && file["path"] == "CHANGELOG" {
 			foundRootName = true
 		}
+		if file["name"] == "templates/config.erb" && file["path"] == "templates/default/config.erb" {
+			foundTemplateName = true
+		}
 	}
 	if !foundRootName {
 		t.Fatalf("v2 create response missing root_files/CHANGELOG: %v", v2CreatedFiles)
+	}
+	if !foundTemplateName {
+		t.Fatalf("v2 create response missing templates/config.erb: %v", v2CreatedFiles)
 	}
 
 	v0GetReq := newSignedJSONRequest(t, http.MethodGet, "/cookbooks/vconv/2.0.0", nil)
@@ -835,6 +862,14 @@ func TestCookbookVersionEndpointsConvertBetweenV0AndV2(t *testing.T) {
 	root := rootFiles[0].(map[string]any)
 	if root["name"] != "CHANGELOG" || root["path"] != "CHANGELOG" {
 		t.Fatalf("v0 root file = %v, want CHANGELOG/CHANGELOG", root)
+	}
+	templates, ok := v0GetResponse["templates"].([]any)
+	if !ok || len(templates) != 1 {
+		t.Fatalf("v0 templates = %v, want 1 entry", v0GetResponse["templates"])
+	}
+	template := templates[0].(map[string]any)
+	if template["name"] != "config.erb" || template["path"] != "templates/default/config.erb" {
+		t.Fatalf("v0 template = %v, want config.erb/templates/default/config.erb", template)
 	}
 }
 

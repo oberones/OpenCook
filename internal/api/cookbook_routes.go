@@ -895,12 +895,8 @@ func invalidCookbookVersionMessage(version string) string {
 }
 
 func cookbookAllFilesName(file bootstrap.CookbookFile) string {
-	name := strings.TrimSpace(file.Name)
-	if strings.Contains(name, "/") {
-		return name
-	}
-
 	segment := cookbookFileSegment(file.Path)
+	name := cookbookLegacyFileName(segment, file.Path)
 	return segment + "/" + name
 }
 
