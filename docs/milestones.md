@@ -81,7 +81,8 @@ Status: in progress
 - cookbook metadata validation now covers more pedant-shaped string and constraint-map failures, including the update-specific missing-checksum error shape
 - cookbook reads now filter metadata down to the Chef-returned subset and inflate upstream defaults without changing exact PUT response bodies
 - cookbook version conversion is now covered across v0 and v2 upload/download paths, including segment-aware `all_files[].name` behavior for root files
-- production S3-compatible blob storage, PostgreSQL-backed cookbook persistence, and broader cookbook pedant coverage beyond the current version-conversion/read-write contract are still pending
+- cookbook named filters and latest/version reads now reflect manifest-derived recipe names, including Chef-style default recipe qualification on `/cookbooks/_recipes`
+- production S3-compatible blob storage, PostgreSQL-backed cookbook persistence, and broader cookbook pedant coverage beyond the current named-filter/latest/version read-write contract are still pending
 - S3-compatible blob storage remains the target production mode after the compatibility contract settles
 
 ## Milestone 7: Operations and Migration

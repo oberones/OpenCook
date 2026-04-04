@@ -71,13 +71,14 @@ As of 2026-04-03, OpenCook has moved past pure scaffolding and into the first co
 - cookbook metadata validation now covers more upstream pedant cases for typed metadata fields, dependency/platform constraint maps, and checksum failure messaging on updates
 - cookbook version reads now return the narrower Chef-shaped metadata subset with upstream defaults inflated at read time while PUT responses remain exact echoes of the submitted payload
 - cookbook version conversion is now exercised across v0 and v2 upload/download paths, including the Chef-style segment-aware `all_files[].name` contract for root files and other segmented content
+- cookbook named filters now more closely match upstream pedant behavior, with `/cookbooks/_recipes` deriving names from the latest cookbook manifests and qualifying default recipes as just the cookbook name
 - compatibility tracking docs and route inventory are in place and being updated alongside code
 
 Current focus:
 
 - preserve API-version-sensitive actor key behavior without carrying forward Chef licensing concerns
 - deepen search query translation beyond the current simple compatibility subset and widen object/index coverage further
-- deepen cookbook/blob compatibility beyond the current cookbook write/read/artifact slice, especially the remaining cookbook pedant cases outside the current version-conversion/read-write contract and production object storage behavior
+- deepen cookbook/blob compatibility beyond the current cookbook write/read/artifact slice, especially the remaining cookbook pedant cases outside the current named-filter/latest/version read-write contract and production object storage behavior
 - replace the in-memory bootstrap layer with PostgreSQL-backed persistence after the contracts stabilize
 
 ## What Exists Upstream
