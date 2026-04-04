@@ -82,7 +82,10 @@ With that in place, signed requests can successfully hit:
 - `/organizations/{org}`
 - `/environments`
 - `/environments/{name}`
+- `/environments/{name}/cookbooks`
+- `/environments/{name}/cookbooks/{cookbook}`
 - `/environments/{name}/nodes`
+- `/environments/{name}/recipes`
 - `/roles`
 - `/roles/{name}`
 - `/roles/{name}/environments`
@@ -102,7 +105,10 @@ With that in place, signed requests can successfully hit:
 - `/search/{index}`
 - `/organizations/{org}/environments`
 - `/organizations/{org}/environments/{name}`
+- `/organizations/{org}/environments/{name}/cookbooks`
+- `/organizations/{org}/environments/{name}/cookbooks/{cookbook}`
 - `/organizations/{org}/environments/{name}/nodes`
+- `/organizations/{org}/environments/{name}/recipes`
 - `/nodes`
 - `/nodes/{name}`
 - `/policies`
@@ -152,7 +158,7 @@ The current policyfile slice is live on both the default-org and explicit-org ro
 
 The sandbox compatibility slice is live too. Signed callers can create and commit sandboxes through `/sandboxes` and `/organizations/{org}/sandboxes`, and the returned checksum entries expose absolute signed upload URLs under `/_blob/checksums/{checksum}` backed by the current in-memory blob store.
 
-The cookbook compatibility slice is also live. Signed callers can create, update, read, and delete cookbook versions through `/cookbooks` and `/organizations/{org}/cookbooks`, create/read/delete cookbook artifacts through `/cookbook_artifacts` and `/organizations/{org}/cookbook_artifacts`, and fetch `/universe` metadata. Cookbook version responses now preserve Chef-style `json_class` and `cookbook_name` fields plus API-version-sensitive v0/v2 file shaping, including segment-aware `all_files[].name` values like `root_files/CHANGELOG`, frozen cookbook versions now reject mutation unless `?force=` is used and remain frozen even after forced updates, cookbook reads now return the narrower Chef-style metadata view with upstream defaults inflated on read, `/cookbooks/_recipes` now derives recipe names from the latest cookbook manifests with Chef-style default-recipe qualification, and returned cookbook file URLs are signed direct blob URLs backed by the same in-memory compatibility store. Remaining cookbook work is now the broader pedant edge cases beyond the current named-filter/latest/version read contract and production S3-compatible blob storage.
+The cookbook compatibility slice is also live. Signed callers can create, update, read, and delete cookbook versions through `/cookbooks` and `/organizations/{org}/cookbooks`, create/read/delete cookbook artifacts through `/cookbook_artifacts` and `/organizations/{org}/cookbook_artifacts`, and fetch `/universe` metadata. Cookbook version responses now preserve Chef-style `json_class` and `cookbook_name` fields plus API-version-sensitive v0/v2 file shaping, including segment-aware `all_files[].name` values like `root_files/CHANGELOG`, frozen cookbook versions now reject mutation unless `?force=` is used and remain frozen even after forced updates, cookbook reads now return the narrower Chef-style metadata view with upstream defaults inflated on read, `/cookbooks/_recipes` now derives recipe names from the latest cookbook manifests with Chef-style default-recipe qualification, environment-scoped cookbook and recipe routes now honor environment cookbook constraints on both default-org and explicit-org paths, and returned cookbook file URLs are signed direct blob URLs backed by the same in-memory compatibility store. Remaining cookbook work is now the broader pedant edge cases beyond the current environment-filtered/named-filter/latest/version read contract and production S3-compatible blob storage.
 
 Typical commands once a Go toolchain is available:
 

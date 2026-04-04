@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 
 	"github.com/oberones/OpenCook/internal/authz"
@@ -137,6 +138,130 @@ func (s *server) handleEnvironmentNodes(w http.ResponseWriter, r *http.Request) 
 	}
 }
 
+func (s *server) handleEnvironmentCookbooks(w http.ResponseWriter, r *http.Request) {
+	state := s.deps.Bootstrap
+	if state == nil {
+		writeJSON(w, http.StatusInternalServerError, apiError{
+			Error:   "bootstrap_unavailable",
+			Message: "bootstrap state service is not configured",
+		})
+		return
+	}
+
+	org, envBasePath, ok := s.resolveEnvironmentRoute(w, r)
+	if !ok {
+		return
+	}
+	envName := r.PathValue("name")
+	cookbooksPath := envBasePath + "/" + envName + "/cookbooks"
+
+	if _, exists := state.GetOrganization(org); !exists {
+		writeJSON(w, http.StatusNotFound, apiError{
+			Error:   "not_found",
+			Message: "organization not found",
+		})
+		return
+	}
+
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, apiError{
+			Error:   "method_not_allowed",
+			Message: "method not allowed for environment cookbooks route",
+		})
+		return
+	}
+
+	if matchesCollectionPath(r.URL.Path, cookbooksPath) {
+		s.handleEnvironmentCookbookCollection(w, r, state, org, envName)
+		return
+	}
+
+	cookbookName, ok := pathTail(r.URL.Path, cookbooksPath+"/")
+	if !ok {
+		writeJSON(w, http.StatusNotFound, apiError{
+			Error:   "not_found",
+			Message: "route not found in scaffold router",
+		})
+		return
+	}
+	s.handleEnvironmentNamedCookbook(w, r, state, org, envName, cookbookName)
+}
+
+func (s *server) handleEnvironmentRecipes(w http.ResponseWriter, r *http.Request) {
+	state := s.deps.Bootstrap
+	if state == nil {
+		writeJSON(w, http.StatusInternalServerError, apiError{
+			Error:   "bootstrap_unavailable",
+			Message: "bootstrap state service is not configured",
+		})
+		return
+	}
+
+	org, envBasePath, ok := s.resolveEnvironmentRoute(w, r)
+	if !ok {
+		return
+	}
+	envName := r.PathValue("name")
+	recipesPath := envBasePath + "/" + envName + "/recipes"
+
+	if _, exists := state.GetOrganization(org); !exists {
+		writeJSON(w, http.StatusNotFound, apiError{
+			Error:   "not_found",
+			Message: "organization not found",
+		})
+		return
+	}
+
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, apiError{
+			Error:   "method_not_allowed",
+			Message: "method not allowed for environment recipes route",
+		})
+		return
+	}
+	if !matchesCollectionPath(r.URL.Path, recipesPath) {
+		writeJSON(w, http.StatusNotFound, apiError{
+			Error:   "not_found",
+			Message: "route not found in scaffold router",
+		})
+		return
+	}
+
+	versions, orgExists, envExists := state.ListEnvironmentCookbookVersions(org, envName, 1, false)
+	if !orgExists {
+		writeJSON(w, http.StatusNotFound, apiError{
+			Error:   "not_found",
+			Message: "organization not found",
+		})
+		return
+	}
+	if !envExists {
+		writeEnvironmentMessages(w, http.StatusNotFound, cannotLoadEnvironmentMessage(envName))
+		return
+	}
+	if !s.authorizeRequest(w, r, authz.ActionRead, authz.Resource{
+		Type:         "environment",
+		Name:         envName,
+		Organization: org,
+	}) {
+		return
+	}
+
+	recipes := make([]string, 0)
+	for cookbookName, refs := range versions {
+		if len(refs) == 0 {
+			continue
+		}
+		version, _, found := state.GetCookbookVersion(org, cookbookName, refs[0].Version)
+		if !found {
+			continue
+		}
+		recipes = append(recipes, cookbookRecipeNames(cookbookName, version.AllFiles)...)
+	}
+	sort.Strings(recipes)
+	writeJSON(w, http.StatusOK, recipes)
+}
+
 func (s *server) handleEnvironmentGet(w http.ResponseWriter, r *http.Request, state *bootstrap.Service, org, basePath string) {
 	if matchesCollectionPath(r.URL.Path, basePath) {
 		if !s.authorizeRequest(w, r, authz.ActionRead, authz.Resource{
@@ -189,6 +314,81 @@ func (s *server) handleEnvironmentGet(w http.ResponseWriter, r *http.Request, st
 	}
 
 	writeJSON(w, http.StatusOK, env)
+}
+
+func (s *server) handleEnvironmentCookbookCollection(w http.ResponseWriter, r *http.Request, state *bootstrap.Service, org, envName string) {
+	numVersions, allVersions, ok := parseEnvironmentCookbookNumVersions(r, false)
+	if !ok {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error": []string{"You have requested an invalid number of versions (x >= 0 || 'all')"},
+		})
+		return
+	}
+
+	versions, orgExists, envExists := state.ListEnvironmentCookbookVersions(org, envName, numVersions, allVersions)
+	if !orgExists {
+		writeJSON(w, http.StatusNotFound, apiError{
+			Error:   "not_found",
+			Message: "organization not found",
+		})
+		return
+	}
+	if !envExists {
+		writeEnvironmentMessages(w, http.StatusNotFound, cannotLoadEnvironmentMessage(envName))
+		return
+	}
+	if !s.authorizeRequest(w, r, authz.ActionRead, authz.Resource{
+		Type:         "environment",
+		Name:         envName,
+		Organization: org,
+	}) {
+		return
+	}
+
+	writeJSON(w, http.StatusOK, renderCookbookVersionCollection(cookbookCollectionBasePath(r, org), versions, 0, true, true))
+}
+
+func (s *server) handleEnvironmentNamedCookbook(w http.ResponseWriter, r *http.Request, state *bootstrap.Service, org, envName, cookbookName string) {
+	if !validCookbookName(cookbookName) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": []string{invalidCookbookNameMessage(cookbookName)}})
+		return
+	}
+
+	numVersions, allVersions, ok := parseEnvironmentCookbookNumVersions(r, true)
+	if !ok {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error": []string{"You have requested an invalid number of versions (x >= 0 || 'all')"},
+		})
+		return
+	}
+
+	refs, orgExists, envExists, cookbookExists := state.GetEnvironmentCookbookVersions(org, envName, cookbookName, numVersions, allVersions)
+	if !orgExists {
+		writeJSON(w, http.StatusNotFound, apiError{
+			Error:   "not_found",
+			Message: "organization not found",
+		})
+		return
+	}
+	if !envExists {
+		writeEnvironmentMessages(w, http.StatusNotFound, cannotLoadEnvironmentMessage(envName))
+		return
+	}
+	if !cookbookExists {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": cookbookNotFound(cookbookName)})
+		return
+	}
+	if !s.authorizeRequest(w, r, authz.ActionRead, authz.Resource{
+		Type:         "environment",
+		Name:         envName,
+		Organization: org,
+	}) {
+		return
+	}
+
+	writeJSON(w, http.StatusOK, renderCookbookVersionCollection(cookbookCollectionBasePath(r, org), map[string][]bootstrap.CookbookVersionRef{
+		cookbookName: refs,
+	}, 0, true, true))
 }
 
 func (s *server) handleEnvironmentHead(w http.ResponseWriter, r *http.Request, state *bootstrap.Service, org, basePath string) {
@@ -433,4 +633,18 @@ func cannotLoadEnvironmentMessage(name string) string {
 
 func bootstrapDefaultEnvironmentModifiedMessage() string {
 	return "The '_default' environment cannot be modified."
+}
+
+func parseEnvironmentCookbookNumVersions(r *http.Request, defaultAll bool) (int, bool, bool) {
+	numVersions, allVersions, explicitLimit, ok := parseCookbookNumVersions(r)
+	if !ok {
+		return 0, false, false
+	}
+	if !explicitLimit {
+		if defaultAll {
+			return 0, true, true
+		}
+		return 1, false, true
+	}
+	return numVersions, allVersions, true
 }
