@@ -638,11 +638,238 @@ func TestCookbookArtifactEndpointsSupportRootLevelAllFiles(t *testing.T) {
 		t.Fatalf("all_files len = %d, want 1 (%v)", len(allFiles), allFiles)
 	}
 	file := allFiles[0].(map[string]any)
-	if file["name"] != "metadata.rb" {
-		t.Fatalf("all_files[0].name = %v, want %q", file["name"], "metadata.rb")
+	if file["name"] != "root_files/metadata.rb" {
+		t.Fatalf("all_files[0].name = %v, want %q", file["name"], "root_files/metadata.rb")
 	}
 	if file["path"] != "metadata.rb" {
 		t.Fatalf("all_files[0].path = %v, want %q", file["path"], "metadata.rb")
+	}
+}
+
+func TestCookbookVersionEndpointsConvertBetweenV0AndV2(t *testing.T) {
+	router := newTestRouter(t)
+	recipeChecksum := uploadCookbookChecksum(t, router, []byte("puts 'recipe contents'"))
+	rootChecksum := uploadCookbookChecksum(t, router, []byte("change log"))
+	templateChecksum := uploadCookbookChecksum(t, router, []byte("template body"))
+
+	v0Payload := map[string]any{
+		"name":          "vconv-1.2.3",
+		"cookbook_name": "vconv",
+		"version":       "1.2.3",
+		"json_class":    "Chef::CookbookVersion",
+		"chef_type":     "cookbook_version",
+		"frozen?":       false,
+		"metadata": map[string]any{
+			"version":          "1.2.3",
+			"name":             "vconv",
+			"maintainer":       defaultCookbookMaintainer,
+			"maintainer_email": defaultCookbookMaintainerEmail,
+			"description":      defaultCookbookDescription,
+			"long_description": defaultCookbookLongDescription,
+			"license":          defaultCookbookLicense,
+			"dependencies":     map[string]any{},
+			"attributes":       map[string]any{},
+			"recipes":          map[string]any{},
+		},
+		"recipes": []any{
+			map[string]any{
+				"name":        "default.rb",
+				"path":        "recipes/default.rb",
+				"checksum":    recipeChecksum,
+				"specificity": "default",
+			},
+		},
+		"root_files": []any{
+			map[string]any{
+				"name":        "CHANGELOG",
+				"path":        "CHANGELOG",
+				"checksum":    rootChecksum,
+				"specificity": "default",
+			},
+		},
+		"templates": []any{
+			map[string]any{
+				"name":        "config.erb",
+				"path":        "templates/default/config.erb",
+				"checksum":    templateChecksum,
+				"specificity": "default",
+			},
+		},
+	}
+
+	v0CreateReq := newSignedJSONRequest(t, http.MethodPut, "/cookbooks/vconv/1.2.3", mustMarshalSandboxJSON(t, v0Payload))
+	v0CreateRec := httptest.NewRecorder()
+	router.ServeHTTP(v0CreateRec, v0CreateReq)
+	if v0CreateRec.Code != http.StatusCreated {
+		t.Fatalf("v0 create status = %d, want %d, body = %s", v0CreateRec.Code, http.StatusCreated, v0CreateRec.Body.String())
+	}
+
+	var v0CreateResponse map[string]any
+	if err := json.Unmarshal(v0CreateRec.Body.Bytes(), &v0CreateResponse); err != nil {
+		t.Fatalf("json.Unmarshal(v0 create) error = %v", err)
+	}
+	if _, ok := v0CreateResponse["all_files"]; ok {
+		t.Fatalf("v0 create response unexpectedly included all_files: %v", v0CreateResponse)
+	}
+
+	v2GetReq := newSignedJSONRequest(t, http.MethodGet, "/cookbooks/vconv/1.2.3", nil)
+	v2GetReq.Header.Set("X-Ops-Server-API-Version", "2")
+	v2GetRec := httptest.NewRecorder()
+	router.ServeHTTP(v2GetRec, v2GetReq)
+	if v2GetRec.Code != http.StatusOK {
+		t.Fatalf("v2 get status = %d, want %d, body = %s", v2GetRec.Code, http.StatusOK, v2GetRec.Body.String())
+	}
+
+	var v2GetResponse map[string]any
+	if err := json.Unmarshal(v2GetRec.Body.Bytes(), &v2GetResponse); err != nil {
+		t.Fatalf("json.Unmarshal(v2 get) error = %v", err)
+	}
+	allFiles, ok := v2GetResponse["all_files"].([]any)
+	if !ok || len(allFiles) != 3 {
+		t.Fatalf("v2 all_files = %v, want 3 entries", v2GetResponse["all_files"])
+	}
+	if _, ok := v2GetResponse["recipes"]; ok {
+		t.Fatalf("v2 get response unexpectedly included recipes: %v", v2GetResponse)
+	}
+	gotNames := map[string]map[string]any{}
+	for _, raw := range allFiles {
+		file := raw.(map[string]any)
+		gotNames[file["name"].(string)] = file
+	}
+	if _, ok := gotNames["recipes/default.rb"]; !ok {
+		t.Fatalf("v2 all_files missing recipe entry: %v", gotNames)
+	}
+	if template := gotNames["templates/config.erb"]; template == nil {
+		t.Fatalf("v2 all_files missing template entry: %v", gotNames)
+	} else if template["path"] != "templates/default/config.erb" {
+		t.Fatalf("v2 template path = %v, want %q", template["path"], "templates/default/config.erb")
+	}
+	if root := gotNames["root_files/CHANGELOG"]; root == nil {
+		t.Fatalf("v2 all_files missing root_files entry: %v", gotNames)
+	} else if root["path"] != "CHANGELOG" {
+		t.Fatalf("v2 root file path = %v, want %q", root["path"], "CHANGELOG")
+	}
+
+	deleteReq := newSignedJSONRequest(t, http.MethodDelete, "/cookbooks/vconv/1.2.3", nil)
+	deleteReq.Header.Set("X-Ops-Server-API-Version", "2")
+	deleteRec := httptest.NewRecorder()
+	router.ServeHTTP(deleteRec, deleteReq)
+	if deleteRec.Code != http.StatusOK {
+		t.Fatalf("delete status = %d, want %d, body = %s", deleteRec.Code, http.StatusOK, deleteRec.Body.String())
+	}
+
+	v2Payload := map[string]any{
+		"name":          "vconv-2.0.0",
+		"cookbook_name": "vconv",
+		"version":       "2.0.0",
+		"json_class":    "Chef::CookbookVersion",
+		"chef_type":     "cookbook_version",
+		"frozen?":       false,
+		"metadata": map[string]any{
+			"version":          "2.0.0",
+			"name":             "vconv",
+			"maintainer":       defaultCookbookMaintainer,
+			"maintainer_email": defaultCookbookMaintainerEmail,
+			"description":      defaultCookbookDescription,
+			"long_description": defaultCookbookLongDescription,
+			"license":          defaultCookbookLicense,
+			"dependencies":     map[string]any{},
+			"attributes":       map[string]any{},
+			"recipes":          map[string]any{},
+		},
+		"all_files": []any{
+			map[string]any{
+				"name":        "recipes/default.rb",
+				"path":        "recipes/default.rb",
+				"checksum":    recipeChecksum,
+				"specificity": "default",
+			},
+			map[string]any{
+				"name":        "root_files/CHANGELOG",
+				"path":        "CHANGELOG",
+				"checksum":    rootChecksum,
+				"specificity": "default",
+			},
+			map[string]any{
+				"name":        "templates/default/config.erb",
+				"path":        "templates/default/config.erb",
+				"checksum":    templateChecksum,
+				"specificity": "default",
+			},
+		},
+	}
+
+	v2CreateReq := newSignedJSONRequest(t, http.MethodPut, "/cookbooks/vconv/2.0.0", mustMarshalSandboxJSON(t, v2Payload))
+	v2CreateReq.Header.Set("X-Ops-Server-API-Version", "2")
+	v2CreateRec := httptest.NewRecorder()
+	router.ServeHTTP(v2CreateRec, v2CreateReq)
+	if v2CreateRec.Code != http.StatusCreated {
+		t.Fatalf("v2 create status = %d, want %d, body = %s", v2CreateRec.Code, http.StatusCreated, v2CreateRec.Body.String())
+	}
+
+	var v2CreateResponse map[string]any
+	if err := json.Unmarshal(v2CreateRec.Body.Bytes(), &v2CreateResponse); err != nil {
+		t.Fatalf("json.Unmarshal(v2 create) error = %v", err)
+	}
+	v2CreatedFiles := v2CreateResponse["all_files"].([]any)
+	if len(v2CreatedFiles) != 3 {
+		t.Fatalf("v2 create all_files len = %d, want 3 (%v)", len(v2CreatedFiles), v2CreatedFiles)
+	}
+	foundRootName := false
+	foundTemplateName := false
+	for _, raw := range v2CreatedFiles {
+		file := raw.(map[string]any)
+		if file["name"] == "root_files/CHANGELOG" && file["path"] == "CHANGELOG" {
+			foundRootName = true
+		}
+		if file["name"] == "templates/config.erb" && file["path"] == "templates/default/config.erb" {
+			foundTemplateName = true
+		}
+	}
+	if !foundRootName {
+		t.Fatalf("v2 create response missing root_files/CHANGELOG: %v", v2CreatedFiles)
+	}
+	if !foundTemplateName {
+		t.Fatalf("v2 create response missing templates/config.erb: %v", v2CreatedFiles)
+	}
+
+	v0GetReq := newSignedJSONRequest(t, http.MethodGet, "/cookbooks/vconv/2.0.0", nil)
+	v0GetRec := httptest.NewRecorder()
+	router.ServeHTTP(v0GetRec, v0GetReq)
+	if v0GetRec.Code != http.StatusOK {
+		t.Fatalf("v0 get status = %d, want %d, body = %s", v0GetRec.Code, http.StatusOK, v0GetRec.Body.String())
+	}
+
+	var v0GetResponse map[string]any
+	if err := json.Unmarshal(v0GetRec.Body.Bytes(), &v0GetResponse); err != nil {
+		t.Fatalf("json.Unmarshal(v0 get) error = %v", err)
+	}
+	if _, ok := v0GetResponse["all_files"]; ok {
+		t.Fatalf("v0 get response unexpectedly included all_files: %v", v0GetResponse)
+	}
+	recipes, ok := v0GetResponse["recipes"].([]any)
+	if !ok || len(recipes) != 1 {
+		t.Fatalf("v0 recipes = %v, want 1 entry", v0GetResponse["recipes"])
+	}
+	recipe := recipes[0].(map[string]any)
+	if recipe["name"] != "default.rb" || recipe["path"] != "recipes/default.rb" {
+		t.Fatalf("v0 recipe = %v, want default.rb/recipes/default.rb", recipe)
+	}
+	rootFiles, ok := v0GetResponse["root_files"].([]any)
+	if !ok || len(rootFiles) != 1 {
+		t.Fatalf("v0 root_files = %v, want 1 entry", v0GetResponse["root_files"])
+	}
+	root := rootFiles[0].(map[string]any)
+	if root["name"] != "CHANGELOG" || root["path"] != "CHANGELOG" {
+		t.Fatalf("v0 root file = %v, want CHANGELOG/CHANGELOG", root)
+	}
+	templates, ok := v0GetResponse["templates"].([]any)
+	if !ok || len(templates) != 1 {
+		t.Fatalf("v0 templates = %v, want 1 entry", v0GetResponse["templates"])
+	}
+	template := templates[0].(map[string]any)
+	if template["name"] != "config.erb" || template["path"] != "templates/default/config.erb" {
+		t.Fatalf("v0 template = %v, want config.erb/templates/default/config.erb", template)
 	}
 }
 
