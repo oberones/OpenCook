@@ -197,3 +197,27 @@ func TestNewDefaultRegistryIncludesCookbookAndBlobRoutes(t *testing.T) {
 		}
 	}
 }
+
+func TestNewDefaultRegistryIncludesEnvironmentCookbookRoutes(t *testing.T) {
+	registry := NewDefaultRegistry()
+
+	patterns := make(map[string]struct{})
+	for _, surface := range registry.Surfaces() {
+		for _, pattern := range surface.Patterns {
+			patterns[pattern] = struct{}{}
+		}
+	}
+
+	for _, pattern := range []string{
+		"/environments/{name}/cookbooks",
+		"/environments/{name}/cookbooks/{cookbook}",
+		"/environments/{name}/recipes",
+		"/organizations/{org}/environments/{name}/cookbooks",
+		"/organizations/{org}/environments/{name}/cookbooks/{cookbook}",
+		"/organizations/{org}/environments/{name}/recipes",
+	} {
+		if _, ok := patterns[pattern]; !ok {
+			t.Fatalf("pattern %q missing from compatibility registry", pattern)
+		}
+	}
+}

@@ -37,6 +37,7 @@ Status: in progress
 - in-memory environment list/get/head/create/update/delete behavior is implemented, including `_default`
 - environment `PUT` now supports Chef-style full replacement and rename semantics
 - `/environments/{name}/nodes` is live and filters the current node compatibility state
+- `/environments/{name}/cookbooks`, `/environments/{name}/cookbooks/{cookbook}`, and `/environments/{name}/recipes` are now live and apply Chef-style environment cookbook constraints
 - in-memory role list/get/head/create/update/delete behavior is implemented
 - `/roles/{name}/environments` and `/roles/{name}/environments/{environment}` are live, including `_default` run-list resolution
 - in-memory data bag list/get/create/delete behavior is implemented for both default-org and explicit-org routes
@@ -82,7 +83,8 @@ Status: in progress
 - cookbook reads now filter metadata down to the Chef-returned subset and inflate upstream defaults without changing exact PUT response bodies
 - cookbook version conversion is now covered across v0 and v2 upload/download paths, including segment-aware `all_files[].name` behavior for root files
 - cookbook named filters and latest/version reads now reflect manifest-derived recipe names, including Chef-style default recipe qualification on `/cookbooks/_recipes`
-- production S3-compatible blob storage, PostgreSQL-backed cookbook persistence, and broader cookbook pedant coverage beyond the current named-filter/latest/version read-write contract are still pending
+- environment-filtered cookbook and recipe views now honor cookbook constraints for both collection and named-cookbook routes
+- production S3-compatible blob storage, PostgreSQL-backed cookbook persistence, and broader cookbook pedant coverage beyond the current environment-filtered/named-filter/latest/version read-write contract are still pending
 - S3-compatible blob storage remains the target production mode after the compatibility contract settles
 
 ## Milestone 7: Operations and Migration
