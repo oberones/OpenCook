@@ -39,6 +39,20 @@ func TestEnvironmentCookbookRoutesFilterVersionsAndDefaultNamedRouteToAll(t *tes
 	assertCookbookVersionList(t, listPayload, "demo", "2.0.0", "1.0.0")
 	assertCookbookVersionList(t, listPayload, "other", "0.5.0")
 
+	defaultListReq := newSignedJSONRequest(t, http.MethodGet, "/environments/production/cookbooks", nil)
+	defaultListRec := httptest.NewRecorder()
+	router.ServeHTTP(defaultListRec, defaultListReq)
+	if defaultListRec.Code != http.StatusOK {
+		t.Fatalf("default environment cookbooks status = %d, want %d, body = %s", defaultListRec.Code, http.StatusOK, defaultListRec.Body.String())
+	}
+
+	var defaultListPayload map[string]any
+	if err := json.Unmarshal(defaultListRec.Body.Bytes(), &defaultListPayload); err != nil {
+		t.Fatalf("json.Unmarshal(default environment cookbooks) error = %v", err)
+	}
+	assertCookbookVersionList(t, defaultListPayload, "demo", "2.0.0")
+	assertCookbookVersionList(t, defaultListPayload, "other", "0.5.0")
+
 	namedReq := newSignedJSONRequest(t, http.MethodGet, "/environments/production/cookbooks/demo", nil)
 	namedRec := httptest.NewRecorder()
 	router.ServeHTTP(namedRec, namedReq)
