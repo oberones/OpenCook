@@ -964,11 +964,11 @@ func cookbookMetadataValueString(value any) string {
 }
 
 func normalizeCookbookAllFilesStoredName(name string) string {
-	parts := strings.Split(strings.TrimSpace(name), "/")
-	if len(parts) == 0 {
-		return ""
+	name = strings.TrimSpace(name)
+	if idx := strings.LastIndex(name, "/"); idx >= 0 {
+		return name[idx+1:]
 	}
-	return parts[len(parts)-1]
+	return name
 }
 
 func compareCookbookVersions(left, right string) int {
