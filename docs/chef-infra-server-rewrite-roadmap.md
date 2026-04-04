@@ -33,7 +33,7 @@ This roadmap is based on a review of the upstream Chef Infra Server repository a
 
 ## Current Progress Snapshot
 
-As of 2026-04-03, OpenCook has moved past pure scaffolding and into the first compatibility slices:
+As of 2026-04-04, OpenCook has moved past pure scaffolding and into the first compatibility slices:
 
 - Chef request signing verification is implemented in Go and enforced on the first authenticated routes
 - initial user, organization, client, group, container, and ACL bootstrap flows are working in an in-memory compatibility layer
@@ -69,6 +69,7 @@ As of 2026-04-03, OpenCook has moved past pure scaffolding and into the first co
 - cookbook version payloads now preserve Chef-style `json_class`, `cookbook_name`, and v0/v2 file-shape conversion semantics in the current compatibility layer
 - `/universe` is now live on both default-org and explicit-org routes, and cookbook file responses now return signed direct blob URLs backed by the in-memory compatibility blob store
 - cookbook version updates now honor Chef-style frozen/force behavior, including `409` conflicts on frozen versions and forced updates that keep the cookbook frozen
+- cookbook PUT responses now preserve pedant-style omission of optional top-level fields like `version`, `json_class`, and `chef_type`, and explicit `?force=false` now has matching compatibility coverage
 - cookbook metadata validation now covers more upstream pedant cases for typed metadata fields, dependency/platform constraint maps, and checksum failure messaging on updates
 - cookbook version reads now return the narrower Chef-shaped metadata subset with upstream defaults inflated at read time while PUT responses remain exact echoes of the submitted payload
 - cookbook version conversion is now exercised across v0 and v2 upload/download paths, including the Chef-style segment-aware `all_files[].name` contract for root files and other segmented content
@@ -76,6 +77,7 @@ As of 2026-04-03, OpenCook has moved past pure scaffolding and into the first co
 - environment-filtered cookbook and recipe views now honor environment cookbook constraints and named-cookbook default `num_versions` behavior on both default-org and explicit-org paths
 - cookbook create-path validation now matches Chef’s `Field 'name' invalid` behavior for route/payload name-version mismatches, while update-path validation stays field-specific
 - cookbook collection and named-version reads now have pedant-style coverage for `num_versions` validation/zero behavior and `_latest` not-found responses
+- cookbook mutation coverage now includes pedant-style v0/v2 file-collection presence and omission exactness on successful update responses
 - cookbook version updates/deletes and cookbook artifact deletes now reclaim unreferenced checksum blobs while preserving shared checksum content still referenced elsewhere in the in-memory compatibility state
 - cookbook HTTP coverage now includes multi-version shared-checksum retention and the expected invalid-user/outside-user auth behavior on cookbook routes
 - compatibility tracking docs and route inventory are in place and being updated alongside code
