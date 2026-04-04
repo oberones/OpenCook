@@ -252,10 +252,11 @@ func (s *server) handleNamedCookbookArtifactVersion(w http.ResponseWriter, r *ht
 		}) {
 			return
 		}
-		artifact, err := state.DeleteCookbookArtifact(org, name, identifier)
+		artifact, releasedChecksums, err := state.DeleteCookbookArtifactWithReleasedChecksums(org, name, identifier)
 		if !s.writeCookbookArtifactError(w, err, name, identifier) {
 			return
 		}
+		s.cleanupBlobChecksums(r.Context(), releasedChecksums)
 		writeJSON(w, http.StatusOK, s.renderCookbookArtifactResponse(r, org, artifact))
 	default:
 		writeMethodNotAllowed(w, "method not allowed for cookbook artifact version route", http.MethodGet, http.MethodPut, http.MethodDelete)
@@ -407,7 +408,7 @@ func (s *server) handleNamedCookbookVersion(w http.ResponseWriter, r *http.Reque
 			return
 		}
 
-		cookbookVersion, created, err := state.UpsertCookbookVersion(org, bootstrap.UpsertCookbookVersionInput{
+		cookbookVersion, releasedChecksums, created, err := state.UpsertCookbookVersionWithReleasedChecksums(org, bootstrap.UpsertCookbookVersionInput{
 			Name:    name,
 			Version: version,
 			Payload: payload,
@@ -419,6 +420,7 @@ func (s *server) handleNamedCookbookVersion(w http.ResponseWriter, r *http.Reque
 		if !writeCookbookVersionError(s, w, err, name, version, found) {
 			return
 		}
+		s.cleanupBlobChecksums(r.Context(), releasedChecksums)
 		status := http.StatusOK
 		if created {
 			status = http.StatusCreated
@@ -437,10 +439,11 @@ func (s *server) handleNamedCookbookVersion(w http.ResponseWriter, r *http.Reque
 			return
 		}
 
-		cookbookVersion, err := state.DeleteCookbookVersion(org, name, version)
+		cookbookVersion, releasedChecksums, err := state.DeleteCookbookVersionWithReleasedChecksums(org, name, version)
 		if !writeCookbookVersionError(s, w, err, name, version, false) {
 			return
 		}
+		s.cleanupBlobChecksums(r.Context(), releasedChecksums)
 		writeJSON(w, http.StatusOK, s.renderCookbookVersionResponse(r, org, cookbookVersion))
 	default:
 		writeMethodNotAllowed(w, "method not allowed for cookbook version route", http.MethodGet, http.MethodPut, http.MethodDelete)

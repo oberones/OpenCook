@@ -41,6 +41,10 @@ type Checker interface {
 	Exists(context.Context, string) (bool, error)
 }
 
+type Deleter interface {
+	Delete(context.Context, string) error
+}
+
 type NoopStore struct {
 	target string
 }
