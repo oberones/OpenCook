@@ -2248,11 +2248,23 @@ func newTestRouterWithOverrides(t *testing.T, cfg config.Config, logger *log.Log
 		},
 		PublicKey: &privateKey.PublicKey,
 	})
+	mustPutKey(t, store, authn.Key{
+		ID: "default",
+		Principal: authn.Principal{
+			Type: "user",
+			Name: "outside-user",
+		},
+		PublicKey: &privateKey.PublicKey,
+	})
 	state := bootstrap.NewService(store, bootstrap.Options{SuperuserName: "pivotal"})
 	publicKeyPEM := mustMarshalPublicKeyPEM(t, &privateKey.PublicKey)
 	state.SeedPrincipal(authn.Principal{Type: "user", Name: "silent-bob"})
 	if err := state.SeedPublicKey(authn.Principal{Type: "user", Name: "silent-bob"}, "default", publicKeyPEM); err != nil {
 		t.Fatalf("SeedPublicKey(silent-bob) error = %v", err)
+	}
+	state.SeedPrincipal(authn.Principal{Type: "user", Name: "outside-user"})
+	if err := state.SeedPublicKey(authn.Principal{Type: "user", Name: "outside-user"}, "default", publicKeyPEM); err != nil {
+		t.Fatalf("SeedPublicKey(outside-user) error = %v", err)
 	}
 	if err := state.SeedPublicKey(authn.Principal{Type: "user", Name: "pivotal"}, "default", publicKeyPEM); err != nil {
 		t.Fatalf("SeedPublicKey(pivotal) error = %v", err)

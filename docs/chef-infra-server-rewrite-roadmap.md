@@ -77,6 +77,7 @@ As of 2026-04-03, OpenCook has moved past pure scaffolding and into the first co
 - cookbook create-path validation now matches Chef’s `Field 'name' invalid` behavior for route/payload name-version mismatches, while update-path validation stays field-specific
 - cookbook collection and named-version reads now have pedant-style coverage for `num_versions` validation/zero behavior and `_latest` not-found responses
 - cookbook version updates/deletes and cookbook artifact deletes now reclaim unreferenced checksum blobs while preserving shared checksum content still referenced elsewhere in the in-memory compatibility state
+- cookbook HTTP coverage now includes multi-version shared-checksum retention and the expected invalid-user/outside-user auth behavior on cookbook routes
 - compatibility tracking docs and route inventory are in place and being updated alongside code
 
 Current focus:
