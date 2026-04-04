@@ -327,7 +327,7 @@ func (s *server) handleCookbookRecipesCollection(w http.ResponseWriter, r *http.
 		if !found {
 			continue
 		}
-		recipes = append(recipes, cookbookRecipeNames(name, version.Metadata)...)
+		recipes = append(recipes, cookbookRecipeNames(name, version.AllFiles)...)
 	}
 	sort.Strings(recipes)
 	writeJSON(w, http.StatusOK, recipes)
@@ -775,15 +775,22 @@ func cookbookLegacyFileName(segment, path string) string {
 	return path
 }
 
-func cookbookRecipeNames(cookbookName string, metadata map[string]any) []string {
-	rawRecipes, ok := metadata["recipes"].(map[string]any)
-	if !ok || len(rawRecipes) == 0 {
-		return nil
-	}
-
-	out := make([]string, 0, len(rawRecipes))
-	for recipeName := range rawRecipes {
-		out = append(out, cookbookName+"::"+strings.TrimSpace(strings.TrimPrefix(recipeName, cookbookName+"::")))
+func cookbookRecipeNames(cookbookName string, files []bootstrap.CookbookFile) []string {
+	out := make([]string, 0, len(files))
+	for _, file := range files {
+		if cookbookFileSegment(file.Path) != "recipes" {
+			continue
+		}
+		recipeName := cookbookLegacyFileName("recipes", file.Path)
+		recipeName = strings.TrimSpace(strings.TrimSuffix(recipeName, ".rb"))
+		if recipeName == "" {
+			continue
+		}
+		if recipeName == "default" {
+			out = append(out, cookbookName)
+			continue
+		}
+		out = append(out, cookbookName+"::"+recipeName)
 	}
 	sort.Strings(out)
 	return out
