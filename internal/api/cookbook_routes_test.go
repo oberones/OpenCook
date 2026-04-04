@@ -539,19 +539,19 @@ func TestCookbookVersionReadInflatesDefaultsAndFiltersExtraMetadata(t *testing.T
 	if getMetadata["name"] != "demo" {
 		t.Fatalf("get metadata.name = %v, want %q", getMetadata["name"], "demo")
 	}
-	if getMetadata["description"] != "A fabulous new cookbook" {
+	if getMetadata["description"] != defaultCookbookDescription {
 		t.Fatalf("get metadata.description = %v, want default description", getMetadata["description"])
 	}
-	if getMetadata["long_description"] != "" {
+	if getMetadata["long_description"] != defaultCookbookLongDescription {
 		t.Fatalf("get metadata.long_description = %v, want empty string", getMetadata["long_description"])
 	}
-	if getMetadata["maintainer"] != "Your Name" {
+	if getMetadata["maintainer"] != defaultCookbookMaintainer {
 		t.Fatalf("get metadata.maintainer = %v, want default maintainer", getMetadata["maintainer"])
 	}
-	if getMetadata["maintainer_email"] != "youremail@example.com" {
+	if getMetadata["maintainer_email"] != defaultCookbookMaintainerEmail {
 		t.Fatalf("get metadata.maintainer_email = %v, want default maintainer email", getMetadata["maintainer_email"])
 	}
-	if getMetadata["license"] != "Apache v2.0" {
+	if getMetadata["license"] != defaultCookbookLicense {
 		t.Fatalf("get metadata.license = %v, want default license", getMetadata["license"])
 	}
 	if getMetadata["version"] != "1.2.3" {
@@ -750,7 +750,7 @@ func cookbookArtifactPayload(name, identifier, version, checksum string, depende
 			"maintainer_email": "opencook@example.com",
 			"description":      "compatibility cookbook",
 			"long_description": "compatibility cookbook",
-			"license":          "Apache-2.0",
+			"license":          defaultCookbookLicense,
 			"dependencies":     metadataDeps,
 			"attributes":       map[string]any{},
 			"recipes":          metadataRecipes,
@@ -801,7 +801,7 @@ func cookbookVersionPayload(name, version, checksum string, dependencies map[str
 			"maintainer_email": "opencook@example.com",
 			"description":      "compatibility cookbook",
 			"long_description": "compatibility cookbook",
-			"license":          "Apache-2.0",
+			"license":          defaultCookbookLicense,
 			"dependencies":     metadataDeps,
 			"attributes":       map[string]any{},
 			"recipes":          metadataRecipes,
