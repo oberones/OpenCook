@@ -222,7 +222,8 @@ func (s *Service) GetEnvironmentCookbookVersions(orgName, environmentName, cookb
 		return nil, true, false, false
 	}
 
-	versions, ok := org.cookbooks[strings.TrimSpace(cookbookName)]
+	cookbookName = strings.TrimSpace(cookbookName)
+	versions, ok := org.cookbooks[cookbookName]
 	if !ok {
 		return nil, true, true, false
 	}
