@@ -87,6 +87,7 @@ Status: in progress
 - cookbook create-path validation now matches Chef’s `Field 'name' invalid` behavior for route/payload name-version mismatches, while update-path validation remains field-specific
 - cookbook collection and latest-version reads now have explicit pedant-style coverage for `num_versions` edge cases and `_latest` not-found behavior
 - cookbook version updates/deletes and artifact deletes now clean up unreferenced checksum blobs while preserving shared checksums still referenced by other cookbooks, artifacts, or live sandboxes
+- cookbook HTTP coverage now explicitly exercises multi-version shared-checksum retention plus the expected 401/403 cookbook auth behavior for invalid and outside users
 - production S3-compatible blob storage, PostgreSQL-backed cookbook persistence, and broader cookbook pedant coverage beyond the current environment-filtered/named-filter/latest/version read-write contract are still pending
 - S3-compatible blob storage remains the target production mode after the compatibility contract settles
 
