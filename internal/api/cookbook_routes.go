@@ -781,6 +781,8 @@ func cookbookRecipeNames(cookbookName string, files []bootstrap.CookbookFile) []
 		if cookbookFileSegment(file.Path) != "recipes" {
 			continue
 		}
+		// Upstream recipe qualification uses the manifest basename and still
+		// qualifies entries without a ".rb" suffix, so we mirror that here.
 		recipeName := cookbookLegacyFileName("recipes", file.Path)
 		recipeName = strings.TrimSpace(strings.TrimSuffix(recipeName, ".rb"))
 		if recipeName == "" {
@@ -792,7 +794,6 @@ func cookbookRecipeNames(cookbookName string, files []bootstrap.CookbookFile) []
 		}
 		out = append(out, cookbookName+"::"+recipeName)
 	}
-	sort.Strings(out)
 	return out
 }
 
