@@ -369,6 +369,17 @@ func isDefaultOrgSandboxPath(path string) bool {
 	return path == "/sandboxes" || path == "/sandboxes/" || strings.HasPrefix(path, "/sandboxes/")
 }
 
+func isDefaultOrgCookbookPath(path string) bool {
+	return path == "/cookbooks" ||
+		path == "/cookbooks/" ||
+		path == "/cookbook_artifacts" ||
+		path == "/cookbook_artifacts/" ||
+		path == "/universe" ||
+		path == "/universe/" ||
+		strings.HasPrefix(path, "/cookbooks/") ||
+		strings.HasPrefix(path, "/cookbook_artifacts/")
+}
+
 func isDefaultOrgDataPath(path string) bool {
 	return path == "/data" || path == "/data/" || strings.HasPrefix(path, "/data/")
 }
@@ -389,6 +400,7 @@ func isDefaultOrgScopedPath(path string) bool {
 		isDefaultOrgClientPath(path) ||
 		isDefaultOrgSearchPath(path) ||
 		isDefaultOrgSandboxPath(path) ||
+		isDefaultOrgCookbookPath(path) ||
 		isDefaultOrgDataPath(path) ||
 		isDefaultOrgPolicyPath(path)
 }

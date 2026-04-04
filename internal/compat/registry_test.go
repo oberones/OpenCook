@@ -160,3 +160,40 @@ func TestNewDefaultRegistryIncludesSandboxRoutes(t *testing.T) {
 		}
 	}
 }
+
+func TestNewDefaultRegistryIncludesCookbookAndBlobRoutes(t *testing.T) {
+	registry := NewDefaultRegistry()
+
+	patterns := make(map[string]struct{})
+	for _, surface := range registry.Surfaces() {
+		for _, pattern := range surface.Patterns {
+			patterns[pattern] = struct{}{}
+		}
+	}
+
+	for _, pattern := range []string{
+		"/_blob/checksums/{checksum}",
+		"/cookbooks",
+		"/cookbooks/_latest",
+		"/cookbooks/_recipes",
+		"/cookbooks/{name}",
+		"/cookbooks/{name}/{version}",
+		"/cookbook_artifacts",
+		"/cookbook_artifacts/{name}",
+		"/cookbook_artifacts/{name}/{identifier}",
+		"/universe",
+		"/organizations/{org}/cookbooks",
+		"/organizations/{org}/cookbooks/_latest",
+		"/organizations/{org}/cookbooks/_recipes",
+		"/organizations/{org}/cookbooks/{name}",
+		"/organizations/{org}/cookbooks/{name}/{version}",
+		"/organizations/{org}/cookbook_artifacts",
+		"/organizations/{org}/cookbook_artifacts/{name}",
+		"/organizations/{org}/cookbook_artifacts/{name}/{identifier}",
+		"/organizations/{org}/universe",
+	} {
+		if _, ok := patterns[pattern]; !ok {
+			t.Fatalf("pattern %q missing from compatibility registry", pattern)
+		}
+	}
+}

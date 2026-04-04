@@ -159,20 +159,21 @@ type UpdateKeyResult struct {
 }
 
 type organizationState struct {
-	org          Organization
-	clients      map[string]Client
-	clientKeys   map[string]map[string]KeyRecord
-	dataBags     map[string]DataBag
-	dataBagItems map[string]map[string]DataBagItem
-	envs         map[string]Environment
-	nodes        map[string]Node
-	roles        map[string]Role
-	sandboxes    map[string]Sandbox
-	policies     map[string]map[string]PolicyRevision
-	policyGroups map[string]PolicyGroup
-	groups       map[string]Group
-	containers   map[string]Container
-	acls         map[string]authz.ACL
+	org               Organization
+	clients           map[string]Client
+	clientKeys        map[string]map[string]KeyRecord
+	cookbookArtifacts map[string]map[string]CookbookArtifact
+	dataBags          map[string]DataBag
+	dataBagItems      map[string]map[string]DataBagItem
+	envs              map[string]Environment
+	nodes             map[string]Node
+	roles             map[string]Role
+	sandboxes         map[string]Sandbox
+	policies          map[string]map[string]PolicyRevision
+	policyGroups      map[string]PolicyGroup
+	groups            map[string]Group
+	containers        map[string]Container
+	acls              map[string]authz.ACL
 }
 
 func NewService(keyStore *authn.MemoryKeyStore, opts Options) *Service {
@@ -443,20 +444,21 @@ func (s *Service) CreateOrganization(input CreateOrganizationInput) (Organizatio
 	}
 
 	state := &organizationState{
-		org:          org,
-		clients:      make(map[string]Client),
-		clientKeys:   make(map[string]map[string]KeyRecord),
-		dataBags:     make(map[string]DataBag),
-		dataBagItems: make(map[string]map[string]DataBagItem),
-		envs:         make(map[string]Environment),
-		nodes:        make(map[string]Node),
-		roles:        make(map[string]Role),
-		sandboxes:    make(map[string]Sandbox),
-		policies:     make(map[string]map[string]PolicyRevision),
-		policyGroups: make(map[string]PolicyGroup),
-		groups:       make(map[string]Group),
-		containers:   make(map[string]Container),
-		acls:         make(map[string]authz.ACL),
+		org:               org,
+		clients:           make(map[string]Client),
+		clientKeys:        make(map[string]map[string]KeyRecord),
+		cookbookArtifacts: make(map[string]map[string]CookbookArtifact),
+		dataBags:          make(map[string]DataBag),
+		dataBagItems:      make(map[string]map[string]DataBagItem),
+		envs:              make(map[string]Environment),
+		nodes:             make(map[string]Node),
+		roles:             make(map[string]Role),
+		sandboxes:         make(map[string]Sandbox),
+		policies:          make(map[string]map[string]PolicyRevision),
+		policyGroups:      make(map[string]PolicyGroup),
+		groups:            make(map[string]Group),
+		containers:        make(map[string]Container),
+		acls:              make(map[string]authz.ACL),
 	}
 
 	s.orgs[org.Name] = state
@@ -1323,7 +1325,7 @@ func defaultContainerACL(superuserName, container string) authz.ACL {
 			Delete: authz.Permission{Actors: []string{superuserName}, Groups: []string{"admins", "users"}},
 			Grant:  authz.Permission{Actors: []string{superuserName}, Groups: []string{"admins"}},
 		}
-	case "data", "roles", "environments", "cookbooks", "sandboxes":
+	case "data", "roles", "environments", "cookbooks", "sandboxes", "cookbook_artifacts":
 		return authz.ACL{
 			Create: authz.Permission{Actors: []string{superuserName}, Groups: []string{"admins", "users"}},
 			Read:   authz.Permission{Actors: []string{superuserName}, Groups: []string{"admins", "users", "clients"}},
