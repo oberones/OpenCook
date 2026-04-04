@@ -491,7 +491,7 @@ func TestCookbookCollectionNumVersionsEdgeCases(t *testing.T) {
 		t.Fatalf("json.Unmarshal(num_versions=0) error = %v", err)
 	}
 	for _, cookbook := range []string{"demo", "other"} {
-		versions := zeroPayload[cookbook].(map[string]any)["versions"].([]any)
+		versions := cookbookVersionListForName(t, zeroPayload, cookbook)
 		if len(versions) != 0 {
 			t.Fatalf("%s versions len = %d, want 0 (%v)", cookbook, len(versions), versions)
 		}
@@ -1249,6 +1249,28 @@ func assertCookbookErrorList(t *testing.T, body []byte, want []string) {
 			t.Fatalf("error[%d] = %v, want %q (%v)", i, rawErrors[i], want[i], rawErrors)
 		}
 	}
+}
+
+func cookbookVersionListForName(t *testing.T, payload map[string]any, name string) []any {
+	t.Helper()
+
+	rawCookbook, ok := payload[name]
+	if !ok {
+		t.Fatalf("payload missing cookbook %q: %v", name, payload)
+	}
+	cookbookEntry, ok := rawCookbook.(map[string]any)
+	if !ok {
+		t.Fatalf("payload[%q] = %T, want map[string]any (%v)", name, rawCookbook, payload)
+	}
+	rawVersions, ok := cookbookEntry["versions"]
+	if !ok {
+		t.Fatalf("payload[%q] missing versions: %v", name, cookbookEntry)
+	}
+	versions, ok := rawVersions.([]any)
+	if !ok {
+		t.Fatalf("payload[%q].versions = %T, want []any (%v)", name, rawVersions, cookbookEntry)
+	}
+	return versions
 }
 
 func createCookbookArtifact(t *testing.T, router http.Handler, name, identifier, version, checksum string, dependencies map[string]string) {
