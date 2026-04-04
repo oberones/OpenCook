@@ -125,6 +125,13 @@ func TestNewDefaultRegistryIncludesPolicyRoutes(t *testing.T) {
 		"/policy_groups",
 		"/policy_groups/{group}",
 		"/policy_groups/{group}/policies/{name}",
+		"/organizations/{org}/policies",
+		"/organizations/{org}/policies/{name}",
+		"/organizations/{org}/policies/{name}/revisions",
+		"/organizations/{org}/policies/{name}/revisions/{revision}",
+		"/organizations/{org}/policy_groups",
+		"/organizations/{org}/policy_groups/{group}",
+		"/organizations/{org}/policy_groups/{group}/policies/{name}",
 	} {
 		if _, ok := patterns[pattern]; !ok {
 			t.Fatalf("pattern %q missing from compatibility registry", pattern)
