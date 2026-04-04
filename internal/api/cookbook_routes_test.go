@@ -476,6 +476,104 @@ func TestCookbookVersionEndpointsUseChecksumSpecificUpdateError(t *testing.T) {
 	}
 }
 
+func TestCookbookVersionReadInflatesDefaultsAndFiltersExtraMetadata(t *testing.T) {
+	router := newTestRouter(t)
+	checksum := uploadCookbookChecksum(t, router, []byte("puts 'hello v1'"))
+
+	createCookbookVersion(t, router, "demo", "1.2.3", checksum, map[string]string{
+		"apt": ">= 1.0.0",
+	})
+
+	updatePayload := cookbookVersionPayload("demo", "1.2.3", checksum, nil)
+	metadata := updatePayload["metadata"].(map[string]any)
+	metadata["name"] = "renamed-app"
+	delete(metadata, "description")
+	delete(metadata, "long_description")
+	delete(metadata, "maintainer")
+	delete(metadata, "maintainer_email")
+	delete(metadata, "license")
+	delete(metadata, "dependencies")
+	delete(metadata, "attributes")
+	delete(metadata, "recipes")
+	metadata["platforms"] = map[string]any{"ubuntu": ">= 20.04"}
+	metadata["providing"] = "demo::default"
+
+	updateReq := newSignedJSONRequest(t, http.MethodPut, "/cookbooks/demo/1.2.3", mustMarshalSandboxJSON(t, updatePayload))
+	updateRec := httptest.NewRecorder()
+	router.ServeHTTP(updateRec, updateReq)
+	if updateRec.Code != http.StatusOK {
+		t.Fatalf("update cookbook status = %d, want %d, body = %s", updateRec.Code, http.StatusOK, updateRec.Body.String())
+	}
+
+	var updateResponse map[string]any
+	if err := json.Unmarshal(updateRec.Body.Bytes(), &updateResponse); err != nil {
+		t.Fatalf("json.Unmarshal(update response) error = %v", err)
+	}
+	updateMetadata := updateResponse["metadata"].(map[string]any)
+	if updateMetadata["name"] != "renamed-app" {
+		t.Fatalf("update metadata.name = %v, want %q", updateMetadata["name"], "renamed-app")
+	}
+	if _, ok := updateMetadata["description"]; ok {
+		t.Fatalf("update metadata.description unexpectedly present: %v", updateMetadata)
+	}
+	if _, ok := updateMetadata["platforms"]; !ok {
+		t.Fatalf("update metadata.platforms missing from exact write response: %v", updateMetadata)
+	}
+	if updateMetadata["providing"] != "demo::default" {
+		t.Fatalf("update metadata.providing = %v, want %q", updateMetadata["providing"], "demo::default")
+	}
+
+	getReq := newSignedJSONRequest(t, http.MethodGet, "/cookbooks/demo/1.2.3", nil)
+	getReq.Header.Set("X-Ops-Server-API-Version", "2")
+	getRec := httptest.NewRecorder()
+	router.ServeHTTP(getRec, getReq)
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("get cookbook status = %d, want %d, body = %s", getRec.Code, http.StatusOK, getRec.Body.String())
+	}
+
+	var getResponse map[string]any
+	if err := json.Unmarshal(getRec.Body.Bytes(), &getResponse); err != nil {
+		t.Fatalf("json.Unmarshal(get response) error = %v", err)
+	}
+	getMetadata := getResponse["metadata"].(map[string]any)
+	if getMetadata["name"] != "demo" {
+		t.Fatalf("get metadata.name = %v, want %q", getMetadata["name"], "demo")
+	}
+	if getMetadata["description"] != defaultCookbookDescription {
+		t.Fatalf("get metadata.description = %v, want default description", getMetadata["description"])
+	}
+	if getMetadata["long_description"] != defaultCookbookLongDescription {
+		t.Fatalf("get metadata.long_description = %v, want empty string", getMetadata["long_description"])
+	}
+	if getMetadata["maintainer"] != defaultCookbookMaintainer {
+		t.Fatalf("get metadata.maintainer = %v, want default maintainer", getMetadata["maintainer"])
+	}
+	if getMetadata["maintainer_email"] != defaultCookbookMaintainerEmail {
+		t.Fatalf("get metadata.maintainer_email = %v, want default maintainer email", getMetadata["maintainer_email"])
+	}
+	if getMetadata["license"] != defaultCookbookLicense {
+		t.Fatalf("get metadata.license = %v, want default license", getMetadata["license"])
+	}
+	if getMetadata["version"] != "1.2.3" {
+		t.Fatalf("get metadata.version = %v, want %q", getMetadata["version"], "1.2.3")
+	}
+	if dependencies, ok := getMetadata["dependencies"].(map[string]any); !ok || len(dependencies) != 0 {
+		t.Fatalf("get metadata.dependencies = %v, want empty map", getMetadata["dependencies"])
+	}
+	if attributes, ok := getMetadata["attributes"].(map[string]any); !ok || len(attributes) != 0 {
+		t.Fatalf("get metadata.attributes = %v, want empty map", getMetadata["attributes"])
+	}
+	if recipes, ok := getMetadata["recipes"].(map[string]any); !ok || len(recipes) != 0 {
+		t.Fatalf("get metadata.recipes = %v, want empty map", getMetadata["recipes"])
+	}
+	if _, ok := getMetadata["platforms"]; ok {
+		t.Fatalf("get metadata.platforms unexpectedly present: %v", getMetadata)
+	}
+	if _, ok := getMetadata["providing"]; ok {
+		t.Fatalf("get metadata.providing unexpectedly present: %v", getMetadata)
+	}
+}
+
 func TestCookbookArtifactEndpointsSupportRootLevelAllFiles(t *testing.T) {
 	router := newTestRouter(t)
 	checksum := uploadCookbookChecksum(t, router, []byte("name 'demo'"))
@@ -652,7 +750,7 @@ func cookbookArtifactPayload(name, identifier, version, checksum string, depende
 			"maintainer_email": "opencook@example.com",
 			"description":      "compatibility cookbook",
 			"long_description": "compatibility cookbook",
-			"license":          "Apache-2.0",
+			"license":          defaultCookbookLicense,
 			"dependencies":     metadataDeps,
 			"attributes":       map[string]any{},
 			"recipes":          metadataRecipes,
@@ -703,7 +801,7 @@ func cookbookVersionPayload(name, version, checksum string, dependencies map[str
 			"maintainer_email": "opencook@example.com",
 			"description":      "compatibility cookbook",
 			"long_description": "compatibility cookbook",
-			"license":          "Apache-2.0",
+			"license":          defaultCookbookLicense,
 			"dependencies":     metadataDeps,
 			"attributes":       map[string]any{},
 			"recipes":          metadataRecipes,
