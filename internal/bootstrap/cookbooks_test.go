@@ -396,11 +396,11 @@ func TestUpsertCookbookVersionReturnsFieldSpecificValidationMessages(t *testing.
 			message: "Field 'cookbook_name' missing",
 		},
 		{
-			name: "invalid cookbook_name",
+			name: "mismatched cookbook_name on create",
 			mutate: func(payload map[string]any) {
 				payload["cookbook_name"] = "new_name"
 			},
-			message: "Field 'cookbook_name' invalid",
+			message: "Field 'name' invalid",
 		},
 		{
 			name: "invalid version",
@@ -410,11 +410,11 @@ func TestUpsertCookbookVersionReturnsFieldSpecificValidationMessages(t *testing.
 			message: "Field 'version' invalid",
 		},
 		{
-			name: "invalid metadata.version",
+			name: "mismatched metadata.version on create",
 			mutate: func(payload map[string]any) {
 				payload["metadata"].(map[string]any)["version"] = "1.2"
 			},
-			message: "Field 'metadata.version' invalid",
+			message: "Field 'name' invalid",
 		},
 	}
 
@@ -443,6 +443,35 @@ func TestUpsertCookbookVersionReturnsFieldSpecificValidationMessages(t *testing.
 				t.Fatalf("validation messages = %v, want %q", validationErr.Messages, tc.message)
 			}
 		})
+	}
+}
+
+func TestUpsertCookbookVersionUpdateRetainsFieldSpecificMismatchErrors(t *testing.T) {
+	service := newTestBootstrapService(t)
+	createTestCookbookOrg(t, service)
+	createTestCookbookVersion(t, service, "ponyville", "app", "1.2.3", nil, nil)
+
+	payload := cookbookVersionTestPayload("app", "1.2.3", nil, nil)
+	payload["cookbook_name"] = "new_name"
+
+	_, _, err := service.UpsertCookbookVersion("ponyville", UpsertCookbookVersionInput{
+		Name:    "app",
+		Version: "1.2.3",
+		Payload: payload,
+		ChecksumExists: func(string) (bool, error) {
+			return true, nil
+		},
+	})
+	if err == nil {
+		t.Fatal("UpsertCookbookVersion() error = nil, want validation error")
+	}
+
+	var validationErr *ValidationError
+	if !errors.As(err, &validationErr) {
+		t.Fatalf("UpsertCookbookVersion() error = %T, want *ValidationError", err)
+	}
+	if len(validationErr.Messages) != 1 || validationErr.Messages[0] != "Field 'cookbook_name' invalid" {
+		t.Fatalf("validation messages = %v, want cookbook_name-specific update error", validationErr.Messages)
 	}
 }
 

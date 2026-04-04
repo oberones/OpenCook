@@ -438,6 +438,92 @@ func TestCookbookVersionEndpointsCreateUpdateAndDelete(t *testing.T) {
 	}
 }
 
+func TestCookbookVersionCreateAndUpdateValidationMatchChefSemantics(t *testing.T) {
+	router := newTestRouter(t)
+
+	createVersionMismatchReq := newSignedJSONRequest(t, http.MethodPut, "/cookbooks/demo/1.2.3", mustMarshalSandboxJSON(t, cookbookVersionPayload("demo", "0.0.1", "", nil)))
+	createVersionMismatchRec := httptest.NewRecorder()
+	router.ServeHTTP(createVersionMismatchRec, createVersionMismatchReq)
+	if createVersionMismatchRec.Code != http.StatusBadRequest {
+		t.Fatalf("create version mismatch status = %d, want %d, body = %s", createVersionMismatchRec.Code, http.StatusBadRequest, createVersionMismatchRec.Body.String())
+	}
+	assertCookbookErrorList(t, createVersionMismatchRec.Body.Bytes(), []string{"Field 'name' invalid"})
+
+	createNameMismatchReq := newSignedJSONRequest(t, http.MethodPut, "/cookbooks/demo/1.2.3", mustMarshalSandboxJSON(t, cookbookVersionPayload("other", "1.2.3", "", nil)))
+	createNameMismatchRec := httptest.NewRecorder()
+	router.ServeHTTP(createNameMismatchRec, createNameMismatchReq)
+	if createNameMismatchRec.Code != http.StatusBadRequest {
+		t.Fatalf("create cookbook_name mismatch status = %d, want %d, body = %s", createNameMismatchRec.Code, http.StatusBadRequest, createNameMismatchRec.Body.String())
+	}
+	assertCookbookErrorList(t, createNameMismatchRec.Body.Bytes(), []string{"Field 'name' invalid"})
+
+	createCookbookVersion(t, router, "demo", "1.2.3", "", nil)
+	updatePayload := cookbookVersionPayload("demo", "1.2.3", "", nil)
+	updatePayload["cookbook_name"] = "other"
+	updateReq := newSignedJSONRequest(t, http.MethodPut, "/cookbooks/demo/1.2.3", mustMarshalSandboxJSON(t, updatePayload))
+	updateRec := httptest.NewRecorder()
+	router.ServeHTTP(updateRec, updateReq)
+	if updateRec.Code != http.StatusBadRequest {
+		t.Fatalf("update cookbook_name mismatch status = %d, want %d, body = %s", updateRec.Code, http.StatusBadRequest, updateRec.Body.String())
+	}
+	assertCookbookErrorList(t, updateRec.Body.Bytes(), []string{"Field 'cookbook_name' invalid"})
+}
+
+func TestCookbookCollectionNumVersionsEdgeCases(t *testing.T) {
+	router := newTestRouter(t)
+
+	createCookbookVersion(t, router, "demo", "1.0.0", "", nil)
+	createCookbookVersion(t, router, "demo", "1.2.0", "", nil)
+	createCookbookVersion(t, router, "other", "0.1.0", "", nil)
+
+	zeroReq := httptest.NewRequest(http.MethodGet, "/cookbooks?num_versions=0", nil)
+	applySignedHeaders(t, zeroReq, "silent-bob", "", http.MethodGet, "/cookbooks", nil, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	zeroRec := httptest.NewRecorder()
+	router.ServeHTTP(zeroRec, zeroReq)
+	if zeroRec.Code != http.StatusOK {
+		t.Fatalf("num_versions=0 status = %d, want %d, body = %s", zeroRec.Code, http.StatusOK, zeroRec.Body.String())
+	}
+	var zeroPayload map[string]any
+	if err := json.Unmarshal(zeroRec.Body.Bytes(), &zeroPayload); err != nil {
+		t.Fatalf("json.Unmarshal(num_versions=0) error = %v", err)
+	}
+	for _, cookbook := range []string{"demo", "other"} {
+		versions := cookbookVersionListForName(t, zeroPayload, cookbook)
+		if len(versions) != 0 {
+			t.Fatalf("%s versions len = %d, want 0 (%v)", cookbook, len(versions), versions)
+		}
+	}
+
+	for _, rawURL := range []string{"/cookbooks?num_versions=", "/cookbooks?num_versions=-1", "/cookbooks?num_versions=foo"} {
+		req := httptest.NewRequest(http.MethodGet, rawURL, nil)
+		applySignedHeaders(t, req, "silent-bob", "", http.MethodGet, "/cookbooks", nil, signDescription{
+			Version:   "1.1",
+			Algorithm: "sha1",
+		}, "2026-04-02T15:04:05Z")
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("%s status = %d, want %d, body = %s", rawURL, rec.Code, http.StatusBadRequest, rec.Body.String())
+		}
+		assertCookbookErrorList(t, rec.Body.Bytes(), []string{"You have requested an invalid number of versions (x >= 0 || 'all')"})
+	}
+}
+
+func TestCookbookLatestVersionNotFoundUsesChefErrorShape(t *testing.T) {
+	router := newTestRouter(t)
+
+	req := newSignedJSONRequest(t, http.MethodGet, "/cookbooks/missing/_latest", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("missing latest status = %d, want %d, body = %s", rec.Code, http.StatusNotFound, rec.Body.String())
+	}
+	assertCookbookErrorList(t, rec.Body.Bytes(), []string{"Cannot find a cookbook named missing with version _latest"})
+}
+
 func TestCookbookVersionEndpointsHonorFrozenForce(t *testing.T) {
 	router := newTestRouter(t)
 	checksumV1 := uploadCookbookChecksum(t, router, []byte("puts 'hello v1'"))
@@ -1142,6 +1228,49 @@ func assertBlobDownloadStatus(t *testing.T, router http.Handler, downloadURL str
 	if rec.Code != want {
 		t.Fatalf("GET %s status = %d, want %d, body = %s", downloadURL, rec.Code, want, rec.Body.String())
 	}
+}
+
+func assertCookbookErrorList(t *testing.T, body []byte, want []string) {
+	t.Helper()
+
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("json.Unmarshal(error payload) error = %v", err)
+	}
+	rawErrors, ok := payload["error"].([]any)
+	if !ok {
+		t.Fatalf("payload error = %T, want []any (%v)", payload["error"], payload)
+	}
+	if len(rawErrors) != len(want) {
+		t.Fatalf("error len = %d, want %d (%v)", len(rawErrors), len(want), rawErrors)
+	}
+	for i := range want {
+		if rawErrors[i] != want[i] {
+			t.Fatalf("error[%d] = %v, want %q (%v)", i, rawErrors[i], want[i], rawErrors)
+		}
+	}
+}
+
+func cookbookVersionListForName(t *testing.T, payload map[string]any, name string) []any {
+	t.Helper()
+
+	rawCookbook, ok := payload[name]
+	if !ok {
+		t.Fatalf("payload missing cookbook %q: %v", name, payload)
+	}
+	cookbookEntry, ok := rawCookbook.(map[string]any)
+	if !ok {
+		t.Fatalf("payload[%q] = %T, want map[string]any (%v)", name, rawCookbook, payload)
+	}
+	rawVersions, ok := cookbookEntry["versions"]
+	if !ok {
+		t.Fatalf("payload[%q] missing versions: %v", name, cookbookEntry)
+	}
+	versions, ok := rawVersions.([]any)
+	if !ok {
+		t.Fatalf("payload[%q].versions = %T, want []any (%v)", name, rawVersions, cookbookEntry)
+	}
+	return versions
 }
 
 func createCookbookArtifact(t *testing.T, router http.Handler, name, identifier, version, checksum string, dependencies map[string]string) {
