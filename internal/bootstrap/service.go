@@ -159,17 +159,19 @@ type UpdateKeyResult struct {
 }
 
 type organizationState struct {
-	org        Organization
-	clients    map[string]Client
-	clientKeys map[string]map[string]KeyRecord
-	dataBags   map[string]DataBag
+	org          Organization
+	clients      map[string]Client
+	clientKeys   map[string]map[string]KeyRecord
+	dataBags     map[string]DataBag
 	dataBagItems map[string]map[string]DataBagItem
-	envs       map[string]Environment
-	nodes      map[string]Node
-	roles      map[string]Role
-	groups     map[string]Group
-	containers map[string]Container
-	acls       map[string]authz.ACL
+	envs         map[string]Environment
+	nodes        map[string]Node
+	roles        map[string]Role
+	policies     map[string]map[string]PolicyRevision
+	policyGroups map[string]PolicyGroup
+	groups       map[string]Group
+	containers   map[string]Container
+	acls         map[string]authz.ACL
 }
 
 func NewService(keyStore *authn.MemoryKeyStore, opts Options) *Service {
@@ -448,6 +450,8 @@ func (s *Service) CreateOrganization(input CreateOrganizationInput) (Organizatio
 		envs:         make(map[string]Environment),
 		nodes:        make(map[string]Node),
 		roles:        make(map[string]Role),
+		policies:     make(map[string]map[string]PolicyRevision),
+		policyGroups: make(map[string]PolicyGroup),
 		groups:       make(map[string]Group),
 		containers:   make(map[string]Container),
 		acls:         make(map[string]authz.ACL),
@@ -876,6 +880,20 @@ func (s *Service) ResolveACL(_ context.Context, resource authz.Resource) (authz.
 			return authz.ACL{}, false, nil
 		}
 		acl, ok := org.acls[roleACLKey(resource.Name)]
+		return acl, ok, nil
+	case "policy":
+		org, ok := s.orgs[resource.Organization]
+		if !ok {
+			return authz.ACL{}, false, nil
+		}
+		acl, ok := org.acls[policyACLKey(resource.Name)]
+		return acl, ok, nil
+	case "policy_group":
+		org, ok := s.orgs[resource.Organization]
+		if !ok {
+			return authz.ACL{}, false, nil
+		}
+		acl, ok := org.acls[policyGroupACLKey(resource.Name)]
 		return acl, ok, nil
 	default:
 		return authz.ACL{}, false, nil
