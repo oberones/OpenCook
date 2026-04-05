@@ -70,6 +70,7 @@ As of 2026-04-04, OpenCook has moved past pure scaffolding and into the first co
 - `/universe` is now live on both default-org and explicit-org routes, and cookbook file responses now return signed direct blob URLs backed by the in-memory compatibility blob store
 - cookbook version updates now honor Chef-style frozen/force behavior, including `409` conflicts on frozen versions and forced updates that keep the cookbook frozen
 - cookbook PUT responses now preserve pedant-style omission of optional top-level fields like `version`, `json_class`, and `chef_type`, and explicit `?force=false` now has matching compatibility coverage
+- cookbook create/update HTTP coverage now includes omitted-default exactness, metadata-name write-vs-read canonicalization, permissive `metadata.providing`, and exact no-mutation behavior for invalid metadata payloads
 - cookbook metadata validation now covers more upstream pedant cases for typed metadata fields, dependency/platform constraint maps, and checksum failure messaging on updates
 - cookbook version reads now return the narrower Chef-shaped metadata subset with upstream defaults inflated at read time while PUT responses remain exact echoes of the submitted payload
 - cookbook version conversion is now exercised across v0 and v2 upload/download paths, including the Chef-style segment-aware `all_files[].name` contract for root files and other segmented content
