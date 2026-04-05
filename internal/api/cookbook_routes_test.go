@@ -1366,18 +1366,11 @@ func TestCookbookVersionEndpointAllowsNormalUserDelete(t *testing.T) {
 func TestCookbookVersionEndpointAllowsNormalUserUpdateAndRejectsUnauthorizedMutation(t *testing.T) {
 	router := newTestRouter(t)
 
-	initialPayload := cookbookVersionPayload("demo", "1.2.3", "", nil)
-	initialReq := newSignedJSONRequest(t, http.MethodPut, "/cookbooks/demo/1.2.3", mustMarshalSandboxJSON(t, initialPayload))
-	initialRec := httptest.NewRecorder()
-	router.ServeHTTP(initialRec, initialReq)
-	if initialRec.Code != http.StatusCreated {
-		t.Fatalf("initial create status = %d, want %d, body = %s", initialRec.Code, http.StatusCreated, initialRec.Body.String())
-	}
+	createCookbookVersion(t, router, "demo", "1.2.3", "", nil)
 
 	normalPayload := cookbookVersionPayload("demo", "1.2.3", "", nil)
 	normalMetadata := normalPayload["metadata"].(map[string]any)
 	normalMetadata["description"] = "updated by normal-user"
-	normalPayload["metadata"] = normalMetadata
 	normalReq := newSignedJSONRequestAs(t, "normal-user", http.MethodPut, "/cookbooks/demo/1.2.3", mustMarshalSandboxJSON(t, normalPayload))
 	normalRec := httptest.NewRecorder()
 	router.ServeHTTP(normalRec, normalReq)
@@ -1389,7 +1382,6 @@ func TestCookbookVersionEndpointAllowsNormalUserUpdateAndRejectsUnauthorizedMuta
 	outsidePayload := cookbookVersionPayload("demo", "1.2.3", "", nil)
 	outsideMetadata := outsidePayload["metadata"].(map[string]any)
 	outsideMetadata["description"] = "outside user attempted update"
-	outsidePayload["metadata"] = outsideMetadata
 	outsideReq := newSignedJSONRequestAs(t, "outside-user", http.MethodPut, "/cookbooks/demo/1.2.3", mustMarshalSandboxJSON(t, outsidePayload))
 	outsideRec := httptest.NewRecorder()
 	router.ServeHTTP(outsideRec, outsideReq)
@@ -1401,7 +1393,6 @@ func TestCookbookVersionEndpointAllowsNormalUserUpdateAndRejectsUnauthorizedMuta
 	invalidPayload := cookbookVersionPayload("demo", "1.2.3", "", nil)
 	invalidMetadata := invalidPayload["metadata"].(map[string]any)
 	invalidMetadata["description"] = "invalid user attempted update"
-	invalidPayload["metadata"] = invalidMetadata
 	invalidReq := newSignedJSONRequestAs(t, "invalid-user", http.MethodPut, "/cookbooks/demo/1.2.3", mustMarshalSandboxJSON(t, invalidPayload))
 	invalidRec := httptest.NewRecorder()
 	router.ServeHTTP(invalidRec, invalidReq)
