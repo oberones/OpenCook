@@ -1363,6 +1363,94 @@ func TestCookbookVersionEndpointAllowsNormalUserDelete(t *testing.T) {
 	}
 }
 
+func TestCookbookVersionEndpointAllowsNormalUserUpdateAndRejectsUnauthorizedMutation(t *testing.T) {
+	router := newTestRouter(t)
+
+	initialPayload := cookbookVersionPayload("demo", "1.2.3", "", nil)
+	initialReq := newSignedJSONRequest(t, http.MethodPut, "/cookbooks/demo/1.2.3", mustMarshalSandboxJSON(t, initialPayload))
+	initialRec := httptest.NewRecorder()
+	router.ServeHTTP(initialRec, initialReq)
+	if initialRec.Code != http.StatusCreated {
+		t.Fatalf("initial create status = %d, want %d, body = %s", initialRec.Code, http.StatusCreated, initialRec.Body.String())
+	}
+
+	normalPayload := cookbookVersionPayload("demo", "1.2.3", "", nil)
+	normalMetadata := normalPayload["metadata"].(map[string]any)
+	normalMetadata["description"] = "updated by normal-user"
+	normalPayload["metadata"] = normalMetadata
+	normalReq := newSignedJSONRequestAs(t, "normal-user", http.MethodPut, "/cookbooks/demo/1.2.3", mustMarshalSandboxJSON(t, normalPayload))
+	normalRec := httptest.NewRecorder()
+	router.ServeHTTP(normalRec, normalReq)
+	if normalRec.Code != http.StatusOK {
+		t.Fatalf("normal user update status = %d, want %d, body = %s", normalRec.Code, http.StatusOK, normalRec.Body.String())
+	}
+	assertCookbookDescription(t, router, "/cookbooks/demo/1.2.3", "updated by normal-user")
+
+	outsidePayload := cookbookVersionPayload("demo", "1.2.3", "", nil)
+	outsideMetadata := outsidePayload["metadata"].(map[string]any)
+	outsideMetadata["description"] = "outside user attempted update"
+	outsidePayload["metadata"] = outsideMetadata
+	outsideReq := newSignedJSONRequestAs(t, "outside-user", http.MethodPut, "/cookbooks/demo/1.2.3", mustMarshalSandboxJSON(t, outsidePayload))
+	outsideRec := httptest.NewRecorder()
+	router.ServeHTTP(outsideRec, outsideReq)
+	if outsideRec.Code != http.StatusForbidden {
+		t.Fatalf("outside user update status = %d, want %d, body = %s", outsideRec.Code, http.StatusForbidden, outsideRec.Body.String())
+	}
+	assertCookbookDescription(t, router, "/cookbooks/demo/1.2.3", "updated by normal-user")
+
+	invalidPayload := cookbookVersionPayload("demo", "1.2.3", "", nil)
+	invalidMetadata := invalidPayload["metadata"].(map[string]any)
+	invalidMetadata["description"] = "invalid user attempted update"
+	invalidPayload["metadata"] = invalidMetadata
+	invalidReq := newSignedJSONRequestAs(t, "invalid-user", http.MethodPut, "/cookbooks/demo/1.2.3", mustMarshalSandboxJSON(t, invalidPayload))
+	invalidRec := httptest.NewRecorder()
+	router.ServeHTTP(invalidRec, invalidReq)
+	if invalidRec.Code != http.StatusUnauthorized {
+		t.Fatalf("invalid user update status = %d, want %d, body = %s", invalidRec.Code, http.StatusUnauthorized, invalidRec.Body.String())
+	}
+	assertCookbookDescription(t, router, "/cookbooks/demo/1.2.3", "updated by normal-user")
+}
+
+func TestCookbookVersionEndpointAllowsNormalUserCreateAndRejectsUnauthorizedCreate(t *testing.T) {
+	router := newTestRouter(t)
+
+	normalPayload := cookbookVersionPayload("created-by-user", "1.2.3", "", nil)
+	normalMetadata := normalPayload["metadata"].(map[string]any)
+	normalMetadata["description"] = "created by normal-user"
+	normalPayload["metadata"] = normalMetadata
+	normalReq := newSignedJSONRequestAs(t, "normal-user", http.MethodPut, "/cookbooks/created-by-user/1.2.3", mustMarshalSandboxJSON(t, normalPayload))
+	normalRec := httptest.NewRecorder()
+	router.ServeHTTP(normalRec, normalReq)
+	if normalRec.Code != http.StatusCreated {
+		t.Fatalf("normal user create status = %d, want %d, body = %s", normalRec.Code, http.StatusCreated, normalRec.Body.String())
+	}
+	assertCookbookDescription(t, router, "/cookbooks/created-by-user/1.2.3", "created by normal-user")
+
+	outsidePayload := cookbookVersionPayload("blocked-by-outside", "1.2.3", "", nil)
+	outsideMetadata := outsidePayload["metadata"].(map[string]any)
+	outsideMetadata["description"] = "outside user attempted create"
+	outsidePayload["metadata"] = outsideMetadata
+	outsideReq := newSignedJSONRequestAs(t, "outside-user", http.MethodPut, "/cookbooks/blocked-by-outside/1.2.3", mustMarshalSandboxJSON(t, outsidePayload))
+	outsideRec := httptest.NewRecorder()
+	router.ServeHTTP(outsideRec, outsideReq)
+	if outsideRec.Code != http.StatusForbidden {
+		t.Fatalf("outside user create status = %d, want %d, body = %s", outsideRec.Code, http.StatusForbidden, outsideRec.Body.String())
+	}
+	assertCookbookMissing(t, router, "/cookbooks/blocked-by-outside/1.2.3")
+
+	invalidPayload := cookbookVersionPayload("blocked-by-invalid", "1.2.3", "", nil)
+	invalidMetadata := invalidPayload["metadata"].(map[string]any)
+	invalidMetadata["description"] = "invalid user attempted create"
+	invalidPayload["metadata"] = invalidMetadata
+	invalidReq := newSignedJSONRequestAs(t, "invalid-user", http.MethodPut, "/cookbooks/blocked-by-invalid/1.2.3", mustMarshalSandboxJSON(t, invalidPayload))
+	invalidRec := httptest.NewRecorder()
+	router.ServeHTTP(invalidRec, invalidReq)
+	if invalidRec.Code != http.StatusUnauthorized {
+		t.Fatalf("invalid user create status = %d, want %d, body = %s", invalidRec.Code, http.StatusUnauthorized, invalidRec.Body.String())
+	}
+	assertCookbookMissing(t, router, "/cookbooks/blocked-by-invalid/1.2.3")
+}
+
 func TestCookbookVersionEndpointsUseChecksumSpecificUpdateError(t *testing.T) {
 	router := newTestRouter(t)
 	checksum := uploadCookbookChecksum(t, router, []byte("puts 'hello v1'"))
@@ -1937,6 +2025,40 @@ func assertBlobDownloadStatus(t *testing.T, router http.Handler, downloadURL str
 	router.ServeHTTP(rec, req)
 	if rec.Code != want {
 		t.Fatalf("GET %s status = %d, want %d, body = %s", downloadURL, rec.Code, want, rec.Body.String())
+	}
+}
+
+func assertCookbookDescription(t *testing.T, router http.Handler, path, want string) {
+	t.Helper()
+
+	req := newSignedJSONRequest(t, http.MethodGet, path, nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET %s status = %d, want %d, body = %s", path, rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal(%s) error = %v", path, err)
+	}
+	rawMetadata, ok := payload["metadata"].(map[string]any)
+	if !ok {
+		t.Fatalf("%s metadata = %T, want map[string]any (%v)", path, payload["metadata"], payload)
+	}
+	if rawMetadata["description"] != want {
+		t.Fatalf("%s metadata.description = %v, want %q", path, rawMetadata["description"], want)
+	}
+}
+
+func assertCookbookMissing(t *testing.T, router http.Handler, path string) {
+	t.Helper()
+
+	req := newSignedJSONRequest(t, http.MethodGet, path, nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("GET %s status = %d, want %d, body = %s", path, rec.Code, http.StatusNotFound, rec.Body.String())
 	}
 }
 
