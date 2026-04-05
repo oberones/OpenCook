@@ -471,6 +471,96 @@ func TestCookbookVersionCreateAndUpdateValidationMatchChefSemantics(t *testing.T
 	assertCookbookErrorList(t, updateRec.Body.Bytes(), []string{"Field 'cookbook_name' invalid"})
 }
 
+func TestCookbookVersionRouteValidationRejectsMalformedNameAndVersions(t *testing.T) {
+	router := newTestRouter(t)
+
+	tests := []struct {
+		name         string
+		method       string
+		path         string
+		body         []byte
+		wantStatus   int
+		wantErrors   []string
+		verifyNoDemo bool
+	}{
+		{
+			name:         "invalid cookbook name on create",
+			method:       http.MethodPut,
+			path:         "/cookbooks/first@second/1.2.3",
+			body:         mustMarshalSandboxJSON(t, cookbookVersionPayload("first@second", "1.2.3", "", nil)),
+			wantStatus:   http.StatusBadRequest,
+			wantErrors:   []string{"Invalid cookbook name 'first@second' using regex: 'Malformed cookbook name. Must only contain A-Z, a-z, 0-9, _, . or -'."},
+			verifyNoDemo: false,
+		},
+		{
+			name:         "negative cookbook version on create",
+			method:       http.MethodPut,
+			path:         "/cookbooks/demo/1.2.-42",
+			body:         mustMarshalSandboxJSON(t, cookbookVersionPayload("demo", "1.2.-42", "", nil)),
+			wantStatus:   http.StatusBadRequest,
+			wantErrors:   []string{"Invalid cookbook version '1.2.-42'."},
+			verifyNoDemo: true,
+		},
+		{
+			name:         "alphabetic cookbook version on create",
+			method:       http.MethodPut,
+			path:         "/cookbooks/demo/abc",
+			body:         mustMarshalSandboxJSON(t, cookbookVersionPayload("demo", "abc", "", nil)),
+			wantStatus:   http.StatusBadRequest,
+			wantErrors:   []string{"Invalid cookbook version 'abc'."},
+			verifyNoDemo: true,
+		},
+		{
+			name:         "negative cookbook version on read",
+			method:       http.MethodGet,
+			path:         "/cookbooks/demo/1.2.-42",
+			wantStatus:   http.StatusBadRequest,
+			wantErrors:   []string{"Invalid cookbook version '1.2.-42'."},
+			verifyNoDemo: false,
+		},
+		{
+			name:         "negative cookbook version on delete",
+			method:       http.MethodDelete,
+			path:         "/cookbooks/demo/1.2.-42",
+			wantStatus:   http.StatusBadRequest,
+			wantErrors:   []string{"Invalid cookbook version '1.2.-42'."},
+			verifyNoDemo: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := newSignedJSONRequest(t, tt.method, tt.path, tt.body)
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("%s status = %d, want %d, body = %s", tt.path, rec.Code, tt.wantStatus, rec.Body.String())
+			}
+			assertCookbookErrorList(t, rec.Body.Bytes(), tt.wantErrors)
+			if tt.verifyNoDemo {
+				assertCookbookNamedCollectionMissing(t, router, "demo")
+			}
+		})
+	}
+}
+
+func TestCookbookVersionRouteValidationHandlesLargeVersionComponents(t *testing.T) {
+	router := newTestRouter(t)
+
+	createCookbookVersion(t, router, "large-version-demo", "1.2.2147483669", "", nil)
+
+	overflowPayload := cookbookVersionPayload("overflow-demo", "1.2.9223372036854775849", "", nil)
+	overflowReq := newSignedJSONRequest(t, http.MethodPut, "/cookbooks/overflow-demo/1.2.9223372036854775849", mustMarshalSandboxJSON(t, overflowPayload))
+	overflowRec := httptest.NewRecorder()
+	router.ServeHTTP(overflowRec, overflowReq)
+	if overflowRec.Code != http.StatusBadRequest {
+		t.Fatalf("overflow version create status = %d, want %d, body = %s", overflowRec.Code, http.StatusBadRequest, overflowRec.Body.String())
+	}
+	assertCookbookErrorList(t, overflowRec.Body.Bytes(), []string{"Invalid cookbook version '1.2.9223372036854775849'."})
+
+	assertCookbookNamedCollectionMissing(t, router, "overflow-demo")
+}
+
 func TestCookbookCollectionNumVersionsEdgeCases(t *testing.T) {
 	router := newTestRouter(t)
 
@@ -2198,6 +2288,17 @@ func assertCookbookMissing(t *testing.T, router http.Handler, path string) {
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("GET %s status = %d, want %d, body = %s", path, rec.Code, http.StatusNotFound, rec.Body.String())
+	}
+}
+
+func assertCookbookNamedCollectionMissing(t *testing.T, router http.Handler, name string) {
+	t.Helper()
+
+	req := newSignedJSONRequest(t, http.MethodGet, "/cookbooks/"+name, nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("GET /cookbooks/%s status = %d, want %d, body = %s", name, rec.Code, http.StatusNotFound, rec.Body.String())
 	}
 }
 

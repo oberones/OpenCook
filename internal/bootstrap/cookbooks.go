@@ -1151,6 +1151,10 @@ func validCookbookRouteVersion(value string) bool {
 	return true
 }
 
+func ValidCookbookRouteVersion(value string) bool {
+	return validCookbookRouteVersion(value)
+}
+
 func invalidCookbookNameMessage(name string) string {
 	return fmt.Sprintf("Invalid cookbook name '%s' using regex: 'Malformed cookbook name. Must only contain A-Z, a-z, 0-9, _, . or -'.", name)
 }
