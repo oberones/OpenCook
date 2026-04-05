@@ -116,6 +116,151 @@ func TestCookbookArtifactEndpointsRejectMissingUploadedChecksum(t *testing.T) {
 	}
 }
 
+func TestCookbookArtifactCollectionEndpointsMatchPedantShapes(t *testing.T) {
+	router := newTestRouter(t)
+
+	emptyReq := newSignedJSONRequest(t, http.MethodGet, "/cookbook_artifacts/", nil)
+	emptyRec := httptest.NewRecorder()
+	router.ServeHTTP(emptyRec, emptyReq)
+	if emptyRec.Code != http.StatusOK {
+		t.Fatalf("empty collection status = %d, want %d, body = %s", emptyRec.Code, http.StatusOK, emptyRec.Body.String())
+	}
+
+	var emptyPayload map[string]any
+	if err := json.Unmarshal(emptyRec.Body.Bytes(), &emptyPayload); err != nil {
+		t.Fatalf("json.Unmarshal(empty collection) error = %v", err)
+	}
+	if len(emptyPayload) != 0 {
+		t.Fatalf("empty collection payload = %v, want {}", emptyPayload)
+	}
+
+	createCookbookArtifact(t, router, "cookbook_name", "1111111111111111111111111111111111111111", "1.0.0", "", nil)
+	createCookbookArtifact(t, router, "cookbook_name", "2222222222222222222222222222222222222222", "1.0.0", "", nil)
+	createCookbookArtifact(t, router, "cookbook_name2", "3333333333333333333333333333333333333333", "1.0.0", "", nil)
+
+	listReq := newSignedJSONRequest(t, http.MethodGet, "/cookbook_artifacts", nil)
+	listRec := httptest.NewRecorder()
+	router.ServeHTTP(listRec, listReq)
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("list collection status = %d, want %d, body = %s", listRec.Code, http.StatusOK, listRec.Body.String())
+	}
+
+	var listPayload map[string]any
+	if err := json.Unmarshal(listRec.Body.Bytes(), &listPayload); err != nil {
+		t.Fatalf("json.Unmarshal(collection) error = %v", err)
+	}
+
+	cookbookNameEntry, ok := listPayload["cookbook_name"].(map[string]any)
+	if !ok {
+		t.Fatalf("collection cookbook_name entry = %T, want map[string]any (%v)", listPayload["cookbook_name"], listPayload)
+	}
+	if cookbookNameEntry["url"] != "/cookbook_artifacts/cookbook_name" {
+		t.Fatalf("cookbook_name url = %v, want %q", cookbookNameEntry["url"], "/cookbook_artifacts/cookbook_name")
+	}
+	cookbookNameVersions := cookbookVersionListForName(t, listPayload, "cookbook_name")
+	if len(cookbookNameVersions) != 2 {
+		t.Fatalf("cookbook_name versions len = %d, want 2 (%v)", len(cookbookNameVersions), cookbookNameVersions)
+	}
+	firstVersion := cookbookNameVersions[0].(map[string]any)
+	secondVersion := cookbookNameVersions[1].(map[string]any)
+	if firstVersion["identifier"] != "1111111111111111111111111111111111111111" || secondVersion["identifier"] != "2222222222222222222222222222222222222222" {
+		t.Fatalf("cookbook_name identifiers = %v, want ordered identifiers", cookbookNameVersions)
+	}
+	if firstVersion["url"] != "/cookbook_artifacts/cookbook_name/1111111111111111111111111111111111111111" {
+		t.Fatalf("first artifact url = %v, want %q", firstVersion["url"], "/cookbook_artifacts/cookbook_name/1111111111111111111111111111111111111111")
+	}
+	if secondVersion["url"] != "/cookbook_artifacts/cookbook_name/2222222222222222222222222222222222222222" {
+		t.Fatalf("second artifact url = %v, want %q", secondVersion["url"], "/cookbook_artifacts/cookbook_name/2222222222222222222222222222222222222222")
+	}
+
+	cookbookName2Entry, ok := listPayload["cookbook_name2"].(map[string]any)
+	if !ok {
+		t.Fatalf("collection cookbook_name2 entry = %T, want map[string]any (%v)", listPayload["cookbook_name2"], listPayload)
+	}
+	if cookbookName2Entry["url"] != "/cookbook_artifacts/cookbook_name2" {
+		t.Fatalf("cookbook_name2 url = %v, want %q", cookbookName2Entry["url"], "/cookbook_artifacts/cookbook_name2")
+	}
+	cookbookName2Versions := cookbookVersionListForName(t, listPayload, "cookbook_name2")
+	if len(cookbookName2Versions) != 1 {
+		t.Fatalf("cookbook_name2 versions len = %d, want 1 (%v)", len(cookbookName2Versions), cookbookName2Versions)
+	}
+
+	namedReq := newSignedJSONRequest(t, http.MethodGet, "/cookbook_artifacts/cookbook_name", nil)
+	namedRec := httptest.NewRecorder()
+	router.ServeHTTP(namedRec, namedReq)
+	if namedRec.Code != http.StatusOK {
+		t.Fatalf("named collection status = %d, want %d, body = %s", namedRec.Code, http.StatusOK, namedRec.Body.String())
+	}
+
+	var namedPayload map[string]any
+	if err := json.Unmarshal(namedRec.Body.Bytes(), &namedPayload); err != nil {
+		t.Fatalf("json.Unmarshal(named collection) error = %v", err)
+	}
+	if len(namedPayload) != 1 {
+		t.Fatalf("named payload len = %d, want 1 (%v)", len(namedPayload), namedPayload)
+	}
+	namedVersions := cookbookVersionListForName(t, namedPayload, "cookbook_name")
+	if len(namedVersions) != 2 {
+		t.Fatalf("named cookbook_name versions len = %d, want 2 (%v)", len(namedVersions), namedVersions)
+	}
+}
+
+func TestCookbookArtifactEndpointsSupportAPIV2AllFilesReadShape(t *testing.T) {
+	router := newTestRouter(t)
+
+	checksum := uploadCookbookChecksum(t, router, []byte("puts 'artifact v2'"))
+	createCookbookArtifact(t, router, "demo", "1111111111111111111111111111111111111111", "1.2.3", checksum, nil)
+
+	getReq := newSignedJSONRequest(t, http.MethodGet, "/cookbook_artifacts/demo/1111111111111111111111111111111111111111", nil)
+	getReq.Header.Set("X-Ops-Server-API-Version", "2")
+	getRec := httptest.NewRecorder()
+	router.ServeHTTP(getRec, getReq)
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("artifact v2 get status = %d, want %d, body = %s", getRec.Code, http.StatusOK, getRec.Body.String())
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(getRec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal(v2 artifact get) error = %v", err)
+	}
+	if _, ok := payload["recipes"]; ok {
+		t.Fatalf("v2 artifact response unexpectedly included recipes: %v", payload)
+	}
+	allFiles, ok := payload["all_files"].([]any)
+	if !ok || len(allFiles) != 1 {
+		t.Fatalf("v2 all_files = %T/%v, want single entry", payload["all_files"], payload["all_files"])
+	}
+	file, ok := allFiles[0].(map[string]any)
+	if !ok {
+		t.Fatalf("v2 all_files entry = %T, want map[string]any", allFiles[0])
+	}
+	if file["name"] != "recipes/default.rb" || file["path"] != "recipes/default.rb" {
+		t.Fatalf("v2 file entry = %v, want recipes/default.rb path and name", file)
+	}
+	if file["checksum"] != checksum {
+		t.Fatalf("v2 file checksum = %v, want %q", file["checksum"], checksum)
+	}
+	if file["specificity"] != "default" {
+		t.Fatalf("v2 file specificity = %v, want %q", file["specificity"], "default")
+	}
+	if _, ok := file["url"].(string); !ok {
+		t.Fatalf("v2 file url = %T, want string (%v)", file["url"], file)
+	}
+
+	metadata, ok := payload["metadata"].(map[string]any)
+	if !ok {
+		t.Fatalf("v2 metadata = %T, want map[string]any", payload["metadata"])
+	}
+	providing, ok := metadata["providing"].(map[string]any)
+	if !ok || providing["demo::default"] != ">= 0.0.0" {
+		t.Fatalf("v2 metadata.providing = %v, want default recipe entry", metadata["providing"])
+	}
+	recipes, ok := metadata["recipes"].(map[string]any)
+	if !ok || recipes["demo::default"] != "" {
+		t.Fatalf("v2 metadata.recipes = %v, want default recipe entry", metadata["recipes"])
+	}
+}
+
 func TestCookbookArtifactEndpointsDoNotDeleteExistingIdentifierOnWrongDelete(t *testing.T) {
 	router := newTestRouter(t)
 
