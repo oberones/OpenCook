@@ -790,6 +790,38 @@ func (s *Service) GetGroup(orgName, groupName string) (Group, bool) {
 	return group, ok
 }
 
+func (s *Service) AddUserToGroup(orgName, groupName, username string) error {
+	orgName = strings.TrimSpace(orgName)
+	groupName = strings.TrimSpace(groupName)
+	username = strings.TrimSpace(username)
+
+	if orgName == "" || groupName == "" || username == "" {
+		return ErrInvalidInput
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	org, ok := s.orgs[orgName]
+	if !ok {
+		return ErrNotFound
+	}
+
+	group, ok := org.groups[groupName]
+	if !ok {
+		return ErrNotFound
+	}
+
+	if _, ok := s.users[username]; !ok {
+		return ErrNotFound
+	}
+
+	group.Users = uniqueSorted(append(group.Users, username))
+	group.Actors = uniqueSorted(append(group.Users, group.Clients...))
+	org.groups[groupName] = group
+	return nil
+}
+
 func (s *Service) ListContainers(orgName string) (map[string]string, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

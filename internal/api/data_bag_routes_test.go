@@ -1,7 +1,6 @@
 package api
 
 import (
-	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -334,24 +333,6 @@ func TestDataBagRoutesReturnAllowHeadersAndConflictMessages(t *testing.T) {
 	if len(conflictPayload["error"]) != 1 || conflictPayload["error"][0] != "Data Bag Item 'twilight' already exists in Data Bag 'ponies'." {
 		t.Fatalf("conflict payload = %v, want item-specific message", conflictPayload)
 	}
-}
-
-func newSignedJSONRequest(t *testing.T, method, path string, body []byte) *http.Request {
-	t.Helper()
-
-	var reader *bytes.Reader
-	if body == nil {
-		reader = bytes.NewReader(nil)
-	} else {
-		reader = bytes.NewReader(body)
-	}
-
-	req := httptest.NewRequest(method, path, reader)
-	applySignedHeaders(t, req, "silent-bob", "", method, path, body, signDescription{
-		Version:   "1.1",
-		Algorithm: "sha1",
-	}, "2026-04-02T15:04:05Z")
-	return req
 }
 
 func mustMarshalDataBagJSON(t *testing.T, payload map[string]any) []byte {
