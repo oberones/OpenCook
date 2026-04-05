@@ -500,6 +500,32 @@ func TestCookbookVersionTopLevelFieldValidationAndNoMutationParity(t *testing.T)
 			verifyExists: false,
 		},
 		{
+			name: "create rejects invalid chef_type",
+			path: "/cookbooks/create-chef-type/1.2.3",
+			payload: func() map[string]any {
+				payload := cookbookVersionPayload("create-chef-type", "1.2.3", "", nil)
+				payload["chef_type"] = "not_a_cookbook_version"
+				return payload
+			}(),
+			wantStatus:   http.StatusBadRequest,
+			wantErrors:   []string{"Field 'chef_type' invalid"},
+			verifyPath:   "/cookbooks/create-chef-type/1.2.3",
+			verifyExists: false,
+		},
+		{
+			name: "create rejects invalid version",
+			path: "/cookbooks/create-version/1.2.3",
+			payload: func() map[string]any {
+				payload := cookbookVersionPayload("create-version", "1.2.3", "", nil)
+				payload["version"] = "0.0"
+				return payload
+			}(),
+			wantStatus:   http.StatusBadRequest,
+			wantErrors:   []string{"Field 'version' invalid"},
+			verifyPath:   "/cookbooks/create-version/1.2.3",
+			verifyExists: false,
+		},
+		{
 			name: "create rejects invalid request key",
 			path: "/cookbooks/create-invalid-key/1.2.3",
 			payload: func() map[string]any {
