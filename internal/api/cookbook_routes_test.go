@@ -538,7 +538,7 @@ func TestCookbookVersionRouteValidationRejectsMalformedNameAndVersions(t *testin
 			}
 			assertCookbookErrorList(t, rec.Body.Bytes(), tt.wantErrors)
 			if tt.verifyNoDemo {
-				assertCookbookNamedCollectionMissing(t, router, "demo")
+				assertCookbookMissing(t, router, "/cookbooks/demo")
 			}
 		})
 	}
@@ -558,7 +558,7 @@ func TestCookbookVersionRouteValidationHandlesLargeVersionComponents(t *testing.
 	}
 	assertCookbookErrorList(t, overflowRec.Body.Bytes(), []string{"Invalid cookbook version '1.2.9223372036854775849'."})
 
-	assertCookbookNamedCollectionMissing(t, router, "overflow-demo")
+	assertCookbookMissing(t, router, "/cookbooks/overflow-demo")
 }
 
 func TestCookbookCollectionNumVersionsEdgeCases(t *testing.T) {
@@ -2288,17 +2288,6 @@ func assertCookbookMissing(t *testing.T, router http.Handler, path string) {
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("GET %s status = %d, want %d, body = %s", path, rec.Code, http.StatusNotFound, rec.Body.String())
-	}
-}
-
-func assertCookbookNamedCollectionMissing(t *testing.T, router http.Handler, name string) {
-	t.Helper()
-
-	req := newSignedJSONRequest(t, http.MethodGet, "/cookbooks/"+name, nil)
-	rec := httptest.NewRecorder()
-	router.ServeHTTP(rec, req)
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("GET /cookbooks/%s status = %d, want %d, body = %s", name, rec.Code, http.StatusNotFound, rec.Body.String())
 	}
 }
 
