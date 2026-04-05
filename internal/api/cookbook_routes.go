@@ -895,19 +895,7 @@ func validCookbookVersionPath(version string, allowLatest bool) bool {
 	if allowLatest && (version == "_latest" || version == "latest") {
 		return true
 	}
-	parts := strings.Split(version, ".")
-	if len(parts) != 3 {
-		return false
-	}
-	for _, part := range parts {
-		if part == "" {
-			return false
-		}
-		if _, err := strconv.ParseInt(part, 10, 64); err != nil {
-			return false
-		}
-	}
-	return true
+	return bootstrap.ValidCookbookRouteVersion(version)
 }
 
 func invalidCookbookNameMessage(name string) string {
