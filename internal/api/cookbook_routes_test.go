@@ -897,6 +897,257 @@ func TestCookbookVersionWriteResponsesPreserveFileCollectionShape(t *testing.T) 
 	})
 }
 
+func TestCookbookVersionCreateResponsePreservesOptionalFieldOmissions(t *testing.T) {
+	router := newTestRouter(t)
+
+	t.Run("v0", func(t *testing.T) {
+		checksum := uploadCookbookChecksum(t, router, []byte("puts 'create exactness v0'"))
+
+		payload := cookbookVersionPayload("create-v0", "1.2.3", checksum, map[string]string{
+			"apt": ">= 1.0.0",
+		})
+		delete(payload, "all_files")
+		delete(payload, "version")
+		delete(payload, "json_class")
+		delete(payload, "chef_type")
+
+		req := newSignedJSONRequest(t, http.MethodPut, "/cookbooks/create-v0/1.2.3", mustMarshalSandboxJSON(t, payload))
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("create status = %d, want %d, body = %s", rec.Code, http.StatusCreated, rec.Body.String())
+		}
+
+		var createResponse map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &createResponse); err != nil {
+			t.Fatalf("json.Unmarshal(create response) error = %v", err)
+		}
+		if !reflect.DeepEqual(createResponse, payload) {
+			t.Fatalf("create response = %#v, want %#v", createResponse, payload)
+		}
+
+		getReq := newSignedJSONRequest(t, http.MethodGet, "/cookbooks/create-v0/1.2.3", nil)
+		getRec := httptest.NewRecorder()
+		router.ServeHTTP(getRec, getReq)
+		if getRec.Code != http.StatusOK {
+			t.Fatalf("get status = %d, want %d, body = %s", getRec.Code, http.StatusOK, getRec.Body.String())
+		}
+
+		var getResponse map[string]any
+		if err := json.Unmarshal(getRec.Body.Bytes(), &getResponse); err != nil {
+			t.Fatalf("json.Unmarshal(get response) error = %v", err)
+		}
+		if getResponse["version"] != "1.2.3" {
+			t.Fatalf("get version = %v, want %q", getResponse["version"], "1.2.3")
+		}
+		if getResponse["json_class"] != "Chef::CookbookVersion" {
+			t.Fatalf("get json_class = %v, want %q", getResponse["json_class"], "Chef::CookbookVersion")
+		}
+		if getResponse["chef_type"] != "cookbook_version" {
+			t.Fatalf("get chef_type = %v, want %q", getResponse["chef_type"], "cookbook_version")
+		}
+	})
+
+	t.Run("v2", func(t *testing.T) {
+		checksum := uploadCookbookChecksum(t, router, []byte("puts 'create exactness v2'"))
+
+		payload := cookbookVersionPayload("create-v2", "1.2.3", checksum, map[string]string{
+			"apt": ">= 1.0.0",
+		})
+		delete(payload, "recipes")
+		delete(payload, "version")
+		delete(payload, "json_class")
+		delete(payload, "chef_type")
+
+		req := newSignedJSONRequest(t, http.MethodPut, "/cookbooks/create-v2/1.2.3", mustMarshalSandboxJSON(t, payload))
+		req.Header.Set("X-Ops-Server-API-Version", "2")
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("create status = %d, want %d, body = %s", rec.Code, http.StatusCreated, rec.Body.String())
+		}
+
+		var createResponse map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &createResponse); err != nil {
+			t.Fatalf("json.Unmarshal(create response) error = %v", err)
+		}
+		if !reflect.DeepEqual(createResponse, payload) {
+			t.Fatalf("create response = %#v, want %#v", createResponse, payload)
+		}
+
+		getReq := newSignedJSONRequest(t, http.MethodGet, "/cookbooks/create-v2/1.2.3", nil)
+		getReq.Header.Set("X-Ops-Server-API-Version", "2")
+		getRec := httptest.NewRecorder()
+		router.ServeHTTP(getRec, getReq)
+		if getRec.Code != http.StatusOK {
+			t.Fatalf("get status = %d, want %d, body = %s", getRec.Code, http.StatusOK, getRec.Body.String())
+		}
+
+		var getResponse map[string]any
+		if err := json.Unmarshal(getRec.Body.Bytes(), &getResponse); err != nil {
+			t.Fatalf("json.Unmarshal(get response) error = %v", err)
+		}
+		if getResponse["version"] != "1.2.3" {
+			t.Fatalf("get version = %v, want %q", getResponse["version"], "1.2.3")
+		}
+		if getResponse["json_class"] != "Chef::CookbookVersion" {
+			t.Fatalf("get json_class = %v, want %q", getResponse["json_class"], "Chef::CookbookVersion")
+		}
+		if getResponse["chef_type"] != "cookbook_version" {
+			t.Fatalf("get chef_type = %v, want %q", getResponse["chef_type"], "cookbook_version")
+		}
+	})
+}
+
+func TestCookbookVersionMetadataMutationHTTPParity(t *testing.T) {
+	router := newTestRouter(t)
+	checksum := uploadCookbookChecksum(t, router, []byte("puts 'metadata exactness'"))
+
+	createCookbookVersion(t, router, "meta-demo", "1.2.3", checksum, map[string]string{
+		"apt": ">= 1.0.0",
+	})
+
+	t.Run("metadata_name_delete_is_exact_on_write_but_canonical_on_read", func(t *testing.T) {
+		payload := cookbookVersionPayload("meta-demo", "1.2.3", checksum, map[string]string{
+			"apt": ">= 1.0.0",
+		})
+		delete(payload, "all_files")
+		delete(payload["metadata"].(map[string]any), "name")
+
+		req := newSignedJSONRequest(t, http.MethodPut, "/cookbooks/meta-demo/1.2.3", mustMarshalSandboxJSON(t, payload))
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("update status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+		}
+
+		var putResponse map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &putResponse); err != nil {
+			t.Fatalf("json.Unmarshal(put response) error = %v", err)
+		}
+		if !reflect.DeepEqual(putResponse, payload) {
+			t.Fatalf("put response = %#v, want %#v", putResponse, payload)
+		}
+		if _, ok := putResponse["metadata"].(map[string]any)["name"]; ok {
+			t.Fatalf("put response unexpectedly included metadata.name: %v", putResponse["metadata"])
+		}
+
+		getReq := newSignedJSONRequest(t, http.MethodGet, "/cookbooks/meta-demo/1.2.3", nil)
+		getReq.Header.Set("X-Ops-Server-API-Version", "2")
+		getRec := httptest.NewRecorder()
+		router.ServeHTTP(getRec, getReq)
+		if getRec.Code != http.StatusOK {
+			t.Fatalf("get status = %d, want %d, body = %s", getRec.Code, http.StatusOK, getRec.Body.String())
+		}
+
+		var getResponse map[string]any
+		if err := json.Unmarshal(getRec.Body.Bytes(), &getResponse); err != nil {
+			t.Fatalf("json.Unmarshal(get response) error = %v", err)
+		}
+		if got := getResponse["metadata"].(map[string]any)["name"]; got != "meta-demo" {
+			t.Fatalf("get metadata.name = %v, want %q", got, "meta-demo")
+		}
+	})
+
+	t.Run("metadata_providing_is_exact_on_write_but_filtered_on_read", func(t *testing.T) {
+		providing := map[string]any{
+			"cats::sleep":                "0.0.1",
+			"here(:kitty, :time_to_eat)": "0.0.1",
+		}
+		payload := cookbookVersionPayload("meta-demo", "1.2.3", checksum, nil)
+		delete(payload, "all_files")
+		payload["metadata"].(map[string]any)["providing"] = providing
+
+		req := newSignedJSONRequest(t, http.MethodPut, "/cookbooks/meta-demo/1.2.3", mustMarshalSandboxJSON(t, payload))
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("update status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+		}
+
+		var putResponse map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &putResponse); err != nil {
+			t.Fatalf("json.Unmarshal(put response) error = %v", err)
+		}
+		if !reflect.DeepEqual(putResponse, payload) {
+			t.Fatalf("put response = %#v, want %#v", putResponse, payload)
+		}
+
+		getReq := newSignedJSONRequest(t, http.MethodGet, "/cookbooks/meta-demo/1.2.3", nil)
+		getReq.Header.Set("X-Ops-Server-API-Version", "2")
+		getRec := httptest.NewRecorder()
+		router.ServeHTTP(getRec, getReq)
+		if getRec.Code != http.StatusOK {
+			t.Fatalf("get status = %d, want %d, body = %s", getRec.Code, http.StatusOK, getRec.Body.String())
+		}
+
+		var getResponse map[string]any
+		if err := json.Unmarshal(getRec.Body.Bytes(), &getResponse); err != nil {
+			t.Fatalf("json.Unmarshal(get response) error = %v", err)
+		}
+		if _, ok := getResponse["metadata"].(map[string]any)["providing"]; ok {
+			t.Fatalf("get response unexpectedly included metadata.providing: %v", getResponse["metadata"])
+		}
+	})
+
+	t.Run("invalid_metadata_shapes_keep_existing_version_intact", func(t *testing.T) {
+		cases := []struct {
+			name    string
+			mutate  func(map[string]any)
+			message string
+		}{
+			{
+				name: "platforms_nested_object",
+				mutate: func(payload map[string]any) {
+					payload["metadata"].(map[string]any)["platforms"] = map[string]any{"ubuntu": map[string]any{}}
+				},
+				message: "Invalid value '{[]}' for metadata.platforms",
+			},
+			{
+				name: "dependencies_array",
+				mutate: func(payload map[string]any) {
+					payload["metadata"].(map[string]any)["dependencies"] = []any{"foo"}
+				},
+				message: "Field 'metadata.dependencies' invalid",
+			},
+		}
+
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				payload := cookbookVersionPayload("meta-demo", "1.2.3", checksum, map[string]string{
+					"apt": ">= 2.0.0",
+				})
+				payload["metadata"].(map[string]any)["description"] = "this should not persist"
+				tc.mutate(payload)
+
+				req := newSignedJSONRequest(t, http.MethodPut, "/cookbooks/meta-demo/1.2.3", mustMarshalSandboxJSON(t, payload))
+				rec := httptest.NewRecorder()
+				router.ServeHTTP(rec, req)
+				if rec.Code != http.StatusBadRequest {
+					t.Fatalf("update status = %d, want %d, body = %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+				}
+				assertCookbookErrorList(t, rec.Body.Bytes(), []string{tc.message})
+
+				getReq := newSignedJSONRequest(t, http.MethodGet, "/cookbooks/meta-demo/1.2.3", nil)
+				getReq.Header.Set("X-Ops-Server-API-Version", "2")
+				getRec := httptest.NewRecorder()
+				router.ServeHTTP(getRec, getReq)
+				if getRec.Code != http.StatusOK {
+					t.Fatalf("get status = %d, want %d, body = %s", getRec.Code, http.StatusOK, getRec.Body.String())
+				}
+
+				var getResponse map[string]any
+				if err := json.Unmarshal(getRec.Body.Bytes(), &getResponse); err != nil {
+					t.Fatalf("json.Unmarshal(get response) error = %v", err)
+				}
+				if got := getResponse["metadata"].(map[string]any)["description"]; got == "this should not persist" {
+					t.Fatalf("metadata.description = %v, want original persisted value after validation failure", got)
+				}
+			})
+		}
+	})
+}
+
 func TestCookbookVersionEndpointsCleanUpReleasedChecksums(t *testing.T) {
 	router := newTestRouter(t)
 	oldChecksum := uploadCookbookChecksum(t, router, []byte("puts 'old body'"))
