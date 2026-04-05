@@ -425,7 +425,7 @@ func (s *server) handleNamedCookbookVersion(w http.ResponseWriter, r *http.Reque
 		if created {
 			status = http.StatusCreated
 		}
-		writeJSON(w, status, s.renderCookbookVersionWriteResponse(r, cookbookVersion))
+		writeJSON(w, status, s.renderCookbookVersionWriteResponse(r, cookbookVersion, payload))
 	case http.MethodDelete:
 		if !validCookbookVersionPath(version, true) {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": []string{invalidCookbookVersionMessage(version)}})
@@ -671,19 +671,29 @@ func (s *server) renderCookbookVersionResponse(r *http.Request, org string, vers
 	return response
 }
 
-func (s *server) renderCookbookVersionWriteResponse(r *http.Request, version bootstrap.CookbookVersion) map[string]any {
+func (s *server) renderCookbookVersionWriteResponse(r *http.Request, version bootstrap.CookbookVersion, requestPayload map[string]any) map[string]any {
 	response := map[string]any{
 		"name":          version.Name,
 		"cookbook_name": version.CookbookName,
-		"version":       version.Version,
-		"json_class":    version.JSONClass,
-		"chef_type":     version.ChefType,
-		"frozen?":       version.Frozen,
 		"metadata":      cloneResponseMap(version.Metadata),
+	}
+	if payloadHasKey(requestPayload, "version") {
+		response["version"] = version.Version
+	}
+	if payloadHasKey(requestPayload, "json_class") {
+		response["json_class"] = version.JSONClass
+	}
+	if payloadHasKey(requestPayload, "chef_type") {
+		response["chef_type"] = version.ChefType
+	}
+	if payloadHasKey(requestPayload, "frozen?") {
+		response["frozen?"] = version.Frozen
 	}
 
 	if requestedCookbookAPIVersion(r) >= 2 {
-		response["all_files"] = s.renderCookbookFiles(r, "", version.AllFiles, true, false)
+		if payloadHasKey(requestPayload, "all_files") {
+			response["all_files"] = s.renderCookbookFiles(r, "", version.AllFiles, true, false)
+		}
 		return response
 	}
 
@@ -703,10 +713,13 @@ func (s *server) renderCookbookVersionWriteResponse(r *http.Request, version boo
 	}
 	response["recipes"] = nonNilCookbookFileEntries(segmentFiles["recipes"])
 	for _, segment := range legacyCookbookSegments {
-		if segment == "recipes" || len(segmentFiles[segment]) == 0 {
+		if segment == "recipes" {
 			continue
 		}
-		response[segment] = segmentFiles[segment]
+		if len(segmentFiles[segment]) == 0 && !payloadHasKey(requestPayload, segment) {
+			continue
+		}
+		response[segment] = nonNilCookbookFileEntries(segmentFiles[segment])
 	}
 	return response
 }
@@ -979,4 +992,12 @@ func cookbookCollectionBasePath(r *http.Request, org string) string {
 		return "/organizations/" + org + "/cookbooks"
 	}
 	return "/cookbooks"
+}
+
+func payloadHasKey(payload map[string]any, key string) bool {
+	if payload == nil {
+		return false
+	}
+	_, ok := payload[key]
+	return ok
 }

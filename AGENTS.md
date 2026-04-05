@@ -144,6 +144,8 @@ Implemented so far:
   - manifest-derived `_recipes` behavior with Chef-style default recipe qualification
   - create-path cookbook validation parity for route/payload mismatch errors, with field-specific update-path validation preserved
   - cookbook collection `num_versions` and `_latest` read-edge coverage
+  - pedant-shaped cookbook PUT exactness for omitted optional top-level fields like `version`, `json_class`, and `chef_type`
+  - explicit `?force=false` conflict coverage plus v0/v2 file-collection presence and omission exactness on successful updates
   - multi-version shared-checksum retention and cookbook-route auth 401/403 coverage
   - API-version-sensitive cookbook version shaping with `json_class`, `cookbook_name`, legacy segments, and v2 `all_files`
   - signed direct blob URLs for cookbook file downloads
