@@ -471,6 +471,154 @@ func TestCookbookVersionCreateAndUpdateValidationMatchChefSemantics(t *testing.T
 	assertCookbookErrorList(t, updateRec.Body.Bytes(), []string{"Field 'cookbook_name' invalid"})
 }
 
+func TestCookbookVersionTopLevelFieldValidationAndNoMutationParity(t *testing.T) {
+	router := newTestRouter(t)
+
+	createCookbookVersion(t, router, "top-level-demo", "1.2.3", "", nil)
+
+	tests := []struct {
+		name         string
+		path         string
+		payload      map[string]any
+		wantStatus   int
+		wantErrors   []string
+		verifyPath   string
+		verifyExists bool
+		wantDesc     string
+	}{
+		{
+			name: "create rejects invalid json_class",
+			path: "/cookbooks/create-json-class/1.2.3",
+			payload: func() map[string]any {
+				payload := cookbookVersionPayload("create-json-class", "1.2.3", "", nil)
+				payload["json_class"] = "Chef::Role"
+				return payload
+			}(),
+			wantStatus:   http.StatusBadRequest,
+			wantErrors:   []string{"Field 'json_class' invalid"},
+			verifyPath:   "/cookbooks/create-json-class/1.2.3",
+			verifyExists: false,
+		},
+		{
+			name: "create rejects invalid chef_type",
+			path: "/cookbooks/create-chef-type/1.2.3",
+			payload: func() map[string]any {
+				payload := cookbookVersionPayload("create-chef-type", "1.2.3", "", nil)
+				payload["chef_type"] = "not_a_cookbook_version"
+				return payload
+			}(),
+			wantStatus:   http.StatusBadRequest,
+			wantErrors:   []string{"Field 'chef_type' invalid"},
+			verifyPath:   "/cookbooks/create-chef-type/1.2.3",
+			verifyExists: false,
+		},
+		{
+			name: "create rejects invalid version",
+			path: "/cookbooks/create-version/1.2.3",
+			payload: func() map[string]any {
+				payload := cookbookVersionPayload("create-version", "1.2.3", "", nil)
+				payload["version"] = "0.0"
+				return payload
+			}(),
+			wantStatus:   http.StatusBadRequest,
+			wantErrors:   []string{"Field 'version' invalid"},
+			verifyPath:   "/cookbooks/create-version/1.2.3",
+			verifyExists: false,
+		},
+		{
+			name: "create rejects invalid request key",
+			path: "/cookbooks/create-invalid-key/1.2.3",
+			payload: func() map[string]any {
+				payload := cookbookVersionPayload("create-invalid-key", "1.2.3", "", nil)
+				payload["bogus"] = "nope"
+				return payload
+			}(),
+			wantStatus:   http.StatusBadRequest,
+			wantErrors:   []string{"Invalid key bogus in request body"},
+			verifyPath:   "/cookbooks/create-invalid-key/1.2.3",
+			verifyExists: false,
+		},
+		{
+			name: "update rejects invalid json_class",
+			path: "/cookbooks/top-level-demo/1.2.3",
+			payload: func() map[string]any {
+				payload := cookbookVersionPayload("top-level-demo", "1.2.3", "", nil)
+				payload["json_class"] = "Chef::NonCookbook"
+				payload["metadata"].(map[string]any)["description"] = "bad json_class"
+				return payload
+			}(),
+			wantStatus:   http.StatusBadRequest,
+			wantErrors:   []string{"Field 'json_class' invalid"},
+			verifyPath:   "/cookbooks/top-level-demo/1.2.3",
+			verifyExists: true,
+			wantDesc:     "compatibility cookbook",
+		},
+		{
+			name: "update rejects invalid chef_type",
+			path: "/cookbooks/top-level-demo/1.2.3",
+			payload: func() map[string]any {
+				payload := cookbookVersionPayload("top-level-demo", "1.2.3", "", nil)
+				payload["chef_type"] = "not_cookbook"
+				payload["metadata"].(map[string]any)["description"] = "bad chef_type"
+				return payload
+			}(),
+			wantStatus:   http.StatusBadRequest,
+			wantErrors:   []string{"Field 'chef_type' invalid"},
+			verifyPath:   "/cookbooks/top-level-demo/1.2.3",
+			verifyExists: true,
+			wantDesc:     "compatibility cookbook",
+		},
+		{
+			name: "update rejects invalid version",
+			path: "/cookbooks/top-level-demo/1.2.3",
+			payload: func() map[string]any {
+				payload := cookbookVersionPayload("top-level-demo", "1.2.3", "", nil)
+				payload["version"] = "0.0"
+				payload["metadata"].(map[string]any)["description"] = "bad version"
+				return payload
+			}(),
+			wantStatus:   http.StatusBadRequest,
+			wantErrors:   []string{"Field 'version' invalid"},
+			verifyPath:   "/cookbooks/top-level-demo/1.2.3",
+			verifyExists: true,
+			wantDesc:     "compatibility cookbook",
+		},
+		{
+			name: "update rejects invalid request key",
+			path: "/cookbooks/top-level-demo/1.2.3",
+			payload: func() map[string]any {
+				payload := cookbookVersionPayload("top-level-demo", "1.2.3", "", nil)
+				payload["bogus"] = []string{"still bad"}
+				payload["metadata"].(map[string]any)["description"] = "bad bogus key"
+				return payload
+			}(),
+			wantStatus:   http.StatusBadRequest,
+			wantErrors:   []string{"Invalid key bogus in request body"},
+			verifyPath:   "/cookbooks/top-level-demo/1.2.3",
+			verifyExists: true,
+			wantDesc:     "compatibility cookbook",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := newSignedJSONRequest(t, http.MethodPut, tt.path, mustMarshalSandboxJSON(t, tt.payload))
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("%s status = %d, want %d, body = %s", tt.path, rec.Code, tt.wantStatus, rec.Body.String())
+			}
+			assertCookbookErrorList(t, rec.Body.Bytes(), tt.wantErrors)
+
+			if !tt.verifyExists {
+				assertCookbookMissing(t, router, tt.verifyPath)
+				return
+			}
+			assertCookbookDescription(t, router, tt.verifyPath, tt.wantDesc)
+		})
+	}
+}
+
 func TestCookbookVersionRouteValidationRejectsMalformedNameAndVersions(t *testing.T) {
 	router := newTestRouter(t)
 
