@@ -116,6 +116,131 @@ func TestCookbookArtifactEndpointsRejectMissingUploadedChecksum(t *testing.T) {
 	}
 }
 
+func TestCookbookArtifactEndpointsDoNotDeleteExistingIdentifierOnWrongDelete(t *testing.T) {
+	router := newTestRouter(t)
+
+	createCookbookArtifact(t, router, "demo", "1111111111111111111111111111111111111111", "1.2.3", "", nil)
+
+	deleteReq := newSignedJSONRequest(t, http.MethodDelete, "/cookbook_artifacts/demo/ffffffffffffffffffffffffffffffffffffffff", nil)
+	deleteRec := httptest.NewRecorder()
+	router.ServeHTTP(deleteRec, deleteReq)
+	if deleteRec.Code != http.StatusNotFound {
+		t.Fatalf("delete wrong identifier status = %d, want %d, body = %s", deleteRec.Code, http.StatusNotFound, deleteRec.Body.String())
+	}
+	assertCookbookErrorList(t, deleteRec.Body.Bytes(), []string{"not_found"})
+
+	getReq := newSignedJSONRequest(t, http.MethodGet, "/cookbook_artifacts/demo/1111111111111111111111111111111111111111", nil)
+	getRec := httptest.NewRecorder()
+	router.ServeHTTP(getRec, getReq)
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("get existing artifact after failed delete status = %d, want %d, body = %s", getRec.Code, http.StatusOK, getRec.Body.String())
+	}
+}
+
+func TestCookbookArtifactEndpointAuthorizationMatchesChefShapes(t *testing.T) {
+	router := newTestRouter(t)
+
+	createCookbookArtifact(t, router, "demo", "1111111111111111111111111111111111111111", "1.2.3", "", nil)
+
+	outsideGetReq := newSignedJSONRequestAs(t, "outside-user", http.MethodGet, "/cookbook_artifacts/demo/1111111111111111111111111111111111111111", nil)
+	outsideGetRec := httptest.NewRecorder()
+	router.ServeHTTP(outsideGetRec, outsideGetReq)
+	if outsideGetRec.Code != http.StatusForbidden {
+		t.Fatalf("outside user get status = %d, want %d, body = %s", outsideGetRec.Code, http.StatusForbidden, outsideGetRec.Body.String())
+	}
+
+	invalidDeleteReq := newSignedJSONRequestAs(t, "invalid-user", http.MethodDelete, "/cookbook_artifacts/demo/1111111111111111111111111111111111111111", nil)
+	invalidDeleteRec := httptest.NewRecorder()
+	router.ServeHTTP(invalidDeleteRec, invalidDeleteReq)
+	if invalidDeleteRec.Code != http.StatusUnauthorized {
+		t.Fatalf("invalid user delete status = %d, want %d, body = %s", invalidDeleteRec.Code, http.StatusUnauthorized, invalidDeleteRec.Body.String())
+	}
+
+	getReq := newSignedJSONRequest(t, http.MethodGet, "/cookbook_artifacts/demo/1111111111111111111111111111111111111111", nil)
+	getRec := httptest.NewRecorder()
+	router.ServeHTTP(getRec, getReq)
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("get existing artifact after auth failures status = %d, want %d, body = %s", getRec.Code, http.StatusOK, getRec.Body.String())
+	}
+}
+
+func TestCookbookArtifactEndpointAllowsNormalUserReadAndSignedRecipeDownload(t *testing.T) {
+	router := newTestRouter(t)
+
+	checksum := uploadCookbookChecksum(t, router, []byte("puts 'hello artifact normal user'"))
+	createCookbookArtifact(t, router, "demo", "1111111111111111111111111111111111111111", "1.2.3", checksum, nil)
+
+	getReq := newSignedJSONRequestAs(t, "normal-user", http.MethodGet, "/cookbook_artifacts/demo/1111111111111111111111111111111111111111", nil)
+	getRec := httptest.NewRecorder()
+	router.ServeHTTP(getRec, getReq)
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("normal user get status = %d, want %d, body = %s", getRec.Code, http.StatusOK, getRec.Body.String())
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(getRec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal(normal user cookbook artifact get) error = %v", err)
+	}
+	rawRecipes, ok := payload["recipes"].([]any)
+	if !ok || len(rawRecipes) != 1 {
+		t.Fatalf("recipes = %T/%v, want single recipe entry", payload["recipes"], payload["recipes"])
+	}
+	recipe, ok := rawRecipes[0].(map[string]any)
+	if !ok {
+		t.Fatalf("recipe entry = %T, want map[string]any", rawRecipes[0])
+	}
+	downloadURL, ok := recipe["url"].(string)
+	if !ok || downloadURL == "" {
+		t.Fatalf("recipe url = %T/%v, want non-empty string", recipe["url"], recipe["url"])
+	}
+
+	downloadReq := httptest.NewRequest(http.MethodGet, downloadURL, nil)
+	downloadRec := httptest.NewRecorder()
+	router.ServeHTTP(downloadRec, downloadReq)
+	if downloadRec.Code != http.StatusOK {
+		t.Fatalf("recipe download status = %d, want %d, body = %s", downloadRec.Code, http.StatusOK, downloadRec.Body.String())
+	}
+	if downloadRec.Body.String() != "puts 'hello artifact normal user'" {
+		t.Fatalf("recipe download body = %q, want recipe contents", downloadRec.Body.String())
+	}
+}
+
+func TestCookbookArtifactEndpointAllowsNormalUserDeleteAndRejectsUnauthorizedDelete(t *testing.T) {
+	router := newTestRouter(t)
+
+	createCookbookArtifact(t, router, "normal-delete", "1111111111111111111111111111111111111111", "1.2.3", "", nil)
+	normalDeleteReq := newSignedJSONRequestAs(t, "normal-user", http.MethodDelete, "/cookbook_artifacts/normal-delete/1111111111111111111111111111111111111111", nil)
+	normalDeleteRec := httptest.NewRecorder()
+	router.ServeHTTP(normalDeleteRec, normalDeleteReq)
+	if normalDeleteRec.Code != http.StatusOK {
+		t.Fatalf("normal user delete status = %d, want %d, body = %s", normalDeleteRec.Code, http.StatusOK, normalDeleteRec.Body.String())
+	}
+	assertCookbookArtifactMissing(t, router, "/cookbook_artifacts/normal-delete/1111111111111111111111111111111111111111")
+
+	createCookbookArtifact(t, router, "blocked-delete", "2222222222222222222222222222222222222222", "1.2.3", "", nil)
+
+	outsideDeleteReq := newSignedJSONRequestAs(t, "outside-user", http.MethodDelete, "/cookbook_artifacts/blocked-delete/2222222222222222222222222222222222222222", nil)
+	outsideDeleteRec := httptest.NewRecorder()
+	router.ServeHTTP(outsideDeleteRec, outsideDeleteReq)
+	if outsideDeleteRec.Code != http.StatusForbidden {
+		t.Fatalf("outside user delete status = %d, want %d, body = %s", outsideDeleteRec.Code, http.StatusForbidden, outsideDeleteRec.Body.String())
+	}
+
+	invalidDeleteReq := newSignedJSONRequestAs(t, "invalid-user", http.MethodDelete, "/cookbook_artifacts/blocked-delete/2222222222222222222222222222222222222222", nil)
+	invalidDeleteRec := httptest.NewRecorder()
+	router.ServeHTTP(invalidDeleteRec, invalidDeleteReq)
+	if invalidDeleteRec.Code != http.StatusUnauthorized {
+		t.Fatalf("invalid user delete status = %d, want %d, body = %s", invalidDeleteRec.Code, http.StatusUnauthorized, invalidDeleteRec.Body.String())
+	}
+
+	getReq := newSignedJSONRequest(t, http.MethodGet, "/cookbook_artifacts/blocked-delete/2222222222222222222222222222222222222222", nil)
+	getRec := httptest.NewRecorder()
+	router.ServeHTTP(getRec, getReq)
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("get existing artifact after unauthorized deletes status = %d, want %d, body = %s", getRec.Code, http.StatusOK, getRec.Body.String())
+	}
+}
+
 func TestCookbookEndpointsListLatestRecipesUniverseAndV2VersionView(t *testing.T) {
 	router := newTestRouter(t)
 
@@ -2429,6 +2554,17 @@ func assertCookbookAllFilePaths(t *testing.T, router http.Handler, path string, 
 }
 
 func assertCookbookMissing(t *testing.T, router http.Handler, path string) {
+	t.Helper()
+
+	req := newSignedJSONRequest(t, http.MethodGet, path, nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("GET %s status = %d, want %d, body = %s", path, rec.Code, http.StatusNotFound, rec.Body.String())
+	}
+}
+
+func assertCookbookArtifactMissing(t *testing.T, router http.Handler, path string) {
 	t.Helper()
 
 	req := newSignedJSONRequest(t, http.MethodGet, path, nil)
