@@ -2256,6 +2256,14 @@ func newTestRouterWithOverrides(t *testing.T, cfg config.Config, logger *log.Log
 		},
 		PublicKey: &privateKey.PublicKey,
 	})
+	mustPutKey(t, store, authn.Key{
+		ID: "default",
+		Principal: authn.Principal{
+			Type: "user",
+			Name: "normal-user",
+		},
+		PublicKey: &privateKey.PublicKey,
+	})
 	state := bootstrap.NewService(store, bootstrap.Options{SuperuserName: "pivotal"})
 	publicKeyPEM := mustMarshalPublicKeyPEM(t, &privateKey.PublicKey)
 	state.SeedPrincipal(authn.Principal{Type: "user", Name: "silent-bob"})
@@ -2265,6 +2273,10 @@ func newTestRouterWithOverrides(t *testing.T, cfg config.Config, logger *log.Log
 	state.SeedPrincipal(authn.Principal{Type: "user", Name: "outside-user"})
 	if err := state.SeedPublicKey(authn.Principal{Type: "user", Name: "outside-user"}, "default", publicKeyPEM); err != nil {
 		t.Fatalf("SeedPublicKey(outside-user) error = %v", err)
+	}
+	state.SeedPrincipal(authn.Principal{Type: "user", Name: "normal-user"})
+	if err := state.SeedPublicKey(authn.Principal{Type: "user", Name: "normal-user"}, "default", publicKeyPEM); err != nil {
+		t.Fatalf("SeedPublicKey(normal-user) error = %v", err)
 	}
 	if err := state.SeedPublicKey(authn.Principal{Type: "user", Name: "pivotal"}, "default", publicKeyPEM); err != nil {
 		t.Fatalf("SeedPublicKey(pivotal) error = %v", err)
@@ -2282,6 +2294,9 @@ func newTestRouterWithOverrides(t *testing.T, cfg config.Config, logger *log.Log
 		PublicKey: publicKeyPEM,
 	}); err != nil {
 		t.Fatalf("CreateClient() error = %v", err)
+	}
+	if err := state.AddUserToGroup("ponyville", "users", "normal-user"); err != nil {
+		t.Fatalf("AddUserToGroup(normal-user) error = %v", err)
 	}
 
 	skew := 15 * time.Minute

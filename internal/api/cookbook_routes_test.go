@@ -1304,6 +1304,65 @@ func TestCookbookVersionEndpointAuthorizationMatchesChefShapes(t *testing.T) {
 	}
 }
 
+func TestCookbookVersionEndpointAllowsNormalUserReadAndSignedRecipeDownload(t *testing.T) {
+	router := newTestRouter(t)
+	checksum := uploadCookbookChecksum(t, router, []byte("puts 'hello normal user'"))
+	createCookbookVersion(t, router, "demo", "1.2.3", checksum, nil)
+
+	getReq := newSignedJSONRequestAs(t, "normal-user", http.MethodGet, "/cookbooks/demo/1.2.3", nil)
+	getRec := httptest.NewRecorder()
+	router.ServeHTTP(getRec, getReq)
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("normal user get status = %d, want %d, body = %s", getRec.Code, http.StatusOK, getRec.Body.String())
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(getRec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal(normal user cookbook get) error = %v", err)
+	}
+	rawRecipes, ok := payload["recipes"].([]any)
+	if !ok || len(rawRecipes) != 1 {
+		t.Fatalf("recipes = %T/%v, want single recipe entry", payload["recipes"], payload["recipes"])
+	}
+	recipe, ok := rawRecipes[0].(map[string]any)
+	if !ok {
+		t.Fatalf("recipe entry = %T, want map[string]any", rawRecipes[0])
+	}
+	downloadURL, ok := recipe["url"].(string)
+	if !ok || downloadURL == "" {
+		t.Fatalf("recipe url = %T/%v, want non-empty string", recipe["url"], recipe["url"])
+	}
+
+	downloadReq := httptest.NewRequest(http.MethodGet, downloadURL, nil)
+	downloadRec := httptest.NewRecorder()
+	router.ServeHTTP(downloadRec, downloadReq)
+	if downloadRec.Code != http.StatusOK {
+		t.Fatalf("recipe download status = %d, want %d, body = %s", downloadRec.Code, http.StatusOK, downloadRec.Body.String())
+	}
+	if downloadRec.Body.String() != "puts 'hello normal user'" {
+		t.Fatalf("recipe download body = %q, want recipe contents", downloadRec.Body.String())
+	}
+}
+
+func TestCookbookVersionEndpointAllowsNormalUserDelete(t *testing.T) {
+	router := newTestRouter(t)
+	createCookbookVersion(t, router, "demo", "1.2.3", "", nil)
+
+	deleteReq := newSignedJSONRequestAs(t, "normal-user", http.MethodDelete, "/cookbooks/demo/1.2.3", nil)
+	deleteRec := httptest.NewRecorder()
+	router.ServeHTTP(deleteRec, deleteReq)
+	if deleteRec.Code != http.StatusOK {
+		t.Fatalf("normal user delete status = %d, want %d, body = %s", deleteRec.Code, http.StatusOK, deleteRec.Body.String())
+	}
+
+	getReq := newSignedJSONRequest(t, http.MethodGet, "/cookbooks/demo/1.2.3", nil)
+	getRec := httptest.NewRecorder()
+	router.ServeHTTP(getRec, getReq)
+	if getRec.Code != http.StatusNotFound {
+		t.Fatalf("get after normal user delete status = %d, want %d, body = %s", getRec.Code, http.StatusNotFound, getRec.Body.String())
+	}
+}
+
 func TestCookbookVersionEndpointsUseChecksumSpecificUpdateError(t *testing.T) {
 	router := newTestRouter(t)
 	checksum := uploadCookbookChecksum(t, router, []byte("puts 'hello v1'"))
