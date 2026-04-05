@@ -80,7 +80,7 @@ As of 2026-04-04, OpenCook has moved past pure scaffolding and into the first co
 - cookbook collection and named-version reads now have pedant-style coverage for `num_versions` validation/zero behavior and `_latest` not-found responses
 - cookbook mutation coverage now includes pedant-style v0/v2 file-collection presence and omission exactness on successful update responses
 - cookbook version updates/deletes and cookbook artifact deletes now reclaim unreferenced checksum blobs while preserving shared checksum content still referenced elsewhere in the in-memory compatibility state
-- cookbook HTTP coverage now includes multi-version shared-checksum retention, successful in-org normal-user cookbook read/delete/create/update behavior, usable signed recipe download URLs, create/update no-mutation guarantees for failed outside-user and invalid-user cookbook mutations, and the expected invalid-user/outside-user auth behavior on cookbook routes
+- cookbook HTTP coverage now includes multi-version shared-checksum retention, successful in-org normal-user cookbook read/delete/create/update behavior, usable signed recipe download URLs, create/update no-mutation guarantees for failed outside-user and invalid-user cookbook mutations, file-set replacement behavior that deletes all or some cookbook files on update, invalid-checksum update rejection without mutating the existing cookbook file set, and the expected invalid-user/outside-user auth behavior on cookbook routes
 - compatibility tracking docs and route inventory are in place and being updated alongside code
 
 Current focus:
