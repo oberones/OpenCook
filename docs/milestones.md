@@ -80,7 +80,7 @@ Status: in progress
 - cookbook version responses now preserve `json_class`, `cookbook_name`, legacy segment views, and API v2 `all_files` shaping
 - frozen cookbook versions now return Chef-style `409` conflicts unless `?force=` is used, and forced updates keep the version frozen
 - cookbook PUT responses now preserve pedant-shaped omission of optional top-level fields like `version`, `json_class`, and `chef_type`, and explicit `?force=false` now has its own HTTP coverage
-- cookbook create/update HTTP coverage now includes omitted-default exactness, metadata-name write-vs-read canonicalization, permissive `metadata.providing` writes, and exact no-mutation behavior for invalid metadata payloads
+- cookbook create/update HTTP coverage now includes omitted-default exactness, metadata-name write-vs-read canonicalization, permissive `metadata.providing` writes, exact no-mutation behavior for invalid metadata payloads, and malformed route-path handling for invalid cookbook names and version strings
 - cookbook metadata validation now covers more pedant-shaped string and constraint-map failures, including the update-specific missing-checksum error shape
 - cookbook reads now filter metadata down to the Chef-returned subset and inflate upstream defaults without changing exact PUT response bodies
 - cookbook version conversion is now covered across v0 and v2 upload/download paths, including segment-aware `all_files[].name` behavior for root files
@@ -90,7 +90,7 @@ Status: in progress
 - cookbook collection and latest-version reads now have explicit pedant-style coverage for `num_versions` edge cases and `_latest` not-found behavior
 - cookbook mutation coverage now includes pedant-style v0/v2 file-collection presence and omission exactness on successful update responses
 - cookbook version updates/deletes and artifact deletes now clean up unreferenced checksum blobs while preserving shared checksums still referenced by other cookbooks, artifacts, or live sandboxes
-- cookbook HTTP coverage now explicitly exercises multi-version shared-checksum retention, successful in-org normal-user cookbook read/delete/create/update behavior, usable signed recipe download URLs, create/update no-mutation guarantees for failed outside-user and invalid-user cookbook mutations, full file-set replacement behavior that deletes all or some cookbook files on update, invalid-checksum update rejection without mutating the existing cookbook file set, plus the expected 401/403 cookbook auth behavior for invalid and outside users
+- cookbook HTTP coverage now explicitly exercises multi-version shared-checksum retention, successful in-org normal-user cookbook read/delete/create/update behavior, usable signed recipe download URLs, create/update no-mutation guarantees for failed outside-user and invalid-user cookbook mutations, full file-set replacement behavior that deletes all or some cookbook files on update, invalid-checksum update rejection without mutating the existing cookbook file set, malformed negative/overflow route-version handling, plus the expected 401/403 cookbook auth behavior for invalid and outside users
 - production S3-compatible blob storage, PostgreSQL-backed cookbook persistence, and broader cookbook pedant coverage beyond the current environment-filtered/named-filter/latest/version read-write contract are still pending
 - S3-compatible blob storage remains the target production mode after the compatibility contract settles
 
