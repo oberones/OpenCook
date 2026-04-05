@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"sort"
 	"testing"
 )
 
@@ -1213,6 +1214,111 @@ func TestCookbookVersionEndpointsPreserveSharedChecksumsAcrossVersions(t *testin
 	assertBlobDownloadStatus(t, router, sharedURL, http.StatusOK)
 }
 
+func TestCookbookVersionEndpointsDeleteAllFilesOnUpdate(t *testing.T) {
+	router := newTestRouter(t)
+	firstChecksum := uploadCookbookChecksum(t, router, []byte("puts 'first body'"))
+	secondChecksum := uploadCookbookChecksum(t, router, []byte("puts 'second body'"))
+
+	createCookbookVersionWithFiles(t, router, "delete-all-demo", "1.2.3", []map[string]any{
+		cookbookFilePayload("files/default/first", "files/default/first", firstChecksum),
+		cookbookFilePayload("files/default/second", "files/default/second", secondChecksum),
+	})
+
+	firstURL := cookbookBlobURLByPath(t, router, "/cookbooks/delete-all-demo/1.2.3", "files/default/first")
+	secondURL := cookbookBlobURLByPath(t, router, "/cookbooks/delete-all-demo/1.2.3", "files/default/second")
+
+	updatePayload := cookbookVersionPayload("delete-all-demo", "1.2.3", "", nil)
+	updateReq := newSignedJSONRequest(t, http.MethodPut, "/cookbooks/delete-all-demo/1.2.3", mustMarshalSandboxJSON(t, updatePayload))
+	updateReq.Header.Set("X-Ops-Server-API-Version", "2")
+	updateRec := httptest.NewRecorder()
+	router.ServeHTTP(updateRec, updateReq)
+	if updateRec.Code != http.StatusOK {
+		t.Fatalf("delete all files update status = %d, want %d, body = %s", updateRec.Code, http.StatusOK, updateRec.Body.String())
+	}
+
+	assertCookbookAllFilePaths(t, router, "/cookbooks/delete-all-demo/1.2.3", nil)
+	assertBlobDownloadStatus(t, router, firstURL, http.StatusNotFound)
+	assertBlobDownloadStatus(t, router, secondURL, http.StatusNotFound)
+}
+
+func TestCookbookVersionEndpointsDeleteSomeFilesOnUpdate(t *testing.T) {
+	router := newTestRouter(t)
+	firstChecksum := uploadCookbookChecksum(t, router, []byte("puts 'first body'"))
+	secondChecksum := uploadCookbookChecksum(t, router, []byte("puts 'second body'"))
+	thirdChecksum := uploadCookbookChecksum(t, router, []byte("puts 'third body'"))
+
+	createCookbookVersionWithFiles(t, router, "delete-some-demo", "1.2.3", []map[string]any{
+		cookbookFilePayload("files/default/first", "files/default/first", firstChecksum),
+		cookbookFilePayload("files/default/second", "files/default/second", secondChecksum),
+		cookbookFilePayload("files/default/third", "files/default/third", thirdChecksum),
+	})
+
+	firstURL := cookbookBlobURLByPath(t, router, "/cookbooks/delete-some-demo/1.2.3", "files/default/first")
+	secondURL := cookbookBlobURLByPath(t, router, "/cookbooks/delete-some-demo/1.2.3", "files/default/second")
+	thirdURL := cookbookBlobURLByPath(t, router, "/cookbooks/delete-some-demo/1.2.3", "files/default/third")
+
+	updatePayload := cookbookVersionPayload("delete-some-demo", "1.2.3", "", nil)
+	updatePayload["all_files"] = []any{
+		cookbookFilePayload("files/default/first", "files/default/first", firstChecksum),
+		cookbookFilePayload("files/default/second", "files/default/second", secondChecksum),
+	}
+	updateReq := newSignedJSONRequest(t, http.MethodPut, "/cookbooks/delete-some-demo/1.2.3", mustMarshalSandboxJSON(t, updatePayload))
+	updateReq.Header.Set("X-Ops-Server-API-Version", "2")
+	updateRec := httptest.NewRecorder()
+	router.ServeHTTP(updateRec, updateReq)
+	if updateRec.Code != http.StatusOK {
+		t.Fatalf("delete some files update status = %d, want %d, body = %s", updateRec.Code, http.StatusOK, updateRec.Body.String())
+	}
+
+	assertCookbookAllFilePaths(t, router, "/cookbooks/delete-some-demo/1.2.3", []string{
+		"files/default/first",
+		"files/default/second",
+	})
+	assertBlobDownloadStatus(t, router, firstURL, http.StatusOK)
+	assertBlobDownloadStatus(t, router, secondURL, http.StatusOK)
+	assertBlobDownloadStatus(t, router, thirdURL, http.StatusNotFound)
+}
+
+func TestCookbookVersionEndpointsRejectInvalidChecksumFileUpdateWithoutMutation(t *testing.T) {
+	router := newTestRouter(t)
+	firstChecksum := uploadCookbookChecksum(t, router, []byte("puts 'first body'"))
+	secondChecksum := uploadCookbookChecksum(t, router, []byte("puts 'second body'"))
+	thirdChecksum := uploadCookbookChecksum(t, router, []byte("puts 'third body'"))
+
+	createCookbookVersionWithFiles(t, router, "invalid-checksum-demo", "1.2.3", []map[string]any{
+		cookbookFilePayload("files/default/first", "files/default/first", firstChecksum),
+		cookbookFilePayload("files/default/second", "files/default/second", secondChecksum),
+		cookbookFilePayload("files/default/third", "files/default/third", thirdChecksum),
+	})
+
+	firstURL := cookbookBlobURLByPath(t, router, "/cookbooks/invalid-checksum-demo/1.2.3", "files/default/first")
+	secondURL := cookbookBlobURLByPath(t, router, "/cookbooks/invalid-checksum-demo/1.2.3", "files/default/second")
+	thirdURL := cookbookBlobURLByPath(t, router, "/cookbooks/invalid-checksum-demo/1.2.3", "files/default/third")
+
+	updatePayload := cookbookVersionPayload("invalid-checksum-demo", "1.2.3", "", nil)
+	updatePayload["all_files"] = []any{
+		cookbookFilePayload("files/default/first", "files/default/first", firstChecksum),
+		cookbookFilePayload("files/default/missing", "files/default/missing", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+	}
+	updateReq := newSignedJSONRequest(t, http.MethodPut, "/cookbooks/invalid-checksum-demo/1.2.3", mustMarshalSandboxJSON(t, updatePayload))
+	updateReq.Header.Set("X-Ops-Server-API-Version", "2")
+	updateRec := httptest.NewRecorder()
+	router.ServeHTTP(updateRec, updateReq)
+	if updateRec.Code != http.StatusBadRequest {
+		t.Fatalf("invalid checksum update status = %d, want %d, body = %s", updateRec.Code, http.StatusBadRequest, updateRec.Body.String())
+	}
+	assertCookbookErrorList(t, updateRec.Body.Bytes(), []string{"Manifest has checksum aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa but it hasn't yet been uploaded"})
+
+	assertCookbookAllFilePaths(t, router, "/cookbooks/invalid-checksum-demo/1.2.3", []string{
+		"files/default/first",
+		"files/default/second",
+		"files/default/third",
+	})
+	assertBlobDownloadStatus(t, router, firstURL, http.StatusOK)
+	assertBlobDownloadStatus(t, router, secondURL, http.StatusOK)
+	assertBlobDownloadStatus(t, router, thirdURL, http.StatusOK)
+}
+
 func TestCookbookArtifactDeleteCleanupPreservesSharedChecksums(t *testing.T) {
 	router := newTestRouter(t)
 	sharedChecksum := uploadCookbookChecksum(t, router, []byte("puts 'shared body'"))
@@ -2039,6 +2145,48 @@ func assertCookbookDescription(t *testing.T, router http.Handler, path, want str
 	}
 	if rawMetadata["description"] != want {
 		t.Fatalf("%s metadata.description = %v, want %q", path, rawMetadata["description"], want)
+	}
+}
+
+func assertCookbookAllFilePaths(t *testing.T, router http.Handler, path string, want []string) {
+	t.Helper()
+
+	req := newSignedJSONRequest(t, http.MethodGet, path, nil)
+	req.Header.Set("X-Ops-Server-API-Version", "2")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET %s status = %d, want %d, body = %s", path, rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal(%s) error = %v", path, err)
+	}
+	rawAllFiles, ok := payload["all_files"].([]any)
+	if !ok {
+		t.Fatalf("%s all_files = %T, want []any (%v)", path, payload["all_files"], payload)
+	}
+	got := make([]string, 0, len(rawAllFiles))
+	for _, raw := range rawAllFiles {
+		file, ok := raw.(map[string]any)
+		if !ok {
+			t.Fatalf("%s all_files entry = %T, want map[string]any", path, raw)
+		}
+		pathValue, ok := file["path"].(string)
+		if !ok {
+			t.Fatalf("%s all_files path = %T, want string (%v)", path, file["path"], file)
+		}
+		got = append(got, pathValue)
+	}
+	sort.Strings(got)
+	wantCopy := append([]string(nil), want...)
+	if wantCopy == nil {
+		wantCopy = []string{}
+	}
+	sort.Strings(wantCopy)
+	if !reflect.DeepEqual(got, wantCopy) {
+		t.Fatalf("%s all_files paths = %v, want %v", path, got, wantCopy)
 	}
 }
 
