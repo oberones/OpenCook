@@ -29,9 +29,9 @@ func (s *MemoryStore) Name() string {
 }
 
 func (s *MemoryStore) Status() Status {
-	message := "blob compatibility routes are backed by in-memory content-addressed storage; external blob adapter is still pending"
+	message := "blob compatibility routes are backed by in-memory content-addressed storage; provider-backed filesystem and S3-compatible modes are separate follow-on adapters"
 	if s.target != "" {
-		message = "OPENCOOK_BLOB_STORAGE_URL is configured, but blob compatibility still uses the in-memory adapter for this phase"
+		message = "blob storage is explicitly pinned to the in-memory compatibility adapter for this phase"
 	}
 
 	return Status{

@@ -2227,7 +2227,15 @@ func newTestRouterWithConfig(t *testing.T, cfg config.Config) http.Handler {
 	return newTestRouterWithOverrides(t, cfg, nil, nil)
 }
 
+func newTestRouterWithBlob(t *testing.T, cfg config.Config, blobStore blob.Store) http.Handler {
+	return newTestRouterWithOverridesAndBlob(t, cfg, nil, nil, blobStore)
+}
+
 func newTestRouterWithOverrides(t *testing.T, cfg config.Config, logger *log.Logger, verifier authn.Verifier) http.Handler {
+	return newTestRouterWithOverridesAndBlob(t, cfg, logger, verifier, blob.NewMemoryStore(""))
+}
+
+func newTestRouterWithOverridesAndBlob(t *testing.T, cfg config.Config, logger *log.Logger, verifier authn.Verifier, blobStore blob.Store) http.Handler {
 	t.Helper()
 
 	privateKey := mustParsePrivateKey(t)
@@ -2319,6 +2327,9 @@ func newTestRouterWithOverrides(t *testing.T, cfg config.Config, logger *log.Log
 	now := func() time.Time {
 		return mustParseTime(t, "2026-04-02T15:04:35Z")
 	}
+	if blobStore == nil {
+		blobStore = blob.NewMemoryStore("")
+	}
 
 	return NewRouter(Dependencies{
 		Logger:           logger,
@@ -2329,7 +2340,7 @@ func newTestRouterWithOverrides(t *testing.T, cfg config.Config, logger *log.Log
 		Authn:            verifier,
 		Authz:            authz.NewACLAuthorizer(state),
 		Bootstrap:        state,
-		Blob:             blob.NewMemoryStore(""),
+		Blob:             blobStore,
 		BlobUploadSecret: []byte("test-blob-upload-secret"),
 		Search:           search.NewMemoryIndex(state, ""),
 		Postgres:         pg.New(""),

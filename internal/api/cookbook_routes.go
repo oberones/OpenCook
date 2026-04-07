@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/oberones/OpenCook/internal/authz"
+	"github.com/oberones/OpenCook/internal/blob"
 	"github.com/oberones/OpenCook/internal/bootstrap"
 )
 
@@ -850,6 +851,11 @@ func writeCookbookVersionError(s *server, w http.ResponseWriter, err error, name
 	var validationErr *bootstrap.ValidationError
 	var checksumErr *bootstrap.MissingChecksumError
 	switch {
+	case errors.Is(err, blob.ErrUnavailable):
+		writeJSON(w, http.StatusServiceUnavailable, apiError{
+			Error:   "blob_unavailable",
+			Message: "blob existence backend is not available",
+		})
 	case errors.As(err, &checksumErr):
 		message := "Manifest has a checksum that hasn't been uploaded."
 		if update {
@@ -949,6 +955,11 @@ func (s *server) writeCookbookArtifactError(w http.ResponseWriter, err error, na
 	var validationErr *bootstrap.ValidationError
 	var checksumErr *bootstrap.MissingChecksumError
 	switch {
+	case errors.Is(err, blob.ErrUnavailable):
+		writeJSON(w, http.StatusServiceUnavailable, apiError{
+			Error:   "blob_unavailable",
+			Message: "blob existence backend is not available",
+		})
 	case errors.As(err, &checksumErr):
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": []string{"Manifest has a checksum that hasn't been uploaded."}})
 	case errors.As(err, &validationErr):
