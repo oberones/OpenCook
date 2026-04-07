@@ -79,3 +79,32 @@ func TestFileStoreRejectsInvalidKeys(t *testing.T) {
 		t.Fatalf("Put() error = %v, want ErrInvalidInput", err)
 	}
 }
+
+func TestFileStorePutOverwritesExistingObjects(t *testing.T) {
+	store, err := NewFileStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewFileStore() error = %v", err)
+	}
+
+	if _, err := store.Put(context.Background(), PutRequest{
+		Key:  "abcdef0123456789",
+		Body: []byte("first"),
+	}); err != nil {
+		t.Fatalf("Put(first) error = %v", err)
+	}
+
+	if _, err := store.Put(context.Background(), PutRequest{
+		Key:  "abcdef0123456789",
+		Body: []byte("second"),
+	}); err != nil {
+		t.Fatalf("Put(second) error = %v", err)
+	}
+
+	body, err := store.Get(context.Background(), "abcdef0123456789")
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if string(body) != "second" {
+		t.Fatalf("Get() = %q, want %q", string(body), "second")
+	}
+}

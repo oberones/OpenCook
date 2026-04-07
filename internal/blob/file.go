@@ -81,7 +81,16 @@ func (s *FileStore) Put(_ context.Context, req PutRequest) (PutResult, error) {
 		return PutResult{}, err
 	}
 	if err := os.Rename(tempName, path); err != nil {
-		return PutResult{}, err
+		if _, statErr := os.Stat(path); statErr == nil {
+			if removeErr := os.Remove(path); removeErr != nil {
+				return PutResult{}, removeErr
+			}
+			if err := os.Rename(tempName, path); err != nil {
+				return PutResult{}, err
+			}
+		} else {
+			return PutResult{}, err
+		}
 	}
 	cleanupTemp = false
 

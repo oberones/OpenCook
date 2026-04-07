@@ -344,6 +344,61 @@ func TestBlobChecksumUploadReturns503WhenBlobBackendUnavailable(t *testing.T) {
 	}
 }
 
+func TestSandboxCommitReturns503WhenBlobCheckerUnavailable(t *testing.T) {
+	router := newTestRouterWithBlob(t, config.Config{
+		ServiceName: "opencook",
+		Environment: "test",
+		AuthSkew:    15 * time.Minute,
+	}, stubBlobStore{})
+
+	checksum := checksumHex([]byte("rainbow dash"))
+	createReq := newSignedJSONRequest(t, http.MethodPost, "/sandboxes", mustMarshalSandboxJSON(t, map[string]any{
+		"checksums": map[string]any{
+			checksum: nil,
+		},
+	}))
+	createRec := httptest.NewRecorder()
+	router.ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("create sandbox status = %d, want %d, body = %s", createRec.Code, http.StatusCreated, createRec.Body.String())
+	}
+
+	var createPayload map[string]any
+	if err := json.Unmarshal(createRec.Body.Bytes(), &createPayload); err != nil {
+		t.Fatalf("json.Unmarshal(create sandbox) error = %v", err)
+	}
+	sandboxID := createPayload["sandbox_id"].(string)
+
+	commitReq := newSignedJSONRequest(t, http.MethodPut, "/sandboxes/"+sandboxID, mustMarshalSandboxJSON(t, map[string]any{"is_completed": true}))
+	commitRec := httptest.NewRecorder()
+	router.ServeHTTP(commitRec, commitReq)
+	if commitRec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("commit sandbox status = %d, want %d, body = %s", commitRec.Code, http.StatusServiceUnavailable, commitRec.Body.String())
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(commitRec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal(commit response) error = %v", err)
+	}
+	if payload["error"] != "blob_unavailable" {
+		t.Fatalf("error = %v, want %q", payload["error"], "blob_unavailable")
+	}
+}
+
+type stubBlobStore struct{}
+
+func (stubBlobStore) Name() string {
+	return "stub-blob-store"
+}
+
+func (stubBlobStore) Status() blob.Status {
+	return blob.Status{
+		Backend:    "stub",
+		Configured: false,
+		Message:    "checker intentionally unavailable for test",
+	}
+}
+
 func TestSandboxesEndpointCommitRejectsFalseIsCompletedWithCorrectFieldName(t *testing.T) {
 	router := newTestRouter(t)
 

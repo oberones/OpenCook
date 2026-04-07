@@ -32,6 +32,28 @@ func TestNewStoreInfersFilesystemBackendFromFileURL(t *testing.T) {
 	}
 }
 
+func TestNewStoreInfersFilesystemBackendFromRelativePath(t *testing.T) {
+	store, err := NewStore(config.Config{
+		BlobStorageURL: "tmp/opencook-objects",
+	})
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+
+	if store.Name() != "filesystem-blob-store" {
+		t.Fatalf("store.Name() = %q, want %q", store.Name(), "filesystem-blob-store")
+	}
+}
+
+func TestNewStoreRejectsMalformedBlobStorageURL(t *testing.T) {
+	_, err := NewStore(config.Config{
+		BlobStorageURL: "://bad-url",
+	})
+	if err == nil {
+		t.Fatal("NewStore() error = nil, want parse error")
+	}
+}
+
 func TestNewStoreSelectsS3CompatibleScaffold(t *testing.T) {
 	store, err := NewStore(config.Config{
 		BlobBackend:    BackendS3,
