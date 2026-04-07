@@ -287,6 +287,58 @@ func TestEnvironmentCookbookVersionsRequiresCookbookContainerReadAuthz(t *testin
 	}
 }
 
+func TestEnvironmentCookbookVersionsRequiresRolesContainerReadAuthzForRoleRunList(t *testing.T) {
+	var authorizer *recordingDepsolverAuthorizer
+	router, state := newSearchTestRouterWithAuthorizer(t, func(state *bootstrap.Service) authz.Authorizer {
+		authorizer = &recordingDepsolverAuthorizer{
+			base: authz.NewACLAuthorizer(state),
+			deny: map[string]struct{}{
+				"read:container:roles": {},
+			},
+		}
+		return authorizer
+	})
+	createEnvironmentForCookbookTests(t, router, "production")
+	if _, err := state.CreateRole("ponyville", bootstrap.CreateRoleInput{
+		Payload: map[string]any{
+			"name":                "web",
+			"description":         "",
+			"json_class":          "Chef::Role",
+			"chef_type":           "role",
+			"default_attributes":  map[string]any{},
+			"override_attributes": map[string]any{},
+			"run_list":            []any{"recipe[apache2]"},
+			"env_run_lists":       map[string]any{},
+		},
+	}); err != nil {
+		t.Fatalf("CreateRole(web) error = %v", err)
+	}
+	authorizer.calls = nil
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/environments/production/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{"role[web]"},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("depsolver roles container authz status = %d, want %d, body = %s", rec.Code, http.StatusForbidden, rec.Body.String())
+	}
+
+	wantCalls := []string{
+		"read:environment:production",
+		"read:container:cookbooks",
+		"read:container:roles",
+	}
+	if len(authorizer.calls) != len(wantCalls) {
+		t.Fatalf("depsolver authz calls = %v, want %v", authorizer.calls, wantCalls)
+	}
+	for idx := range wantCalls {
+		if authorizer.calls[idx] != wantCalls[idx] {
+			t.Fatalf("depsolver authz calls[%d] = %q, want %q (%v)", idx, authorizer.calls[idx], wantCalls[idx], authorizer.calls)
+		}
+	}
+}
+
 func TestEnvironmentCookbookVersionsExpandsRoleRunLists(t *testing.T) {
 	router, state := newSearchTestRouterWithAuthorizer(t, nil)
 	createEnvironmentForCookbookTests(t, router, "production")
