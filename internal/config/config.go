@@ -29,6 +29,9 @@ type Config struct {
 	BlobS3Region         string
 	BlobS3ForcePathStyle bool
 	BlobS3DisableTLS     bool
+	BlobS3AccessKeyID    string
+	BlobS3SecretKey      string
+	BlobS3SessionToken   string
 
 	BootstrapRequestorName          string
 	BootstrapRequestorType          string
@@ -110,6 +113,9 @@ func LoadFromEnv() (Config, error) {
 		BlobS3Region:                    strings.TrimSpace(os.Getenv("OPENCOOK_BLOB_S3_REGION")),
 		BlobS3ForcePathStyle:            blobS3ForcePathStyle,
 		BlobS3DisableTLS:                blobS3DisableTLS,
+		BlobS3AccessKeyID:               strings.TrimSpace(os.Getenv("OPENCOOK_BLOB_S3_ACCESS_KEY_ID")),
+		BlobS3SecretKey:                 strings.TrimSpace(os.Getenv("OPENCOOK_BLOB_S3_SECRET_ACCESS_KEY")),
+		BlobS3SessionToken:              strings.TrimSpace(os.Getenv("OPENCOOK_BLOB_S3_SESSION_TOKEN")),
 		BootstrapRequestorName:          envString("OPENCOOK_BOOTSTRAP_REQUESTOR_NAME", ""),
 		BootstrapRequestorType:          envString("OPENCOOK_BOOTSTRAP_REQUESTOR_TYPE", "user"),
 		BootstrapRequestorOrganization:  envString("OPENCOOK_BOOTSTRAP_REQUESTOR_ORG", ""),
@@ -144,6 +150,9 @@ func (c Config) Redacted() map[string]string {
 		"blob_s3_region":             c.BlobS3Region,
 		"blob_s3_force_path_style":   strconv.FormatBool(c.BlobS3ForcePathStyle),
 		"blob_s3_disable_tls":        strconv.FormatBool(c.BlobS3DisableTLS),
+		"blob_s3_access_key_id":      redact(c.BlobS3AccessKeyID),
+		"blob_s3_secret_access_key":  redact(c.BlobS3SecretKey),
+		"blob_s3_session_token":      redact(c.BlobS3SessionToken),
 	}
 }
 
