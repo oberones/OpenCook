@@ -86,6 +86,7 @@ As of 2026-04-04, OpenCook has moved past pure scaffolding and into the first co
 - cookbook artifact create/update coverage now also includes large-component and prerelease versions, invalid route name/identifier rejection, exact route/payload name and identifier mismatch errors, repeated-`PUT` `409` conflict behavior, and no-mutation behavior for failed outside-user and invalid-user updates
 - cookbook artifact create coverage now also includes metadata default overrides and multi-identifier create behavior for the same cookbook name
 - cookbook artifact validation HTTP coverage now also includes missing metadata versions, invalid legacy segment shapes, and invalid metadata dependency/platform payloads
+- cookbook artifact create auth coverage now also includes normal-user create success plus invalid/outside no-mutation behavior
 - compatibility tracking docs and route inventory are in place and being updated alongside code
 
 Current focus:
