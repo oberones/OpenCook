@@ -67,7 +67,7 @@ Implemented so far:
   - `/environments/{name}/cookbook_versions`
   - `/environments/{name}/nodes`
   - `/environments/{name}/recipes`
-  - cookbook depsolver run-list resolution with environment constraints, version pins, recursive dependency expansion, cookbook-container read auth parity, minimal Chef-style success payload shaping, datestamp constraint coverage, and the current Chef-shaped `400`/`404`/`412` responses
+  - cookbook depsolver run-list resolution with server-side `role[...]` expansion, environment constraints, environment-specific role run lists, nested-role expansion, version pins, recursive dependency expansion, cookbook-container read auth parity, minimal Chef-style success payload shaping, datestamp constraint coverage, and the current Chef-shaped `400`/`404`/`412` responses including missing/recursive role failures
 - the first core object slice for nodes:
   - list
   - get
@@ -356,7 +356,7 @@ These areas are still intentionally incomplete:
 - deeper node and environment compatibility such as cookbook constraint edge cases and linked object behavior
 - deeper role compatibility such as run-list normalization and linked environment behavior
 - broader search semantics beyond the current in-memory compatibility layer, especially richer Lucene-style query translation and wider object coverage
-- deeper Bookshelf/cookbook flows beyond the current cookbook write/read/artifact slice, especially the remaining cookbook pedant cases outside the current environment-filtered/named-filter/latest/version/depsolver contract and the remaining deeper provider hardening around S3-compatible blob behavior
+- deeper Bookshelf/cookbook flows beyond the current cookbook write/read/artifact slice, especially the remaining cookbook pedant cases outside the current environment-filtered/named-filter/latest/version/depsolver contract, broader upstream run-list/depsolver semantics, and the remaining deeper provider hardening around S3-compatible blob behavior
 - operational parity and migration tooling
 
-The next likely major slice is the remaining cookbook pedant cases beyond the current environment-filtered, named-filter/latest-version, and first depsolver coverage, or deeper provider hardening around S3-compatible blob behavior before moving stabilized slices toward PostgreSQL/OpenSearch-backed providers.
+The next likely major slice is broader upstream run-list/depsolver parity beyond the current role-expanded depsolver coverage, or deeper provider hardening around S3-compatible blob behavior before moving stabilized slices toward PostgreSQL/OpenSearch-backed providers.

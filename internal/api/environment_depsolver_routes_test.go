@@ -55,22 +55,6 @@ func TestEnvironmentCookbookVersionsRejectInvalidRunList(t *testing.T) {
 	assertEnvironmentErrorMessages(t, rec.Body.Bytes(), "Field 'run_list' is not a valid run list")
 }
 
-func TestEnvironmentCookbookVersionsRejectUnsupportedRoleRunListItem(t *testing.T) {
-	router := newTestRouter(t)
-	createEnvironmentForCookbookTests(t, router, "production")
-
-	req := newSignedJSONRequest(t, http.MethodPost, "/environments/production/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
-		"run_list": []any{"role[web]"},
-	}))
-	rec := httptest.NewRecorder()
-	router.ServeHTTP(rec, req)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("depsolver unsupported role run_list status = %d, want %d, body = %s", rec.Code, http.StatusBadRequest, rec.Body.String())
-	}
-
-	assertEnvironmentErrorMessages(t, rec.Body.Bytes(), "Field 'run_list' contains unsupported role item role[web]")
-}
-
 func TestEnvironmentCookbookVersionsReturnsNotFoundForMissingEnvironment(t *testing.T) {
 	router := newTestRouter(t)
 
@@ -301,6 +285,138 @@ func TestEnvironmentCookbookVersionsRequiresCookbookContainerReadAuthz(t *testin
 			t.Fatalf("depsolver authz calls[%d] = %q, want %q (%v)", idx, authorizer.calls[idx], wantCalls[idx], authorizer.calls)
 		}
 	}
+}
+
+func TestEnvironmentCookbookVersionsExpandsRoleRunLists(t *testing.T) {
+	router, state := newSearchTestRouterWithAuthorizer(t, nil)
+	createEnvironmentForCookbookTests(t, router, "production")
+	createCookbookVersion(t, router, "apache2", "1.0.0", "", nil)
+	createCookbookVersion(t, router, "nginx", "2.0.0", "", nil)
+	createCookbookVersion(t, router, "users", "3.0.0", "", nil)
+
+	if _, err := state.CreateRole("ponyville", bootstrap.CreateRoleInput{
+		Payload: map[string]any{
+			"name":                "base",
+			"description":         "",
+			"json_class":          "Chef::Role",
+			"chef_type":           "role",
+			"default_attributes":  map[string]any{},
+			"override_attributes": map[string]any{},
+			"run_list":            []any{"recipe[apache2]"},
+			"env_run_lists": map[string]any{
+				"production": []any{"recipe[nginx]"},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("CreateRole(base) error = %v", err)
+	}
+	if _, err := state.CreateRole("ponyville", bootstrap.CreateRoleInput{
+		Payload: map[string]any{
+			"name":                "web",
+			"description":         "",
+			"json_class":          "Chef::Role",
+			"chef_type":           "role",
+			"default_attributes":  map[string]any{},
+			"override_attributes": map[string]any{},
+			"run_list":            []any{"role[base]", "recipe[users]"},
+			"env_run_lists":       map[string]any{},
+		},
+	}); err != nil {
+		t.Fatalf("CreateRole(web) error = %v", err)
+	}
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/environments/production/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{"role[web]"},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("depsolver role expansion status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	payload := decodeJSONMap(t, rec.Body.Bytes())
+	assertCookbookVersionBody(t, payload, "nginx", "2.0.0")
+	assertCookbookVersionBody(t, payload, "users", "3.0.0")
+	if _, ok := payload["apache2"]; ok {
+		t.Fatalf("production role-expanded payload unexpectedly contains apache2: %v", payload)
+	}
+
+	defaultReq := newSignedJSONRequest(t, http.MethodPost, "/environments/_default/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{"role[web]"},
+	}))
+	defaultRec := httptest.NewRecorder()
+	router.ServeHTTP(defaultRec, defaultReq)
+	if defaultRec.Code != http.StatusOK {
+		t.Fatalf("depsolver default role expansion status = %d, want %d, body = %s", defaultRec.Code, http.StatusOK, defaultRec.Body.String())
+	}
+
+	defaultPayload := decodeJSONMap(t, defaultRec.Body.Bytes())
+	assertCookbookVersionBody(t, defaultPayload, "apache2", "1.0.0")
+	assertCookbookVersionBody(t, defaultPayload, "users", "3.0.0")
+	if _, ok := defaultPayload["nginx"]; ok {
+		t.Fatalf("default role-expanded payload unexpectedly contains nginx: %v", defaultPayload)
+	}
+}
+
+func TestEnvironmentCookbookVersionsRejectsMissingRoleRunListItem(t *testing.T) {
+	router := newTestRouter(t)
+	createEnvironmentForCookbookTests(t, router, "production")
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/environments/production/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{"role[missing]"},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("depsolver missing role status = %d, want %d, body = %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+
+	assertEnvironmentErrorMessages(t, rec.Body.Bytes(), "Field 'run_list' contains unknown role item role[missing]")
+}
+
+func TestEnvironmentCookbookVersionsRejectsRecursiveRoleRunListItem(t *testing.T) {
+	router, state := newSearchTestRouterWithAuthorizer(t, nil)
+	createEnvironmentForCookbookTests(t, router, "production")
+
+	if _, err := state.CreateRole("ponyville", bootstrap.CreateRoleInput{
+		Payload: map[string]any{
+			"name":                "web",
+			"description":         "",
+			"json_class":          "Chef::Role",
+			"chef_type":           "role",
+			"default_attributes":  map[string]any{},
+			"override_attributes": map[string]any{},
+			"run_list":            []any{"role[db]"},
+			"env_run_lists":       map[string]any{},
+		},
+	}); err != nil {
+		t.Fatalf("CreateRole(web) error = %v", err)
+	}
+	if _, err := state.CreateRole("ponyville", bootstrap.CreateRoleInput{
+		Payload: map[string]any{
+			"name":                "db",
+			"description":         "",
+			"json_class":          "Chef::Role",
+			"chef_type":           "role",
+			"default_attributes":  map[string]any{},
+			"override_attributes": map[string]any{},
+			"run_list":            []any{"role[web]"},
+			"env_run_lists":       map[string]any{},
+		},
+	}); err != nil {
+		t.Fatalf("CreateRole(db) error = %v", err)
+	}
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/environments/production/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{"role[web]"},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("depsolver recursive role status = %d, want %d, body = %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+
+	assertEnvironmentErrorMessages(t, rec.Body.Bytes(), "Field 'run_list' contains recursive role item role[web]")
 }
 
 func assertEnvironmentErrorMessages(t *testing.T, body []byte, want ...string) {
