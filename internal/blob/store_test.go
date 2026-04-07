@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/oberones/OpenCook/internal/config"
 )
@@ -99,5 +100,32 @@ func TestNewStoreReportsConfiguredS3CompatibleBackendWithCredentials(t *testing.
 	status := store.Status()
 	if !status.Configured {
 		t.Fatal("Status().Configured = false, want true")
+	}
+}
+
+func TestNewStoreAppliesS3TimeoutAndRetrySettings(t *testing.T) {
+	store, err := NewStore(config.Config{
+		BlobBackend:          BackendS3,
+		BlobStorageURL:       "s3://chef-bucket/checksums",
+		BlobS3Endpoint:       "http://minio.local:9000",
+		BlobS3Region:         "us-east-1",
+		BlobS3AccessKeyID:    "access-key",
+		BlobS3SecretKey:      "secret-key",
+		BlobS3RequestTimeout: 42 * time.Second,
+		BlobS3MaxRetries:     5,
+	})
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+
+	s3Store, ok := store.(*S3CompatibleStore)
+	if !ok {
+		t.Fatalf("store type = %T, want *S3CompatibleStore", store)
+	}
+	if s3Store.client.Timeout != 42*time.Second {
+		t.Fatalf("client.Timeout = %v, want %v", s3Store.client.Timeout, 42*time.Second)
+	}
+	if s3Store.maxRetries != 5 {
+		t.Fatalf("maxRetries = %d, want %d", s3Store.maxRetries, 5)
 	}
 }
