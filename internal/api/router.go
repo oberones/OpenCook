@@ -81,6 +81,8 @@ func NewRouter(deps Dependencies) http.Handler {
 	mux.HandleFunc("/environments/{name}/cookbooks", srv.withAuthn("environment-cookbooks-root", srv.handleEnvironmentCookbooks))
 	mux.HandleFunc("/environments/{name}/cookbooks/{cookbook}", srv.withAuthn("environment-cookbooks-named", srv.handleEnvironmentCookbooks))
 	mux.HandleFunc("/environments/{name}/cookbooks/", srv.withAuthn("environment-cookbooks-routes", srv.handleEnvironmentCookbooks))
+	mux.HandleFunc("/environments/{name}/cookbook_versions", srv.withAuthn("environment-cookbook-versions-root", srv.handleEnvironmentCookbookVersions))
+	mux.HandleFunc("/environments/{name}/cookbook_versions/", srv.withAuthn("environment-cookbook-versions-routes", srv.handleEnvironmentCookbookVersions))
 	mux.HandleFunc("/environments/{name}/nodes", srv.withAuthn("environment-nodes-root", srv.handleEnvironmentNodes))
 	mux.HandleFunc("/environments/{name}/nodes/", srv.withAuthn("environment-nodes-routes", srv.handleEnvironmentNodes))
 	mux.HandleFunc("/environments/{name}/recipes", srv.withAuthn("environment-recipes-root", srv.handleEnvironmentRecipes))
@@ -116,6 +118,8 @@ func NewRouter(deps Dependencies) http.Handler {
 	mux.HandleFunc("/organizations/{org}/environments/{name}/cookbooks", srv.withAuthn("org-environment-cookbooks-root", srv.handleEnvironmentCookbooks))
 	mux.HandleFunc("/organizations/{org}/environments/{name}/cookbooks/{cookbook}", srv.withAuthn("org-environment-cookbooks-named", srv.handleEnvironmentCookbooks))
 	mux.HandleFunc("/organizations/{org}/environments/{name}/cookbooks/", srv.withAuthn("org-environment-cookbooks-routes", srv.handleEnvironmentCookbooks))
+	mux.HandleFunc("/organizations/{org}/environments/{name}/cookbook_versions", srv.withAuthn("org-environment-cookbook-versions-root", srv.handleEnvironmentCookbookVersions))
+	mux.HandleFunc("/organizations/{org}/environments/{name}/cookbook_versions/", srv.withAuthn("org-environment-cookbook-versions-routes", srv.handleEnvironmentCookbookVersions))
 	mux.HandleFunc("/organizations/{org}/environments/{name}/nodes", srv.withAuthn("org-environment-nodes-root", srv.handleEnvironmentNodes))
 	mux.HandleFunc("/organizations/{org}/environments/{name}/nodes/", srv.withAuthn("org-environment-nodes-routes", srv.handleEnvironmentNodes))
 	mux.HandleFunc("/organizations/{org}/environments/{name}/recipes", srv.withAuthn("org-environment-recipes-root", srv.handleEnvironmentRecipes))
@@ -473,7 +477,7 @@ func flattenHeaders(header http.Header) map[string]string {
 
 func isImplementedPattern(pattern string) bool {
 	switch pattern {
-	case "/_blob/checksums/{checksum}", "/_blob/checksums/{checksum}/", "/users", "/users/", "/users/{name}/keys", "/users/{name}/keys/", "/organizations", "/organizations/", "/clients", "/clients/", "/clients/{name}/keys", "/clients/{name}/keys/", "/cookbooks", "/cookbooks/", "/cookbooks/_latest", "/cookbooks/_latest/", "/cookbooks/_recipes", "/cookbooks/_recipes/", "/cookbooks/{name}", "/cookbooks/{name}/", "/cookbooks/{name}/{version}", "/cookbooks/{name}/{version}/", "/cookbook_artifacts", "/cookbook_artifacts/", "/cookbook_artifacts/{name}", "/cookbook_artifacts/{name}/", "/cookbook_artifacts/{name}/{identifier}", "/cookbook_artifacts/{name}/{identifier}/", "/universe", "/universe/", "/data", "/data/", "/organizations/{org}/data", "/organizations/{org}/data/", "/organizations/{org}/cookbooks", "/organizations/{org}/cookbooks/", "/organizations/{org}/cookbooks/_latest", "/organizations/{org}/cookbooks/_latest/", "/organizations/{org}/cookbooks/_recipes", "/organizations/{org}/cookbooks/_recipes/", "/organizations/{org}/cookbooks/{name}", "/organizations/{org}/cookbooks/{name}/", "/organizations/{org}/cookbooks/{name}/{version}", "/organizations/{org}/cookbooks/{name}/{version}/", "/organizations/{org}/cookbook_artifacts", "/organizations/{org}/cookbook_artifacts/", "/organizations/{org}/cookbook_artifacts/{name}", "/organizations/{org}/cookbook_artifacts/{name}/", "/organizations/{org}/cookbook_artifacts/{name}/{identifier}", "/organizations/{org}/cookbook_artifacts/{name}/{identifier}/", "/organizations/{org}/universe", "/organizations/{org}/universe/", "/environments", "/environments/", "/environments/{name}/cookbooks", "/environments/{name}/cookbooks/", "/environments/{name}/cookbooks/{cookbook}", "/environments/{name}/nodes", "/environments/{name}/nodes/", "/environments/{name}/recipes", "/environments/{name}/recipes/", "/organizations/{org}/environments", "/organizations/{org}/environments/", "/organizations/{org}/environments/{name}/cookbooks", "/organizations/{org}/environments/{name}/cookbooks/", "/organizations/{org}/environments/{name}/cookbooks/{cookbook}", "/organizations/{org}/environments/{name}/nodes", "/organizations/{org}/environments/{name}/nodes/", "/organizations/{org}/environments/{name}/recipes", "/organizations/{org}/environments/{name}/recipes/", "/nodes", "/nodes/", "/organizations/{org}/nodes", "/organizations/{org}/nodes/", "/policies", "/policies/", "/policies/{name}", "/policies/{name}/", "/policies/{name}/revisions", "/policies/{name}/revisions/", "/policies/{name}/revisions/{revision}", "/policies/{name}/revisions/{revision}/", "/policy_groups", "/policy_groups/", "/policy_groups/{group}", "/policy_groups/{group}/", "/policy_groups/{group}/policies/{name}", "/policy_groups/{group}/policies/{name}/", "/organizations/{org}/policies", "/organizations/{org}/policies/", "/organizations/{org}/policies/{name}", "/organizations/{org}/policies/{name}/", "/organizations/{org}/policies/{name}/revisions", "/organizations/{org}/policies/{name}/revisions/", "/organizations/{org}/policies/{name}/revisions/{revision}", "/organizations/{org}/policies/{name}/revisions/{revision}/", "/organizations/{org}/policy_groups", "/organizations/{org}/policy_groups/", "/organizations/{org}/policy_groups/{group}", "/organizations/{org}/policy_groups/{group}/", "/organizations/{org}/policy_groups/{group}/policies/{name}", "/organizations/{org}/policy_groups/{group}/policies/{name}/", "/search", "/search/", "/search/{index}", "/search/{index}/", "/organizations/{org}/search", "/organizations/{org}/search/", "/organizations/{org}/search/{index}", "/organizations/{org}/search/{index}/", "/sandboxes", "/sandboxes/", "/sandboxes/{id}", "/sandboxes/{id}/", "/organizations/{org}/sandboxes", "/organizations/{org}/sandboxes/", "/organizations/{org}/sandboxes/{id}", "/organizations/{org}/sandboxes/{id}/", "/roles", "/roles/", "/roles/{name}/environments", "/roles/{name}/environments/", "/roles/{name}/environments/{environment}", "/roles/{name}/environments/{environment}/", "/organizations/{org}/roles", "/organizations/{org}/roles/", "/organizations/{org}/roles/{name}/environments", "/organizations/{org}/roles/{name}/environments/", "/organizations/{org}/roles/{name}/environments/{environment}", "/organizations/{org}/roles/{name}/environments/{environment}/", "/organizations/{org}/clients", "/organizations/{org}/clients/", "/organizations/{org}/clients/{name}/keys", "/organizations/{org}/clients/{name}/keys/":
+	case "/_blob/checksums/{checksum}", "/_blob/checksums/{checksum}/", "/users", "/users/", "/users/{name}/keys", "/users/{name}/keys/", "/organizations", "/organizations/", "/clients", "/clients/", "/clients/{name}/keys", "/clients/{name}/keys/", "/cookbooks", "/cookbooks/", "/cookbooks/_latest", "/cookbooks/_latest/", "/cookbooks/_recipes", "/cookbooks/_recipes/", "/cookbooks/{name}", "/cookbooks/{name}/", "/cookbooks/{name}/{version}", "/cookbooks/{name}/{version}/", "/cookbook_artifacts", "/cookbook_artifacts/", "/cookbook_artifacts/{name}", "/cookbook_artifacts/{name}/", "/cookbook_artifacts/{name}/{identifier}", "/cookbook_artifacts/{name}/{identifier}/", "/universe", "/universe/", "/data", "/data/", "/organizations/{org}/data", "/organizations/{org}/data/", "/organizations/{org}/cookbooks", "/organizations/{org}/cookbooks/", "/organizations/{org}/cookbooks/_latest", "/organizations/{org}/cookbooks/_latest/", "/organizations/{org}/cookbooks/_recipes", "/organizations/{org}/cookbooks/_recipes/", "/organizations/{org}/cookbooks/{name}", "/organizations/{org}/cookbooks/{name}/", "/organizations/{org}/cookbooks/{name}/{version}", "/organizations/{org}/cookbooks/{name}/{version}/", "/organizations/{org}/cookbook_artifacts", "/organizations/{org}/cookbook_artifacts/", "/organizations/{org}/cookbook_artifacts/{name}", "/organizations/{org}/cookbook_artifacts/{name}/", "/organizations/{org}/cookbook_artifacts/{name}/{identifier}", "/organizations/{org}/cookbook_artifacts/{name}/{identifier}/", "/organizations/{org}/universe", "/organizations/{org}/universe/", "/environments", "/environments/", "/environments/{name}/cookbooks", "/environments/{name}/cookbooks/", "/environments/{name}/cookbooks/{cookbook}", "/environments/{name}/cookbook_versions", "/environments/{name}/cookbook_versions/", "/environments/{name}/nodes", "/environments/{name}/nodes/", "/environments/{name}/recipes", "/environments/{name}/recipes/", "/organizations/{org}/environments", "/organizations/{org}/environments/", "/organizations/{org}/environments/{name}/cookbooks", "/organizations/{org}/environments/{name}/cookbooks/", "/organizations/{org}/environments/{name}/cookbooks/{cookbook}", "/organizations/{org}/environments/{name}/cookbook_versions", "/organizations/{org}/environments/{name}/cookbook_versions/", "/organizations/{org}/environments/{name}/nodes", "/organizations/{org}/environments/{name}/nodes/", "/organizations/{org}/environments/{name}/recipes", "/organizations/{org}/environments/{name}/recipes/", "/nodes", "/nodes/", "/organizations/{org}/nodes", "/organizations/{org}/nodes/", "/policies", "/policies/", "/policies/{name}", "/policies/{name}/", "/policies/{name}/revisions", "/policies/{name}/revisions/", "/policies/{name}/revisions/{revision}", "/policies/{name}/revisions/{revision}/", "/policy_groups", "/policy_groups/", "/policy_groups/{group}", "/policy_groups/{group}/", "/policy_groups/{group}/policies/{name}", "/policy_groups/{group}/policies/{name}/", "/organizations/{org}/policies", "/organizations/{org}/policies/", "/organizations/{org}/policies/{name}", "/organizations/{org}/policies/{name}/", "/organizations/{org}/policies/{name}/revisions", "/organizations/{org}/policies/{name}/revisions/", "/organizations/{org}/policies/{name}/revisions/{revision}", "/organizations/{org}/policies/{name}/revisions/{revision}/", "/organizations/{org}/policy_groups", "/organizations/{org}/policy_groups/", "/organizations/{org}/policy_groups/{group}", "/organizations/{org}/policy_groups/{group}/", "/organizations/{org}/policy_groups/{group}/policies/{name}", "/organizations/{org}/policy_groups/{group}/policies/{name}/", "/search", "/search/", "/search/{index}", "/search/{index}/", "/organizations/{org}/search", "/organizations/{org}/search/", "/organizations/{org}/search/{index}", "/organizations/{org}/search/{index}/", "/sandboxes", "/sandboxes/", "/sandboxes/{id}", "/sandboxes/{id}/", "/organizations/{org}/sandboxes", "/organizations/{org}/sandboxes/", "/organizations/{org}/sandboxes/{id}", "/organizations/{org}/sandboxes/{id}/", "/roles", "/roles/", "/roles/{name}/environments", "/roles/{name}/environments/", "/roles/{name}/environments/{environment}", "/roles/{name}/environments/{environment}/", "/organizations/{org}/roles", "/organizations/{org}/roles/", "/organizations/{org}/roles/{name}/environments", "/organizations/{org}/roles/{name}/environments/", "/organizations/{org}/roles/{name}/environments/{environment}", "/organizations/{org}/roles/{name}/environments/{environment}/", "/organizations/{org}/clients", "/organizations/{org}/clients/", "/organizations/{org}/clients/{name}/keys", "/organizations/{org}/clients/{name}/keys/":
 		return true
 	default:
 		return false
@@ -500,27 +504,52 @@ func (s *server) logf(format string, args ...any) {
 	s.deps.Logger.Printf(format, args...)
 }
 
-func decodeJSON(w http.ResponseWriter, r *http.Request, payload any) bool {
+type decodeJSONResult int
+
+const (
+	decodeJSONOK decodeJSONResult = iota
+	decodeJSONInvalid
+	decodeJSONMultipleDocuments
+)
+
+func decodeJSONInto(r *http.Request, payload any) decodeJSONResult {
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(payload); err != nil {
+		return decodeJSONInvalid
+	}
+
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		return decodeJSONMultipleDocuments
+	}
+
+	return decodeJSONOK
+}
+
+func decodeJSON(w http.ResponseWriter, r *http.Request, payload any) bool {
+	switch decodeJSONInto(r, payload) {
+	case decodeJSONOK:
+		return true
+	case decodeJSONInvalid:
+		writeJSON(w, http.StatusBadRequest, apiError{
+			Error:   "invalid_json",
+			Message: "request body must be valid JSON",
+		})
+		return false
+	case decodeJSONMultipleDocuments:
+		writeJSON(w, http.StatusBadRequest, apiError{
+			Error:   "invalid_json",
+			Message: "request body must contain exactly one JSON document",
+		})
+		return false
+	default:
 		writeJSON(w, http.StatusBadRequest, apiError{
 			Error:   "invalid_json",
 			Message: "request body must be valid JSON",
 		})
 		return false
 	}
-
-	var extra any
-	if err := decoder.Decode(&extra); err != io.EOF {
-		writeJSON(w, http.StatusBadRequest, apiError{
-			Error:   "invalid_json",
-			Message: "request body must contain exactly one JSON document",
-		})
-		return false
-	}
-
-	return true
 }
 
 func (s *server) statusPayload(mode string) map[string]any {
