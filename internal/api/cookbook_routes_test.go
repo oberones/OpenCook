@@ -423,6 +423,97 @@ func TestCookbookArtifactUpdateConflictAndNoMutationParity(t *testing.T) {
 	assertCookbookArtifactDescription(t, router, "/cookbook_artifacts/cookbook-to-be-modified/1111111111111111111111111111111111111111", "compatibility cookbook")
 }
 
+func TestCookbookArtifactCreateAllowsMetadataDefaultOverrides(t *testing.T) {
+	router := newTestRouter(t)
+
+	payload := cookbookArtifactPayload("override-demo", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "1.2.3", "", nil)
+	metadata := payload["metadata"].(map[string]any)
+	metadata["description"] = "my cookbook"
+	metadata["long_description"] = "this is a great cookbook"
+	metadata["maintainer"] = "This is my name"
+	metadata["maintainer_email"] = "cookbook_author@example.com"
+	metadata["license"] = "MPL"
+
+	req := newSignedJSONRequest(t, http.MethodPut, "/cookbook_artifacts/override-demo/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", mustMarshalSandboxJSON(t, payload))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create override artifact status = %d, want %d, body = %s", rec.Code, http.StatusCreated, rec.Body.String())
+	}
+
+	getReq := newSignedJSONRequest(t, http.MethodGet, "/cookbook_artifacts/override-demo/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", nil)
+	getRec := httptest.NewRecorder()
+	router.ServeHTTP(getRec, getReq)
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("get override artifact status = %d, want %d, body = %s", getRec.Code, http.StatusOK, getRec.Body.String())
+	}
+
+	var getPayload map[string]any
+	if err := json.Unmarshal(getRec.Body.Bytes(), &getPayload); err != nil {
+		t.Fatalf("json.Unmarshal(override artifact) error = %v", err)
+	}
+	getMetadata, ok := getPayload["metadata"].(map[string]any)
+	if !ok {
+		t.Fatalf("override metadata = %T, want map[string]any", getPayload["metadata"])
+	}
+	for key, want := range map[string]string{
+		"description":      "my cookbook",
+		"long_description": "this is a great cookbook",
+		"maintainer":       "This is my name",
+		"maintainer_email": "cookbook_author@example.com",
+		"license":          "MPL",
+	} {
+		if got := getMetadata[key]; got != want {
+			t.Fatalf("metadata[%q] = %v, want %q", key, got, want)
+		}
+	}
+}
+
+func TestCookbookArtifactCreateAllowsMultipleIdentifiersForSameCookbook(t *testing.T) {
+	router := newTestRouter(t)
+
+	firstPayload := cookbookArtifactPayload("multiple_versions", "1111111111111111111111111111111111111111", "1.0.0", "", nil)
+	firstPayload["metadata"].(map[string]any)["description"] = "first artifact"
+	firstReq := newSignedJSONRequest(t, http.MethodPut, "/cookbook_artifacts/multiple_versions/1111111111111111111111111111111111111111", mustMarshalSandboxJSON(t, firstPayload))
+	firstRec := httptest.NewRecorder()
+	router.ServeHTTP(firstRec, firstReq)
+	if firstRec.Code != http.StatusCreated {
+		t.Fatalf("create first artifact status = %d, want %d, body = %s", firstRec.Code, http.StatusCreated, firstRec.Body.String())
+	}
+
+	secondPayload := cookbookArtifactPayload("multiple_versions", "2222222222222222222222222222222222222222", "1.0.0", "", nil)
+	secondPayload["metadata"].(map[string]any)["description"] = "second artifact"
+	secondReq := newSignedJSONRequest(t, http.MethodPut, "/cookbook_artifacts/multiple_versions/2222222222222222222222222222222222222222", mustMarshalSandboxJSON(t, secondPayload))
+	secondRec := httptest.NewRecorder()
+	router.ServeHTTP(secondRec, secondReq)
+	if secondRec.Code != http.StatusCreated {
+		t.Fatalf("create second artifact status = %d, want %d, body = %s", secondRec.Code, http.StatusCreated, secondRec.Body.String())
+	}
+
+	for path, wantDescription := range map[string]string{
+		"/cookbook_artifacts/multiple_versions/1111111111111111111111111111111111111111": "first artifact",
+		"/cookbook_artifacts/multiple_versions/2222222222222222222222222222222222222222": "second artifact",
+	} {
+		req := newSignedJSONRequest(t, http.MethodGet, path, nil)
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET %s status = %d, want %d, body = %s", path, rec.Code, http.StatusOK, rec.Body.String())
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+			t.Fatalf("json.Unmarshal(%s) error = %v", path, err)
+		}
+		metadata, ok := payload["metadata"].(map[string]any)
+		if !ok {
+			t.Fatalf("%s metadata = %T, want map[string]any", path, payload["metadata"])
+		}
+		if got := metadata["description"]; got != wantDescription {
+			t.Fatalf("%s metadata.description = %v, want %q", path, got, wantDescription)
+		}
+	}
+}
+
 func TestCookbookArtifactEndpointsDoNotDeleteExistingIdentifierOnWrongDelete(t *testing.T) {
 	router := newTestRouter(t)
 
