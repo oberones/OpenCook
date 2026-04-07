@@ -295,6 +295,110 @@ func TestBlobChecksumUploadRejectsChecksumMismatch(t *testing.T) {
 	}
 }
 
+func TestBlobChecksumUploadReturns503WhenBlobBackendUnavailable(t *testing.T) {
+	store, err := blob.NewS3CompatibleStore(blob.S3CompatibleConfig{
+		StorageURL: "s3://chef-bucket/checksums",
+		Endpoint:   "http://minio.local:9000",
+		Region:     "us-east-1",
+	})
+	if err != nil {
+		t.Fatalf("NewS3CompatibleStore() error = %v", err)
+	}
+	router := newTestRouterWithBlob(t, config.Config{
+		ServiceName: "opencook",
+		Environment: "test",
+		AuthSkew:    15 * time.Minute,
+	}, store)
+
+	content := []byte("provider-backed later")
+	checksum := checksumHex(content)
+	createReq := newSignedJSONRequest(t, http.MethodPost, "/sandboxes", mustMarshalSandboxJSON(t, map[string]any{
+		"checksums": map[string]any{checksum: nil},
+	}))
+	createRec := httptest.NewRecorder()
+	router.ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("create sandbox status = %d, want %d, body = %s", createRec.Code, http.StatusCreated, createRec.Body.String())
+	}
+
+	var createPayload map[string]any
+	if err := json.Unmarshal(createRec.Body.Bytes(), &createPayload); err != nil {
+		t.Fatalf("json.Unmarshal(create sandbox) error = %v", err)
+	}
+	uploadURL := createPayload["checksums"].(map[string]any)[checksum].(map[string]any)["url"].(string)
+
+	uploadReq := httptest.NewRequest(http.MethodPut, uploadURL, bytes.NewReader(content))
+	uploadReq.Header.Set("Content-MD5", checksumBase64(content))
+	uploadRec := httptest.NewRecorder()
+	router.ServeHTTP(uploadRec, uploadReq)
+	if uploadRec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("upload status = %d, want %d, body = %s", uploadRec.Code, http.StatusServiceUnavailable, uploadRec.Body.String())
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(uploadRec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal(upload response) error = %v", err)
+	}
+	if payload["error"] != "blob_unavailable" {
+		t.Fatalf("error = %v, want %q", payload["error"], "blob_unavailable")
+	}
+}
+
+func TestSandboxCommitReturns503WhenBlobCheckerUnavailable(t *testing.T) {
+	router := newTestRouterWithBlob(t, config.Config{
+		ServiceName: "opencook",
+		Environment: "test",
+		AuthSkew:    15 * time.Minute,
+	}, stubBlobStore{})
+
+	checksum := checksumHex([]byte("rainbow dash"))
+	createReq := newSignedJSONRequest(t, http.MethodPost, "/sandboxes", mustMarshalSandboxJSON(t, map[string]any{
+		"checksums": map[string]any{
+			checksum: nil,
+		},
+	}))
+	createRec := httptest.NewRecorder()
+	router.ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("create sandbox status = %d, want %d, body = %s", createRec.Code, http.StatusCreated, createRec.Body.String())
+	}
+
+	var createPayload map[string]any
+	if err := json.Unmarshal(createRec.Body.Bytes(), &createPayload); err != nil {
+		t.Fatalf("json.Unmarshal(create sandbox) error = %v", err)
+	}
+	sandboxID := createPayload["sandbox_id"].(string)
+
+	commitReq := newSignedJSONRequest(t, http.MethodPut, "/sandboxes/"+sandboxID, mustMarshalSandboxJSON(t, map[string]any{"is_completed": true}))
+	commitRec := httptest.NewRecorder()
+	router.ServeHTTP(commitRec, commitReq)
+	if commitRec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("commit sandbox status = %d, want %d, body = %s", commitRec.Code, http.StatusServiceUnavailable, commitRec.Body.String())
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(commitRec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal(commit response) error = %v", err)
+	}
+	if payload["error"] != "blob_unavailable" {
+		t.Fatalf("error = %v, want %q", payload["error"], "blob_unavailable")
+	}
+}
+
+type stubBlobStore struct{}
+
+func (stubBlobStore) Name() string {
+	return "stub-blob-store"
+}
+
+func (stubBlobStore) Status() blob.Status {
+	return blob.Status{
+		Backend:    "stub",
+		Configured: false,
+		Message:    "checker intentionally unavailable for test",
+	}
+}
+
 func TestSandboxesEndpointCommitRejectsFalseIsCompletedWithCorrectFieldName(t *testing.T) {
 	router := newTestRouter(t)
 

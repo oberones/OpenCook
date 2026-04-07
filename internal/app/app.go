@@ -31,7 +31,10 @@ type Application struct {
 func New(cfg config.Config, logger *log.Logger, build version.Info) (*Application, error) {
 	compatRegistry := compat.NewDefaultRegistry()
 	postgresStore := pg.New(cfg.PostgresDSN)
-	blobStore := blob.NewMemoryStore(cfg.BlobStorageURL)
+	blobStore, err := blob.NewStore(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("configure blob storage: %w", err)
+	}
 	keyStore := authn.NewMemoryKeyStore()
 	bootstrapState := bootstrap.NewService(keyStore, bootstrap.Options{
 		SuperuserName: resolveSuperuserName(cfg),
