@@ -54,6 +54,29 @@ func TestSolveEnvironmentCookbookVersionsResolvesRecursiveDependencies(t *testin
 	}
 }
 
+func TestSolveEnvironmentCookbookVersionsChecksScopeBeforeValidation(t *testing.T) {
+	service := newTestBootstrapService(t)
+
+	_, orgExists, envExists, err := service.SolveEnvironmentCookbookVersions("missing", "production", nil)
+	if err != nil {
+		t.Fatalf("SolveEnvironmentCookbookVersions() error = %v, want nil for missing org", err)
+	}
+	if orgExists || envExists {
+		t.Fatalf("SolveEnvironmentCookbookVersions() orgExists/envExists = %v/%v, want false/false", orgExists, envExists)
+	}
+
+	createTestCookbookOrg(t, service)
+	_, orgExists, envExists, err = service.SolveEnvironmentCookbookVersions("ponyville", "missing", map[string]any{
+		"run_list": []any{},
+	})
+	if err != nil {
+		t.Fatalf("SolveEnvironmentCookbookVersions() error = %v, want nil for missing environment", err)
+	}
+	if !orgExists || envExists {
+		t.Fatalf("SolveEnvironmentCookbookVersions() orgExists/envExists = %v/%v, want true/false", orgExists, envExists)
+	}
+}
+
 func TestSolveEnvironmentCookbookVersionsReturnsDepsolverErrorForMissingDependency(t *testing.T) {
 	service := newTestBootstrapService(t)
 	createTestCookbookOrg(t, service)
