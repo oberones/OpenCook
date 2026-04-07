@@ -27,6 +27,9 @@ func TestLoadFromEnvDefaults(t *testing.T) {
 	t.Setenv("OPENCOOK_BLOB_S3_REGION", "")
 	t.Setenv("OPENCOOK_BLOB_S3_FORCE_PATH_STYLE", "")
 	t.Setenv("OPENCOOK_BLOB_S3_DISABLE_TLS", "")
+	t.Setenv("OPENCOOK_BLOB_S3_ACCESS_KEY_ID", "")
+	t.Setenv("OPENCOOK_BLOB_S3_SECRET_ACCESS_KEY", "")
+	t.Setenv("OPENCOOK_BLOB_S3_SESSION_TOKEN", "")
 
 	cfg, err := LoadFromEnv()
 	if err != nil {
@@ -116,6 +119,9 @@ func TestLoadFromEnvBlobProviderSettings(t *testing.T) {
 	t.Setenv("OPENCOOK_BLOB_S3_REGION", "us-east-1")
 	t.Setenv("OPENCOOK_BLOB_S3_FORCE_PATH_STYLE", "true")
 	t.Setenv("OPENCOOK_BLOB_S3_DISABLE_TLS", "true")
+	t.Setenv("OPENCOOK_BLOB_S3_ACCESS_KEY_ID", "access-key")
+	t.Setenv("OPENCOOK_BLOB_S3_SECRET_ACCESS_KEY", "secret-key")
+	t.Setenv("OPENCOOK_BLOB_S3_SESSION_TOKEN", "session-token")
 
 	cfg, err := LoadFromEnv()
 	if err != nil {
@@ -139,5 +145,14 @@ func TestLoadFromEnvBlobProviderSettings(t *testing.T) {
 	}
 	if !cfg.BlobS3DisableTLS {
 		t.Fatal("BlobS3DisableTLS = false, want true")
+	}
+	if cfg.BlobS3AccessKeyID != "access-key" {
+		t.Fatalf("BlobS3AccessKeyID = %q, want %q", cfg.BlobS3AccessKeyID, "access-key")
+	}
+	if cfg.BlobS3SecretKey != "secret-key" {
+		t.Fatalf("BlobS3SecretKey = %q, want %q", cfg.BlobS3SecretKey, "secret-key")
+	}
+	if cfg.BlobS3SessionToken != "session-token" {
+		t.Fatalf("BlobS3SessionToken = %q, want %q", cfg.BlobS3SessionToken, "session-token")
 	}
 }

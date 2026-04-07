@@ -32,6 +32,9 @@ func NewStore(cfg config.Config) (Store, error) {
 			Region:         cfg.BlobS3Region,
 			ForcePathStyle: cfg.BlobS3ForcePathStyle,
 			DisableTLS:     cfg.BlobS3DisableTLS,
+			AccessKeyID:    cfg.BlobS3AccessKeyID,
+			SecretKey:      cfg.BlobS3SecretKey,
+			SessionToken:   cfg.BlobS3SessionToken,
 		})
 	default:
 		return nil, fmt.Errorf("unsupported blob backend %q", strings.TrimSpace(cfg.BlobBackend))
