@@ -21,7 +21,12 @@ func TestLoadFromEnvDefaults(t *testing.T) {
 	t.Setenv("OPENCOOK_BOOTSTRAP_PUBLIC_KEY_PATH", "")
 	t.Setenv("OPENCOOK_POSTGRES_DSN", "")
 	t.Setenv("OPENCOOK_OPENSEARCH_URL", "")
+	t.Setenv("OPENCOOK_BLOB_BACKEND", "")
 	t.Setenv("OPENCOOK_BLOB_STORAGE_URL", "")
+	t.Setenv("OPENCOOK_BLOB_S3_ENDPOINT", "")
+	t.Setenv("OPENCOOK_BLOB_S3_REGION", "")
+	t.Setenv("OPENCOOK_BLOB_S3_FORCE_PATH_STYLE", "")
+	t.Setenv("OPENCOOK_BLOB_S3_DISABLE_TLS", "")
 
 	cfg, err := LoadFromEnv()
 	if err != nil {
@@ -101,5 +106,38 @@ func TestLoadFromEnvDefaultOrganization(t *testing.T) {
 
 	if cfg.DefaultOrganization != "ponyville" {
 		t.Fatalf("DefaultOrganization = %q, want %q", cfg.DefaultOrganization, "ponyville")
+	}
+}
+
+func TestLoadFromEnvBlobProviderSettings(t *testing.T) {
+	t.Setenv("OPENCOOK_BLOB_BACKEND", "s3")
+	t.Setenv("OPENCOOK_BLOB_STORAGE_URL", "s3://chef-bucket/checksums")
+	t.Setenv("OPENCOOK_BLOB_S3_ENDPOINT", "http://minio.local:9000")
+	t.Setenv("OPENCOOK_BLOB_S3_REGION", "us-east-1")
+	t.Setenv("OPENCOOK_BLOB_S3_FORCE_PATH_STYLE", "true")
+	t.Setenv("OPENCOOK_BLOB_S3_DISABLE_TLS", "true")
+
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatalf("LoadFromEnv() error = %v", err)
+	}
+
+	if cfg.BlobBackend != "s3" {
+		t.Fatalf("BlobBackend = %q, want %q", cfg.BlobBackend, "s3")
+	}
+	if cfg.BlobStorageURL != "s3://chef-bucket/checksums" {
+		t.Fatalf("BlobStorageURL = %q, want %q", cfg.BlobStorageURL, "s3://chef-bucket/checksums")
+	}
+	if cfg.BlobS3Endpoint != "http://minio.local:9000" {
+		t.Fatalf("BlobS3Endpoint = %q, want %q", cfg.BlobS3Endpoint, "http://minio.local:9000")
+	}
+	if cfg.BlobS3Region != "us-east-1" {
+		t.Fatalf("BlobS3Region = %q, want %q", cfg.BlobS3Region, "us-east-1")
+	}
+	if !cfg.BlobS3ForcePathStyle {
+		t.Fatal("BlobS3ForcePathStyle = false, want true")
+	}
+	if !cfg.BlobS3DisableTLS {
+		t.Fatal("BlobS3DisableTLS = false, want true")
 	}
 }

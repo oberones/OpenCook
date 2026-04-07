@@ -121,6 +121,13 @@ func (s *server) handleBlobChecksumDownload(w http.ResponseWriter, r *http.Reque
 			})
 			return
 		}
+		if errors.Is(err, blob.ErrUnavailable) {
+			writeJSON(w, http.StatusServiceUnavailable, apiError{
+				Error:   "blob_unavailable",
+				Message: "blob download backend is not available",
+			})
+			return
+		}
 		s.logf("blob download failed for checksum %s: %v", checksum, err)
 		writeJSON(w, http.StatusInternalServerError, apiError{
 			Error:   "blob_download_failed",
@@ -221,6 +228,13 @@ func (s *server) handleBlobChecksumUploadPut(w http.ResponseWriter, r *http.Requ
 			})
 			return
 		}
+		if errors.Is(err, blob.ErrUnavailable) {
+			writeJSON(w, http.StatusServiceUnavailable, apiError{
+				Error:   "blob_unavailable",
+				Message: "blob upload backend is not available",
+			})
+			return
+		}
 		s.logf("blob upload failed for checksum %s: %v", checksum, err)
 		writeJSON(w, http.StatusInternalServerError, apiError{
 			Error:   "blob_upload_failed",
@@ -314,6 +328,13 @@ func (s *server) handleNamedSandbox(w http.ResponseWriter, r *http.Request, stat
 
 	missing, err := s.missingSandboxChecksums(r.Context(), sandbox)
 	if err != nil {
+		if errors.Is(err, blob.ErrUnavailable) {
+			writeJSON(w, http.StatusServiceUnavailable, apiError{
+				Error:   "blob_unavailable",
+				Message: "blob existence backend is not available",
+			})
+			return
+		}
 		s.logf("sandbox checksum validation failed for %s: %v", sandboxID, err)
 		writeJSON(w, http.StatusInternalServerError, apiError{
 			Error:   "sandbox_failed",
@@ -515,7 +536,7 @@ func (s *server) cleanupBlobChecksums(ctx context.Context, checksums []string) {
 func (s *server) missingSandboxChecksums(ctx context.Context, sandbox bootstrap.Sandbox) ([]string, error) {
 	checker, ok := s.deps.Blob.(blob.Checker)
 	if !ok {
-		return nil, errors.New("blob existence backend is not available")
+		return nil, fmt.Errorf("%w: blob existence backend is not available", blob.ErrUnavailable)
 	}
 
 	missing := make([]string, 0)
