@@ -268,7 +268,7 @@ func solveDepsolverCookbook(org *organizationState, env Environment, current dep
 }
 
 func solveDepsolverCookbookWithExistingConstraints(org *organizationState, env Environment, current depsolverSolution, cookbook, rootCookbook string) (depsolverSolution, error) {
-	next := cloneDepsolverSolution(current)
+	next := current
 
 	versions, exists := org.cookbooks[cookbook]
 	if !exists {
