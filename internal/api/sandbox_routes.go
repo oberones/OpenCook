@@ -536,7 +536,7 @@ func (s *server) cleanupBlobChecksums(ctx context.Context, checksums []string) {
 func (s *server) missingSandboxChecksums(ctx context.Context, sandbox bootstrap.Sandbox) ([]string, error) {
 	checker, ok := s.deps.Blob.(blob.Checker)
 	if !ok {
-		return nil, errors.New("blob existence backend is not available")
+		return nil, fmt.Errorf("%w: blob existence backend is not available", blob.ErrUnavailable)
 	}
 
 	missing := make([]string, 0)

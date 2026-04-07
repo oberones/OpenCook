@@ -3,7 +3,6 @@ package blob
 import (
 	"fmt"
 	"net/url"
-	"path/filepath"
 	"strings"
 
 	"github.com/oberones/OpenCook/internal/config"
@@ -16,7 +15,12 @@ const (
 )
 
 func NewStore(cfg config.Config) (Store, error) {
-	switch resolveBackend(cfg) {
+	backend, err := resolveBackend(cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	switch backend {
 	case BackendMemory:
 		return NewMemoryStore(cfg.BlobStorageURL), nil
 	case BackendFilesystem:
@@ -34,36 +38,32 @@ func NewStore(cfg config.Config) (Store, error) {
 	}
 }
 
-func resolveBackend(cfg config.Config) string {
+func resolveBackend(cfg config.Config) (string, error) {
 	backend := strings.ToLower(strings.TrimSpace(cfg.BlobBackend))
 	if backend != "" {
-		return backend
+		return backend, nil
 	}
 
 	target := strings.TrimSpace(cfg.BlobStorageURL)
 	if target == "" {
-		return BackendMemory
+		return BackendMemory, nil
 	}
 
 	if strings.Contains(target, "://") {
 		parsed, err := url.Parse(target)
 		if err != nil {
-			return BackendMemory
+			return "", fmt.Errorf("parse blob storage URL: %w", err)
 		}
 
 		switch strings.ToLower(strings.TrimSpace(parsed.Scheme)) {
 		case "file":
-			return BackendFilesystem
+			return BackendFilesystem, nil
 		case "s3":
-			return BackendS3
+			return BackendS3, nil
 		default:
-			return BackendMemory
+			return BackendMemory, nil
 		}
 	}
 
-	if filepath.IsAbs(target) || strings.HasPrefix(target, ".") {
-		return BackendFilesystem
-	}
-
-	return BackendMemory
+	return BackendFilesystem, nil
 }
