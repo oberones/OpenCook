@@ -54,6 +54,10 @@ func (s *Service) SolveEnvironmentCookbookVersions(orgName, environmentName stri
 	if err != nil {
 		return nil, true, true, err
 	}
+	runList, err = expandDepsolverRunList(org, environmentName, runList)
+	if err != nil {
+		return nil, true, true, err
+	}
 	if len(runList) == 0 {
 		return map[string]CookbookVersion{}, true, true, nil
 	}
@@ -135,20 +139,86 @@ func validateDepsolverPayload(payload map[string]any) ([]string, error) {
 }
 
 func validateDepsolverRunList(value any) ([]string, error) {
-	runList, err := validateRunList(value)
-	if err != nil {
-		return nil, err
+	return validateRunList(value)
+}
+
+func expandDepsolverRunList(org *organizationState, environmentName string, runList []string) ([]string, error) {
+	expanded := make([]string, 0, len(runList))
+	seen := make(map[string]struct{}, len(runList))
+	for _, item := range runList {
+		items, err := expandDepsolverRunListItem(org, environmentName, item, map[string]struct{}{})
+		if err != nil {
+			return nil, err
+		}
+		for _, expandedItem := range items {
+			normalized := normalizeDepsolverRunListItem(expandedItem)
+			if _, ok := seen[normalized]; ok {
+				continue
+			}
+			seen[normalized] = struct{}{}
+			expanded = append(expanded, expandedItem)
+		}
+	}
+	return expanded, nil
+}
+
+func expandDepsolverRunListItem(org *organizationState, environmentName, item string, stack map[string]struct{}) ([]string, error) {
+	item = strings.TrimSpace(item)
+	if item == "" {
+		return nil, &ValidationError{Messages: []string{"Field 'run_list' is not a valid run list"}}
+	}
+	if !validRoleRunListPattern.MatchString(item) {
+		return []string{item}, nil
 	}
 
-	for _, item := range runList {
-		if validRoleRunListPattern.MatchString(item) {
-			return nil, &ValidationError{Messages: []string{
-				fmt.Sprintf("Field 'run_list' contains unsupported role item %s", item),
-			}}
+	roleName := strings.TrimSuffix(strings.TrimPrefix(item, "role["), "]")
+	if _, ok := stack[roleName]; ok {
+		return nil, &ValidationError{Messages: []string{
+			fmt.Sprintf("Field 'run_list' contains recursive role item role[%s]", roleName),
+		}}
+	}
+
+	role, ok := org.roles[roleName]
+	if !ok {
+		return nil, &ValidationError{Messages: []string{
+			fmt.Sprintf("Field 'run_list' contains unknown role item role[%s]", roleName),
+		}}
+	}
+
+	selectedRunList := role.RunList
+	if environmentName != "_default" {
+		if envRunList, ok := role.EnvRunLists[environmentName]; ok {
+			selectedRunList = envRunList
 		}
 	}
 
-	return runList, nil
+	nextStack := make(map[string]struct{}, len(stack)+1)
+	for key := range stack {
+		nextStack[key] = struct{}{}
+	}
+	nextStack[roleName] = struct{}{}
+
+	out := make([]string, 0, len(selectedRunList))
+	for _, nested := range selectedRunList {
+		expanded, err := expandDepsolverRunListItem(org, environmentName, nested, nextStack)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, expanded...)
+	}
+	return out, nil
+}
+
+func normalizeDepsolverRunListItem(item string) string {
+	item = strings.TrimSpace(item)
+	switch {
+	case validRoleRunListPattern.MatchString(item):
+		return item
+	case strings.HasPrefix(item, "recipe[") && strings.HasSuffix(item, "]"):
+		return item
+	default:
+		return "recipe[" + item + "]"
+	}
 }
 
 func parseDepsolverRunListItem(value string) (depsolverRunListItem, error) {
