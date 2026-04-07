@@ -609,6 +609,40 @@ func TestCookbookArtifactCreateValidationHTTPParity(t *testing.T) {
 	}
 }
 
+func TestCookbookArtifactEndpointAllowsNormalUserCreateAndRejectsUnauthorizedCreate(t *testing.T) {
+	router := newTestRouter(t)
+
+	normalPayload := cookbookArtifactPayload("created-by-user", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "1.2.3", "", nil)
+	normalPayload["metadata"].(map[string]any)["description"] = "created by normal-user"
+	normalReq := newSignedJSONRequestAs(t, "normal-user", http.MethodPut, "/cookbook_artifacts/created-by-user/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", mustMarshalSandboxJSON(t, normalPayload))
+	normalRec := httptest.NewRecorder()
+	router.ServeHTTP(normalRec, normalReq)
+	if normalRec.Code != http.StatusCreated {
+		t.Fatalf("normal user create status = %d, want %d, body = %s", normalRec.Code, http.StatusCreated, normalRec.Body.String())
+	}
+	assertCookbookArtifactDescription(t, router, "/cookbook_artifacts/created-by-user/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "created by normal-user")
+
+	outsidePayload := cookbookArtifactPayload("blocked-by-outside", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "1.2.3", "", nil)
+	outsidePayload["metadata"].(map[string]any)["description"] = "outside user attempted create"
+	outsideReq := newSignedJSONRequestAs(t, "outside-user", http.MethodPut, "/cookbook_artifacts/blocked-by-outside/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", mustMarshalSandboxJSON(t, outsidePayload))
+	outsideRec := httptest.NewRecorder()
+	router.ServeHTTP(outsideRec, outsideReq)
+	if outsideRec.Code != http.StatusForbidden {
+		t.Fatalf("outside user create status = %d, want %d, body = %s", outsideRec.Code, http.StatusForbidden, outsideRec.Body.String())
+	}
+	assertCookbookArtifactMissing(t, router, "/cookbook_artifacts/blocked-by-outside/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+
+	invalidPayload := cookbookArtifactPayload("blocked-by-invalid", "cccccccccccccccccccccccccccccccccccccccc", "1.2.3", "", nil)
+	invalidPayload["metadata"].(map[string]any)["description"] = "invalid user attempted create"
+	invalidReq := newSignedJSONRequestAs(t, "invalid-user", http.MethodPut, "/cookbook_artifacts/blocked-by-invalid/cccccccccccccccccccccccccccccccccccccccc", mustMarshalSandboxJSON(t, invalidPayload))
+	invalidRec := httptest.NewRecorder()
+	router.ServeHTTP(invalidRec, invalidReq)
+	if invalidRec.Code != http.StatusUnauthorized {
+		t.Fatalf("invalid user create status = %d, want %d, body = %s", invalidRec.Code, http.StatusUnauthorized, invalidRec.Body.String())
+	}
+	assertCookbookArtifactMissing(t, router, "/cookbook_artifacts/blocked-by-invalid/cccccccccccccccccccccccccccccccccccccccc")
+}
+
 func TestCookbookArtifactEndpointsDoNotDeleteExistingIdentifierOnWrongDelete(t *testing.T) {
 	router := newTestRouter(t)
 
