@@ -514,6 +514,101 @@ func TestCookbookArtifactCreateAllowsMultipleIdentifiersForSameCookbook(t *testi
 	}
 }
 
+func TestCookbookArtifactCreateValidationHTTPParity(t *testing.T) {
+	router := newTestRouter(t)
+
+	tests := []struct {
+		name       string
+		path       string
+		payload    map[string]any
+		wantErrors []string
+		verifyPath string
+	}{
+		{
+			name: "empty metadata",
+			path: "/cookbook_artifacts/invalid-meta/1111111111111111111111111111111111111111",
+			payload: func() map[string]any {
+				payload := cookbookArtifactPayload("invalid-meta", "1111111111111111111111111111111111111111", "1.2.3", "", nil)
+				payload["metadata"] = map[string]any{}
+				return payload
+			}(),
+			wantErrors: []string{"Field 'metadata.version' missing"},
+			verifyPath: "/cookbook_artifacts/invalid-meta/1111111111111111111111111111111111111111",
+		},
+		{
+			name: "recipes as string",
+			path: "/cookbook_artifacts/segment-string/1111111111111111111111111111111111111111",
+			payload: func() map[string]any {
+				payload := cookbookArtifactPayload("segment-string", "1111111111111111111111111111111111111111", "1.2.3", "", nil)
+				delete(payload, "all_files")
+				payload["recipes"] = "foo"
+				return payload
+			}(),
+			wantErrors: []string{"Field 'recipes' invalid"},
+			verifyPath: "/cookbook_artifacts/segment-string/1111111111111111111111111111111111111111",
+		},
+		{
+			name: "recipes element missing required fields",
+			path: "/cookbook_artifacts/segment-empty/1111111111111111111111111111111111111111",
+			payload: func() map[string]any {
+				payload := cookbookArtifactPayload("segment-empty", "1111111111111111111111111111111111111111", "1.2.3", "", nil)
+				delete(payload, "all_files")
+				payload["recipes"] = []any{map[string]any{}}
+				return payload
+			}(),
+			wantErrors: []string{"Field 'recipes' invalid"},
+			verifyPath: "/cookbook_artifacts/segment-empty/1111111111111111111111111111111111111111",
+		},
+		{
+			name: "dependencies as string",
+			path: "/cookbook_artifacts/dependency-string/1111111111111111111111111111111111111111",
+			payload: func() map[string]any {
+				payload := cookbookArtifactPayload("dependency-string", "1111111111111111111111111111111111111111", "1.2.3", "", nil)
+				payload["metadata"].(map[string]any)["dependencies"] = "foo"
+				return payload
+			}(),
+			wantErrors: []string{"Field 'metadata.dependencies' invalid"},
+			verifyPath: "/cookbook_artifacts/dependency-string/1111111111111111111111111111111111111111",
+		},
+		{
+			name: "dependencies malformed constraint",
+			path: "/cookbook_artifacts/dependency-constraint/1111111111111111111111111111111111111111",
+			payload: func() map[string]any {
+				payload := cookbookArtifactPayload("dependency-constraint", "1111111111111111111111111111111111111111", "1.2.3", "", nil)
+				payload["metadata"].(map[string]any)["dependencies"] = map[string]any{"apt": "s395dss@#"}
+				return payload
+			}(),
+			wantErrors: []string{"Invalid value 's395dss@#' for metadata.dependencies"},
+			verifyPath: "/cookbook_artifacts/dependency-constraint/1111111111111111111111111111111111111111",
+		},
+		{
+			name: "platforms nested object",
+			path: "/cookbook_artifacts/platforms-object/1111111111111111111111111111111111111111",
+			payload: func() map[string]any {
+				payload := cookbookArtifactPayload("platforms-object", "1111111111111111111111111111111111111111", "1.2.3", "", nil)
+				payload["metadata"].(map[string]any)["platforms"] = map[string]any{"ubuntu": map[string]any{}}
+				return payload
+			}(),
+			wantErrors: []string{"Invalid value '{[]}' for metadata.platforms"},
+			verifyPath: "/cookbook_artifacts/platforms-object/1111111111111111111111111111111111111111",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req := newSignedJSONRequest(t, http.MethodPut, tc.path, mustMarshalSandboxJSON(t, tc.payload))
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("%s status = %d, want %d, body = %s", tc.path, rec.Code, http.StatusBadRequest, rec.Body.String())
+			}
+
+			assertCookbookErrorList(t, rec.Body.Bytes(), tc.wantErrors)
+			assertCookbookArtifactMissing(t, router, tc.verifyPath)
+		})
+	}
+}
+
 func TestCookbookArtifactEndpointsDoNotDeleteExistingIdentifierOnWrongDelete(t *testing.T) {
 	router := newTestRouter(t)
 
