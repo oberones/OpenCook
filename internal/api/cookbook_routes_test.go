@@ -261,6 +261,168 @@ func TestCookbookArtifactEndpointsSupportAPIV2AllFilesReadShape(t *testing.T) {
 	}
 }
 
+func TestCookbookArtifactCreateValidationAndVersionParity(t *testing.T) {
+	router := newTestRouter(t)
+
+	createCases := []struct {
+		name       string
+		path       string
+		payload    map[string]any
+		wantStatus int
+		wantErrors []string
+		verifyPath string
+	}{
+		{
+			name: "create accepts version larger than four bytes",
+			path: "/cookbook_artifacts/large-version/1111111111111111111111111111111111111111",
+			payload: cookbookArtifactPayload(
+				"large-version",
+				"1111111111111111111111111111111111111111",
+				"1.2.2147483669",
+				"",
+				nil,
+			),
+			wantStatus: http.StatusCreated,
+			verifyPath: "/cookbook_artifacts/large-version/1111111111111111111111111111111111111111",
+		},
+		{
+			name: "create accepts prerelease version",
+			path: "/cookbook_artifacts/prerelease/2222222222222222222222222222222222222222",
+			payload: cookbookArtifactPayload(
+				"prerelease",
+				"2222222222222222222222222222222222222222",
+				"1.2.3.beta.5",
+				"",
+				nil,
+			),
+			wantStatus: http.StatusCreated,
+			verifyPath: "/cookbook_artifacts/prerelease/2222222222222222222222222222222222222222",
+		},
+		{
+			name: "create rejects invalid identifier in url",
+			path: "/cookbook_artifacts/cookbook_name/foo@bar",
+			payload: cookbookArtifactPayload(
+				"cookbook_name",
+				"foo@bar",
+				"1.2.3",
+				"",
+				nil,
+			),
+			wantStatus: http.StatusBadRequest,
+			wantErrors: []string{"Field 'identifier' invalid"},
+			verifyPath: "/cookbook_artifacts/cookbook_name/foo@bar",
+		},
+		{
+			name: "create rejects invalid cookbook name in url",
+			path: "/cookbook_artifacts/first@second/1111111111111111111111111111111111111111",
+			payload: cookbookArtifactPayload(
+				"first@second",
+				"1111111111111111111111111111111111111111",
+				"1.2.3",
+				"",
+				nil,
+			),
+			wantStatus: http.StatusBadRequest,
+			wantErrors: []string{"Field 'name' invalid"},
+			verifyPath: "/cookbook_artifacts/first@second/1111111111111111111111111111111111111111",
+		},
+		{
+			name: "create rejects identifier mismatch",
+			path: "/cookbook_artifacts/cookbook_name/1111111111111111111111111111111111111111",
+			payload: cookbookArtifactPayload(
+				"cookbook_name",
+				"ffffffffffffffffffffffffffffffffffffffff",
+				"1.2.3",
+				"",
+				nil,
+			),
+			wantStatus: http.StatusBadRequest,
+			wantErrors: []string{"Field 'identifier' invalid : 1111111111111111111111111111111111111111 does not match ffffffffffffffffffffffffffffffffffffffff"},
+			verifyPath: "/cookbook_artifacts/cookbook_name/1111111111111111111111111111111111111111",
+		},
+		{
+			name: "create rejects cookbook name mismatch",
+			path: "/cookbook_artifacts/cookbook_name/1111111111111111111111111111111111111111",
+			payload: cookbookArtifactPayload(
+				"foobar",
+				"1111111111111111111111111111111111111111",
+				"1.2.3",
+				"",
+				nil,
+			),
+			wantStatus: http.StatusBadRequest,
+			wantErrors: []string{"Field 'name' invalid : cookbook_name does not match foobar"},
+			verifyPath: "/cookbook_artifacts/cookbook_name/1111111111111111111111111111111111111111",
+		},
+	}
+
+	for _, tc := range createCases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := newSignedJSONRequest(t, http.MethodPut, tc.path, mustMarshalSandboxJSON(t, tc.payload))
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+			if rec.Code != tc.wantStatus {
+				t.Fatalf("%s status = %d, want %d, body = %s", tc.path, rec.Code, tc.wantStatus, rec.Body.String())
+			}
+
+			if tc.wantStatus == http.StatusCreated {
+				req := newSignedJSONRequest(t, http.MethodGet, tc.verifyPath, nil)
+				rec := httptest.NewRecorder()
+				router.ServeHTTP(rec, req)
+				if rec.Code != http.StatusOK {
+					t.Fatalf("GET %s status = %d, want %d, body = %s", tc.verifyPath, rec.Code, http.StatusOK, rec.Body.String())
+				}
+
+				var payload map[string]any
+				if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+					t.Fatalf("json.Unmarshal(%s) error = %v", tc.verifyPath, err)
+				}
+				if payload["version"] != tc.payload["version"] {
+					t.Fatalf("%s version = %v, want %v", tc.verifyPath, payload["version"], tc.payload["version"])
+				}
+				return
+			}
+
+			assertCookbookErrorList(t, rec.Body.Bytes(), tc.wantErrors)
+			assertCookbookArtifactMissing(t, router, tc.verifyPath)
+		})
+	}
+}
+
+func TestCookbookArtifactUpdateConflictAndNoMutationParity(t *testing.T) {
+	router := newTestRouter(t)
+
+	createCookbookArtifact(t, router, "cookbook-to-be-modified", "1111111111111111111111111111111111111111", "1.2.3", "", nil)
+
+	updatedPayload := cookbookArtifactPayload("cookbook-to-be-modified", "1111111111111111111111111111111111111111", "1.2.3", "", nil)
+	updatedPayload["metadata"].(map[string]any)["description"] = "hi there"
+
+	adminReq := newSignedJSONRequest(t, http.MethodPut, "/cookbook_artifacts/cookbook-to-be-modified/1111111111111111111111111111111111111111", mustMarshalSandboxJSON(t, updatedPayload))
+	adminRec := httptest.NewRecorder()
+	router.ServeHTTP(adminRec, adminReq)
+	if adminRec.Code != http.StatusConflict {
+		t.Fatalf("admin update status = %d, want %d, body = %s", adminRec.Code, http.StatusConflict, adminRec.Body.String())
+	}
+	assertCookbookArtifactStringError(t, adminRec.Body.Bytes(), "Cookbook artifact already exists")
+	assertCookbookArtifactDescription(t, router, "/cookbook_artifacts/cookbook-to-be-modified/1111111111111111111111111111111111111111", "compatibility cookbook")
+
+	outsideReq := newSignedJSONRequestAs(t, "outside-user", http.MethodPut, "/cookbook_artifacts/cookbook-to-be-modified/1111111111111111111111111111111111111111", mustMarshalSandboxJSON(t, updatedPayload))
+	outsideRec := httptest.NewRecorder()
+	router.ServeHTTP(outsideRec, outsideReq)
+	if outsideRec.Code != http.StatusForbidden {
+		t.Fatalf("outside user update status = %d, want %d, body = %s", outsideRec.Code, http.StatusForbidden, outsideRec.Body.String())
+	}
+	assertCookbookArtifactDescription(t, router, "/cookbook_artifacts/cookbook-to-be-modified/1111111111111111111111111111111111111111", "compatibility cookbook")
+
+	invalidReq := newSignedJSONRequestAs(t, "invalid-user", http.MethodPut, "/cookbook_artifacts/cookbook-to-be-modified/1111111111111111111111111111111111111111", mustMarshalSandboxJSON(t, updatedPayload))
+	invalidRec := httptest.NewRecorder()
+	router.ServeHTTP(invalidRec, invalidReq)
+	if invalidRec.Code != http.StatusUnauthorized {
+		t.Fatalf("invalid user update status = %d, want %d, body = %s", invalidRec.Code, http.StatusUnauthorized, invalidRec.Body.String())
+	}
+	assertCookbookArtifactDescription(t, router, "/cookbook_artifacts/cookbook-to-be-modified/1111111111111111111111111111111111111111", "compatibility cookbook")
+}
+
 func TestCookbookArtifactEndpointsDoNotDeleteExistingIdentifierOnWrongDelete(t *testing.T) {
 	router := newTestRouter(t)
 
@@ -2717,6 +2879,49 @@ func assertCookbookArtifactMissing(t *testing.T, router http.Handler, path strin
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("GET %s status = %d, want %d, body = %s", path, rec.Code, http.StatusNotFound, rec.Body.String())
+	}
+}
+
+func assertCookbookArtifactDescription(t *testing.T, router http.Handler, path, want string) {
+	t.Helper()
+
+	req := newSignedJSONRequest(t, http.MethodGet, path, nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET %s status = %d, want %d, body = %s", path, rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal(%s) error = %v", path, err)
+	}
+	rawMetadata, ok := payload["metadata"].(map[string]any)
+	if !ok {
+		t.Fatalf("%s metadata = %T, want map[string]any (%v)", path, payload["metadata"], payload)
+	}
+	description, ok := rawMetadata["description"].(string)
+	if !ok {
+		t.Fatalf("%s metadata.description = %T, want string (%v)", path, rawMetadata["description"], rawMetadata)
+	}
+	if description != want {
+		t.Fatalf("%s metadata.description = %q, want %q", path, description, want)
+	}
+}
+
+func assertCookbookArtifactStringError(t *testing.T, body []byte, want string) {
+	t.Helper()
+
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("json.Unmarshal(error payload) error = %v", err)
+	}
+	got, ok := payload["error"].(string)
+	if !ok {
+		t.Fatalf("payload error = %T, want string (%v)", payload["error"], payload)
+	}
+	if got != want {
+		t.Fatalf("error = %q, want %q", got, want)
 	}
 }
 
