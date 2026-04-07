@@ -1,0 +1,222 @@
+package api
+
+import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+)
+
+func TestEnvironmentCookbookVersionsRejectInvalidJSON(t *testing.T) {
+	router := newTestRouter(t)
+	createEnvironmentForCookbookTests(t, router, "production")
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/environments/production/cookbook_versions", []byte("this_is_not_json"))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("depsolver invalid JSON status = %d, want %d, body = %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+
+	assertEnvironmentErrorMessages(t, rec.Body.Bytes(), "invalid JSON")
+}
+
+func TestEnvironmentCookbookVersionsRejectInvalidRunList(t *testing.T) {
+	router := newTestRouter(t)
+	createEnvironmentForCookbookTests(t, router, "production")
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/environments/production/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": "demo",
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("depsolver invalid run_list status = %d, want %d, body = %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+
+	assertEnvironmentErrorMessages(t, rec.Body.Bytes(), "Field 'run_list' is not a valid run list")
+}
+
+func TestEnvironmentCookbookVersionsReturnsNotFoundForMissingEnvironment(t *testing.T) {
+	router := newTestRouter(t)
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/environments/not@environment/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("depsolver missing environment status = %d, want %d, body = %s", rec.Code, http.StatusNotFound, rec.Body.String())
+	}
+
+	assertEnvironmentErrorMessages(t, rec.Body.Bytes(), "Cannot load environment not@environment")
+}
+
+func TestEnvironmentCookbookVersionsReturns412ForMissingAndFilteredCookbooks(t *testing.T) {
+	router := newTestRouter(t)
+	createEnvironmentForCookbookTests(t, router, "production")
+	createCookbookVersion(t, router, "foo", "1.2.3", "", nil)
+	updateEnvironmentCookbookConstraints(t, router, "production", map[string]string{
+		"foo": "= 400.0.0",
+	})
+
+	missingReq := newSignedJSONRequest(t, http.MethodPost, "/environments/production/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{"this_does_not_exist"},
+	}))
+	missingRec := httptest.NewRecorder()
+	router.ServeHTTP(missingRec, missingReq)
+	if missingRec.Code != http.StatusPreconditionFailed {
+		t.Fatalf("depsolver missing cookbook status = %d, want %d, body = %s", missingRec.Code, http.StatusPreconditionFailed, missingRec.Body.String())
+	}
+
+	missingPayload := decodeJSONMap(t, missingRec.Body.Bytes())
+	assertDepsolverErrorDetail(t, missingPayload, map[string]any{
+		"message":                    "Run list contains invalid items: no such cookbook this_does_not_exist.",
+		"non_existent_cookbooks":     []string{"this_does_not_exist"},
+		"cookbooks_with_no_versions": []string{},
+	})
+
+	filteredReq := newSignedJSONRequest(t, http.MethodPost, "/environments/production/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{"foo"},
+	}))
+	filteredRec := httptest.NewRecorder()
+	router.ServeHTTP(filteredRec, filteredReq)
+	if filteredRec.Code != http.StatusPreconditionFailed {
+		t.Fatalf("depsolver filtered cookbook status = %d, want %d, body = %s", filteredRec.Code, http.StatusPreconditionFailed, filteredRec.Body.String())
+	}
+
+	filteredPayload := decodeJSONMap(t, filteredRec.Body.Bytes())
+	assertDepsolverErrorDetail(t, filteredPayload, map[string]any{
+		"message":                    "Run list contains invalid items: no versions match the constraints on cookbook (foo >= 0.0.0).",
+		"non_existent_cookbooks":     []string{},
+		"cookbooks_with_no_versions": []string{"(foo >= 0.0.0)"},
+	})
+}
+
+func TestEnvironmentCookbookVersionsResolvesPinnedAndDependentCookbooks(t *testing.T) {
+	router := newTestRouter(t)
+	createEnvironmentForCookbookTests(t, router, "production")
+	createCookbookVersion(t, router, "foo", "1.0.0", "", nil)
+	createCookbookVersion(t, router, "foo", "2.0.0", "", nil)
+	createCookbookVersion(t, router, "bar", "2.0.0", "", map[string]string{"foo": "= 1.0.0"})
+	createCookbookVersion(t, router, "quux", "4.0.0", "", map[string]string{"bar": "= 2.0.0"})
+
+	req := newSignedJSONRequestAs(t, "normal-user", http.MethodPost, "/organizations/ponyville/environments/production/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{"quux", "foo@1.0.0"},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("depsolver success status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	payload := decodeJSONMap(t, rec.Body.Bytes())
+	assertCookbookVersionBody(t, payload, "foo", "1.0.0")
+	assertCookbookVersionBody(t, payload, "bar", "2.0.0")
+	assertCookbookVersionBody(t, payload, "quux", "4.0.0")
+
+	barDeps := payload["bar"].(map[string]any)["metadata"].(map[string]any)["dependencies"].(map[string]any)
+	if value := barDeps["foo"]; value != "= 1.0.0" {
+		t.Fatalf("bar dependency foo = %v, want %q", value, "= 1.0.0")
+	}
+	quuxDeps := payload["quux"].(map[string]any)["metadata"].(map[string]any)["dependencies"].(map[string]any)
+	if value := quuxDeps["bar"]; value != "= 2.0.0" {
+		t.Fatalf("quux dependency bar = %v, want %q", value, "= 2.0.0")
+	}
+}
+
+func TestEnvironmentCookbookVersionsReturns412ForMissingDependency(t *testing.T) {
+	router := newTestRouter(t)
+	createEnvironmentForCookbookTests(t, router, "production")
+	createCookbookVersion(t, router, "foo", "1.2.3", "", map[string]string{"this_does_not_exist": ">= 0.0.0"})
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/environments/production/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{"foo"},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusPreconditionFailed {
+		t.Fatalf("depsolver missing dependency status = %d, want %d, body = %s", rec.Code, http.StatusPreconditionFailed, rec.Body.String())
+	}
+
+	payload := decodeJSONMap(t, rec.Body.Bytes())
+	errorList, ok := payload["error"].([]any)
+	if !ok || len(errorList) != 1 {
+		t.Fatalf("error payload = %v, want one depsolver error object", payload["error"])
+	}
+	detail, ok := errorList[0].(map[string]any)
+	if !ok {
+		t.Fatalf("error detail type = %T, want map[string]any", errorList[0])
+	}
+	if detail["unsatisfiable_run_list_item"] != "(foo >= 0.0.0)" {
+		t.Fatalf("unsatisfiable_run_list_item = %v, want %q", detail["unsatisfiable_run_list_item"], "(foo >= 0.0.0)")
+	}
+	assertStringSliceValue(t, detail["non_existent_cookbooks"], []string{"this_does_not_exist"})
+}
+
+func assertEnvironmentErrorMessages(t *testing.T, body []byte, want ...string) {
+	t.Helper()
+
+	payload := decodeJSONMap(t, body)
+	assertStringSliceValue(t, payload["error"], want)
+}
+
+func assertDepsolverErrorDetail(t *testing.T, payload map[string]any, want map[string]any) {
+	t.Helper()
+
+	errorList, ok := payload["error"].([]any)
+	if !ok || len(errorList) != 1 {
+		t.Fatalf("error payload = %v, want one depsolver error object", payload["error"])
+	}
+	detail, ok := errorList[0].(map[string]any)
+	if !ok {
+		t.Fatalf("error detail type = %T, want map[string]any", errorList[0])
+	}
+	if detail["message"] != want["message"] {
+		t.Fatalf("message = %v, want %v", detail["message"], want["message"])
+	}
+	assertStringSliceValue(t, detail["non_existent_cookbooks"], want["non_existent_cookbooks"].([]string))
+	assertStringSliceValue(t, detail["cookbooks_with_no_versions"], want["cookbooks_with_no_versions"].([]string))
+}
+
+func assertCookbookVersionBody(t *testing.T, payload map[string]any, cookbook, version string) {
+	t.Helper()
+
+	entry, ok := payload[cookbook].(map[string]any)
+	if !ok {
+		t.Fatalf("payload[%q] = %T, want map[string]any", cookbook, payload[cookbook])
+	}
+	if entry["version"] != version {
+		t.Fatalf("payload[%q].version = %v, want %q", cookbook, entry["version"], version)
+	}
+	if entry["cookbook_name"] != cookbook {
+		t.Fatalf("payload[%q].cookbook_name = %v, want %q", cookbook, entry["cookbook_name"], cookbook)
+	}
+}
+
+func decodeJSONMap(t *testing.T, body []byte) map[string]any {
+	t.Helper()
+
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	return payload
+}
+
+func assertStringSliceValue(t *testing.T, value any, want []string) {
+	t.Helper()
+
+	raw, ok := value.([]any)
+	if !ok {
+		t.Fatalf("value = %T, want []any (%v)", value, value)
+	}
+	if len(raw) != len(want) {
+		t.Fatalf("len(value) = %d, want %d (%v)", len(raw), len(want), raw)
+	}
+	for idx := range want {
+		if raw[idx] != want[idx] {
+			t.Fatalf("value[%d] = %v, want %q (%v)", idx, raw[idx], want[idx], raw)
+		}
+	}
+}

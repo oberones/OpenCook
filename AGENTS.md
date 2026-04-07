@@ -64,8 +64,10 @@ Implemented so far:
   - delete
   - rename-capable `PUT`
   - `/environments/{name}/cookbooks`
+  - `/environments/{name}/cookbook_versions`
   - `/environments/{name}/nodes`
   - `/environments/{name}/recipes`
+  - cookbook depsolver run-list resolution with environment constraints, version pins, recursive dependency expansion, and the current Chef-shaped `400`/`404`/`412` responses
 - the first core object slice for nodes:
   - list
   - get
@@ -354,7 +356,7 @@ These areas are still intentionally incomplete:
 - deeper node and environment compatibility such as cookbook constraint edge cases and linked object behavior
 - deeper role compatibility such as run-list normalization and linked environment behavior
 - broader search semantics beyond the current in-memory compatibility layer, especially richer Lucene-style query translation and wider object coverage
-- deeper Bookshelf/cookbook flows beyond the current cookbook write/read/artifact slice, especially the remaining cookbook pedant cases outside the current environment-filtered/named-filter/latest/version read-write contract and the remaining deeper provider hardening around S3-compatible blob behavior
+- deeper Bookshelf/cookbook flows beyond the current cookbook write/read/artifact slice, especially the remaining cookbook pedant cases outside the current environment-filtered/named-filter/latest/version/depsolver contract and the remaining deeper provider hardening around S3-compatible blob behavior
 - operational parity and migration tooling
 
-The next likely major slice is the remaining cookbook pedant cases beyond environment-filtered and named-filter/latest-version views, or deeper provider hardening around S3-compatible blob behavior before moving stabilized slices toward PostgreSQL/OpenSearch-backed providers.
+The next likely major slice is the remaining cookbook pedant cases beyond the current environment-filtered, named-filter/latest-version, and first depsolver coverage, or deeper provider hardening around S3-compatible blob behavior before moving stabilized slices toward PostgreSQL/OpenSearch-backed providers.

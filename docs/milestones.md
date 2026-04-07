@@ -99,7 +99,8 @@ Status: in progress
 - cookbook artifact create auth coverage now also exercises normal-user create success plus 401/403 no-mutation behavior for invalid and outside users
 - blob backend selection now supports the existing in-memory compatibility mode, a provider-backed filesystem adapter for local dev/test persistence, and a real S3-compatible adapter for request-path `PUT`/`GET`/`HEAD`/`DELETE` blob operations when endpoint and credentials are configured
 - provider-backed blob hardening now includes configurable S3 request timeout/retry settings plus consistent `blob_unavailable` degradation for transient/provider-auth failures
-- PostgreSQL-backed cookbook persistence, broader cookbook pedant coverage beyond the current environment-filtered/named-filter/latest/version read-write contract, and deeper operational hardening around provider-backed blob behavior are still pending
+- the first depsolver slice is now live on `/environments/{env}/cookbook_versions` and the org-scoped alias, with run-list validation, environment-aware cookbook selection, version pins, recursive dependency expansion, and the current Chef-shaped `400`/`404`/`412` responses for missing, filtered, and dependency-missing cookbooks
+- PostgreSQL-backed cookbook persistence, broader cookbook pedant coverage beyond the current environment-filtered/named-filter/latest/version read-write contract, deeper depsolver parity, and deeper operational hardening around provider-backed blob behavior are still pending
 - S3-compatible blob storage remains the target production mode after the compatibility contract settles
 
 ## Milestone 7: Operations and Migration
