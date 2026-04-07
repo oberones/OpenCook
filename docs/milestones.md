@@ -94,6 +94,7 @@ Status: in progress
 - cookbook artifact HTTP coverage now also exercises wrong-identifier delete no-mutation behavior, successful normal-user artifact reads/deletes with usable signed recipe download URLs, and the expected 401/403 artifact auth behavior for invalid and outside users
 - cookbook artifact read coverage now also exercises empty and multi-identifier collections, named-artifact collection views, and explicit API v2 `all_files` response shaping
 - cookbook artifact create/update coverage now also exercises large-component and prerelease versions, invalid route name/identifier rejection, exact route/payload name and identifier mismatch errors, repeated-`PUT` `409` conflict behavior, and no-mutation behavior for failed outside-user and invalid-user updates
+- cookbook artifact create coverage now also exercises metadata default overrides and multi-identifier create behavior for the same cookbook name
 - production S3-compatible blob storage, PostgreSQL-backed cookbook persistence, and broader cookbook pedant coverage beyond the current environment-filtered/named-filter/latest/version read-write contract are still pending
 - S3-compatible blob storage remains the target production mode after the compatibility contract settles
 
