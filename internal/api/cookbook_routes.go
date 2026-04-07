@@ -672,6 +672,20 @@ func (s *server) renderCookbookVersionResponse(r *http.Request, org string, vers
 	return response
 }
 
+func (s *server) renderDepsolverCookbookVersionResponse(r *http.Request, org string, version bootstrap.CookbookVersion) map[string]any {
+	response := s.renderCookbookVersionResponse(r, org, version)
+	metadata, ok := response["metadata"].(map[string]any)
+	if !ok {
+		return response
+	}
+
+	minimal := cloneResponseMap(metadata)
+	delete(minimal, "attributes")
+	delete(minimal, "long_description")
+	response["metadata"] = minimal
+	return response
+}
+
 func (s *server) renderCookbookVersionWriteResponse(r *http.Request, version bootstrap.CookbookVersion, requestPayload map[string]any) map[string]any {
 	response := map[string]any{
 		"name":          version.Name,
