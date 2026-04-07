@@ -7,11 +7,13 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"io"
 	"log"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -385,6 +387,51 @@ func TestSandboxCommitReturns503WhenBlobCheckerUnavailable(t *testing.T) {
 	}
 }
 
+func TestSandboxesEndpointCreateUploadAndCommitWithS3CompatibleStore(t *testing.T) {
+	store := newTestS3BlobStore(t)
+	router := newTestRouterWithBlob(t, config.Config{
+		ServiceName: "opencook",
+		Environment: "test",
+		AuthSkew:    15 * time.Minute,
+	}, store)
+
+	content := []byte("friendship is portable")
+	checksum := checksumHex(content)
+	createReq := newSignedJSONRequest(t, http.MethodPost, "/sandboxes", mustMarshalSandboxJSON(t, map[string]any{
+		"checksums": map[string]any{
+			checksum: nil,
+		},
+	}))
+	createRec := httptest.NewRecorder()
+	router.ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("create sandbox status = %d, want %d, body = %s", createRec.Code, http.StatusCreated, createRec.Body.String())
+	}
+
+	var createPayload map[string]any
+	if err := json.Unmarshal(createRec.Body.Bytes(), &createPayload); err != nil {
+		t.Fatalf("json.Unmarshal(create sandbox) error = %v", err)
+	}
+	sandboxID := createPayload["sandbox_id"].(string)
+	uploadURL := createPayload["checksums"].(map[string]any)[checksum].(map[string]any)["url"].(string)
+
+	uploadReq := httptest.NewRequest(http.MethodPut, uploadURL, bytes.NewReader(content))
+	uploadReq.Header.Set("Content-Type", "application/x-binary")
+	uploadReq.Header.Set("Content-MD5", checksumBase64(content))
+	uploadRec := httptest.NewRecorder()
+	router.ServeHTTP(uploadRec, uploadReq)
+	if uploadRec.Code != http.StatusNoContent {
+		t.Fatalf("upload checksum status = %d, want %d, body = %s", uploadRec.Code, http.StatusNoContent, uploadRec.Body.String())
+	}
+
+	commitReq := newSignedJSONRequest(t, http.MethodPut, "/sandboxes/"+sandboxID, mustMarshalSandboxJSON(t, map[string]any{"is_completed": true}))
+	commitRec := httptest.NewRecorder()
+	router.ServeHTTP(commitRec, commitReq)
+	if commitRec.Code != http.StatusOK {
+		t.Fatalf("commit sandbox status = %d, want %d, body = %s", commitRec.Code, http.StatusOK, commitRec.Body.String())
+	}
+}
+
 type stubBlobStore struct{}
 
 func (stubBlobStore) Name() string {
@@ -663,4 +710,81 @@ func checksumHex(body []byte) string {
 func checksumBase64(body []byte) string {
 	sum := md5.Sum(body)
 	return base64.StdEncoding.EncodeToString(sum[:])
+}
+
+func newTestS3BlobStore(t *testing.T) *blob.S3CompatibleStore {
+	t.Helper()
+
+	var (
+		mu      sync.Mutex
+		objects = map[string][]byte{}
+	)
+
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		mu.Lock()
+		defer mu.Unlock()
+
+		switch r.Method {
+		case http.MethodPut:
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Errorf("ReadAll() error = %v", err)
+				return testRoundTripResponse(r, http.StatusInternalServerError, ""), nil
+			}
+			objects[r.URL.Path] = body
+			return testRoundTripResponse(r, http.StatusOK, ""), nil
+		case http.MethodHead:
+			if _, ok := objects[r.URL.Path]; !ok {
+				return testRoundTripResponse(r, http.StatusNotFound, ""), nil
+			}
+			return testRoundTripResponse(r, http.StatusOK, ""), nil
+		case http.MethodGet:
+			body, ok := objects[r.URL.Path]
+			if !ok {
+				return testRoundTripResponse(r, http.StatusNotFound, ""), nil
+			}
+			return testRoundTripResponse(r, http.StatusOK, string(body)), nil
+		case http.MethodDelete:
+			if _, ok := objects[r.URL.Path]; !ok {
+				return testRoundTripResponse(r, http.StatusNotFound, ""), nil
+			}
+			delete(objects, r.URL.Path)
+			return testRoundTripResponse(r, http.StatusNoContent, ""), nil
+		default:
+			return testRoundTripResponse(r, http.StatusMethodNotAllowed, ""), nil
+		}
+	})}
+
+	store, err := blob.NewS3CompatibleStore(blob.S3CompatibleConfig{
+		StorageURL:     "s3://chef-bucket/checksums",
+		Endpoint:       "http://s3.test",
+		Region:         "us-east-1",
+		ForcePathStyle: true,
+		AccessKeyID:    "access-key",
+		SecretKey:      "secret-key",
+		SessionToken:   "session-token",
+		HTTPClient:     client,
+		Now: func() time.Time {
+			return time.Date(2026, 4, 7, 12, 0, 0, 0, time.UTC)
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewS3CompatibleStore() error = %v", err)
+	}
+	return store
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (fn roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return fn(req)
+}
+
+func testRoundTripResponse(req *http.Request, status int, body string) *http.Response {
+	return &http.Response{
+		StatusCode: status,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader(body)),
+		Request:    req,
+	}
 }

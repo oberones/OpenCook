@@ -69,8 +69,8 @@ func TestNewStoreSelectsS3CompatibleScaffold(t *testing.T) {
 	if status.Backend != "s3-compatible" {
 		t.Fatalf("Status().Backend = %q, want %q", status.Backend, "s3-compatible")
 	}
-	if !status.Configured {
-		t.Fatal("Status().Configured = false, want true")
+	if status.Configured {
+		t.Fatal("Status().Configured = true, want false without credentials")
 	}
 
 	getter, ok := store.(Getter)
@@ -80,5 +80,24 @@ func TestNewStoreSelectsS3CompatibleScaffold(t *testing.T) {
 	_, err = getter.Get(context.Background(), "abcdef")
 	if !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("Get() error = %v, want ErrUnavailable", err)
+	}
+}
+
+func TestNewStoreReportsConfiguredS3CompatibleBackendWithCredentials(t *testing.T) {
+	store, err := NewStore(config.Config{
+		BlobBackend:       BackendS3,
+		BlobStorageURL:    "s3://chef-bucket/checksums",
+		BlobS3Endpoint:    "http://minio.local:9000",
+		BlobS3Region:      "us-east-1",
+		BlobS3AccessKeyID: "access-key",
+		BlobS3SecretKey:   "secret-key",
+	})
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+
+	status := store.Status()
+	if !status.Configured {
+		t.Fatal("Status().Configured = false, want true")
 	}
 }
