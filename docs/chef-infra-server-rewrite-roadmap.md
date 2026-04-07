@@ -62,6 +62,7 @@ As of 2026-04-04, OpenCook has moved past pure scaffolding and into the first co
 - policy payload normalization now preserves richer canonical structures like `named_run_lists`, nested cookbook-lock metadata, and `solution_dependencies`, with deeper validation around cookbook lock versions and shapes
 - node `policy_name` and `policy_group` semantics remain compatibility-safe searchable fields rather than newly enforced foreign keys
 - the first sandbox/blob slice is now live with signed sandbox create/commit flows, absolute checksum upload URLs, and in-memory checksum blob storage
+- the first provider-backed blob seam is now live with backend selection, a filesystem adapter for local dev/test persistence, and an S3-compatible scaffold that reports its mode honestly while request-path provider operations remain pending
 - sandbox commit now enforces upload completeness before marking a sandbox complete, matching the expected Chef-style lifecycle shape
 - the first cookbook slice is now live with `PUT/GET/DELETE /cookbook_artifacts/{name}/{identifier}` plus collection and named-artifact reads on both default-org and explicit-org routes
 - cookbook version create/update/delete behavior is now live on `/cookbooks/{name}/{version}` and `/organizations/{org}/cookbooks/{name}/{version}`
@@ -93,7 +94,7 @@ Current focus:
 
 - preserve API-version-sensitive actor key behavior without carrying forward Chef licensing concerns
 - deepen search query translation beyond the current simple compatibility subset and widen object/index coverage further
-- deepen cookbook/blob compatibility beyond the current cookbook write/read/artifact slice, especially the remaining cookbook pedant cases outside the current environment-filtered/named-filter/latest/version read-write contract and production object storage behavior
+- deepen cookbook/blob compatibility beyond the current cookbook write/read/artifact slice, especially the remaining cookbook pedant cases outside the current environment-filtered/named-filter/latest/version read-write contract and the remaining S3-compatible request-path object storage behavior
 - replace the in-memory bootstrap layer with PostgreSQL-backed persistence after the contracts stabilize
 
 ## What Exists Upstream
@@ -282,6 +283,7 @@ These should become regression tests for OpenCook.
 - Support S3-compatible storage as the primary production mode
 - Provide local dev/test filesystem mode
 - Emulate Bookshelf upload/download contracts, including signed URL behavior expected by clients
+- Current status: provider selection now exists, the filesystem adapter is live for local dev/test persistence, and the S3-compatible path is wired as an honest scaffold pending full request-time operations
 
 ### Operations layer
 

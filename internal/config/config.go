@@ -21,9 +21,14 @@ type Config struct {
 	MaxBlobUploadBytes  int64
 	BootstrapMode       bool
 
-	PostgresDSN    string
-	OpenSearchURL  string
-	BlobStorageURL string
+	PostgresDSN          string
+	OpenSearchURL        string
+	BlobBackend          string
+	BlobStorageURL       string
+	BlobS3Endpoint       string
+	BlobS3Region         string
+	BlobS3ForcePathStyle bool
+	BlobS3DisableTLS     bool
 
 	BootstrapRequestorName          string
 	BootstrapRequestorType          string
@@ -76,6 +81,14 @@ func LoadFromEnv() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	blobS3ForcePathStyle, err := envBool("OPENCOOK_BLOB_S3_FORCE_PATH_STYLE", false)
+	if err != nil {
+		return Config{}, err
+	}
+	blobS3DisableTLS, err := envBool("OPENCOOK_BLOB_S3_DISABLE_TLS", false)
+	if err != nil {
+		return Config{}, err
+	}
 
 	return Config{
 		ServiceName:                     envString("OPENCOOK_SERVICE_NAME", "opencook"),
@@ -91,7 +104,12 @@ func LoadFromEnv() (Config, error) {
 		BootstrapMode:                   bootstrapMode,
 		PostgresDSN:                     strings.TrimSpace(os.Getenv("OPENCOOK_POSTGRES_DSN")),
 		OpenSearchURL:                   strings.TrimSpace(os.Getenv("OPENCOOK_OPENSEARCH_URL")),
+		BlobBackend:                     envString("OPENCOOK_BLOB_BACKEND", ""),
 		BlobStorageURL:                  strings.TrimSpace(os.Getenv("OPENCOOK_BLOB_STORAGE_URL")),
+		BlobS3Endpoint:                  strings.TrimSpace(os.Getenv("OPENCOOK_BLOB_S3_ENDPOINT")),
+		BlobS3Region:                    strings.TrimSpace(os.Getenv("OPENCOOK_BLOB_S3_REGION")),
+		BlobS3ForcePathStyle:            blobS3ForcePathStyle,
+		BlobS3DisableTLS:                blobS3DisableTLS,
 		BootstrapRequestorName:          envString("OPENCOOK_BOOTSTRAP_REQUESTOR_NAME", ""),
 		BootstrapRequestorType:          envString("OPENCOOK_BOOTSTRAP_REQUESTOR_TYPE", "user"),
 		BootstrapRequestorOrganization:  envString("OPENCOOK_BOOTSTRAP_REQUESTOR_ORG", ""),
@@ -120,7 +138,12 @@ func (c Config) Redacted() map[string]string {
 		"bootstrap_public_key_path":  redact(c.BootstrapRequestorPublicKeyPath),
 		"postgres_dsn":               redact(c.PostgresDSN),
 		"opensearch_url":             redact(c.OpenSearchURL),
+		"blob_backend":               c.BlobBackend,
 		"blob_storage_url":           redact(c.BlobStorageURL),
+		"blob_s3_endpoint":           redact(c.BlobS3Endpoint),
+		"blob_s3_region":             c.BlobS3Region,
+		"blob_s3_force_path_style":   strconv.FormatBool(c.BlobS3ForcePathStyle),
+		"blob_s3_disable_tls":        strconv.FormatBool(c.BlobS3DisableTLS),
 	}
 }
 
