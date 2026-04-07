@@ -67,7 +67,7 @@ Implemented so far:
   - `/environments/{name}/cookbook_versions`
   - `/environments/{name}/nodes`
   - `/environments/{name}/recipes`
-  - cookbook depsolver run-list resolution with server-side `role[...]` expansion, environment constraints, environment-specific role run lists, nested-role expansion, version pins, recursive dependency expansion, cookbook-container read auth parity, minimal Chef-style success payload shaping, datestamp constraint coverage, and the current Chef-shaped `400`/`404`/`412` responses including missing/recursive role failures
+  - cookbook depsolver run-list resolution with recipe-qualified and version-pinned run-list item support, server-side `role[...]` expansion, environment constraints, environment-specific role run lists, nested-role expansion, version pins, recursive dependency expansion, sibling-aware backtracking across compatible dependency alternatives, cookbook-container read auth parity, minimal Chef-style success payload shaping, datestamp constraint coverage, and the current Chef-shaped `400`/`404`/`412` responses including missing/recursive role failures and richer transitive conflict detail
 - the first core object slice for nodes:
   - list
   - get
