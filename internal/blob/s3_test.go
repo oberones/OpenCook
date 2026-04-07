@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -44,17 +45,26 @@ func TestS3CompatibleStorePutGetExistsAndDelete(t *testing.T) {
 			objects[r.URL.Path] = body
 			return testHTTPResponse(r, http.StatusOK, ""), nil
 		case http.MethodHead:
+			if r.Body != nil {
+				t.Errorf("HEAD body = non-nil, want nil")
+			}
 			if _, ok := objects[r.URL.Path]; !ok {
 				return testHTTPResponse(r, http.StatusNotFound, ""), nil
 			}
 			return testHTTPResponse(r, http.StatusOK, ""), nil
 		case http.MethodGet:
+			if r.Body != nil {
+				t.Errorf("GET body = non-nil, want nil")
+			}
 			body, ok := objects[r.URL.Path]
 			if !ok {
 				return testHTTPResponse(r, http.StatusNotFound, ""), nil
 			}
 			return testHTTPResponse(r, http.StatusOK, string(body)), nil
 		case http.MethodDelete:
+			if r.Body != nil {
+				t.Errorf("DELETE body = non-nil, want nil")
+			}
 			if _, ok := objects[r.URL.Path]; !ok {
 				return testHTTPResponse(r, http.StatusNotFound, ""), nil
 			}
@@ -138,6 +148,44 @@ func TestS3CompatibleStoreReturnsUnavailableWithoutCredentials(t *testing.T) {
 	})
 	if !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("Put() error = %v, want ErrUnavailable", err)
+	}
+}
+
+func TestCanonicalQueryStringUsesSigV4Encoding(t *testing.T) {
+	u := &url.URL{
+		RawQuery: "marker=a+b&prefix=foo bar&empty=&encoded=%2F&a=1&a=0",
+	}
+
+	got := canonicalQueryString(u)
+	want := "a=0&a=1&empty=&encoded=%2F&marker=a%2Bb&prefix=foo%20bar"
+	if got != want {
+		t.Fatalf("canonicalQueryString() = %q, want %q", got, want)
+	}
+}
+
+func TestNewRequestUsesNilBodyForReadMethods(t *testing.T) {
+	store, err := NewS3CompatibleStore(S3CompatibleConfig{
+		StorageURL:     "s3://chef-bucket/checksums",
+		Endpoint:       "http://s3.test",
+		Region:         "us-east-1",
+		ForcePathStyle: true,
+		AccessKeyID:    "access-key",
+		SecretKey:      "secret-key",
+	})
+	if err != nil {
+		t.Fatalf("NewS3CompatibleStore() error = %v", err)
+	}
+
+	for _, method := range []string{http.MethodGet, http.MethodHead, http.MethodDelete} {
+		t.Run(method, func(t *testing.T) {
+			req, err := store.newRequest(context.Background(), method, "abcdef0123456789", "", nil)
+			if err != nil {
+				t.Fatalf("newRequest() error = %v", err)
+			}
+			if req.Body != nil {
+				t.Fatalf("req.Body = non-nil, want nil")
+			}
+		})
 	}
 }
 
