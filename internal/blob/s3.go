@@ -219,9 +219,9 @@ func (s *S3CompatibleStore) newRequest(ctx context.Context, method, key, content
 	}
 
 	payloadHash := hexSHA256(body)
-	reader := bytes.NewReader(body)
-	if body == nil {
-		reader = bytes.NewReader(nil)
+	var reader io.Reader
+	if body != nil {
+		reader = bytes.NewReader(body)
 	}
 	req, err := http.NewRequestWithContext(ctx, method, targetURL, reader)
 	if err != nil {
@@ -300,7 +300,8 @@ func (s *S3CompatibleStore) signRequest(req *http.Request, host, payloadHash str
 		credentialScope,
 		hexSHA256([]byte(canonicalRequest)),
 	}, "\n")
-	signature := hex.EncodeToString(signingKey(s.secretKey, dateStamp, s.region, "s3", stringToSign))
+	signingKey := deriveSigningKey(s.secretKey, dateStamp, s.region, "s3")
+	signature := hex.EncodeToString(signStringToSign(signingKey, stringToSign))
 	req.Header.Set("Authorization", fmt.Sprintf(
 		"AWS4-HMAC-SHA256 Credential=%s/%s, SignedHeaders=%s, Signature=%s",
 		s.accessKeyID,
@@ -358,25 +359,50 @@ func canonicalQueryString(u *url.URL) string {
 	if u == nil || u.RawQuery == "" {
 		return ""
 	}
-	values := u.Query()
-	var parts []string
-	for key, valuesForKey := range values {
-		escapedKey := url.QueryEscape(key)
-		sort.Strings(valuesForKey)
-		for _, value := range valuesForKey {
-			parts = append(parts, escapedKey+"="+url.QueryEscape(value))
-		}
+
+	type queryPart struct {
+		key   string
+		value string
 	}
-	sort.Strings(parts)
-	return strings.Join(parts, "&")
+
+	rawParts := strings.Split(u.RawQuery, "&")
+	parts := make([]queryPart, 0, len(rawParts))
+	for _, rawPart := range rawParts {
+		rawKey := rawPart
+		rawValue := ""
+		if idx := strings.Index(rawPart, "="); idx >= 0 {
+			rawKey = rawPart[:idx]
+			rawValue = rawPart[idx+1:]
+		}
+
+		parts = append(parts, queryPart{
+			key:   awsPercentEncode(decodeRawQueryComponent(rawKey)),
+			value: awsPercentEncode(decodeRawQueryComponent(rawValue)),
+		})
+	}
+	sort.Slice(parts, func(i, j int) bool {
+		if parts[i].key == parts[j].key {
+			return parts[i].value < parts[j].value
+		}
+		return parts[i].key < parts[j].key
+	})
+
+	canonical := make([]string, 0, len(parts))
+	for _, part := range parts {
+		canonical = append(canonical, part.key+"="+part.value)
+	}
+	return strings.Join(canonical, "&")
 }
 
-func signingKey(secret, dateStamp, region, service, stringToSign string) []byte {
+func deriveSigningKey(secret, dateStamp, region, service string) []byte {
 	dateKey := hmacSHA256([]byte("AWS4"+secret), dateStamp)
 	regionKey := hmacSHA256(dateKey, region)
 	serviceKey := hmacSHA256(regionKey, service)
-	requestKey := hmacSHA256(serviceKey, "aws4_request")
-	return hmacSHA256(requestKey, stringToSign)
+	return hmacSHA256(serviceKey, "aws4_request")
+}
+
+func signStringToSign(signingKey []byte, stringToSign string) []byte {
+	return hmacSHA256(signingKey, stringToSign)
 }
 
 func hmacSHA256(key []byte, value string) []byte {
@@ -428,4 +454,68 @@ func (s *S3CompatibleStore) usePathStyle() bool {
 
 func (s *S3CompatibleStore) unexpectedStatus(op string, status int) error {
 	return fmt.Errorf("s3-compatible blob %s failed with status %d", op, status)
+}
+
+func awsPercentEncode(value string) string {
+	var builder strings.Builder
+	for _, b := range []byte(value) {
+		if isAWSUnreserved(b) {
+			builder.WriteByte(b)
+			continue
+		}
+		builder.WriteString(fmt.Sprintf("%%%02X", b))
+	}
+	return builder.String()
+}
+
+func decodeRawQueryComponent(value string) string {
+	decoded := make([]byte, 0, len(value))
+	for i := 0; i < len(value); i++ {
+		if value[i] == '%' && i+2 < len(value) && isHexDigit(value[i+1]) && isHexDigit(value[i+2]) {
+			decoded = append(decoded, fromHex(value[i+1])<<4|fromHex(value[i+2]))
+			i += 2
+			continue
+		}
+		decoded = append(decoded, value[i])
+	}
+	return string(decoded)
+}
+
+func isAWSUnreserved(b byte) bool {
+	switch {
+	case b >= 'A' && b <= 'Z':
+		return true
+	case b >= 'a' && b <= 'z':
+		return true
+	case b >= '0' && b <= '9':
+		return true
+	case b == '-', b == '.', b == '_', b == '~':
+		return true
+	default:
+		return false
+	}
+}
+
+func isHexDigit(b byte) bool {
+	switch {
+	case b >= '0' && b <= '9':
+		return true
+	case b >= 'a' && b <= 'f':
+		return true
+	case b >= 'A' && b <= 'F':
+		return true
+	default:
+		return false
+	}
+}
+
+func fromHex(b byte) byte {
+	switch {
+	case b >= '0' && b <= '9':
+		return b - '0'
+	case b >= 'a' && b <= 'f':
+		return b - 'a' + 10
+	default:
+		return b - 'A' + 10
+	}
 }
