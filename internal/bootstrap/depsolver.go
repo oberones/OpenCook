@@ -103,7 +103,9 @@ func (s *Service) SolveEnvironmentCookbookVersions(orgName, environmentName stri
 		RootMessages: make(map[string]string),
 	}
 	for _, item := range items {
-		solution.RootMessages[item.Cookbook] = item.Label
+		if _, exists := solution.RootMessages[item.Cookbook]; !exists {
+			solution.RootMessages[item.Cookbook] = item.Label
+		}
 		next, err := solveDepsolverCookbook(org, env, solution, item.Cookbook, item.Cookbook, depsolverConstraintSource{
 			Constraint: item.Constraint,
 		})
