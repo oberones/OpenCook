@@ -264,6 +264,11 @@ func parseDepsolverRunListItem(value string) (depsolverRunListItem, error) {
 func solveDepsolverCookbook(org *organizationState, env Environment, current depsolverSolution, cookbook, rootCookbook string, incoming depsolverConstraintSource) (depsolverSolution, error) {
 	next := cloneDepsolverSolution(current)
 	next.Constraints[cookbook] = append(next.Constraints[cookbook], incoming)
+	return solveDepsolverCookbookWithExistingConstraints(org, env, next, cookbook, rootCookbook)
+}
+
+func solveDepsolverCookbookWithExistingConstraints(org *organizationState, env Environment, current depsolverSolution, cookbook, rootCookbook string) (depsolverSolution, error) {
+	next := current
 
 	versions, exists := org.cookbooks[cookbook]
 	if !exists {
@@ -297,12 +302,21 @@ func solveDepsolverCookbook(org *organizationState, env Environment, current dep
 			if depConstraint == "" {
 				depConstraint = ">= 0.0.0"
 			}
+			parentSources := depsolverConstraintSources(trial.Constraints[cookbook])
+			if len(parentSources) == 0 {
+				parentSources = []string{fmt.Sprintf("(%s = %s)", candidate.CookbookName, candidate.Version)}
+			}
+			for _, parentSource := range parentSources {
+				trial.Constraints[depName] = append(trial.Constraints[depName], depsolverConstraintSource{
+					Constraint: depConstraint,
+					Source:     parentSource + " -> (" + depName + " " + depConstraint + ")",
+				})
+			}
+		}
 
+		for _, depName := range depNames {
 			var err error
-			trial, err = solveDepsolverCookbook(org, env, trial, depName, rootCookbook, depsolverConstraintSource{
-				Constraint: depConstraint,
-				Source:     fmt.Sprintf("(%s = %s) -> (%s %s)", candidate.CookbookName, candidate.Version, depName, depConstraint),
-			})
+			trial, err = solveDepsolverCookbookWithExistingConstraints(org, env, trial, depName, rootCookbook)
 			if err != nil {
 				lastErr = err
 				dependencyFailed = true
@@ -319,7 +333,7 @@ func solveDepsolverCookbook(org *organizationState, env Environment, current dep
 	if lastErr != nil {
 		return next, lastErr
 	}
-	return next, unsatisfiedDependencyCookbookError(cookbook, versions, env.CookbookVersions[cookbook], next.RootMessages[rootCookbook], depsolverConstraintSources(next.Constraints[cookbook]))
+	return next, unsatisfiedDependencyCookbookError(cookbook, versions, env.CookbookVersions[cookbook], next.RootMessages[rootCookbook], depsolverConstraintSources(next.Constraints[cookbook]), next.Versions[cookbook])
 }
 
 func cloneDepsolverSolution(in depsolverSolution) depsolverSolution {
@@ -403,7 +417,6 @@ func depsolverConstraintSources(constraints []depsolverConstraintSource) []strin
 		seen[source] = struct{}{}
 		out = append(out, source)
 	}
-	sort.Strings(out)
 	return out
 }
 
@@ -453,7 +466,7 @@ func missingDependencyCookbookError(cookbook, rootMessage string, sources []stri
 	}
 }
 
-func unsatisfiedDependencyCookbookError(cookbook string, versions map[string]CookbookVersion, envConstraint, rootMessage string, sources []string) error {
+func unsatisfiedDependencyCookbookError(cookbook string, versions map[string]CookbookVersion, envConstraint, rootMessage string, sources []string, selected CookbookVersion) error {
 	return &DepsolverError{
 		Detail: map[string]any{
 			"message": fmt.Sprintf(
@@ -465,18 +478,26 @@ func unsatisfiedDependencyCookbookError(cookbook string, versions map[string]Coo
 			),
 			"unsatisfiable_run_list_item": rootMessage,
 			"non_existent_cookbooks":      []string{},
-			"most_constrained_cookbooks":  []string{renderMostConstrainedCookbook(cookbook, versions, envConstraint)},
+			"most_constrained_cookbooks":  []string{renderMostConstrainedCookbook(cookbook, versions, envConstraint, selected)},
 		},
 	}
 }
 
-func renderMostConstrainedCookbook(cookbook string, versions map[string]CookbookVersion, envConstraint string) string {
+func renderMostConstrainedCookbook(cookbook string, versions map[string]CookbookVersion, envConstraint string, selected CookbookVersion) string {
+	if strings.TrimSpace(selected.Version) != "" {
+		return renderMostConstrainedCookbookVersion(cookbook, selected)
+	}
+
 	refs := filterEnvironmentCookbookRefs(cookbookVersionRefs(versions), envConstraint)
 	if len(refs) == 0 {
 		return cookbook + " -> []"
 	}
 
 	version := versions[refs[0].Version]
+	return renderMostConstrainedCookbookVersion(cookbook, version)
+}
+
+func renderMostConstrainedCookbookVersion(cookbook string, version CookbookVersion) string {
 	dependencies := cookbookMetadataDependencies(version.Metadata)
 	if len(dependencies) == 0 {
 		return fmt.Sprintf("%s = %s -> []", cookbook, version.Version)
