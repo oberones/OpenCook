@@ -97,8 +97,8 @@ Status: in progress
 - cookbook artifact create coverage now also exercises metadata default overrides and multi-identifier create behavior for the same cookbook name
 - cookbook artifact validation HTTP coverage now also exercises missing metadata versions, invalid legacy segment shapes, and invalid metadata dependency/platform payloads
 - cookbook artifact create auth coverage now also exercises normal-user create success plus 401/403 no-mutation behavior for invalid and outside users
-- blob backend selection now supports the existing in-memory compatibility mode, a provider-backed filesystem adapter for local dev/test persistence, and an honest S3-compatible scaffold that reports its mode and returns service-unavailable for request-time blob operations until the provider implementation lands
-- full S3-compatible request-path blob behavior, PostgreSQL-backed cookbook persistence, and broader cookbook pedant coverage beyond the current environment-filtered/named-filter/latest/version read-write contract are still pending
+- blob backend selection now supports the existing in-memory compatibility mode, a provider-backed filesystem adapter for local dev/test persistence, and a real S3-compatible adapter for request-path `PUT`/`GET`/`HEAD`/`DELETE` blob operations when endpoint and credentials are configured
+- PostgreSQL-backed cookbook persistence, broader cookbook pedant coverage beyond the current environment-filtered/named-filter/latest/version read-write contract, and operational hardening around provider-backed blob behavior are still pending
 - S3-compatible blob storage remains the target production mode after the compatibility contract settles
 
 ## Milestone 7: Operations and Migration
