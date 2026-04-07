@@ -90,7 +90,7 @@ As of 2026-04-07, OpenCook has moved past pure scaffolding and into the first co
 - cookbook artifact create coverage now also includes metadata default overrides and multi-identifier create behavior for the same cookbook name
 - cookbook artifact validation HTTP coverage now also includes missing metadata versions, invalid legacy segment shapes, and invalid metadata dependency/platform payloads
 - cookbook artifact create auth coverage now also includes normal-user create success plus invalid/outside no-mutation behavior
-- the first depsolver slice now validates cookbook run lists, honors environment cookbook constraints and version pins, expands recursive cookbook dependencies, and returns the current Chef-shaped `400`/`404`/`412` responses for invalid, missing, filtered, and dependency-missing cookbook cases
+- the first depsolver slice now validates cookbook run lists, honors environment cookbook constraints and version pins, expands recursive cookbook dependencies, enforces cookbook-container read auth alongside environment read, returns the upstream-style minimal cookbook payloads that omit `metadata.attributes` and `metadata.long_description`, and returns the current Chef-shaped `400`/`404`/`412` responses for invalid, missing, filtered, datestamp, and dependency-failure cookbook cases
 - compatibility tracking docs and route inventory are in place and being updated alongside code
 
 Current focus:

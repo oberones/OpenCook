@@ -67,7 +67,7 @@ Implemented so far:
   - `/environments/{name}/cookbook_versions`
   - `/environments/{name}/nodes`
   - `/environments/{name}/recipes`
-  - cookbook depsolver run-list resolution with environment constraints, version pins, recursive dependency expansion, and the current Chef-shaped `400`/`404`/`412` responses
+  - cookbook depsolver run-list resolution with environment constraints, version pins, recursive dependency expansion, cookbook-container read auth parity, minimal Chef-style success payload shaping, datestamp constraint coverage, and the current Chef-shaped `400`/`404`/`412` responses
 - the first core object slice for nodes:
   - list
   - get

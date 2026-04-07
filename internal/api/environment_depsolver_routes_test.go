@@ -1,10 +1,14 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/oberones/OpenCook/internal/authz"
+	"github.com/oberones/OpenCook/internal/bootstrap"
 )
 
 func TestEnvironmentCookbookVersionsRejectInvalidJSON(t *testing.T) {
@@ -153,6 +157,14 @@ func TestEnvironmentCookbookVersionsResolvesPinnedAndDependentCookbooks(t *testi
 	if value := quuxDeps["bar"]; value != "= 2.0.0" {
 		t.Fatalf("quux dependency bar = %v, want %q", value, "= 2.0.0")
 	}
+
+	fooMetadata := payload["foo"].(map[string]any)["metadata"].(map[string]any)
+	if _, ok := fooMetadata["attributes"]; ok {
+		t.Fatalf("depsolver metadata.attributes present, want omitted (%v)", fooMetadata)
+	}
+	if _, ok := fooMetadata["long_description"]; ok {
+		t.Fatalf("depsolver metadata.long_description present, want omitted (%v)", fooMetadata)
+	}
 }
 
 func TestEnvironmentCookbookVersionsReturns412ForMissingDependency(t *testing.T) {
@@ -182,6 +194,113 @@ func TestEnvironmentCookbookVersionsReturns412ForMissingDependency(t *testing.T)
 		t.Fatalf("unsatisfiable_run_list_item = %v, want %q", detail["unsatisfiable_run_list_item"], "(foo >= 0.0.0)")
 	}
 	assertStringSliceValue(t, detail["non_existent_cookbooks"], []string{"this_does_not_exist"})
+	assertStringSliceValue(t, detail["most_constrained_cookbooks"], []string{})
+}
+
+func TestEnvironmentCookbookVersionsReturns412ForUnsatisfiedDependencyVersion(t *testing.T) {
+	router := newTestRouter(t)
+	createEnvironmentForCookbookTests(t, router, "production")
+	createCookbookVersion(t, router, "foo", "1.2.3", "", map[string]string{"bar": "> 2.0.0"})
+	createCookbookVersion(t, router, "bar", "2.0.0", "", nil)
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/environments/production/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{"foo"},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusPreconditionFailed {
+		t.Fatalf("depsolver unsatisfied dependency status = %d, want %d, body = %s", rec.Code, http.StatusPreconditionFailed, rec.Body.String())
+	}
+
+	payload := decodeJSONMap(t, rec.Body.Bytes())
+	assertUnsatisfiedDepsolverDetail(t, payload, map[string]any{
+		"message":                     "Unable to satisfy constraints on package bar due to solution constraint (foo >= 0.0.0). Solution constraints that may result in a constraint on bar: [(foo = 1.2.3) -> (bar > 2.0.0)]",
+		"unsatisfiable_run_list_item": "(foo >= 0.0.0)",
+		"non_existent_cookbooks":      []string{},
+		"most_constrained_cookbooks":  []string{"bar = 2.0.0 -> []"},
+	})
+}
+
+func TestEnvironmentCookbookVersionsReturns412ForImpossibleDependency(t *testing.T) {
+	router := newTestRouter(t)
+	createEnvironmentForCookbookTests(t, router, "production")
+	createCookbookVersion(t, router, "foo", "1.2.3", "", map[string]string{"bar": "> 2.0.0"})
+	createCookbookVersion(t, router, "bar", "2.0.0", "", map[string]string{"foo": "> 3.0.0"})
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/environments/production/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{"foo"},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusPreconditionFailed {
+		t.Fatalf("depsolver impossible dependency status = %d, want %d, body = %s", rec.Code, http.StatusPreconditionFailed, rec.Body.String())
+	}
+
+	payload := decodeJSONMap(t, rec.Body.Bytes())
+	assertUnsatisfiedDepsolverDetail(t, payload, map[string]any{
+		"message":                     "Unable to satisfy constraints on package bar due to solution constraint (foo >= 0.0.0). Solution constraints that may result in a constraint on bar: [(foo = 1.2.3) -> (bar > 2.0.0)]",
+		"unsatisfiable_run_list_item": "(foo >= 0.0.0)",
+		"non_existent_cookbooks":      []string{},
+		"most_constrained_cookbooks":  []string{"bar = 2.0.0 -> [(foo > 3.0.0)]"},
+	})
+}
+
+func TestEnvironmentCookbookVersionsSupportsDatestampVersions(t *testing.T) {
+	router := newTestRouter(t)
+	createEnvironmentForCookbookTests(t, router, "datestamp-env")
+	createCookbookVersion(t, router, "datestamp", "1.2.20130730201745", "", nil)
+	updateEnvironmentCookbookConstraints(t, router, "datestamp-env", map[string]string{
+		"datestamp": ">= 1.2.20130730200000",
+	})
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/environments/datestamp-env/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{"datestamp"},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("depsolver datestamp status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	payload := decodeJSONMap(t, rec.Body.Bytes())
+	assertCookbookVersionBody(t, payload, "datestamp", "1.2.20130730201745")
+}
+
+func TestEnvironmentCookbookVersionsRequiresCookbookContainerReadAuthz(t *testing.T) {
+	var authorizer *recordingDepsolverAuthorizer
+	router, _ := newSearchTestRouterWithAuthorizer(t, func(state *bootstrap.Service) authz.Authorizer {
+		authorizer = &recordingDepsolverAuthorizer{
+			base: authz.NewACLAuthorizer(state),
+			deny: map[string]struct{}{
+				"read:container:cookbooks": {},
+			},
+		}
+		return authorizer
+	})
+	createEnvironmentForCookbookTests(t, router, "production")
+	authorizer.calls = nil
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/environments/production/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("depsolver cookbook container authz status = %d, want %d, body = %s", rec.Code, http.StatusForbidden, rec.Body.String())
+	}
+
+	wantCalls := []string{
+		"read:environment:production",
+		"read:container:cookbooks",
+	}
+	if len(authorizer.calls) != len(wantCalls) {
+		t.Fatalf("depsolver authz calls = %v, want %v", authorizer.calls, wantCalls)
+	}
+	for idx := range wantCalls {
+		if authorizer.calls[idx] != wantCalls[idx] {
+			t.Fatalf("depsolver authz calls[%d] = %q, want %q (%v)", idx, authorizer.calls[idx], wantCalls[idx], authorizer.calls)
+		}
+	}
 }
 
 func assertEnvironmentErrorMessages(t *testing.T, body []byte, want ...string) {
@@ -207,6 +326,27 @@ func assertDepsolverErrorDetail(t *testing.T, payload map[string]any, want map[s
 	}
 	assertStringSliceValue(t, detail["non_existent_cookbooks"], want["non_existent_cookbooks"].([]string))
 	assertStringSliceValue(t, detail["cookbooks_with_no_versions"], want["cookbooks_with_no_versions"].([]string))
+}
+
+func assertUnsatisfiedDepsolverDetail(t *testing.T, payload map[string]any, want map[string]any) {
+	t.Helper()
+
+	errorList, ok := payload["error"].([]any)
+	if !ok || len(errorList) != 1 {
+		t.Fatalf("error payload = %v, want one depsolver error object", payload["error"])
+	}
+	detail, ok := errorList[0].(map[string]any)
+	if !ok {
+		t.Fatalf("error detail type = %T, want map[string]any", errorList[0])
+	}
+	if detail["message"] != want["message"] {
+		t.Fatalf("message = %v, want %v", detail["message"], want["message"])
+	}
+	if detail["unsatisfiable_run_list_item"] != want["unsatisfiable_run_list_item"] {
+		t.Fatalf("unsatisfiable_run_list_item = %v, want %v", detail["unsatisfiable_run_list_item"], want["unsatisfiable_run_list_item"])
+	}
+	assertStringSliceValue(t, detail["non_existent_cookbooks"], want["non_existent_cookbooks"].([]string))
+	assertStringSliceValue(t, detail["most_constrained_cookbooks"], want["most_constrained_cookbooks"].([]string))
 }
 
 func assertCookbookVersionBody(t *testing.T, payload map[string]any, cookbook, version string) {
@@ -249,4 +389,26 @@ func assertStringSliceValue(t *testing.T, value any, want []string) {
 			t.Fatalf("value[%d] = %v, want %q (%v)", idx, raw[idx], want[idx], raw)
 		}
 	}
+}
+
+type recordingDepsolverAuthorizer struct {
+	base  authz.Authorizer
+	deny  map[string]struct{}
+	calls []string
+}
+
+func (a *recordingDepsolverAuthorizer) Name() string {
+	return "recording-depsolver-test"
+}
+
+func (a *recordingDepsolverAuthorizer) Authorize(ctx context.Context, subject authz.Subject, action authz.Action, resource authz.Resource) (authz.Decision, error) {
+	key := string(action) + ":" + resource.Type + ":" + resource.Name
+	a.calls = append(a.calls, key)
+	if _, denied := a.deny[key]; denied {
+		return authz.Decision{Allowed: false, Reason: "denied for test"}, nil
+	}
+	if a.base == nil {
+		return authz.Decision{Allowed: true, Reason: "no base authorizer"}, nil
+	}
+	return a.base.Authorize(ctx, subject, action, resource)
 }
