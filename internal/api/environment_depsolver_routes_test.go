@@ -270,7 +270,7 @@ func TestEnvironmentCookbookVersionsDeduplicatesEquivalentRunListForms(t *testin
 	assertCookbookVersionBody(t, payload, "bar", "1.0.0")
 }
 
-func TestEnvironmentCookbookVersionsSelectsPinnedEquivalentRunListForm(t *testing.T) {
+func TestEnvironmentCookbookVersionsSelectsPinnedVersionWhenEquivalentFormsArePresent(t *testing.T) {
 	router := newTestRouter(t)
 	createEnvironmentForCookbookTests(t, router, "production")
 	createCookbookVersion(t, router, "foo", "1.0.0", "", nil)
