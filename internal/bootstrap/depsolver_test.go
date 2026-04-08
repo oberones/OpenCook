@@ -912,3 +912,102 @@ func TestSolveEnvironmentCookbookVersionsAllowsCircularDependencies(t *testing.T
 		t.Fatalf("app2 version = %q, want %q", solution["app2"].Version, "0.0.1")
 	}
 }
+
+func TestSolveEnvironmentCookbookVersionsReportsImpossibleDependencyViaEnvironmentConstraint(t *testing.T) {
+	service := newTestBootstrapService(t)
+	createTestCookbookOrg(t, service)
+
+	if _, err := service.CreateEnvironment("ponyville", CreateEnvironmentInput{
+		Payload: map[string]any{
+			"name":        "production",
+			"json_class":  "Chef::Environment",
+			"chef_type":   "environment",
+			"description": "",
+			"cookbook_versions": map[string]any{
+				"bar": "= 1.0.0",
+			},
+			"default_attributes":  map[string]any{},
+			"override_attributes": map[string]any{},
+		},
+	}); err != nil {
+		t.Fatalf("CreateEnvironment() error = %v", err)
+	}
+
+	createTestCookbookVersion(t, service, "ponyville", "foo", "1.2.3", map[string]any{
+		"dependencies": map[string]any{"bar": "> 2.0.0"},
+	}, nil)
+	createTestCookbookVersion(t, service, "ponyville", "bar", "1.0.0", nil, nil)
+	createTestCookbookVersion(t, service, "ponyville", "bar", "3.0.0", nil, nil)
+
+	_, _, _, err := service.SolveEnvironmentCookbookVersions("ponyville", "production", map[string]any{
+		"run_list": []any{"foo"},
+	})
+	if err == nil {
+		t.Fatal("SolveEnvironmentCookbookVersions() error = nil, want depsolver error")
+	}
+
+	var depsolverErr *DepsolverError
+	if !errors.As(err, &depsolverErr) {
+		t.Fatalf("SolveEnvironmentCookbookVersions() error = %T, want *DepsolverError", err)
+	}
+	if got := depsolverErr.Detail["message"]; got != "Unable to satisfy constraints on package bar due to solution constraint (foo >= 0.0.0). Solution constraints that may result in a constraint on bar: [(foo = 1.2.3) -> (bar > 2.0.0)]" {
+		t.Fatalf("message = %v, want impossible-via-environment message", got)
+	}
+	if got := depsolverErr.Detail["unsatisfiable_run_list_item"]; got != "(foo >= 0.0.0)" {
+		t.Fatalf("unsatisfiable_run_list_item = %v, want %q", got, "(foo >= 0.0.0)")
+	}
+	if got := depsolverErr.Detail["most_constrained_cookbooks"]; len(got.([]string)) != 1 || got.([]string)[0] != "bar = 1.0.0 -> []" {
+		t.Fatalf("most_constrained_cookbooks = %v, want [bar = 1.0.0 -> []]", got)
+	}
+}
+
+func TestSolveEnvironmentCookbookVersionsPrefersMissingRootCookbooksOverNoVersionRoots(t *testing.T) {
+	service := newTestBootstrapService(t)
+	createTestCookbookOrg(t, service)
+
+	createTestCookbookVersion(t, service, "ponyville", "foo", "1.2.3", nil, nil)
+
+	_, _, _, err := service.SolveEnvironmentCookbookVersions("ponyville", "_default", map[string]any{
+		"run_list": []any{"this_does_not_exist", "foo@2.0.0"},
+	})
+	if err == nil {
+		t.Fatal("SolveEnvironmentCookbookVersions() error = nil, want depsolver error")
+	}
+
+	var depsolverErr *DepsolverError
+	if !errors.As(err, &depsolverErr) {
+		t.Fatalf("SolveEnvironmentCookbookVersions() error = %T, want *DepsolverError", err)
+	}
+	if got := depsolverErr.Detail["message"]; got != "Run list contains invalid items: no such cookbook this_does_not_exist." {
+		t.Fatalf("message = %v, want missing-root precedence message", got)
+	}
+	if got := depsolverErr.Detail["non_existent_cookbooks"]; len(got.([]string)) != 1 || got.([]string)[0] != "this_does_not_exist" {
+		t.Fatalf("non_existent_cookbooks = %v, want [this_does_not_exist]", got)
+	}
+	if got := depsolverErr.Detail["cookbooks_with_no_versions"]; len(got.([]string)) != 0 {
+		t.Fatalf("cookbooks_with_no_versions = %v, want []", got)
+	}
+}
+
+func TestSolveEnvironmentCookbookVersionsReportsPluralMissingRootCookbooks(t *testing.T) {
+	service := newTestBootstrapService(t)
+	createTestCookbookOrg(t, service)
+
+	_, _, _, err := service.SolveEnvironmentCookbookVersions("ponyville", "_default", map[string]any{
+		"run_list": []any{"z_missing", "a_missing"},
+	})
+	if err == nil {
+		t.Fatal("SolveEnvironmentCookbookVersions() error = nil, want depsolver error")
+	}
+
+	var depsolverErr *DepsolverError
+	if !errors.As(err, &depsolverErr) {
+		t.Fatalf("SolveEnvironmentCookbookVersions() error = %T, want *DepsolverError", err)
+	}
+	if got := depsolverErr.Detail["message"]; got != "Run list contains invalid items: no such cookbooks a_missing, z_missing." {
+		t.Fatalf("message = %v, want plural missing-root message", got)
+	}
+	if got := depsolverErr.Detail["non_existent_cookbooks"]; len(got.([]string)) != 2 || got.([]string)[0] != "a_missing" || got.([]string)[1] != "z_missing" {
+		t.Fatalf("non_existent_cookbooks = %v, want sorted missing roots", got)
+	}
+}
