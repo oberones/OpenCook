@@ -849,8 +849,23 @@ func TestSolveEnvironmentCookbookVersionsCombinesEnvironmentAndDependencyConstra
 		t.Fatalf("SolveEnvironmentCookbookVersions() error = %v", err)
 	}
 
+	if len(solution) != 5 {
+		t.Fatalf("len(solution) = %d, want 5 (%v)", len(solution), solution)
+	}
+	if solution["app1"].Version != "3.0.0" {
+		t.Fatalf("app1 version = %q, want %q", solution["app1"].Version, "3.0.0")
+	}
+	if solution["app2"].Version != "3.0.0" {
+		t.Fatalf("app2 version = %q, want %q", solution["app2"].Version, "3.0.0")
+	}
 	if solution["app3"].Version != "0.1.3" {
 		t.Fatalf("app3 version = %q, want %q", solution["app3"].Version, "0.1.3")
+	}
+	if solution["app4"].Version != "6.0.0" {
+		t.Fatalf("app4 version = %q, want %q", solution["app4"].Version, "6.0.0")
+	}
+	if solution["app5"].Version != "6.0.0" {
+		t.Fatalf("app5 version = %q, want %q", solution["app5"].Version, "6.0.0")
 	}
 }
 

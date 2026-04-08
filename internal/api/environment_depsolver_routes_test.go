@@ -427,7 +427,14 @@ func TestEnvironmentCookbookVersionsCombinesEnvironmentAndDependencyConstraints(
 	}
 
 	payload := decodeJSONMap(t, rec.Body.Bytes())
+	if len(payload) != 5 {
+		t.Fatalf("len(payload) = %d, want 5 (%v)", len(payload), payload)
+	}
+	assertCookbookVersionBody(t, payload, "app1", "3.0.0")
+	assertCookbookVersionBody(t, payload, "app2", "3.0.0")
 	assertCookbookVersionBody(t, payload, "app3", "0.1.3")
+	assertCookbookVersionBody(t, payload, "app4", "6.0.0")
+	assertCookbookVersionBody(t, payload, "app5", "6.0.0")
 }
 
 func TestEnvironmentCookbookVersionsAllowsCircularDependencies(t *testing.T) {
