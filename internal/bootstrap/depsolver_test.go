@@ -114,3 +114,158 @@ func TestSolveEnvironmentCookbookVersionsReturnsDepsolverErrorForMissingDependen
 		t.Fatalf("unsatisfiable_run_list_item = %v, want %q", depsolverErr.Detail["unsatisfiable_run_list_item"], "(foo >= 0.0.0)")
 	}
 }
+
+func TestSolveEnvironmentCookbookVersionsExpandsNestedRolesWithEnvironmentOverrides(t *testing.T) {
+	service := newTestBootstrapService(t)
+	createTestCookbookOrg(t, service)
+
+	if _, err := service.CreateEnvironment("ponyville", CreateEnvironmentInput{
+		Payload: map[string]any{
+			"name":                "production",
+			"json_class":          "Chef::Environment",
+			"chef_type":           "environment",
+			"description":         "",
+			"cookbook_versions":   map[string]any{},
+			"default_attributes":  map[string]any{},
+			"override_attributes": map[string]any{},
+		},
+	}); err != nil {
+		t.Fatalf("CreateEnvironment() error = %v", err)
+	}
+
+	createTestCookbookVersion(t, service, "ponyville", "apache2", "1.0.0", nil, nil)
+	createTestCookbookVersion(t, service, "ponyville", "nginx", "2.0.0", nil, nil)
+	createTestCookbookVersion(t, service, "ponyville", "users", "3.0.0", nil, nil)
+
+	if _, err := service.CreateRole("ponyville", CreateRoleInput{
+		Payload: map[string]any{
+			"name":                "base",
+			"description":         "",
+			"json_class":          "Chef::Role",
+			"chef_type":           "role",
+			"default_attributes":  map[string]any{},
+			"override_attributes": map[string]any{},
+			"run_list":            []any{"recipe[apache2]"},
+			"env_run_lists": map[string]any{
+				"production": []any{"recipe[nginx]"},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("CreateRole(base) error = %v", err)
+	}
+	if _, err := service.CreateRole("ponyville", CreateRoleInput{
+		Payload: map[string]any{
+			"name":                "web",
+			"description":         "",
+			"json_class":          "Chef::Role",
+			"chef_type":           "role",
+			"default_attributes":  map[string]any{},
+			"override_attributes": map[string]any{},
+			"run_list":            []any{"role[base]", "recipe[users]"},
+			"env_run_lists":       map[string]any{},
+		},
+	}); err != nil {
+		t.Fatalf("CreateRole(web) error = %v", err)
+	}
+
+	productionSolution, _, _, err := service.SolveEnvironmentCookbookVersions("ponyville", "production", map[string]any{
+		"run_list": []any{"role[web]"},
+	})
+	if err != nil {
+		t.Fatalf("SolveEnvironmentCookbookVersions(production) error = %v", err)
+	}
+	if _, ok := productionSolution["nginx"]; !ok {
+		t.Fatalf("production solution missing nginx: %v", productionSolution)
+	}
+	if _, ok := productionSolution["users"]; !ok {
+		t.Fatalf("production solution missing users: %v", productionSolution)
+	}
+	if _, ok := productionSolution["apache2"]; ok {
+		t.Fatalf("production solution unexpectedly included apache2: %v", productionSolution)
+	}
+
+	defaultSolution, _, _, err := service.SolveEnvironmentCookbookVersions("ponyville", "_default", map[string]any{
+		"run_list": []any{"role[web]"},
+	})
+	if err != nil {
+		t.Fatalf("SolveEnvironmentCookbookVersions(_default) error = %v", err)
+	}
+	if _, ok := defaultSolution["apache2"]; !ok {
+		t.Fatalf("_default solution missing apache2: %v", defaultSolution)
+	}
+	if _, ok := defaultSolution["users"]; !ok {
+		t.Fatalf("_default solution missing users: %v", defaultSolution)
+	}
+	if _, ok := defaultSolution["nginx"]; ok {
+		t.Fatalf("_default solution unexpectedly included nginx: %v", defaultSolution)
+	}
+}
+
+func TestSolveEnvironmentCookbookVersionsRejectsMissingRole(t *testing.T) {
+	service := newTestBootstrapService(t)
+	createTestCookbookOrg(t, service)
+
+	_, _, _, err := service.SolveEnvironmentCookbookVersions("ponyville", "_default", map[string]any{
+		"run_list": []any{"role[missing]"},
+	})
+	if err == nil {
+		t.Fatal("SolveEnvironmentCookbookVersions() error = nil, want validation error")
+	}
+
+	var validationErr *ValidationError
+	if !errors.As(err, &validationErr) {
+		t.Fatalf("SolveEnvironmentCookbookVersions() error = %T, want *ValidationError", err)
+	}
+	if len(validationErr.Messages) != 1 || validationErr.Messages[0] != "Field 'run_list' contains unknown role item role[missing]" {
+		t.Fatalf("validation messages = %v, want unknown role message", validationErr.Messages)
+	}
+}
+
+func TestSolveEnvironmentCookbookVersionsRejectsRecursiveRole(t *testing.T) {
+	service := newTestBootstrapService(t)
+	createTestCookbookOrg(t, service)
+
+	if _, err := service.CreateRole("ponyville", CreateRoleInput{
+		Payload: map[string]any{
+			"name":                "web",
+			"description":         "",
+			"json_class":          "Chef::Role",
+			"chef_type":           "role",
+			"default_attributes":  map[string]any{},
+			"override_attributes": map[string]any{},
+			"run_list":            []any{"role[db]"},
+			"env_run_lists":       map[string]any{},
+		},
+	}); err != nil {
+		t.Fatalf("CreateRole(web) error = %v", err)
+	}
+	if _, err := service.CreateRole("ponyville", CreateRoleInput{
+		Payload: map[string]any{
+			"name":                "db",
+			"description":         "",
+			"json_class":          "Chef::Role",
+			"chef_type":           "role",
+			"default_attributes":  map[string]any{},
+			"override_attributes": map[string]any{},
+			"run_list":            []any{"role[web]"},
+			"env_run_lists":       map[string]any{},
+		},
+	}); err != nil {
+		t.Fatalf("CreateRole(db) error = %v", err)
+	}
+
+	_, _, _, err := service.SolveEnvironmentCookbookVersions("ponyville", "_default", map[string]any{
+		"run_list": []any{"role[web]"},
+	})
+	if err == nil {
+		t.Fatal("SolveEnvironmentCookbookVersions() error = nil, want validation error")
+	}
+
+	var validationErr *ValidationError
+	if !errors.As(err, &validationErr) {
+		t.Fatalf("SolveEnvironmentCookbookVersions() error = %T, want *ValidationError", err)
+	}
+	if len(validationErr.Messages) != 1 || validationErr.Messages[0] != "Field 'run_list' contains recursive role item role[web]" {
+		t.Fatalf("validation messages = %v, want recursive role message", validationErr.Messages)
+	}
+}

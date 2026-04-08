@@ -43,7 +43,7 @@ As of 2026-04-07, OpenCook has moved past pure scaffolding and into the first co
 - the adjacent environment slice is now live with `_default`, list/get/head/create/update/delete, and rename-capable `PUT`
 - environment-scoped node listing is implemented via `/environments/{name}/nodes`
 - environment-scoped cookbook and recipe views are now implemented via `/environments/{name}/cookbooks`, `/environments/{name}/cookbooks/{cookbook}`, and `/environments/{name}/recipes`
-- the first environment depsolver slice is now live via `/environments/{name}/cookbook_versions` and `/organizations/{org}/environments/{name}/cookbook_versions`
+- the current environment depsolver slice is now live via `/environments/{name}/cookbook_versions` and `/organizations/{org}/environments/{name}/cookbook_versions`
 - default-org and explicit-org node routes now resolve against the same org-scoped compatibility state
 - default-org and explicit-org environment routes now resolve against the same org-scoped compatibility state
 - the first role slice is now live with in-memory list/get/head/create/update/delete behavior
@@ -90,14 +90,14 @@ As of 2026-04-07, OpenCook has moved past pure scaffolding and into the first co
 - cookbook artifact create coverage now also includes metadata default overrides and multi-identifier create behavior for the same cookbook name
 - cookbook artifact validation HTTP coverage now also includes missing metadata versions, invalid legacy segment shapes, and invalid metadata dependency/platform payloads
 - cookbook artifact create auth coverage now also includes normal-user create success plus invalid/outside no-mutation behavior
-- the first depsolver slice now validates cookbook run lists, honors environment cookbook constraints and version pins, expands recursive cookbook dependencies, enforces cookbook-container read auth alongside environment read, returns the upstream-style minimal cookbook payloads that omit `metadata.attributes` and `metadata.long_description`, and returns the current Chef-shaped `400`/`404`/`412` responses for invalid, missing, filtered, datestamp, and dependency-failure cookbook cases
+- the current depsolver slice now validates cookbook run lists, expands `role[...]` items server-side, honors environment cookbook constraints and version pins, uses environment-specific role run lists when present, expands nested roles and recursive cookbook dependencies, enforces cookbook-container read auth alongside environment read, returns the upstream-style minimal cookbook payloads that omit `metadata.attributes` and `metadata.long_description`, and returns the current Chef-shaped `400`/`404`/`412` responses for invalid, missing, filtered, datestamp, missing-role, recursive-role, and dependency-failure cookbook cases
 - compatibility tracking docs and route inventory are in place and being updated alongside code
 
 Current focus:
 
 - preserve API-version-sensitive actor key behavior without carrying forward Chef licensing concerns
 - deepen search query translation beyond the current simple compatibility subset and widen object/index coverage further
-- deepen cookbook/blob compatibility beyond the current cookbook write/read/artifact slice, especially the remaining cookbook pedant cases outside the current environment-filtered/named-filter/latest/version/depsolver contract and the remaining deeper provider hardening around S3-compatible object storage behavior
+- deepen cookbook/blob compatibility beyond the current cookbook write/read/artifact slice, especially the remaining cookbook pedant cases outside the current environment-filtered/named-filter/latest/version/depsolver contract, broader upstream run-list/depsolver semantics, and the remaining deeper provider hardening around S3-compatible object storage behavior
 - replace the in-memory bootstrap layer with PostgreSQL-backed persistence after the contracts stabilize
 
 ## What Exists Upstream
