@@ -343,6 +343,124 @@ func TestEnvironmentCookbookVersionsReturns412ForMultiRootConflict(t *testing.T)
 	})
 }
 
+func TestEnvironmentCookbookVersionsMatchesUpstreamSecondGraph(t *testing.T) {
+	router := newTestRouter(t)
+	createEnvironmentForCookbookTests(t, router, "production")
+	createCookbookVersion(t, router, "app1", "0.1.0", "", map[string]string{
+		"app2": ">= 0.1.0",
+		"app4": "0.2.0",
+		"app3": ">= 0.2.0",
+	})
+	createCookbookVersion(t, router, "app2", "0.1.0", "", map[string]string{
+		"app3": ">= 0.2.0",
+	})
+	createCookbookVersion(t, router, "app2", "0.2.0", "", map[string]string{
+		"app3": ">= 0.2.0",
+	})
+	createCookbookVersion(t, router, "app2", "0.3.0", "", map[string]string{
+		"app3": ">= 0.2.0",
+	})
+	createCookbookVersion(t, router, "app3", "0.1.0", "", map[string]string{
+		"app4": ">= 0.2.0",
+	})
+	createCookbookVersion(t, router, "app3", "0.2.0", "", map[string]string{
+		"app4": "0.2.0",
+	})
+	createCookbookVersion(t, router, "app3", "0.3.0", "", nil)
+	createCookbookVersion(t, router, "app4", "0.1.0", "", nil)
+	createCookbookVersion(t, router, "app4", "0.2.0", "", map[string]string{
+		"app2": ">= 0.2.0",
+		"app3": "0.3.0",
+	})
+	createCookbookVersion(t, router, "app4", "0.3.0", "", nil)
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/environments/production/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{"app1@0.1.0", "app2@0.3.0"},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("depsolver second graph status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	payload := decodeJSONMap(t, rec.Body.Bytes())
+	assertCookbookVersionBody(t, payload, "app1", "0.1.0")
+	assertCookbookVersionBody(t, payload, "app2", "0.3.0")
+	assertCookbookVersionBody(t, payload, "app3", "0.3.0")
+	assertCookbookVersionBody(t, payload, "app4", "0.2.0")
+}
+
+func TestEnvironmentCookbookVersionsCombinesEnvironmentAndDependencyConstraints(t *testing.T) {
+	router := newTestRouter(t)
+	createEnvironmentForCookbookTests(t, router, "production")
+	updateEnvironmentCookbookConstraints(t, router, "production", map[string]string{
+		"app3": "<= 0.1.5",
+	})
+	createCookbookVersion(t, router, "app1", "3.0.0", "", map[string]string{
+		"app2": ">= 0.1.0",
+		"app3": ">= 0.1.1",
+	})
+	createCookbookVersion(t, router, "app2", "3.0.0", "", map[string]string{
+		"app4": ">= 5.0.0",
+	})
+	createCookbookVersion(t, router, "app3", "0.1.0", "", map[string]string{
+		"app5": ">= 2.0.0",
+	})
+	createCookbookVersion(t, router, "app3", "0.1.3", "", map[string]string{
+		"app5": ">= 2.0.0",
+	})
+	createCookbookVersion(t, router, "app3", "2.0.0", "", map[string]string{
+		"app5": ">= 2.0.0",
+	})
+	createCookbookVersion(t, router, "app4", "6.0.0", "", map[string]string{
+		"app5": ">= 0.0.0",
+	})
+	createCookbookVersion(t, router, "app5", "6.0.0", "", nil)
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/environments/production/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{"app1@3.0.0"},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("depsolver combined constraints status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	payload := decodeJSONMap(t, rec.Body.Bytes())
+	if len(payload) != 5 {
+		t.Fatalf("len(payload) = %d, want 5 (%v)", len(payload), payload)
+	}
+	assertCookbookVersionBody(t, payload, "app1", "3.0.0")
+	assertCookbookVersionBody(t, payload, "app2", "3.0.0")
+	assertCookbookVersionBody(t, payload, "app3", "0.1.3")
+	assertCookbookVersionBody(t, payload, "app4", "6.0.0")
+	assertCookbookVersionBody(t, payload, "app5", "6.0.0")
+}
+
+func TestEnvironmentCookbookVersionsAllowsCircularDependencies(t *testing.T) {
+	router := newTestRouter(t)
+	createEnvironmentForCookbookTests(t, router, "production")
+	createCookbookVersion(t, router, "app1", "0.1.0", "", map[string]string{
+		"app2": ">= 0.0.0",
+	})
+	createCookbookVersion(t, router, "app2", "0.0.1", "", map[string]string{
+		"app1": ">= 0.0.0",
+	})
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/environments/production/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{"app1@0.1.0"},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("depsolver circular dependency status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	payload := decodeJSONMap(t, rec.Body.Bytes())
+	assertCookbookVersionBody(t, payload, "app1", "0.1.0")
+	assertCookbookVersionBody(t, payload, "app2", "0.0.1")
+}
+
 func TestEnvironmentCookbookVersionsSupportsDatestampVersions(t *testing.T) {
 	router := newTestRouter(t)
 	createEnvironmentForCookbookTests(t, router, "datestamp-env")
