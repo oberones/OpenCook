@@ -211,9 +211,11 @@ func TestNewDefaultRegistryIncludesEnvironmentCookbookRoutes(t *testing.T) {
 	for _, pattern := range []string{
 		"/environments/{name}/cookbooks",
 		"/environments/{name}/cookbooks/{cookbook}",
+		"/environments/{name}/cookbook_versions",
 		"/environments/{name}/recipes",
 		"/organizations/{org}/environments/{name}/cookbooks",
 		"/organizations/{org}/environments/{name}/cookbooks/{cookbook}",
+		"/organizations/{org}/environments/{name}/cookbook_versions",
 		"/organizations/{org}/environments/{name}/recipes",
 	} {
 		if _, ok := patterns[pattern]; !ok {
