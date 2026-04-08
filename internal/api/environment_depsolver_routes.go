@@ -61,6 +61,13 @@ func (s *server) handleEnvironmentCookbookVersions(w http.ResponseWriter, r *htt
 	}) {
 		return
 	}
+	if !s.authorizeRequest(w, r, authz.ActionRead, authz.Resource{
+		Type:         "container",
+		Name:         "cookbooks",
+		Organization: org,
+	}) {
+		return
+	}
 
 	payload, ok := decodeDepsolverJSON(w, r)
 	if !ok {
@@ -101,7 +108,7 @@ func (s *server) handleEnvironmentCookbookVersions(w http.ResponseWriter, r *htt
 
 	response := make(map[string]any, len(solution))
 	for name, version := range solution {
-		response[name] = s.renderCookbookVersionResponse(r, org, version)
+		response[name] = s.renderDepsolverCookbookVersionResponse(r, org, version)
 	}
 	writeJSON(w, http.StatusOK, response)
 }
