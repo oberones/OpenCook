@@ -3,10 +3,13 @@ package api
 import (
 	"errors"
 	"net/http"
+	"regexp"
 
 	"github.com/oberones/OpenCook/internal/authz"
 	"github.com/oberones/OpenCook/internal/bootstrap"
 )
+
+var depsolverRoleRunListPattern = regexp.MustCompile(`^role\[[A-Za-z0-9_.:-]+\]$`)
 
 func (s *server) handleEnvironmentCookbookVersions(w http.ResponseWriter, r *http.Request) {
 	state := s.deps.Bootstrap
@@ -73,6 +76,15 @@ func (s *server) handleEnvironmentCookbookVersions(w http.ResponseWriter, r *htt
 	if !ok {
 		return
 	}
+	if depsolverPayloadReferencesRoles(payload) {
+		if !s.authorizeRequest(w, r, authz.ActionRead, authz.Resource{
+			Type:         "container",
+			Name:         "roles",
+			Organization: org,
+		}) {
+			return
+		}
+	}
 
 	solution, orgExists, envExists, err := state.SolveEnvironmentCookbookVersions(org, envName, payload)
 	if !orgExists {
@@ -122,4 +134,29 @@ func decodeDepsolverJSON(w http.ResponseWriter, r *http.Request) (map[string]any
 		writeEnvironmentMessages(w, http.StatusBadRequest, "invalid JSON")
 		return nil, false
 	}
+}
+
+func depsolverPayloadReferencesRoles(payload map[string]any) bool {
+	rawRunList, ok := payload["run_list"]
+	if !ok {
+		return false
+	}
+
+	switch runList := rawRunList.(type) {
+	case []any:
+		for _, item := range runList {
+			value, ok := item.(string)
+			if ok && depsolverRoleRunListPattern.MatchString(value) {
+				return true
+			}
+		}
+	case []string:
+		for _, item := range runList {
+			if depsolverRoleRunListPattern.MatchString(item) {
+				return true
+			}
+		}
+	}
+
+	return false
 }
