@@ -9,15 +9,19 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"path"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
-
-	"github.com/oberones/OpenCook/internal/config"
 )
+
+const defaultS3CompatibleRequestTimeout = 30 * time.Second
+const defaultS3CompatibleRetryBaseDelay = 100 * time.Millisecond
+const maxS3CompatibleRetryDelay = 2 * time.Second
 
 type S3CompatibleConfig struct {
 	StorageURL     string
@@ -32,6 +36,7 @@ type S3CompatibleConfig struct {
 	MaxRetries     int
 	HTTPClient     *http.Client
 	Now            func() time.Time
+	Sleep          func(context.Context, time.Duration) error
 }
 
 type S3CompatibleStore struct {
@@ -48,6 +53,7 @@ type S3CompatibleStore struct {
 	maxRetries     int
 	client         *http.Client
 	now            func() time.Time
+	sleep          func(context.Context, time.Duration) error
 }
 
 func NewS3CompatibleStore(cfg S3CompatibleConfig) (*S3CompatibleStore, error) {
@@ -63,12 +69,13 @@ func NewS3CompatibleStore(cfg S3CompatibleConfig) (*S3CompatibleStore, error) {
 		maxRetries:     cfg.MaxRetries,
 		client:         cfg.HTTPClient,
 		now:            cfg.Now,
+		sleep:          cfg.Sleep,
 	}
 	if store.region == "" {
 		store.region = "us-east-1"
 	}
 	if store.requestTimeout <= 0 {
-		store.requestTimeout = config.DefaultBlobS3RequestTimeout
+		store.requestTimeout = defaultS3CompatibleRequestTimeout
 	}
 	if store.maxRetries < 0 {
 		return nil, fmt.Errorf("s3-compatible blob backend requires a non-negative retry count")
@@ -82,6 +89,9 @@ func NewS3CompatibleStore(cfg S3CompatibleConfig) (*S3CompatibleStore, error) {
 	}
 	if store.now == nil {
 		store.now = time.Now
+	}
+	if store.sleep == nil {
+		store.sleep = sleepWithContext
 	}
 
 	target := strings.TrimSpace(cfg.StorageURL)
@@ -220,15 +230,22 @@ func (s *S3CompatibleStore) do(ctx context.Context, op, method, key, contentType
 			if ctx.Err() != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
 				return nil, ctx.Err()
 			}
-			if attempt < attempts-1 {
+			if s.isRetryableTransportError(err) && attempt < attempts-1 {
+				if err := s.waitBeforeRetry(ctx, attempt, ""); err != nil {
+					return nil, err
+				}
 				continue
 			}
 			return nil, s.unavailableTransportError(op, err)
 		}
 
 		if s.isRetryableStatus(resp.StatusCode) {
+			retryAfter := resp.Header.Get("Retry-After")
 			discardAndCloseResponse(resp)
 			if attempt < attempts-1 {
+				if err := s.waitBeforeRetry(ctx, attempt, retryAfter); err != nil {
+					return nil, err
+				}
 				continue
 			}
 			return nil, s.unavailableStatusError(op, resp.StatusCode)
@@ -493,6 +510,56 @@ func (s *S3CompatibleStore) usePathStyle() bool {
 	return s.forcePathStyle || strings.TrimSpace(s.endpoint) != ""
 }
 
+func (s *S3CompatibleStore) waitBeforeRetry(ctx context.Context, attempt int, retryAfter string) error {
+	delay := s.retryDelay(attempt, retryAfter)
+	if delay <= 0 {
+		return nil
+	}
+	if err := s.sleep(ctx, delay); err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return ctx.Err()
+		}
+		return err
+	}
+	return nil
+}
+
+func (s *S3CompatibleStore) retryDelay(attempt int, retryAfter string) time.Duration {
+	if delay, ok := s.parseRetryAfter(retryAfter); ok {
+		return delay
+	}
+
+	delay := defaultS3CompatibleRetryBaseDelay * time.Duration(1<<attempt)
+	if delay <= 0 || delay > maxS3CompatibleRetryDelay {
+		return maxS3CompatibleRetryDelay
+	}
+	return delay
+}
+
+func (s *S3CompatibleStore) parseRetryAfter(value string) (time.Duration, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0, false
+	}
+
+	if seconds, err := strconv.Atoi(value); err == nil {
+		if seconds < 0 {
+			return 0, false
+		}
+		return time.Duration(seconds) * time.Second, true
+	}
+
+	when, err := http.ParseTime(value)
+	if err != nil {
+		return 0, false
+	}
+	delay := when.Sub(s.clock()().UTC())
+	if delay < 0 {
+		return 0, true
+	}
+	return delay, true
+}
+
 func (s *S3CompatibleStore) unexpectedStatus(op string, status int) error {
 	return fmt.Errorf("s3-compatible blob %s failed with status %d", op, status)
 }
@@ -528,12 +595,38 @@ func (s *S3CompatibleStore) isRetryableStatus(status int) bool {
 	}
 }
 
+func (s *S3CompatibleStore) isRetryableTransportError(err error) bool {
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return dnsErr.IsTimeout || dnsErr.IsTemporary
+	}
+
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		return netErr.Timeout() || netErr.Temporary()
+	}
+
+	return false
+}
+
 func discardAndCloseResponse(resp *http.Response) {
 	if resp == nil || resp.Body == nil {
 		return
 	}
 	_, _ = io.Copy(io.Discard, resp.Body)
 	_ = resp.Body.Close()
+}
+
+func sleepWithContext(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func awsPercentEncode(value string) string {
