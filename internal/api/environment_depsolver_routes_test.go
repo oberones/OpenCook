@@ -55,6 +55,38 @@ func TestEnvironmentCookbookVersionsRejectInvalidRunList(t *testing.T) {
 	assertEnvironmentErrorMessages(t, rec.Body.Bytes(), "Field 'run_list' is not a valid run list")
 }
 
+func TestEnvironmentCookbookVersionsRejectMalformedVersionedRunListItem(t *testing.T) {
+	router := newTestRouter(t)
+	createEnvironmentForCookbookTests(t, router, "production")
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/environments/production/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{"foo@not_a_version"},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("depsolver malformed versioned run_list status = %d, want %d, body = %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+
+	assertEnvironmentErrorMessages(t, rec.Body.Bytes(), "Field 'run_list' is not a valid run list")
+}
+
+func TestEnvironmentCookbookVersionsRejectBogusBracketedRunListItem(t *testing.T) {
+	router := newTestRouter(t)
+	createEnvironmentForCookbookTests(t, router, "production")
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/environments/production/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{"fake[not_good]"},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("depsolver bogus bracketed run_list status = %d, want %d, body = %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+
+	assertEnvironmentErrorMessages(t, rec.Body.Bytes(), "Field 'run_list' is not a valid run list")
+}
+
 func TestEnvironmentCookbookVersionsReturnsNotFoundForMissingEnvironment(t *testing.T) {
 	router := newTestRouter(t)
 
@@ -534,6 +566,30 @@ func TestEnvironmentCookbookVersionsSelectsRootVersionThatRespectsEnvironmentCon
 	}
 	assertCookbookVersionBody(t, payload, "foo", "1.0.0")
 	assertCookbookVersionBody(t, payload, "bar", "1.0.0")
+}
+
+func TestEnvironmentCookbookVersionsSelectsPinnedVersionForRepeatedRootCookbook(t *testing.T) {
+	router := newTestRouter(t)
+	createEnvironmentForCookbookTests(t, router, "production")
+	createCookbookVersion(t, router, "foo", "1.0.0", "", nil)
+	createCookbookVersion(t, router, "foo", "2.0.0", "", map[string]string{"bar": "= 2.0.0"})
+	createCookbookVersion(t, router, "bar", "2.0.0", "", nil)
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/environments/production/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{"foo", "foo@2.0.0"},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("depsolver repeated-root pinned selection status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	payload := decodeJSONMap(t, rec.Body.Bytes())
+	if len(payload) != 2 {
+		t.Fatalf("len(payload) = %d, want 2 (%v)", len(payload), payload)
+	}
+	assertCookbookVersionBody(t, payload, "foo", "2.0.0")
+	assertCookbookVersionBody(t, payload, "bar", "2.0.0")
 }
 
 func TestEnvironmentCookbookVersionsKeepsFirstRootLabelForRepeatedCookbook(t *testing.T) {
