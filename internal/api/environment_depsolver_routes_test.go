@@ -151,6 +151,27 @@ func TestEnvironmentCookbookVersionsResolvesPinnedAndDependentCookbooks(t *testi
 	}
 }
 
+func TestEnvironmentCookbookVersionsSupportsQualifiedAndVersionedRecipeRunListItems(t *testing.T) {
+	router := newTestRouter(t)
+	createEnvironmentForCookbookTests(t, router, "production")
+	createCookbookVersion(t, router, "foo", "1.0.0", "", nil)
+	createCookbookVersion(t, router, "foo", "2.0.0", "", nil)
+	createCookbookVersion(t, router, "bar", "1.0.0", "", nil)
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/environments/production/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{"foo::default", "recipe[bar::install]", "recipe[foo::server@1.0.0]"},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("depsolver qualified run_list status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	payload := decodeJSONMap(t, rec.Body.Bytes())
+	assertCookbookVersionBody(t, payload, "foo", "1.0.0")
+	assertCookbookVersionBody(t, payload, "bar", "1.0.0")
+}
+
 func TestEnvironmentCookbookVersionsReturns412ForMissingDependency(t *testing.T) {
 	router := newTestRouter(t)
 	createEnvironmentForCookbookTests(t, router, "production")
@@ -226,6 +247,40 @@ func TestEnvironmentCookbookVersionsReturns412ForImpossibleDependency(t *testing
 		"unsatisfiable_run_list_item": "(foo >= 0.0.0)",
 		"non_existent_cookbooks":      []string{},
 		"most_constrained_cookbooks":  []string{"bar = 2.0.0 -> [(foo > 3.0.0)]"},
+	})
+}
+
+func TestEnvironmentCookbookVersionsReturns412ForTransitiveConflict(t *testing.T) {
+	router := newTestRouter(t)
+	createEnvironmentForCookbookTests(t, router, "production")
+	createCookbookVersion(t, router, "foo", "1.2.3", "", map[string]string{
+		"bar":  "= 1.0.0",
+		"buzz": "= 1.0.0",
+	})
+	createCookbookVersion(t, router, "bar", "1.0.0", "", map[string]string{
+		"baz": "= 1.0.0",
+	})
+	createCookbookVersion(t, router, "buzz", "1.0.0", "", map[string]string{
+		"baz": "> 1.2.0",
+	})
+	createCookbookVersion(t, router, "baz", "1.0.0", "", nil)
+	createCookbookVersion(t, router, "baz", "2.0.0", "", nil)
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/environments/production/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{"foo"},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusPreconditionFailed {
+		t.Fatalf("depsolver transitive conflict status = %d, want %d, body = %s", rec.Code, http.StatusPreconditionFailed, rec.Body.String())
+	}
+
+	payload := decodeJSONMap(t, rec.Body.Bytes())
+	assertUnsatisfiedDepsolverDetail(t, payload, map[string]any{
+		"message":                     "Unable to satisfy constraints on package baz due to solution constraint (foo >= 0.0.0). Solution constraints that may result in a constraint on baz: [(foo = 1.2.3) -> (bar = 1.0.0) -> (baz = 1.0.0), (foo = 1.2.3) -> (buzz = 1.0.0) -> (baz > 1.2.0)]",
+		"unsatisfiable_run_list_item": "(foo >= 0.0.0)",
+		"non_existent_cookbooks":      []string{},
+		"most_constrained_cookbooks":  []string{"baz = 1.0.0 -> []"},
 	})
 }
 
