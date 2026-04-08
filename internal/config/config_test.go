@@ -30,6 +30,8 @@ func TestLoadFromEnvDefaults(t *testing.T) {
 	t.Setenv("OPENCOOK_BLOB_S3_ACCESS_KEY_ID", "")
 	t.Setenv("OPENCOOK_BLOB_S3_SECRET_ACCESS_KEY", "")
 	t.Setenv("OPENCOOK_BLOB_S3_SESSION_TOKEN", "")
+	t.Setenv("OPENCOOK_BLOB_S3_REQUEST_TIMEOUT", "")
+	t.Setenv("OPENCOOK_BLOB_S3_MAX_RETRIES", "")
 
 	cfg, err := LoadFromEnv()
 	if err != nil {
@@ -70,6 +72,14 @@ func TestLoadFromEnvDefaults(t *testing.T) {
 
 	if cfg.BootstrapRequestorKeyID != "default" {
 		t.Fatalf("BootstrapRequestorKeyID = %q, want %q", cfg.BootstrapRequestorKeyID, "default")
+	}
+
+	if cfg.BlobS3RequestTimeout != DefaultBlobS3RequestTimeout {
+		t.Fatalf("BlobS3RequestTimeout = %v, want %v", cfg.BlobS3RequestTimeout, DefaultBlobS3RequestTimeout)
+	}
+
+	if cfg.BlobS3MaxRetries != DefaultBlobS3MaxRetries {
+		t.Fatalf("BlobS3MaxRetries = %d, want %d", cfg.BlobS3MaxRetries, DefaultBlobS3MaxRetries)
 	}
 }
 
@@ -122,6 +132,8 @@ func TestLoadFromEnvBlobProviderSettings(t *testing.T) {
 	t.Setenv("OPENCOOK_BLOB_S3_ACCESS_KEY_ID", "access-key")
 	t.Setenv("OPENCOOK_BLOB_S3_SECRET_ACCESS_KEY", "secret-key")
 	t.Setenv("OPENCOOK_BLOB_S3_SESSION_TOKEN", "session-token")
+	t.Setenv("OPENCOOK_BLOB_S3_REQUEST_TIMEOUT", "45s")
+	t.Setenv("OPENCOOK_BLOB_S3_MAX_RETRIES", "4")
 
 	cfg, err := LoadFromEnv()
 	if err != nil {
@@ -154,5 +166,11 @@ func TestLoadFromEnvBlobProviderSettings(t *testing.T) {
 	}
 	if cfg.BlobS3SessionToken != "session-token" {
 		t.Fatalf("BlobS3SessionToken = %q, want %q", cfg.BlobS3SessionToken, "session-token")
+	}
+	if cfg.BlobS3RequestTimeout.String() != "45s" {
+		t.Fatalf("BlobS3RequestTimeout = %q, want %q", cfg.BlobS3RequestTimeout.String(), "45s")
+	}
+	if cfg.BlobS3MaxRetries != 4 {
+		t.Fatalf("BlobS3MaxRetries = %d, want %d", cfg.BlobS3MaxRetries, 4)
 	}
 }
