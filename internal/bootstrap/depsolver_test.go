@@ -244,6 +244,9 @@ func TestSolveEnvironmentCookbookVersionsUsesExplicitEmptyEnvironmentRoleRunList
 	if err != nil {
 		t.Fatalf("SolveEnvironmentCookbookVersions(production) error = %v", err)
 	}
+	if productionSolution == nil {
+		t.Fatalf("production solution = nil, want empty map")
+	}
 	if len(productionSolution) != 0 {
 		t.Fatalf("production solution = %v, want empty solution", productionSolution)
 	}
@@ -397,6 +400,9 @@ func TestSolveEnvironmentCookbookVersionsReturnsEmptySolutionForEmptyRunList(t *
 	}
 	if !orgExists || !envExists {
 		t.Fatalf("SolveEnvironmentCookbookVersions() orgExists/envExists = %v/%v, want true/true", orgExists, envExists)
+	}
+	if solution == nil {
+		t.Fatalf("solution = nil, want empty map")
 	}
 	if len(solution) != 0 {
 		t.Fatalf("len(solution) = %d, want 0 (%v)", len(solution), solution)
