@@ -38,14 +38,6 @@ type depsolverSolution struct {
 }
 
 func (s *Service) SolveEnvironmentCookbookVersions(orgName, environmentName string, payload map[string]any) (map[string]CookbookVersion, bool, bool, error) {
-	runList, err := validateDepsolverPayload(payload)
-	if err != nil {
-		return nil, true, true, err
-	}
-	if len(runList) == 0 {
-		return map[string]CookbookVersion{}, true, true, nil
-	}
-
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -56,6 +48,14 @@ func (s *Service) SolveEnvironmentCookbookVersions(orgName, environmentName stri
 	env, ok := org.envs[environmentName]
 	if !ok {
 		return nil, true, false, nil
+	}
+
+	runList, err := validateDepsolverPayload(payload)
+	if err != nil {
+		return nil, true, true, err
+	}
+	if len(runList) == 0 {
+		return map[string]CookbookVersion{}, true, true, nil
 	}
 
 	items := make([]depsolverRunListItem, 0, len(runList))
@@ -129,7 +129,24 @@ func validateDepsolverPayload(payload map[string]any) ([]string, error) {
 	if !ok {
 		return nil, &ValidationError{Messages: []string{"Field 'run_list' is not a valid run list"}}
 	}
-	return validateRunList(runListValue)
+	return validateDepsolverRunList(runListValue)
+}
+
+func validateDepsolverRunList(value any) ([]string, error) {
+	runList, err := validateRunList(value)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, item := range runList {
+		if validRoleRunListPattern.MatchString(item) {
+			return nil, &ValidationError{Messages: []string{
+				fmt.Sprintf("Field 'run_list' contains unsupported role item %s", item),
+			}}
+		}
+	}
+
+	return runList, nil
 }
 
 func parseDepsolverRunListItem(value string) (depsolverRunListItem, error) {

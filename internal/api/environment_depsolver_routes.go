@@ -1,9 +1,7 @@
 package api
 
 import (
-	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
 
 	"github.com/oberones/OpenCook/internal/authz"
@@ -109,20 +107,12 @@ func (s *server) handleEnvironmentCookbookVersions(w http.ResponseWriter, r *htt
 }
 
 func decodeDepsolverJSON(w http.ResponseWriter, r *http.Request) (map[string]any, bool) {
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		writeEnvironmentMessages(w, http.StatusBadRequest, "invalid JSON")
-		return nil, false
-	}
-	if len(body) == 0 {
-		writeEnvironmentMessages(w, http.StatusBadRequest, "invalid JSON")
-		return nil, false
-	}
-
 	var payload map[string]any
-	if err := json.Unmarshal(body, &payload); err != nil {
+	switch decodeJSONInto(r, &payload) {
+	case decodeJSONOK:
+		return payload, true
+	default:
 		writeEnvironmentMessages(w, http.StatusBadRequest, "invalid JSON")
 		return nil, false
 	}
-	return payload, true
 }

@@ -21,6 +21,20 @@ func TestEnvironmentCookbookVersionsRejectInvalidJSON(t *testing.T) {
 	assertEnvironmentErrorMessages(t, rec.Body.Bytes(), "invalid JSON")
 }
 
+func TestEnvironmentCookbookVersionsRejectTrailingJSONDocument(t *testing.T) {
+	router := newTestRouter(t)
+	createEnvironmentForCookbookTests(t, router, "production")
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/environments/production/cookbook_versions", []byte(`{"run_list":[]}{"run_list":[]}`))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("depsolver trailing JSON status = %d, want %d, body = %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+
+	assertEnvironmentErrorMessages(t, rec.Body.Bytes(), "invalid JSON")
+}
+
 func TestEnvironmentCookbookVersionsRejectInvalidRunList(t *testing.T) {
 	router := newTestRouter(t)
 	createEnvironmentForCookbookTests(t, router, "production")
@@ -35,6 +49,22 @@ func TestEnvironmentCookbookVersionsRejectInvalidRunList(t *testing.T) {
 	}
 
 	assertEnvironmentErrorMessages(t, rec.Body.Bytes(), "Field 'run_list' is not a valid run list")
+}
+
+func TestEnvironmentCookbookVersionsRejectUnsupportedRoleRunListItem(t *testing.T) {
+	router := newTestRouter(t)
+	createEnvironmentForCookbookTests(t, router, "production")
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/environments/production/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{"role[web]"},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("depsolver unsupported role run_list status = %d, want %d, body = %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+
+	assertEnvironmentErrorMessages(t, rec.Body.Bytes(), "Field 'run_list' contains unsupported role item role[web]")
 }
 
 func TestEnvironmentCookbookVersionsReturnsNotFoundForMissingEnvironment(t *testing.T) {

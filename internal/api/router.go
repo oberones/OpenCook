@@ -504,27 +504,52 @@ func (s *server) logf(format string, args ...any) {
 	s.deps.Logger.Printf(format, args...)
 }
 
-func decodeJSON(w http.ResponseWriter, r *http.Request, payload any) bool {
+type decodeJSONResult int
+
+const (
+	decodeJSONOK decodeJSONResult = iota
+	decodeJSONInvalid
+	decodeJSONMultipleDocuments
+)
+
+func decodeJSONInto(r *http.Request, payload any) decodeJSONResult {
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(payload); err != nil {
+		return decodeJSONInvalid
+	}
+
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		return decodeJSONMultipleDocuments
+	}
+
+	return decodeJSONOK
+}
+
+func decodeJSON(w http.ResponseWriter, r *http.Request, payload any) bool {
+	switch decodeJSONInto(r, payload) {
+	case decodeJSONOK:
+		return true
+	case decodeJSONInvalid:
+		writeJSON(w, http.StatusBadRequest, apiError{
+			Error:   "invalid_json",
+			Message: "request body must be valid JSON",
+		})
+		return false
+	case decodeJSONMultipleDocuments:
+		writeJSON(w, http.StatusBadRequest, apiError{
+			Error:   "invalid_json",
+			Message: "request body must contain exactly one JSON document",
+		})
+		return false
+	default:
 		writeJSON(w, http.StatusBadRequest, apiError{
 			Error:   "invalid_json",
 			Message: "request body must be valid JSON",
 		})
 		return false
 	}
-
-	var extra any
-	if err := decoder.Decode(&extra); err != io.EOF {
-		writeJSON(w, http.StatusBadRequest, apiError{
-			Error:   "invalid_json",
-			Message: "request body must contain exactly one JSON document",
-		})
-		return false
-	}
-
-	return true
 }
 
 func (s *server) statusPayload(mode string) map[string]any {
