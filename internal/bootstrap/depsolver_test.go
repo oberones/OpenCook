@@ -350,6 +350,145 @@ func TestSolveEnvironmentCookbookVersionsSupportsQualifiedAndVersionedRecipeRunL
 	}
 }
 
+func TestSolveEnvironmentCookbookVersionsDeduplicatesEquivalentRunListForms(t *testing.T) {
+	service := newTestBootstrapService(t)
+	createTestCookbookOrg(t, service)
+
+	if _, err := service.CreateEnvironment("ponyville", CreateEnvironmentInput{
+		Payload: map[string]any{
+			"name":                "production",
+			"json_class":          "Chef::Environment",
+			"chef_type":           "environment",
+			"description":         "",
+			"cookbook_versions":   map[string]any{},
+			"default_attributes":  map[string]any{},
+			"override_attributes": map[string]any{},
+		},
+	}); err != nil {
+		t.Fatalf("CreateEnvironment() error = %v", err)
+	}
+
+	createTestCookbookVersion(t, service, "ponyville", "foo", "1.0.0", map[string]any{
+		"dependencies": map[string]any{"bar": "= 1.0.0"},
+	}, nil)
+	createTestCookbookVersion(t, service, "ponyville", "bar", "1.0.0", nil, nil)
+
+	solution, _, _, err := service.SolveEnvironmentCookbookVersions("ponyville", "production", map[string]any{
+		"run_list": []any{"foo", "recipe[foo]", "foo::default", "recipe[foo::default]"},
+	})
+	if err != nil {
+		t.Fatalf("SolveEnvironmentCookbookVersions() error = %v", err)
+	}
+
+	if len(solution) != 2 {
+		t.Fatalf("len(solution) = %d, want 2 (%v)", len(solution), solution)
+	}
+	if solution["foo"].Version != "1.0.0" {
+		t.Fatalf("foo version = %q, want %q", solution["foo"].Version, "1.0.0")
+	}
+	if solution["bar"].Version != "1.0.0" {
+		t.Fatalf("bar version = %q, want %q", solution["bar"].Version, "1.0.0")
+	}
+}
+
+func TestSolveEnvironmentCookbookVersionsSelectsPinnedVersionWhenEquivalentFormsArePresent(t *testing.T) {
+	service := newTestBootstrapService(t)
+	createTestCookbookOrg(t, service)
+
+	if _, err := service.CreateEnvironment("ponyville", CreateEnvironmentInput{
+		Payload: map[string]any{
+			"name":                "production",
+			"json_class":          "Chef::Environment",
+			"chef_type":           "environment",
+			"description":         "",
+			"cookbook_versions":   map[string]any{},
+			"default_attributes":  map[string]any{},
+			"override_attributes": map[string]any{},
+		},
+	}); err != nil {
+		t.Fatalf("CreateEnvironment() error = %v", err)
+	}
+
+	createTestCookbookVersion(t, service, "ponyville", "foo", "1.0.0", nil, nil)
+	createTestCookbookVersion(t, service, "ponyville", "foo", "2.0.0", map[string]any{
+		"dependencies": map[string]any{"bar": "= 2.0.0"},
+	}, nil)
+	createTestCookbookVersion(t, service, "ponyville", "bar", "2.0.0", nil, nil)
+
+	solution, _, _, err := service.SolveEnvironmentCookbookVersions("ponyville", "production", map[string]any{
+		"run_list": []any{"foo", "recipe[foo::default@2.0.0]"},
+	})
+	if err != nil {
+		t.Fatalf("SolveEnvironmentCookbookVersions() error = %v", err)
+	}
+
+	if len(solution) != 2 {
+		t.Fatalf("len(solution) = %d, want 2 (%v)", len(solution), solution)
+	}
+	if solution["foo"].Version != "2.0.0" {
+		t.Fatalf("foo version = %q, want %q", solution["foo"].Version, "2.0.0")
+	}
+	if solution["bar"].Version != "2.0.0" {
+		t.Fatalf("bar version = %q, want %q", solution["bar"].Version, "2.0.0")
+	}
+}
+
+func TestSolveEnvironmentCookbookVersionsDeduplicatesRoleExpandedEquivalentRunListForms(t *testing.T) {
+	service := newTestBootstrapService(t)
+	createTestCookbookOrg(t, service)
+
+	if _, err := service.CreateEnvironment("ponyville", CreateEnvironmentInput{
+		Payload: map[string]any{
+			"name":                "production",
+			"json_class":          "Chef::Environment",
+			"chef_type":           "environment",
+			"description":         "",
+			"cookbook_versions":   map[string]any{},
+			"default_attributes":  map[string]any{},
+			"override_attributes": map[string]any{},
+		},
+	}); err != nil {
+		t.Fatalf("CreateEnvironment() error = %v", err)
+	}
+
+	createTestCookbookVersion(t, service, "ponyville", "foo", "1.0.0", map[string]any{
+		"dependencies": map[string]any{"bar": "= 1.0.0"},
+	}, nil)
+	createTestCookbookVersion(t, service, "ponyville", "bar", "1.0.0", nil, nil)
+
+	if _, err := service.CreateRole("ponyville", CreateRoleInput{
+		Payload: map[string]any{
+			"name":                "web",
+			"description":         "",
+			"json_class":          "Chef::Role",
+			"chef_type":           "role",
+			"default_attributes":  map[string]any{},
+			"override_attributes": map[string]any{},
+			"run_list":            []any{"recipe[foo]", "recipe[foo::default]"},
+			"env_run_lists":       map[string]any{},
+		},
+	}); err != nil {
+		t.Fatalf("CreateRole(web) error = %v", err)
+	}
+
+	solution, _, _, err := service.SolveEnvironmentCookbookVersions("ponyville", "production", map[string]any{
+		"run_list": []any{"role[web]", "foo"},
+	})
+	if err != nil {
+		t.Fatalf("SolveEnvironmentCookbookVersions() error = %v", err)
+	}
+
+	if len(solution) != 2 {
+		t.Fatalf("len(solution) = %d, want 2 (%v)", len(solution), solution)
+	}
+	if solution["foo"].Version != "1.0.0" {
+		t.Fatalf("foo version = %q, want %q", solution["foo"].Version, "1.0.0")
+	}
+	if solution["bar"].Version != "1.0.0" {
+		t.Fatalf("bar version = %q, want %q", solution["bar"].Version, "1.0.0")
+	}
+}
+
 func TestSolveEnvironmentCookbookVersionsBacktracksAcrossCompatibleAlternatives(t *testing.T) {
 	service := newTestBootstrapService(t)
 	createTestCookbookOrg(t, service)
