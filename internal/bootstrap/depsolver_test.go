@@ -654,3 +654,261 @@ func TestSolveEnvironmentCookbookVersionsReportsMultiRootConflictWithAllKnownCon
 		t.Fatalf("message = %v, want multi-root conflict message", got)
 	}
 }
+
+func TestSolveEnvironmentCookbookVersionsMatchesUpstreamFirstGraph(t *testing.T) {
+	service := newTestBootstrapService(t)
+	createTestCookbookOrg(t, service)
+
+	if _, err := service.CreateEnvironment("ponyville", CreateEnvironmentInput{
+		Payload: map[string]any{
+			"name":                "production",
+			"json_class":          "Chef::Environment",
+			"chef_type":           "environment",
+			"description":         "",
+			"cookbook_versions":   map[string]any{},
+			"default_attributes":  map[string]any{},
+			"override_attributes": map[string]any{},
+		},
+	}); err != nil {
+		t.Fatalf("CreateEnvironment() error = %v", err)
+	}
+
+	createTestCookbookVersion(t, service, "ponyville", "app1", "0.1.0", map[string]any{
+		"dependencies": map[string]any{
+			"app2": "0.2.33",
+			"app3": ">= 0.2.0",
+		},
+	}, nil)
+	createTestCookbookVersion(t, service, "ponyville", "app2", "0.1.0", nil, nil)
+	createTestCookbookVersion(t, service, "ponyville", "app2", "0.2.33", map[string]any{
+		"dependencies": map[string]any{
+			"app3": "0.3.0",
+		},
+	}, nil)
+	createTestCookbookVersion(t, service, "ponyville", "app2", "0.3.0", nil, nil)
+	createTestCookbookVersion(t, service, "ponyville", "app3", "0.1.0", nil, nil)
+	createTestCookbookVersion(t, service, "ponyville", "app3", "0.2.0", nil, nil)
+	createTestCookbookVersion(t, service, "ponyville", "app3", "0.3.0", nil, nil)
+
+	solution, _, _, err := service.SolveEnvironmentCookbookVersions("ponyville", "production", map[string]any{
+		"run_list": []any{"app1@0.1.0"},
+	})
+	if err != nil {
+		t.Fatalf("SolveEnvironmentCookbookVersions() error = %v", err)
+	}
+
+	if solution["app1"].Version != "0.1.0" {
+		t.Fatalf("app1 version = %q, want %q", solution["app1"].Version, "0.1.0")
+	}
+	if solution["app2"].Version != "0.2.33" {
+		t.Fatalf("app2 version = %q, want %q", solution["app2"].Version, "0.2.33")
+	}
+	if solution["app3"].Version != "0.3.0" {
+		t.Fatalf("app3 version = %q, want %q", solution["app3"].Version, "0.3.0")
+	}
+}
+
+func TestSolveEnvironmentCookbookVersionsMatchesUpstreamSecondGraph(t *testing.T) {
+	service := newTestBootstrapService(t)
+	createTestCookbookOrg(t, service)
+
+	if _, err := service.CreateEnvironment("ponyville", CreateEnvironmentInput{
+		Payload: map[string]any{
+			"name":                "production",
+			"json_class":          "Chef::Environment",
+			"chef_type":           "environment",
+			"description":         "",
+			"cookbook_versions":   map[string]any{},
+			"default_attributes":  map[string]any{},
+			"override_attributes": map[string]any{},
+		},
+	}); err != nil {
+		t.Fatalf("CreateEnvironment() error = %v", err)
+	}
+
+	createTestCookbookVersion(t, service, "ponyville", "app1", "0.1.0", map[string]any{
+		"dependencies": map[string]any{
+			"app2": ">= 0.1.0",
+			"app4": "0.2.0",
+			"app3": ">= 0.2.0",
+		},
+	}, nil)
+	createTestCookbookVersion(t, service, "ponyville", "app2", "0.1.0", map[string]any{
+		"dependencies": map[string]any{
+			"app3": ">= 0.2.0",
+		},
+	}, nil)
+	createTestCookbookVersion(t, service, "ponyville", "app2", "0.2.0", map[string]any{
+		"dependencies": map[string]any{
+			"app3": ">= 0.2.0",
+		},
+	}, nil)
+	createTestCookbookVersion(t, service, "ponyville", "app2", "0.3.0", map[string]any{
+		"dependencies": map[string]any{
+			"app3": ">= 0.2.0",
+		},
+	}, nil)
+	createTestCookbookVersion(t, service, "ponyville", "app3", "0.1.0", map[string]any{
+		"dependencies": map[string]any{
+			"app4": ">= 0.2.0",
+		},
+	}, nil)
+	createTestCookbookVersion(t, service, "ponyville", "app3", "0.2.0", map[string]any{
+		"dependencies": map[string]any{
+			"app4": "0.2.0",
+		},
+	}, nil)
+	createTestCookbookVersion(t, service, "ponyville", "app3", "0.3.0", nil, nil)
+	createTestCookbookVersion(t, service, "ponyville", "app4", "0.1.0", nil, nil)
+	createTestCookbookVersion(t, service, "ponyville", "app4", "0.2.0", map[string]any{
+		"dependencies": map[string]any{
+			"app2": ">= 0.2.0",
+			"app3": "0.3.0",
+		},
+	}, nil)
+	createTestCookbookVersion(t, service, "ponyville", "app4", "0.3.0", nil, nil)
+
+	solution, _, _, err := service.SolveEnvironmentCookbookVersions("ponyville", "production", map[string]any{
+		"run_list": []any{"app1@0.1.0", "app2@0.3.0"},
+	})
+	if err != nil {
+		t.Fatalf("SolveEnvironmentCookbookVersions() error = %v", err)
+	}
+
+	if solution["app1"].Version != "0.1.0" {
+		t.Fatalf("app1 version = %q, want %q", solution["app1"].Version, "0.1.0")
+	}
+	if solution["app2"].Version != "0.3.0" {
+		t.Fatalf("app2 version = %q, want %q", solution["app2"].Version, "0.3.0")
+	}
+	if solution["app3"].Version != "0.3.0" {
+		t.Fatalf("app3 version = %q, want %q", solution["app3"].Version, "0.3.0")
+	}
+	if solution["app4"].Version != "0.2.0" {
+		t.Fatalf("app4 version = %q, want %q", solution["app4"].Version, "0.2.0")
+	}
+}
+
+func TestSolveEnvironmentCookbookVersionsCombinesEnvironmentAndDependencyConstraints(t *testing.T) {
+	service := newTestBootstrapService(t)
+	createTestCookbookOrg(t, service)
+
+	if _, err := service.CreateEnvironment("ponyville", CreateEnvironmentInput{
+		Payload: map[string]any{
+			"name":        "production",
+			"json_class":  "Chef::Environment",
+			"chef_type":   "environment",
+			"description": "",
+			"cookbook_versions": map[string]any{
+				"app3": "<= 0.1.5",
+			},
+			"default_attributes":  map[string]any{},
+			"override_attributes": map[string]any{},
+		},
+	}); err != nil {
+		t.Fatalf("CreateEnvironment() error = %v", err)
+	}
+
+	createTestCookbookVersion(t, service, "ponyville", "app1", "3.0.0", map[string]any{
+		"dependencies": map[string]any{
+			"app2": ">= 0.1.0",
+			"app3": ">= 0.1.1",
+		},
+	}, nil)
+	createTestCookbookVersion(t, service, "ponyville", "app2", "3.0.0", map[string]any{
+		"dependencies": map[string]any{
+			"app4": ">= 5.0.0",
+		},
+	}, nil)
+	createTestCookbookVersion(t, service, "ponyville", "app3", "0.1.0", map[string]any{
+		"dependencies": map[string]any{
+			"app5": ">= 2.0.0",
+		},
+	}, nil)
+	createTestCookbookVersion(t, service, "ponyville", "app3", "0.1.3", map[string]any{
+		"dependencies": map[string]any{
+			"app5": ">= 2.0.0",
+		},
+	}, nil)
+	createTestCookbookVersion(t, service, "ponyville", "app3", "2.0.0", map[string]any{
+		"dependencies": map[string]any{
+			"app5": ">= 2.0.0",
+		},
+	}, nil)
+	createTestCookbookVersion(t, service, "ponyville", "app4", "6.0.0", map[string]any{
+		"dependencies": map[string]any{
+			"app5": ">= 0.0.0",
+		},
+	}, nil)
+	createTestCookbookVersion(t, service, "ponyville", "app5", "6.0.0", nil, nil)
+
+	solution, _, _, err := service.SolveEnvironmentCookbookVersions("ponyville", "production", map[string]any{
+		"run_list": []any{"app1@3.0.0"},
+	})
+	if err != nil {
+		t.Fatalf("SolveEnvironmentCookbookVersions() error = %v", err)
+	}
+
+	if len(solution) != 5 {
+		t.Fatalf("len(solution) = %d, want 5 (%v)", len(solution), solution)
+	}
+	if solution["app1"].Version != "3.0.0" {
+		t.Fatalf("app1 version = %q, want %q", solution["app1"].Version, "3.0.0")
+	}
+	if solution["app2"].Version != "3.0.0" {
+		t.Fatalf("app2 version = %q, want %q", solution["app2"].Version, "3.0.0")
+	}
+	if solution["app3"].Version != "0.1.3" {
+		t.Fatalf("app3 version = %q, want %q", solution["app3"].Version, "0.1.3")
+	}
+	if solution["app4"].Version != "6.0.0" {
+		t.Fatalf("app4 version = %q, want %q", solution["app4"].Version, "6.0.0")
+	}
+	if solution["app5"].Version != "6.0.0" {
+		t.Fatalf("app5 version = %q, want %q", solution["app5"].Version, "6.0.0")
+	}
+}
+
+func TestSolveEnvironmentCookbookVersionsAllowsCircularDependencies(t *testing.T) {
+	service := newTestBootstrapService(t)
+	createTestCookbookOrg(t, service)
+
+	if _, err := service.CreateEnvironment("ponyville", CreateEnvironmentInput{
+		Payload: map[string]any{
+			"name":                "production",
+			"json_class":          "Chef::Environment",
+			"chef_type":           "environment",
+			"description":         "",
+			"cookbook_versions":   map[string]any{},
+			"default_attributes":  map[string]any{},
+			"override_attributes": map[string]any{},
+		},
+	}); err != nil {
+		t.Fatalf("CreateEnvironment() error = %v", err)
+	}
+
+	createTestCookbookVersion(t, service, "ponyville", "app1", "0.1.0", map[string]any{
+		"dependencies": map[string]any{
+			"app2": ">= 0.0.0",
+		},
+	}, nil)
+	createTestCookbookVersion(t, service, "ponyville", "app2", "0.0.1", map[string]any{
+		"dependencies": map[string]any{
+			"app1": ">= 0.0.0",
+		},
+	}, nil)
+
+	solution, _, _, err := service.SolveEnvironmentCookbookVersions("ponyville", "production", map[string]any{
+		"run_list": []any{"app1@0.1.0"},
+	})
+	if err != nil {
+		t.Fatalf("SolveEnvironmentCookbookVersions() error = %v", err)
+	}
+
+	if solution["app1"].Version != "0.1.0" {
+		t.Fatalf("app1 version = %q, want %q", solution["app1"].Version, "0.1.0")
+	}
+	if solution["app2"].Version != "0.0.1" {
+		t.Fatalf("app2 version = %q, want %q", solution["app2"].Version, "0.0.1")
+	}
+}
