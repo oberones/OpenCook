@@ -32,6 +32,8 @@ type Config struct {
 	BlobS3AccessKeyID    string
 	BlobS3SecretKey      string
 	BlobS3SessionToken   string
+	BlobS3RequestTimeout time.Duration
+	BlobS3MaxRetries     int
 
 	BootstrapRequestorName          string
 	BootstrapRequestorType          string
@@ -42,6 +44,8 @@ type Config struct {
 
 const DefaultMaxAuthBodyBytes int64 = 8 << 20
 const DefaultMaxBlobUploadBytes int64 = 64 << 20
+const DefaultBlobS3RequestTimeout = 30 * time.Second
+const DefaultBlobS3MaxRetries = 2
 
 func LoadFromEnv() (Config, error) {
 	readTimeout, err := envDuration("OPENCOOK_READ_TIMEOUT", 15*time.Second)
@@ -80,6 +84,22 @@ func LoadFromEnv() (Config, error) {
 		return Config{}, fmt.Errorf("OPENCOOK_MAX_BLOB_UPLOAD_BYTES: must be positive")
 	}
 
+	blobS3RequestTimeout, err := envDuration("OPENCOOK_BLOB_S3_REQUEST_TIMEOUT", DefaultBlobS3RequestTimeout)
+	if err != nil {
+		return Config{}, err
+	}
+	if blobS3RequestTimeout <= 0 {
+		return Config{}, fmt.Errorf("OPENCOOK_BLOB_S3_REQUEST_TIMEOUT: must be positive")
+	}
+
+	blobS3MaxRetries, err := envInt("OPENCOOK_BLOB_S3_MAX_RETRIES", DefaultBlobS3MaxRetries)
+	if err != nil {
+		return Config{}, err
+	}
+	if blobS3MaxRetries < 0 {
+		return Config{}, fmt.Errorf("OPENCOOK_BLOB_S3_MAX_RETRIES: must be zero or greater")
+	}
+
 	bootstrapMode, err := envBool("OPENCOOK_BOOTSTRAP_MODE", true)
 	if err != nil {
 		return Config{}, err
@@ -116,6 +136,8 @@ func LoadFromEnv() (Config, error) {
 		BlobS3AccessKeyID:               strings.TrimSpace(os.Getenv("OPENCOOK_BLOB_S3_ACCESS_KEY_ID")),
 		BlobS3SecretKey:                 strings.TrimSpace(os.Getenv("OPENCOOK_BLOB_S3_SECRET_ACCESS_KEY")),
 		BlobS3SessionToken:              strings.TrimSpace(os.Getenv("OPENCOOK_BLOB_S3_SESSION_TOKEN")),
+		BlobS3RequestTimeout:            blobS3RequestTimeout,
+		BlobS3MaxRetries:                blobS3MaxRetries,
 		BootstrapRequestorName:          envString("OPENCOOK_BOOTSTRAP_REQUESTOR_NAME", ""),
 		BootstrapRequestorType:          envString("OPENCOOK_BOOTSTRAP_REQUESTOR_TYPE", "user"),
 		BootstrapRequestorOrganization:  envString("OPENCOOK_BOOTSTRAP_REQUESTOR_ORG", ""),
@@ -153,6 +175,8 @@ func (c Config) Redacted() map[string]string {
 		"blob_s3_access_key_id":      redact(c.BlobS3AccessKeyID),
 		"blob_s3_secret_access_key":  redact(c.BlobS3SecretKey),
 		"blob_s3_session_token":      redact(c.BlobS3SessionToken),
+		"blob_s3_request_timeout":    c.BlobS3RequestTimeout.String(),
+		"blob_s3_max_retries":        strconv.Itoa(c.BlobS3MaxRetries),
 	}
 }
 
@@ -199,6 +223,20 @@ func envInt64(key string, fallback int64) (int64, error) {
 	}
 
 	parsed, err := strconv.ParseInt(value, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("%s: %w", key, err)
+	}
+
+	return parsed, nil
+}
+
+func envInt(key string, fallback int) (int, error) {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback, nil
+	}
+
+	parsed, err := strconv.Atoi(value)
 	if err != nil {
 		return 0, fmt.Errorf("%s: %w", key, err)
 	}

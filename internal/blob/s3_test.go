@@ -189,7 +189,231 @@ func TestNewRequestUsesNilBodyForReadMethods(t *testing.T) {
 	}
 }
 
+func TestS3CompatibleStoreRetriesRetryableStatusThenSucceeds(t *testing.T) {
+	attempts := 0
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		attempts++
+		if attempts < 3 {
+			return testHTTPResponse(r, http.StatusServiceUnavailable, ""), nil
+		}
+
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("ReadAll() error = %v", err)
+		}
+		if string(body) != "rainbow" {
+			t.Fatalf("body = %q, want %q", string(body), "rainbow")
+		}
+		return testHTTPResponse(r, http.StatusCreated, ""), nil
+	})}
+
+	store, err := NewS3CompatibleStore(S3CompatibleConfig{
+		StorageURL:     "s3://chef-bucket/checksums",
+		Endpoint:       "http://s3.test",
+		Region:         "us-east-1",
+		ForcePathStyle: true,
+		AccessKeyID:    "access-key",
+		SecretKey:      "secret-key",
+		MaxRetries:     2,
+		HTTPClient:     client,
+	})
+	if err != nil {
+		t.Fatalf("NewS3CompatibleStore() error = %v", err)
+	}
+
+	if _, err := store.Put(context.Background(), PutRequest{
+		Key:  "abcdef0123456789",
+		Body: []byte("rainbow"),
+	}); err != nil {
+		t.Fatalf("Put() error = %v", err)
+	}
+
+	if attempts != 3 {
+		t.Fatalf("attempts = %d, want %d", attempts, 3)
+	}
+}
+
+func TestS3CompatibleStoreRetriesTransportErrorThenSucceeds(t *testing.T) {
+	attempts := 0
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		attempts++
+		if attempts == 1 {
+			return nil, temporaryNetError{message: "temporary network failure"}
+		}
+		return testHTTPResponse(r, http.StatusOK, "rainbow"), nil
+	})}
+
+	store, err := NewS3CompatibleStore(S3CompatibleConfig{
+		StorageURL:     "s3://chef-bucket/checksums",
+		Endpoint:       "http://s3.test",
+		Region:         "us-east-1",
+		ForcePathStyle: true,
+		AccessKeyID:    "access-key",
+		SecretKey:      "secret-key",
+		MaxRetries:     1,
+		HTTPClient:     client,
+	})
+	if err != nil {
+		t.Fatalf("NewS3CompatibleStore() error = %v", err)
+	}
+
+	body, err := store.Get(context.Background(), "abcdef0123456789")
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if string(body) != "rainbow" {
+		t.Fatalf("Get() = %q, want %q", string(body), "rainbow")
+	}
+	if attempts != 2 {
+		t.Fatalf("attempts = %d, want %d", attempts, 2)
+	}
+}
+
+func TestS3CompatibleStoreDoesNotRetryNonTransientTransportError(t *testing.T) {
+	attempts := 0
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		attempts++
+		return nil, errors.New("permanent transport failure")
+	})}
+
+	store, err := NewS3CompatibleStore(S3CompatibleConfig{
+		StorageURL:     "s3://chef-bucket/checksums",
+		Endpoint:       "http://s3.test",
+		Region:         "us-east-1",
+		ForcePathStyle: true,
+		AccessKeyID:    "access-key",
+		SecretKey:      "secret-key",
+		MaxRetries:     3,
+		HTTPClient:     client,
+	})
+	if err != nil {
+		t.Fatalf("NewS3CompatibleStore() error = %v", err)
+	}
+
+	_, err = store.Get(context.Background(), "abcdef0123456789")
+	if !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("Get() error = %v, want ErrUnavailable", err)
+	}
+	if attempts != 1 {
+		t.Fatalf("attempts = %d, want %d", attempts, 1)
+	}
+}
+
+func TestS3CompatibleStoreReturnsUnavailableAfterRetryableStatusExhausted(t *testing.T) {
+	attempts := 0
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		attempts++
+		return testHTTPResponse(r, http.StatusServiceUnavailable, ""), nil
+	})}
+
+	store, err := NewS3CompatibleStore(S3CompatibleConfig{
+		StorageURL:     "s3://chef-bucket/checksums",
+		Endpoint:       "http://s3.test",
+		Region:         "us-east-1",
+		ForcePathStyle: true,
+		AccessKeyID:    "access-key",
+		SecretKey:      "secret-key",
+		MaxRetries:     1,
+		HTTPClient:     client,
+	})
+	if err != nil {
+		t.Fatalf("NewS3CompatibleStore() error = %v", err)
+	}
+
+	_, err = store.Exists(context.Background(), "abcdef0123456789")
+	if !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("Exists() error = %v, want ErrUnavailable", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("attempts = %d, want %d", attempts, 2)
+	}
+}
+
+func TestS3CompatibleStoreReturnsUnavailableForForbiddenStatus(t *testing.T) {
+	attempts := 0
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		attempts++
+		return testHTTPResponse(r, http.StatusForbidden, ""), nil
+	})}
+
+	store, err := NewS3CompatibleStore(S3CompatibleConfig{
+		StorageURL:     "s3://chef-bucket/checksums",
+		Endpoint:       "http://s3.test",
+		Region:         "us-east-1",
+		ForcePathStyle: true,
+		AccessKeyID:    "access-key",
+		SecretKey:      "secret-key",
+		MaxRetries:     3,
+		HTTPClient:     client,
+	})
+	if err != nil {
+		t.Fatalf("NewS3CompatibleStore() error = %v", err)
+	}
+
+	_, err = store.Get(context.Background(), "abcdef0123456789")
+	if !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("Get() error = %v, want ErrUnavailable", err)
+	}
+	if attempts != 1 {
+		t.Fatalf("attempts = %d, want %d", attempts, 1)
+	}
+}
+
+func TestS3CompatibleStoreUsesRetryAfterDelay(t *testing.T) {
+	attempts := 0
+	var delays []time.Duration
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		attempts++
+		if attempts == 1 {
+			resp := testHTTPResponse(r, http.StatusTooManyRequests, "")
+			resp.Header.Set("Retry-After", "2")
+			return resp, nil
+		}
+		return testHTTPResponse(r, http.StatusOK, "rainbow"), nil
+	})}
+
+	store, err := NewS3CompatibleStore(S3CompatibleConfig{
+		StorageURL:     "s3://chef-bucket/checksums",
+		Endpoint:       "http://s3.test",
+		Region:         "us-east-1",
+		ForcePathStyle: true,
+		AccessKeyID:    "access-key",
+		SecretKey:      "secret-key",
+		MaxRetries:     1,
+		HTTPClient:     client,
+		Sleep: func(_ context.Context, delay time.Duration) error {
+			delays = append(delays, delay)
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewS3CompatibleStore() error = %v", err)
+	}
+
+	body, err := store.Get(context.Background(), "abcdef0123456789")
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if string(body) != "rainbow" {
+		t.Fatalf("Get() = %q, want %q", string(body), "rainbow")
+	}
+	if len(delays) != 1 {
+		t.Fatalf("len(delays) = %d, want %d", len(delays), 1)
+	}
+	if delays[0] != 2*time.Second {
+		t.Fatalf("delay = %v, want %v", delays[0], 2*time.Second)
+	}
+}
+
 type roundTripFunc func(*http.Request) (*http.Response, error)
+
+type temporaryNetError struct {
+	message string
+}
+
+func (e temporaryNetError) Error() string   { return e.message }
+func (e temporaryNetError) Timeout() bool   { return false }
+func (e temporaryNetError) Temporary() bool { return true }
 
 func (fn roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return fn(req)

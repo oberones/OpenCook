@@ -190,7 +190,7 @@ Current architectural reality:
 - the API surface is partly real and partly scaffolded
 - bootstrap and key lifecycle state are in-memory compatibility implementations
 - PostgreSQL and OpenSearch are still placeholders or early scaffolding
-- the blob layer now has in-memory, filesystem-backed, and S3-compatible compatibility implementations for sandbox checksum uploads/downloads and cookbook file URLs, though provider hardening and broader operational behavior are still pending
+- the blob layer now has in-memory, filesystem-backed, and S3-compatible compatibility implementations for sandbox checksum uploads/downloads and cookbook file URLs, and the S3-compatible path now includes configurable timeout/retry behavior plus availability-style degradation for transient/provider-auth failures, though broader operational behavior is still pending
 
 Do not mistake the current in-memory implementation for the final persistence architecture.
 
@@ -354,7 +354,7 @@ These areas are still intentionally incomplete:
 - deeper node and environment compatibility such as cookbook constraint edge cases and linked object behavior
 - deeper role compatibility such as run-list normalization and linked environment behavior
 - broader search semantics beyond the current in-memory compatibility layer, especially richer Lucene-style query translation and wider object coverage
-- deeper Bookshelf/cookbook flows beyond the current cookbook write/read/artifact slice, especially the remaining cookbook pedant cases outside the current environment-filtered/named-filter/latest/version read-write contract and the remaining provider hardening around S3-compatible blob behavior
+- deeper Bookshelf/cookbook flows beyond the current cookbook write/read/artifact slice, especially the remaining cookbook pedant cases outside the current environment-filtered/named-filter/latest/version read-write contract and the remaining deeper provider hardening around S3-compatible blob behavior
 - operational parity and migration tooling
 
-The next likely major slice is the remaining cookbook pedant cases beyond environment-filtered and named-filter/latest-version views, or provider hardening around S3-compatible blob behavior before moving stabilized slices toward PostgreSQL/OpenSearch-backed providers.
+The next likely major slice is the remaining cookbook pedant cases beyond environment-filtered and named-filter/latest-version views, or deeper provider hardening around S3-compatible blob behavior before moving stabilized slices toward PostgreSQL/OpenSearch-backed providers.
