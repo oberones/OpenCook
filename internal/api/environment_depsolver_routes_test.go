@@ -87,6 +87,44 @@ func TestEnvironmentCookbookVersionsRejectBogusBracketedRunListItem(t *testing.T
 	assertEnvironmentErrorMessages(t, rec.Body.Bytes(), "Field 'run_list' is not a valid run list")
 }
 
+func TestEnvironmentCookbookVersionsReturnsEmptyObjectForEmptyRunList(t *testing.T) {
+	router := newTestRouter(t)
+	createEnvironmentForCookbookTests(t, router, "production")
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/environments/production/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("depsolver empty run_list status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	payload := decodeJSONMap(t, rec.Body.Bytes())
+	if len(payload) != 0 {
+		t.Fatalf("payload = %v, want empty object", payload)
+	}
+}
+
+func TestOrganizationEnvironmentCookbookVersionsReturnsEmptyObjectForEmptyRunList(t *testing.T) {
+	router := newTestRouter(t)
+	createEnvironmentForCookbookTests(t, router, "production")
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/organizations/ponyville/environments/production/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("org-scoped depsolver empty run_list status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	payload := decodeJSONMap(t, rec.Body.Bytes())
+	if len(payload) != 0 {
+		t.Fatalf("payload = %v, want empty object", payload)
+	}
+}
+
 func TestEnvironmentCookbookVersionsReturnsNotFoundForMissingEnvironment(t *testing.T) {
 	router := newTestRouter(t)
 
@@ -867,6 +905,58 @@ func TestEnvironmentCookbookVersionsExpandsRoleRunLists(t *testing.T) {
 	if _, ok := defaultPayload["nginx"]; ok {
 		t.Fatalf("default role-expanded payload unexpectedly contains nginx: %v", defaultPayload)
 	}
+}
+
+func TestEnvironmentCookbookVersionsUsesExplicitEmptyEnvironmentRoleRunList(t *testing.T) {
+	router, state := newSearchTestRouterWithAuthorizer(t, nil)
+	createEnvironmentForCookbookTests(t, router, "production")
+	createCookbookVersion(t, router, "apache2", "1.0.0", "", nil)
+
+	if _, err := state.CreateRole("ponyville", bootstrap.CreateRoleInput{
+		Payload: map[string]any{
+			"name":                "web",
+			"description":         "",
+			"json_class":          "Chef::Role",
+			"chef_type":           "role",
+			"default_attributes":  map[string]any{},
+			"override_attributes": map[string]any{},
+			"run_list":            []any{"recipe[apache2]"},
+			"env_run_lists": map[string]any{
+				"production": []any{},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("CreateRole(web) error = %v", err)
+	}
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/environments/production/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{"role[web]"},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("depsolver empty env role run_list status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	payload := decodeJSONMap(t, rec.Body.Bytes())
+	if len(payload) != 0 {
+		t.Fatalf("production role-expanded payload = %v, want empty object", payload)
+	}
+
+	defaultReq := newSignedJSONRequest(t, http.MethodPost, "/environments/_default/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{"role[web]"},
+	}))
+	defaultRec := httptest.NewRecorder()
+	router.ServeHTTP(defaultRec, defaultReq)
+	if defaultRec.Code != http.StatusOK {
+		t.Fatalf("depsolver default role expansion status = %d, want %d, body = %s", defaultRec.Code, http.StatusOK, defaultRec.Body.String())
+	}
+
+	defaultPayload := decodeJSONMap(t, defaultRec.Body.Bytes())
+	if len(defaultPayload) != 1 {
+		t.Fatalf("len(defaultPayload) = %d, want 1 (%v)", len(defaultPayload), defaultPayload)
+	}
+	assertCookbookVersionBody(t, defaultPayload, "apache2", "1.0.0")
 }
 
 func TestEnvironmentCookbookVersionsDeduplicatesRoleExpandedEquivalentRunListForms(t *testing.T) {
