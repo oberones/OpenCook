@@ -906,6 +906,9 @@ func TestOrganizationEnvironmentCookbookVersionsMatchesUpstreamSecondGraph(t *te
 	}
 
 	payload := decodeJSONMap(t, rec.Body.Bytes())
+	if len(payload) != 4 {
+		t.Fatalf("len(payload) = %d, want 4 (%v)", len(payload), payload)
+	}
 	assertCookbookVersionBody(t, payload, "app1", "0.1.0")
 	assertCookbookVersionBody(t, payload, "app2", "0.3.0")
 	assertCookbookVersionBody(t, payload, "app3", "0.3.0")
