@@ -524,6 +524,54 @@ func TestEnvironmentCookbookVersionsReturns412ForMissingDependency(t *testing.T)
 	assertStringSliceValue(t, detail["most_constrained_cookbooks"], []string{})
 }
 
+func TestEnvironmentCookbookVersionsAttributesMissingDependencyToLaterRoot(t *testing.T) {
+	router := newTestRouter(t)
+	createEnvironmentForCookbookTests(t, router, "production")
+	createCookbookVersion(t, router, "app1", "1.1.0", "", nil)
+	createCookbookVersion(t, router, "app2", "0.0.1", "", map[string]string{"oops": ">= 0.0.0"})
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/environments/production/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{"app1", "app2"},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusPreconditionFailed {
+		t.Fatalf("depsolver later-root missing dependency status = %d, want %d, body = %s", rec.Code, http.StatusPreconditionFailed, rec.Body.String())
+	}
+
+	payload := decodeJSONMap(t, rec.Body.Bytes())
+	assertUnsatisfiedDepsolverDetail(t, payload, map[string]any{
+		"message":                     "Unable to satisfy constraints on package oops, which does not exist, due to solution constraint (app2 >= 0.0.0). Solution constraints that may result in a constraint on oops: [(app2 = 0.0.1) -> (oops >= 0.0.0)]",
+		"unsatisfiable_run_list_item": "(app2 >= 0.0.0)",
+		"non_existent_cookbooks":      []string{"oops"},
+		"most_constrained_cookbooks":  []string{},
+	})
+}
+
+func TestOrganizationEnvironmentCookbookVersionsAttributesMissingDependencyToLaterRoot(t *testing.T) {
+	router := newTestRouter(t)
+	createEnvironmentForCookbookTests(t, router, "production")
+	createCookbookVersion(t, router, "app1", "1.1.0", "", nil)
+	createCookbookVersion(t, router, "app2", "0.0.1", "", map[string]string{"oops": ">= 0.0.0"})
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/organizations/ponyville/environments/production/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{"app1", "app2"},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusPreconditionFailed {
+		t.Fatalf("org-scoped depsolver later-root missing dependency status = %d, want %d, body = %s", rec.Code, http.StatusPreconditionFailed, rec.Body.String())
+	}
+
+	payload := decodeJSONMap(t, rec.Body.Bytes())
+	assertUnsatisfiedDepsolverDetail(t, payload, map[string]any{
+		"message":                     "Unable to satisfy constraints on package oops, which does not exist, due to solution constraint (app2 >= 0.0.0). Solution constraints that may result in a constraint on oops: [(app2 = 0.0.1) -> (oops >= 0.0.0)]",
+		"unsatisfiable_run_list_item": "(app2 >= 0.0.0)",
+		"non_existent_cookbooks":      []string{"oops"},
+		"most_constrained_cookbooks":  []string{},
+	})
+}
+
 func TestEnvironmentCookbookVersionsReturns412ForUnsatisfiedDependencyVersion(t *testing.T) {
 	router := newTestRouter(t)
 	createEnvironmentForCookbookTests(t, router, "production")
