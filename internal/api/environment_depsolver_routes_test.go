@@ -247,6 +247,53 @@ func TestEnvironmentCookbookVersionsSupportsQualifiedAndVersionedRecipeRunListIt
 	assertCookbookVersionBody(t, payload, "bar", "1.0.0")
 }
 
+func TestEnvironmentCookbookVersionsDeduplicatesEquivalentRunListForms(t *testing.T) {
+	router := newTestRouter(t)
+	createEnvironmentForCookbookTests(t, router, "production")
+	createCookbookVersion(t, router, "foo", "1.0.0", "", map[string]string{"bar": "= 1.0.0"})
+	createCookbookVersion(t, router, "bar", "1.0.0", "", nil)
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/environments/production/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{"foo", "recipe[foo]", "foo::default", "recipe[foo::default]"},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("depsolver equivalent run_list forms status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	payload := decodeJSONMap(t, rec.Body.Bytes())
+	if len(payload) != 2 {
+		t.Fatalf("len(payload) = %d, want 2 (%v)", len(payload), payload)
+	}
+	assertCookbookVersionBody(t, payload, "foo", "1.0.0")
+	assertCookbookVersionBody(t, payload, "bar", "1.0.0")
+}
+
+func TestEnvironmentCookbookVersionsSelectsPinnedVersionWhenEquivalentFormsArePresent(t *testing.T) {
+	router := newTestRouter(t)
+	createEnvironmentForCookbookTests(t, router, "production")
+	createCookbookVersion(t, router, "foo", "1.0.0", "", nil)
+	createCookbookVersion(t, router, "foo", "2.0.0", "", map[string]string{"bar": "= 2.0.0"})
+	createCookbookVersion(t, router, "bar", "2.0.0", "", nil)
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/environments/production/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{"foo", "recipe[foo::default@2.0.0]"},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("depsolver pinned equivalent run_list form status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	payload := decodeJSONMap(t, rec.Body.Bytes())
+	if len(payload) != 2 {
+		t.Fatalf("len(payload) = %d, want 2 (%v)", len(payload), payload)
+	}
+	assertCookbookVersionBody(t, payload, "foo", "2.0.0")
+	assertCookbookVersionBody(t, payload, "bar", "2.0.0")
+}
+
 func TestEnvironmentCookbookVersionsReturns412ForMissingDependency(t *testing.T) {
 	router := newTestRouter(t)
 	createEnvironmentForCookbookTests(t, router, "production")
@@ -820,6 +867,44 @@ func TestEnvironmentCookbookVersionsExpandsRoleRunLists(t *testing.T) {
 	if _, ok := defaultPayload["nginx"]; ok {
 		t.Fatalf("default role-expanded payload unexpectedly contains nginx: %v", defaultPayload)
 	}
+}
+
+func TestEnvironmentCookbookVersionsDeduplicatesRoleExpandedEquivalentRunListForms(t *testing.T) {
+	router, state := newSearchTestRouterWithAuthorizer(t, nil)
+	createEnvironmentForCookbookTests(t, router, "production")
+	createCookbookVersion(t, router, "foo", "1.0.0", "", map[string]string{"bar": "= 1.0.0"})
+	createCookbookVersion(t, router, "bar", "1.0.0", "", nil)
+
+	if _, err := state.CreateRole("ponyville", bootstrap.CreateRoleInput{
+		Payload: map[string]any{
+			"name":                "web",
+			"description":         "",
+			"json_class":          "Chef::Role",
+			"chef_type":           "role",
+			"default_attributes":  map[string]any{},
+			"override_attributes": map[string]any{},
+			"run_list":            []any{"recipe[foo]", "recipe[foo::default]"},
+			"env_run_lists":       map[string]any{},
+		},
+	}); err != nil {
+		t.Fatalf("CreateRole(web) error = %v", err)
+	}
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/environments/production/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{"role[web]", "foo"},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("depsolver role-expanded duplicate normalization status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	payload := decodeJSONMap(t, rec.Body.Bytes())
+	if len(payload) != 2 {
+		t.Fatalf("len(payload) = %d, want 2 (%v)", len(payload), payload)
+	}
+	assertCookbookVersionBody(t, payload, "foo", "1.0.0")
+	assertCookbookVersionBody(t, payload, "bar", "1.0.0")
 }
 
 func TestEnvironmentCookbookVersionsRejectsMissingRoleRunListItem(t *testing.T) {
