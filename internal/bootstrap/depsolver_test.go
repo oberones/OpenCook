@@ -270,6 +270,46 @@ func TestSolveEnvironmentCookbookVersionsRejectsRecursiveRole(t *testing.T) {
 	}
 }
 
+func TestSolveEnvironmentCookbookVersionsRejectsMalformedVersionedRunListItem(t *testing.T) {
+	service := newTestBootstrapService(t)
+	createTestCookbookOrg(t, service)
+
+	_, _, _, err := service.SolveEnvironmentCookbookVersions("ponyville", "_default", map[string]any{
+		"run_list": []any{"foo@not_a_version"},
+	})
+	if err == nil {
+		t.Fatal("SolveEnvironmentCookbookVersions() error = nil, want validation error")
+	}
+
+	var validationErr *ValidationError
+	if !errors.As(err, &validationErr) {
+		t.Fatalf("SolveEnvironmentCookbookVersions() error = %T, want *ValidationError", err)
+	}
+	if len(validationErr.Messages) != 1 || validationErr.Messages[0] != "Field 'run_list' is not a valid run list" {
+		t.Fatalf("validation messages = %v, want invalid run_list message", validationErr.Messages)
+	}
+}
+
+func TestSolveEnvironmentCookbookVersionsRejectsBogusBracketedRunListItem(t *testing.T) {
+	service := newTestBootstrapService(t)
+	createTestCookbookOrg(t, service)
+
+	_, _, _, err := service.SolveEnvironmentCookbookVersions("ponyville", "_default", map[string]any{
+		"run_list": []any{"fake[not_good]"},
+	})
+	if err == nil {
+		t.Fatal("SolveEnvironmentCookbookVersions() error = nil, want validation error")
+	}
+
+	var validationErr *ValidationError
+	if !errors.As(err, &validationErr) {
+		t.Fatalf("SolveEnvironmentCookbookVersions() error = %T, want *ValidationError", err)
+	}
+	if len(validationErr.Messages) != 1 || validationErr.Messages[0] != "Field 'run_list' is not a valid run list" {
+		t.Fatalf("validation messages = %v, want invalid run_list message", validationErr.Messages)
+	}
+}
+
 func TestSolveEnvironmentCookbookVersionsSupportsQualifiedAndVersionedRecipeRunListItems(t *testing.T) {
 	service := newTestBootstrapService(t)
 	createTestCookbookOrg(t, service)
@@ -1005,6 +1045,48 @@ func TestSolveEnvironmentCookbookVersionsSelectsRootVersionThatRespectsEnvironme
 	}
 	if solution["bar"].Version != "1.0.0" {
 		t.Fatalf("bar version = %q, want %q", solution["bar"].Version, "1.0.0")
+	}
+}
+
+func TestSolveEnvironmentCookbookVersionsSelectsPinnedVersionForRepeatedRootCookbook(t *testing.T) {
+	service := newTestBootstrapService(t)
+	createTestCookbookOrg(t, service)
+
+	if _, err := service.CreateEnvironment("ponyville", CreateEnvironmentInput{
+		Payload: map[string]any{
+			"name":                "production",
+			"json_class":          "Chef::Environment",
+			"chef_type":           "environment",
+			"description":         "",
+			"cookbook_versions":   map[string]any{},
+			"default_attributes":  map[string]any{},
+			"override_attributes": map[string]any{},
+		},
+	}); err != nil {
+		t.Fatalf("CreateEnvironment() error = %v", err)
+	}
+
+	createTestCookbookVersion(t, service, "ponyville", "foo", "1.0.0", nil, nil)
+	createTestCookbookVersion(t, service, "ponyville", "foo", "2.0.0", map[string]any{
+		"dependencies": map[string]any{"bar": "= 2.0.0"},
+	}, nil)
+	createTestCookbookVersion(t, service, "ponyville", "bar", "2.0.0", nil, nil)
+
+	solution, _, _, err := service.SolveEnvironmentCookbookVersions("ponyville", "production", map[string]any{
+		"run_list": []any{"foo", "foo@2.0.0"},
+	})
+	if err != nil {
+		t.Fatalf("SolveEnvironmentCookbookVersions() error = %v", err)
+	}
+
+	if len(solution) != 2 {
+		t.Fatalf("len(solution) = %d, want 2 (%v)", len(solution), solution)
+	}
+	if solution["foo"].Version != "2.0.0" {
+		t.Fatalf("foo version = %q, want %q", solution["foo"].Version, "2.0.0")
+	}
+	if solution["bar"].Version != "2.0.0" {
+		t.Fatalf("bar version = %q, want %q", solution["bar"].Version, "2.0.0")
 	}
 }
 
