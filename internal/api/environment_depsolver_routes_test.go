@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -1122,11 +1123,16 @@ func assertCookbookVersionBody(t *testing.T, payload map[string]any, cookbook, v
 func decodeJSONMap(t *testing.T, body []byte) map[string]any {
 	t.Helper()
 
-	var payload map[string]any
+	var payload any
 	if err := json.Unmarshal(body, &payload); err != nil {
 		t.Fatalf("json.Unmarshal() error = %v", err)
 	}
-	return payload
+
+	object, ok := payload.(map[string]any)
+	if !ok {
+		t.Fatalf("decoded JSON = %T, want top-level object (%s)", payload, bytes.TrimSpace(body))
+	}
+	return object
 }
 
 func assertStringSliceValue(t *testing.T, value any, want []string) {
