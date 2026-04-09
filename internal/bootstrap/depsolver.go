@@ -228,7 +228,7 @@ func normalizeDepsolverRunListItem(item string) string {
 
 func parseDepsolverRunListItem(value string) (depsolverRunListItem, error) {
 	value = strings.TrimSpace(value)
-	if value == "" {
+	if value == "" || !isValidRunListItem(value) {
 		return depsolverRunListItem{}, ErrInvalidInput
 	}
 
@@ -243,11 +243,7 @@ func parseDepsolverRunListItem(value string) (depsolverRunListItem, error) {
 	versionConstraint := ">= 0.0.0"
 	if cookbookToken, versionToken, ok := strings.Cut(token, "@"); ok {
 		token = cookbookToken
-		versionToken = strings.TrimSpace(versionToken)
-		if !validCookbookVersion(versionToken) {
-			return depsolverRunListItem{}, ErrInvalidInput
-		}
-		versionConstraint = "= " + versionToken
+		versionConstraint = "= " + strings.TrimSpace(versionToken)
 	}
 
 	cookbookName := token
