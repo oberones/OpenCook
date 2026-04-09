@@ -797,6 +797,59 @@ func TestEnvironmentCookbookVersionsMatchesUpstreamSecondGraph(t *testing.T) {
 	assertCookbookVersionBody(t, payload, "app4", "0.2.0")
 }
 
+func TestEnvironmentCookbookVersionsIgnoresUnrelatedEnvironmentConstraintsForSuccessfulSelection(t *testing.T) {
+	router := newTestRouter(t)
+	createEnvironmentForCookbookTests(t, router, "production")
+	updateEnvironmentCookbookConstraints(t, router, "production", map[string]string{
+		"something": "= 1.0.0",
+	})
+	createCookbookVersion(t, router, "app1", "0.1.0", "", map[string]string{
+		"app2": ">= 0.1.0",
+		"app4": "0.2.0",
+		"app3": ">= 0.2.0",
+	})
+	createCookbookVersion(t, router, "app2", "0.1.0", "", map[string]string{
+		"app3": ">= 0.2.0",
+	})
+	createCookbookVersion(t, router, "app2", "0.2.0", "", map[string]string{
+		"app3": ">= 0.2.0",
+	})
+	createCookbookVersion(t, router, "app2", "0.3.0", "", map[string]string{
+		"app3": ">= 0.2.0",
+	})
+	createCookbookVersion(t, router, "app3", "0.1.0", "", map[string]string{
+		"app4": ">= 0.2.0",
+	})
+	createCookbookVersion(t, router, "app3", "0.2.0", "", map[string]string{
+		"app4": "0.2.0",
+	})
+	createCookbookVersion(t, router, "app3", "0.3.0", "", nil)
+	createCookbookVersion(t, router, "app4", "0.1.0", "", nil)
+	createCookbookVersion(t, router, "app4", "0.2.0", "", map[string]string{
+		"app2": ">= 0.2.0",
+		"app3": "0.3.0",
+	})
+	createCookbookVersion(t, router, "app4", "0.3.0", "", nil)
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/environments/production/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{"app1@0.1.0", "app2@0.3.0"},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("depsolver unrelated environment constraint success status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	payload := decodeJSONMap(t, rec.Body.Bytes())
+	if len(payload) != 4 {
+		t.Fatalf("len(payload) = %d, want 4 (%v)", len(payload), payload)
+	}
+	assertCookbookVersionBody(t, payload, "app1", "0.1.0")
+	assertCookbookVersionBody(t, payload, "app2", "0.3.0")
+	assertCookbookVersionBody(t, payload, "app3", "0.3.0")
+	assertCookbookVersionBody(t, payload, "app4", "0.2.0")
+}
+
 func TestEnvironmentCookbookVersionsMatchesUpstreamThirdGraph(t *testing.T) {
 	router := newTestRouter(t)
 	createEnvironmentForCookbookTests(t, router, "production")
