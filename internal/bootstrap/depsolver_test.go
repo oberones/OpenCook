@@ -1848,6 +1848,53 @@ func TestSolveEnvironmentCookbookVersionsSelectsRootVersionThatRespectsEnvironme
 	}
 }
 
+func TestSolveEnvironmentCookbookVersionsSelectsNewerRootVersionWhenEnvironmentAllowsIt(t *testing.T) {
+	service := newTestBootstrapService(t)
+	createTestCookbookOrg(t, service)
+
+	if _, err := service.CreateEnvironment("ponyville", CreateEnvironmentInput{
+		Payload: map[string]any{
+			"name":        "production",
+			"json_class":  "Chef::Environment",
+			"chef_type":   "environment",
+			"description": "",
+			"cookbook_versions": map[string]any{
+				"bar": "> 1.1.0",
+			},
+			"default_attributes":  map[string]any{},
+			"override_attributes": map[string]any{},
+		},
+	}); err != nil {
+		t.Fatalf("CreateEnvironment() error = %v", err)
+	}
+
+	createTestCookbookVersion(t, service, "ponyville", "foo", "1.2.3", map[string]any{
+		"dependencies": map[string]any{"bar": "> 2.0.0"},
+	}, nil)
+	createTestCookbookVersion(t, service, "ponyville", "foo", "1.0.0", map[string]any{
+		"dependencies": map[string]any{"bar": "= 1.0.0"},
+	}, nil)
+	createTestCookbookVersion(t, service, "ponyville", "bar", "1.0.0", nil, nil)
+	createTestCookbookVersion(t, service, "ponyville", "bar", "3.0.0", nil, nil)
+
+	solution, _, _, err := service.SolveEnvironmentCookbookVersions("ponyville", "production", map[string]any{
+		"run_list": []any{"foo"},
+	})
+	if err != nil {
+		t.Fatalf("SolveEnvironmentCookbookVersions() error = %v", err)
+	}
+
+	if len(solution) != 2 {
+		t.Fatalf("len(solution) = %d, want 2 (%v)", len(solution), solution)
+	}
+	if solution["foo"].Version != "1.2.3" {
+		t.Fatalf("foo version = %q, want %q", solution["foo"].Version, "1.2.3")
+	}
+	if solution["bar"].Version != "3.0.0" {
+		t.Fatalf("bar version = %q, want %q", solution["bar"].Version, "3.0.0")
+	}
+}
+
 func TestSolveEnvironmentCookbookVersionsSelectsPinnedVersionForRepeatedRootCookbook(t *testing.T) {
 	service := newTestBootstrapService(t)
 	createTestCookbookOrg(t, service)
