@@ -182,6 +182,47 @@ func TestEnvironmentCookbookVersionsReturns412ForMissingAndFilteredCookbooks(t *
 	})
 }
 
+func TestOrganizationEnvironmentCookbookVersionsReturns412ForMissingAndFilteredCookbooks(t *testing.T) {
+	router := newTestRouter(t)
+	createEnvironmentForCookbookTests(t, router, "production")
+	createCookbookVersion(t, router, "foo", "1.2.3", "", nil)
+	updateEnvironmentCookbookConstraints(t, router, "production", map[string]string{
+		"foo": "= 400.0.0",
+	})
+
+	missingReq := newSignedJSONRequest(t, http.MethodPost, "/organizations/ponyville/environments/production/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{"this_does_not_exist"},
+	}))
+	missingRec := httptest.NewRecorder()
+	router.ServeHTTP(missingRec, missingReq)
+	if missingRec.Code != http.StatusPreconditionFailed {
+		t.Fatalf("org-scoped depsolver missing cookbook status = %d, want %d, body = %s", missingRec.Code, http.StatusPreconditionFailed, missingRec.Body.String())
+	}
+
+	missingPayload := decodeJSONMap(t, missingRec.Body.Bytes())
+	assertDepsolverErrorDetail(t, missingPayload, map[string]any{
+		"message":                    "Run list contains invalid items: no such cookbook this_does_not_exist.",
+		"non_existent_cookbooks":     []string{"this_does_not_exist"},
+		"cookbooks_with_no_versions": []string{},
+	})
+
+	filteredReq := newSignedJSONRequest(t, http.MethodPost, "/organizations/ponyville/environments/production/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{"foo"},
+	}))
+	filteredRec := httptest.NewRecorder()
+	router.ServeHTTP(filteredRec, filteredReq)
+	if filteredRec.Code != http.StatusPreconditionFailed {
+		t.Fatalf("org-scoped depsolver filtered cookbook status = %d, want %d, body = %s", filteredRec.Code, http.StatusPreconditionFailed, filteredRec.Body.String())
+	}
+
+	filteredPayload := decodeJSONMap(t, filteredRec.Body.Bytes())
+	assertDepsolverErrorDetail(t, filteredPayload, map[string]any{
+		"message":                    "Run list contains invalid items: no versions match the constraints on cookbook (foo >= 0.0.0).",
+		"non_existent_cookbooks":     []string{},
+		"cookbooks_with_no_versions": []string{"(foo >= 0.0.0)"},
+	})
+}
+
 func TestEnvironmentCookbookVersionsPrefersMissingRootsOverNoVersionRoots(t *testing.T) {
 	router := newTestRouter(t)
 	createEnvironmentForCookbookTests(t, router, "production")
@@ -238,6 +279,29 @@ func TestEnvironmentCookbookVersionsReportsPluralNoVersionRootCookbooks(t *testi
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusPreconditionFailed {
 		t.Fatalf("depsolver plural no-version roots status = %d, want %d, body = %s", rec.Code, http.StatusPreconditionFailed, rec.Body.String())
+	}
+
+	payload := decodeJSONMap(t, rec.Body.Bytes())
+	assertDepsolverErrorDetail(t, payload, map[string]any{
+		"message":                    "Run list contains invalid items: no versions match the constraints on cookbooks (bar = 9.0.0), (foo = 4.0.0).",
+		"non_existent_cookbooks":     []string{},
+		"cookbooks_with_no_versions": []string{"(bar = 9.0.0)", "(foo = 4.0.0)"},
+	})
+}
+
+func TestOrganizationEnvironmentCookbookVersionsReportsPluralNoVersionRootCookbooks(t *testing.T) {
+	router := newTestRouter(t)
+	createEnvironmentForCookbookTests(t, router, "production")
+	createCookbookVersion(t, router, "bar", "2.0.0", "", nil)
+	createCookbookVersion(t, router, "foo", "1.2.3", "", nil)
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/organizations/ponyville/environments/production/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{"bar@9.0.0", "foo@4.0.0"},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusPreconditionFailed {
+		t.Fatalf("org-scoped depsolver plural no-version roots status = %d, want %d, body = %s", rec.Code, http.StatusPreconditionFailed, rec.Body.String())
 	}
 
 	payload := decodeJSONMap(t, rec.Body.Bytes())
@@ -305,6 +369,43 @@ func TestDefaultEnvironmentCookbookVersionsPreservesDependencyMetadataForNormalU
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("default depsolver dependency metadata status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	payload := decodeJSONMap(t, rec.Body.Bytes())
+	if len(payload) != 4 {
+		t.Fatalf("len(payload) = %d, want 4 (%v)", len(payload), payload)
+	}
+	assertCookbookVersionBody(t, payload, "foo", "1.0.0")
+	assertCookbookVersionBody(t, payload, "bar", "2.0.0")
+	assertCookbookVersionBody(t, payload, "baz", "3.0.0")
+	assertCookbookVersionBody(t, payload, "quux", "4.0.0")
+
+	assertDepsolverResponseDependencies(t, payload["foo"], map[string]string{})
+	assertDepsolverResponseDependencies(t, payload["bar"], map[string]string{"foo": "> 0.0.0"})
+	assertDepsolverResponseDependencies(t, payload["baz"], map[string]string{})
+	assertDepsolverResponseDependencies(t, payload["quux"], map[string]string{
+		"bar": "= 2.0.0",
+		"baz": "= 3.0.0",
+	})
+}
+
+func TestOrganizationDefaultEnvironmentCookbookVersionsPreservesDependencyMetadataForNormalUser(t *testing.T) {
+	router := newTestRouter(t)
+	createCookbookVersion(t, router, "foo", "1.0.0", "", nil)
+	createCookbookVersion(t, router, "bar", "2.0.0", "", map[string]string{"foo": "> 0.0.0"})
+	createCookbookVersion(t, router, "baz", "3.0.0", "", nil)
+	createCookbookVersion(t, router, "quux", "4.0.0", "", map[string]string{
+		"bar": "= 2.0.0",
+		"baz": "= 3.0.0",
+	})
+
+	req := newSignedJSONRequestAs(t, "normal-user", http.MethodPost, "/organizations/ponyville/environments/_default/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{"quux"},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("org-scoped default depsolver dependency metadata status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
 	}
 
 	payload := decodeJSONMap(t, rec.Body.Bytes())
