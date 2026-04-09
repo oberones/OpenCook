@@ -458,6 +458,39 @@ func TestSolveEnvironmentCookbookVersionsReturnsEmptySolutionForEmptyRunList(t *
 	}
 }
 
+func TestSolveEnvironmentCookbookVersionsReturnsEmptySolutionForMissingRunList(t *testing.T) {
+	service := newTestBootstrapService(t)
+	createTestCookbookOrg(t, service)
+
+	if _, err := service.CreateEnvironment("ponyville", CreateEnvironmentInput{
+		Payload: map[string]any{
+			"name":                "production",
+			"json_class":          "Chef::Environment",
+			"chef_type":           "environment",
+			"description":         "",
+			"cookbook_versions":   map[string]any{},
+			"default_attributes":  map[string]any{},
+			"override_attributes": map[string]any{},
+		},
+	}); err != nil {
+		t.Fatalf("CreateEnvironment() error = %v", err)
+	}
+
+	solution, orgExists, envExists, err := service.SolveEnvironmentCookbookVersions("ponyville", "production", map[string]any{})
+	if err != nil {
+		t.Fatalf("SolveEnvironmentCookbookVersions() error = %v", err)
+	}
+	if !orgExists || !envExists {
+		t.Fatalf("SolveEnvironmentCookbookVersions() orgExists/envExists = %v/%v, want true/true", orgExists, envExists)
+	}
+	if solution == nil {
+		t.Fatalf("solution = nil, want empty map")
+	}
+	if len(solution) != 0 {
+		t.Fatalf("len(solution) = %d, want 0 (%v)", len(solution), solution)
+	}
+}
+
 func TestSolveEnvironmentCookbookVersionsPreservesDependencyMetadataForDefaultEnvironment(t *testing.T) {
 	service := newTestBootstrapService(t)
 	createTestCookbookOrg(t, service)
