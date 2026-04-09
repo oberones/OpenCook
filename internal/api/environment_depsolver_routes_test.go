@@ -225,6 +225,29 @@ func TestEnvironmentCookbookVersionsReportsPluralMissingRootCookbooks(t *testing
 	})
 }
 
+func TestEnvironmentCookbookVersionsReportsPluralNoVersionRootCookbooks(t *testing.T) {
+	router := newTestRouter(t)
+	createEnvironmentForCookbookTests(t, router, "production")
+	createCookbookVersion(t, router, "bar", "2.0.0", "", nil)
+	createCookbookVersion(t, router, "foo", "1.2.3", "", nil)
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/environments/production/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{"bar@9.0.0", "foo@4.0.0"},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusPreconditionFailed {
+		t.Fatalf("depsolver plural no-version roots status = %d, want %d, body = %s", rec.Code, http.StatusPreconditionFailed, rec.Body.String())
+	}
+
+	payload := decodeJSONMap(t, rec.Body.Bytes())
+	assertDepsolverErrorDetail(t, payload, map[string]any{
+		"message":                    "Run list contains invalid items: no versions match the constraints on cookbooks (bar = 9.0.0), (foo = 4.0.0).",
+		"non_existent_cookbooks":     []string{},
+		"cookbooks_with_no_versions": []string{"(bar = 9.0.0)", "(foo = 4.0.0)"},
+	})
+}
+
 func TestEnvironmentCookbookVersionsResolvesPinnedAndDependentCookbooks(t *testing.T) {
 	router := newTestRouter(t)
 	createEnvironmentForCookbookTests(t, router, "production")
@@ -263,6 +286,43 @@ func TestEnvironmentCookbookVersionsResolvesPinnedAndDependentCookbooks(t *testi
 	if _, ok := fooMetadata["long_description"]; ok {
 		t.Fatalf("depsolver metadata.long_description present, want omitted (%v)", fooMetadata)
 	}
+}
+
+func TestDefaultEnvironmentCookbookVersionsPreservesDependencyMetadataForNormalUser(t *testing.T) {
+	router := newTestRouter(t)
+	createCookbookVersion(t, router, "foo", "1.0.0", "", nil)
+	createCookbookVersion(t, router, "bar", "2.0.0", "", map[string]string{"foo": "> 0.0.0"})
+	createCookbookVersion(t, router, "baz", "3.0.0", "", nil)
+	createCookbookVersion(t, router, "quux", "4.0.0", "", map[string]string{
+		"bar": "= 2.0.0",
+		"baz": "= 3.0.0",
+	})
+
+	req := newSignedJSONRequestAs(t, "normal-user", http.MethodPost, "/environments/_default/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{"quux"},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("default depsolver dependency metadata status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	payload := decodeJSONMap(t, rec.Body.Bytes())
+	if len(payload) != 4 {
+		t.Fatalf("len(payload) = %d, want 4 (%v)", len(payload), payload)
+	}
+	assertCookbookVersionBody(t, payload, "foo", "1.0.0")
+	assertCookbookVersionBody(t, payload, "bar", "2.0.0")
+	assertCookbookVersionBody(t, payload, "baz", "3.0.0")
+	assertCookbookVersionBody(t, payload, "quux", "4.0.0")
+
+	assertDepsolverResponseDependencies(t, payload["foo"], map[string]string{})
+	assertDepsolverResponseDependencies(t, payload["bar"], map[string]string{"foo": "> 0.0.0"})
+	assertDepsolverResponseDependencies(t, payload["baz"], map[string]string{})
+	assertDepsolverResponseDependencies(t, payload["quux"], map[string]string{
+		"bar": "= 2.0.0",
+		"baz": "= 3.0.0",
+	})
 }
 
 func TestEnvironmentCookbookVersionsSupportsQualifiedAndVersionedRecipeRunListItems(t *testing.T) {
@@ -1223,6 +1283,37 @@ func assertCookbookVersionBody(t *testing.T, payload map[string]any, cookbook, v
 	}
 	if entry["cookbook_name"] != cookbook {
 		t.Fatalf("payload[%q].cookbook_name = %v, want %q", cookbook, entry["cookbook_name"], cookbook)
+	}
+}
+
+func assertDepsolverResponseDependencies(t *testing.T, value any, want map[string]string) {
+	t.Helper()
+
+	entry, ok := value.(map[string]any)
+	if !ok {
+		t.Fatalf("entry = %T, want map[string]any (%v)", value, value)
+	}
+	metadata, ok := entry["metadata"].(map[string]any)
+	if !ok {
+		t.Fatalf("entry.metadata = %T, want map[string]any (%v)", entry["metadata"], entry["metadata"])
+	}
+	raw, ok := metadata["dependencies"].(map[string]any)
+	if !ok {
+		t.Fatalf("metadata.dependencies = %T, want map[string]any (%v)", metadata["dependencies"], metadata["dependencies"])
+	}
+	if len(raw) != len(want) {
+		t.Fatalf("len(metadata.dependencies) = %d, want %d (%v)", len(raw), len(want), raw)
+	}
+	for key, wantValue := range want {
+		if raw[key] != wantValue {
+			t.Fatalf("metadata.dependencies[%q] = %v, want %q (%v)", key, raw[key], wantValue, raw)
+		}
+	}
+	if _, ok := metadata["attributes"]; ok {
+		t.Fatalf("depsolver metadata.attributes present, want omitted (%v)", metadata)
+	}
+	if _, ok := metadata["long_description"]; ok {
+		t.Fatalf("depsolver metadata.long_description present, want omitted (%v)", metadata)
 	}
 }
 

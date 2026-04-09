@@ -409,6 +409,44 @@ func TestSolveEnvironmentCookbookVersionsReturnsEmptySolutionForEmptyRunList(t *
 	}
 }
 
+func TestSolveEnvironmentCookbookVersionsPreservesDependencyMetadataForDefaultEnvironment(t *testing.T) {
+	service := newTestBootstrapService(t)
+	createTestCookbookOrg(t, service)
+
+	createTestCookbookVersion(t, service, "ponyville", "foo", "1.0.0", nil, nil)
+	createTestCookbookVersion(t, service, "ponyville", "bar", "2.0.0", map[string]any{
+		"dependencies": map[string]any{"foo": "> 0.0.0"},
+	}, nil)
+	createTestCookbookVersion(t, service, "ponyville", "baz", "3.0.0", nil, nil)
+	createTestCookbookVersion(t, service, "ponyville", "quux", "4.0.0", map[string]any{
+		"dependencies": map[string]any{
+			"bar": "= 2.0.0",
+			"baz": "= 3.0.0",
+		},
+	}, nil)
+
+	solution, orgExists, envExists, err := service.SolveEnvironmentCookbookVersions("ponyville", "_default", map[string]any{
+		"run_list": []any{"quux"},
+	})
+	if err != nil {
+		t.Fatalf("SolveEnvironmentCookbookVersions() error = %v", err)
+	}
+	if !orgExists || !envExists {
+		t.Fatalf("SolveEnvironmentCookbookVersions() orgExists/envExists = %v/%v, want true/true", orgExists, envExists)
+	}
+	if len(solution) != 4 {
+		t.Fatalf("len(solution) = %d, want 4 (%v)", len(solution), solution)
+	}
+
+	assertDepsolverMetadataDependencies(t, solution["foo"].Metadata, map[string]string{})
+	assertDepsolverMetadataDependencies(t, solution["bar"].Metadata, map[string]string{"foo": "> 0.0.0"})
+	assertDepsolverMetadataDependencies(t, solution["baz"].Metadata, map[string]string{})
+	assertDepsolverMetadataDependencies(t, solution["quux"].Metadata, map[string]string{
+		"bar": "= 2.0.0",
+		"baz": "= 3.0.0",
+	})
+}
+
 func TestSolveEnvironmentCookbookVersionsSupportsQualifiedAndVersionedRecipeRunListItems(t *testing.T) {
 	service := newTestBootstrapService(t)
 	createTestCookbookOrg(t, service)
@@ -1630,5 +1668,51 @@ func TestSolveEnvironmentCookbookVersionsReportsPluralMissingRootCookbooks(t *te
 	}
 	if got := depsolverErr.Detail["non_existent_cookbooks"]; len(got.([]string)) != 2 || got.([]string)[0] != "a_missing" || got.([]string)[1] != "z_missing" {
 		t.Fatalf("non_existent_cookbooks = %v, want sorted missing roots", got)
+	}
+}
+
+func TestSolveEnvironmentCookbookVersionsReportsPluralNoVersionRootCookbooks(t *testing.T) {
+	service := newTestBootstrapService(t)
+	createTestCookbookOrg(t, service)
+
+	createTestCookbookVersion(t, service, "ponyville", "bar", "2.0.0", nil, nil)
+	createTestCookbookVersion(t, service, "ponyville", "foo", "1.2.3", nil, nil)
+
+	_, _, _, err := service.SolveEnvironmentCookbookVersions("ponyville", "_default", map[string]any{
+		"run_list": []any{"bar@9.0.0", "foo@4.0.0"},
+	})
+	if err == nil {
+		t.Fatal("SolveEnvironmentCookbookVersions() error = nil, want depsolver error")
+	}
+
+	var depsolverErr *DepsolverError
+	if !errors.As(err, &depsolverErr) {
+		t.Fatalf("SolveEnvironmentCookbookVersions() error = %T, want *DepsolverError", err)
+	}
+	if got := depsolverErr.Detail["message"]; got != "Run list contains invalid items: no versions match the constraints on cookbooks (bar = 9.0.0), (foo = 4.0.0)." {
+		t.Fatalf("message = %v, want plural no-version root message", got)
+	}
+	if got := depsolverErr.Detail["non_existent_cookbooks"]; len(got.([]string)) != 0 {
+		t.Fatalf("non_existent_cookbooks = %v, want []", got)
+	}
+	if got := depsolverErr.Detail["cookbooks_with_no_versions"]; len(got.([]string)) != 2 || got.([]string)[0] != "(bar = 9.0.0)" || got.([]string)[1] != "(foo = 4.0.0)" {
+		t.Fatalf("cookbooks_with_no_versions = %v, want [(bar = 9.0.0) (foo = 4.0.0)]", got)
+	}
+}
+
+func assertDepsolverMetadataDependencies(t *testing.T, metadata map[string]any, want map[string]string) {
+	t.Helper()
+
+	raw, ok := metadata["dependencies"].(map[string]any)
+	if !ok {
+		t.Fatalf("metadata.dependencies = %T, want map[string]any (%v)", metadata["dependencies"], metadata["dependencies"])
+	}
+	if len(raw) != len(want) {
+		t.Fatalf("len(metadata.dependencies) = %d, want %d (%v)", len(raw), len(want), raw)
+	}
+	for key, wantValue := range want {
+		if raw[key] != wantValue {
+			t.Fatalf("metadata.dependencies[%q] = %v, want %q (%v)", key, raw[key], wantValue, raw)
+		}
 	}
 }
