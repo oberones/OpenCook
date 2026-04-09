@@ -391,7 +391,7 @@ func TestSolveEnvironmentCookbookVersionsDeduplicatesEquivalentRunListForms(t *t
 	}
 }
 
-func TestSolveEnvironmentCookbookVersionsSelectsPinnedEquivalentRunListForm(t *testing.T) {
+func TestSolveEnvironmentCookbookVersionsSelectsPinnedVersionWhenEquivalentFormsArePresent(t *testing.T) {
 	service := newTestBootstrapService(t)
 	createTestCookbookOrg(t, service)
 
