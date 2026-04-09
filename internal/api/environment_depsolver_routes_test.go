@@ -232,6 +232,113 @@ func TestOrganizationEnvironmentCookbookVersionsReturnsNotFoundForMissingEnviron
 	assertEnvironmentErrorMessages(t, rec.Body.Bytes(), "Cannot load environment not@environment")
 }
 
+func TestOrganizationEnvironmentCookbookVersionsReturnsNotFoundForMissingOrganization(t *testing.T) {
+	router := newTestRouter(t)
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/organizations/missing-org/environments/production/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("org-scoped depsolver missing organization status = %d, want %d, body = %s", rec.Code, http.StatusNotFound, rec.Body.String())
+	}
+
+	payload := decodeJSONMap(t, rec.Body.Bytes())
+	if payload["error"] != "not_found" {
+		t.Fatalf("error = %v, want %q", payload["error"], "not_found")
+	}
+	if payload["message"] != "organization not found" {
+		t.Fatalf("message = %v, want %q", payload["message"], "organization not found")
+	}
+}
+
+func TestEnvironmentCookbookVersionsReturnsMethodNotAllowedWithAllowHeader(t *testing.T) {
+	router := newTestRouter(t)
+
+	req := newSignedJSONRequest(t, http.MethodGet, "/environments/production/cookbook_versions", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("depsolver method status = %d, want %d, body = %s", rec.Code, http.StatusMethodNotAllowed, rec.Body.String())
+	}
+	if rec.Header().Get("Allow") != http.MethodPost {
+		t.Fatalf("Allow = %q, want %q", rec.Header().Get("Allow"), http.MethodPost)
+	}
+
+	payload := decodeJSONMap(t, rec.Body.Bytes())
+	if payload["error"] != "method_not_allowed" {
+		t.Fatalf("error = %v, want %q", payload["error"], "method_not_allowed")
+	}
+	if payload["message"] != "method not allowed for environment cookbook_versions route" {
+		t.Fatalf("message = %v, want %q", payload["message"], "method not allowed for environment cookbook_versions route")
+	}
+}
+
+func TestOrganizationEnvironmentCookbookVersionsReturnsMethodNotAllowedWithAllowHeader(t *testing.T) {
+	router := newTestRouter(t)
+
+	req := newSignedJSONRequest(t, http.MethodGet, "/organizations/ponyville/environments/production/cookbook_versions", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("org-scoped depsolver method status = %d, want %d, body = %s", rec.Code, http.StatusMethodNotAllowed, rec.Body.String())
+	}
+	if rec.Header().Get("Allow") != http.MethodPost {
+		t.Fatalf("Allow = %q, want %q", rec.Header().Get("Allow"), http.MethodPost)
+	}
+
+	payload := decodeJSONMap(t, rec.Body.Bytes())
+	if payload["error"] != "method_not_allowed" {
+		t.Fatalf("error = %v, want %q", payload["error"], "method_not_allowed")
+	}
+	if payload["message"] != "method not allowed for environment cookbook_versions route" {
+		t.Fatalf("message = %v, want %q", payload["message"], "method not allowed for environment cookbook_versions route")
+	}
+}
+
+func TestEnvironmentCookbookVersionsRejectsExtraPathSegments(t *testing.T) {
+	router := newTestRouter(t)
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/environments/production/cookbook_versions/extra", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("depsolver extra path status = %d, want %d, body = %s", rec.Code, http.StatusNotFound, rec.Body.String())
+	}
+
+	payload := decodeJSONMap(t, rec.Body.Bytes())
+	if payload["error"] != "not_found" {
+		t.Fatalf("error = %v, want %q", payload["error"], "not_found")
+	}
+	if payload["message"] != "route not found in scaffold router" {
+		t.Fatalf("message = %v, want %q", payload["message"], "route not found in scaffold router")
+	}
+}
+
+func TestOrganizationEnvironmentCookbookVersionsRejectsExtraPathSegments(t *testing.T) {
+	router := newTestRouter(t)
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/organizations/ponyville/environments/production/cookbook_versions/extra", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("org-scoped depsolver extra path status = %d, want %d, body = %s", rec.Code, http.StatusNotFound, rec.Body.String())
+	}
+
+	payload := decodeJSONMap(t, rec.Body.Bytes())
+	if payload["error"] != "not_found" {
+		t.Fatalf("error = %v, want %q", payload["error"], "not_found")
+	}
+	if payload["message"] != "route not found in scaffold router" {
+		t.Fatalf("message = %v, want %q", payload["message"], "route not found in scaffold router")
+	}
+}
+
 func TestEnvironmentCookbookVersionsReturns412ForMissingAndFilteredCookbooks(t *testing.T) {
 	router := newTestRouter(t)
 	createEnvironmentForCookbookTests(t, router, "production")
