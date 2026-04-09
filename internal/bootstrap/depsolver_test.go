@@ -1234,7 +1234,7 @@ func TestSolveEnvironmentCookbookVersionsIgnoresUnrelatedEnvironmentConstraintsF
 	createTestCookbookVersion(t, service, "ponyville", "app1", "0.1.0", map[string]any{
 		"dependencies": map[string]any{
 			"app2": ">= 0.1.0",
-			"app4": "= 0.2.0",
+			"app4": "0.2.0",
 			"app3": ">= 0.2.0",
 		},
 	}, nil)
@@ -1251,14 +1251,14 @@ func TestSolveEnvironmentCookbookVersionsIgnoresUnrelatedEnvironmentConstraintsF
 		"dependencies": map[string]any{"app4": ">= 0.2.0"},
 	}, nil)
 	createTestCookbookVersion(t, service, "ponyville", "app3", "0.2.0", map[string]any{
-		"dependencies": map[string]any{"app4": "= 0.2.0"},
+		"dependencies": map[string]any{"app4": "0.2.0"},
 	}, nil)
 	createTestCookbookVersion(t, service, "ponyville", "app3", "0.3.0", nil, nil)
 	createTestCookbookVersion(t, service, "ponyville", "app4", "0.1.0", nil, nil)
 	createTestCookbookVersion(t, service, "ponyville", "app4", "0.2.0", map[string]any{
 		"dependencies": map[string]any{
 			"app2": ">= 0.2.0",
-			"app3": "= 0.3.0",
+			"app3": "0.3.0",
 		},
 	}, nil)
 	createTestCookbookVersion(t, service, "ponyville", "app4", "0.3.0", nil, nil)
