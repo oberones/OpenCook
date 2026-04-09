@@ -70,6 +70,80 @@ func TestOrganizationEnvironmentCookbookVersionsRejectTrailingJSONDocument(t *te
 	assertEnvironmentErrorMessages(t, rec.Body.Bytes(), "invalid JSON")
 }
 
+func TestEnvironmentCookbookVersionsAcceptsTrailingSlash(t *testing.T) {
+	router := newTestRouter(t)
+	createEnvironmentForCookbookTests(t, router, "production")
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/environments/production/cookbook_versions/", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("depsolver trailing slash status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	payload := decodeJSONMap(t, rec.Body.Bytes())
+	if len(payload) != 0 {
+		t.Fatalf("payload = %v, want empty object", payload)
+	}
+}
+
+func TestOrganizationEnvironmentCookbookVersionsAcceptsTrailingSlash(t *testing.T) {
+	router := newTestRouter(t)
+	createEnvironmentForCookbookTests(t, router, "production")
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/organizations/ponyville/environments/production/cookbook_versions/", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("org-scoped depsolver trailing slash status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	payload := decodeJSONMap(t, rec.Body.Bytes())
+	if len(payload) != 0 {
+		t.Fatalf("payload = %v, want empty object", payload)
+	}
+}
+
+func TestDefaultEnvironmentCookbookVersionsAcceptsTrailingSlash(t *testing.T) {
+	router := newTestRouter(t)
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/environments/_default/cookbook_versions/", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("default depsolver trailing slash status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	payload := decodeJSONMap(t, rec.Body.Bytes())
+	if len(payload) != 0 {
+		t.Fatalf("payload = %v, want empty object", payload)
+	}
+}
+
+func TestOrganizationDefaultEnvironmentCookbookVersionsAcceptsTrailingSlash(t *testing.T) {
+	router := newTestRouter(t)
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/organizations/ponyville/environments/_default/cookbook_versions/", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("org-scoped default depsolver trailing slash status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	payload := decodeJSONMap(t, rec.Body.Bytes())
+	if len(payload) != 0 {
+		t.Fatalf("payload = %v, want empty object", payload)
+	}
+}
+
 func TestEnvironmentCookbookVersionsRejectInvalidRunList(t *testing.T) {
 	router := newTestRouter(t)
 	createEnvironmentForCookbookTests(t, router, "production")
