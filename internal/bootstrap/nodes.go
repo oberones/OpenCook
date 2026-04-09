@@ -10,13 +10,19 @@ import (
 	"github.com/oberones/OpenCook/internal/authz"
 )
 
+const (
+	runListNameRegex    = `[A-Za-z0-9_.-]+`
+	runListVersionRegex = `\d+(?:\.\d+){1,2}`
+	runListRecipeRegex  = `(?:` + runListNameRegex + `::)?` + runListNameRegex
+)
+
 var (
 	validNodeNamePattern        = regexp.MustCompile(`^[A-Za-z0-9_.:-]+$`)
 	validNodeEnvironmentPattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 	validPolicyNamePattern      = regexp.MustCompile(`^[A-Za-z0-9_.:-]+$`)
-	validRunListItemPattern     = regexp.MustCompile(`^[A-Za-z0-9_.:-]+(?:@[A-Za-z0-9_.:-]+(?:\.[A-Za-z0-9_.:-]+)*)?$`)
-	validRecipeRunListPattern   = regexp.MustCompile(`^recipe\[[A-Za-z0-9_.:-]+(?:@[A-Za-z0-9_.:-]+(?:\.[A-Za-z0-9_.:-]+)*)?\]$`)
-	validRoleRunListPattern     = regexp.MustCompile(`^role\[[A-Za-z0-9_.:-]+\]$`)
+	validRunListItemPattern     = regexp.MustCompile(`^` + runListRecipeRegex + `(?:@` + runListVersionRegex + `)?$`)
+	validRecipeRunListPattern   = regexp.MustCompile(`^recipe\[` + runListRecipeRegex + `(?:@` + runListVersionRegex + `)?\]$`)
+	validRoleRunListPattern     = regexp.MustCompile(`^role\[` + runListNameRegex + `\]$`)
 )
 
 var allowedNodeKeys = map[string]struct{}{
