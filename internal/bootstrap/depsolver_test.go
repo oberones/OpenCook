@@ -201,6 +201,70 @@ func TestSolveEnvironmentCookbookVersionsExpandsNestedRolesWithEnvironmentOverri
 	}
 }
 
+func TestSolveEnvironmentCookbookVersionsUsesExplicitEmptyEnvironmentRoleRunList(t *testing.T) {
+	service := newTestBootstrapService(t)
+	createTestCookbookOrg(t, service)
+
+	if _, err := service.CreateEnvironment("ponyville", CreateEnvironmentInput{
+		Payload: map[string]any{
+			"name":                "production",
+			"json_class":          "Chef::Environment",
+			"chef_type":           "environment",
+			"description":         "",
+			"cookbook_versions":   map[string]any{},
+			"default_attributes":  map[string]any{},
+			"override_attributes": map[string]any{},
+		},
+	}); err != nil {
+		t.Fatalf("CreateEnvironment() error = %v", err)
+	}
+
+	createTestCookbookVersion(t, service, "ponyville", "apache2", "1.0.0", nil, nil)
+
+	if _, err := service.CreateRole("ponyville", CreateRoleInput{
+		Payload: map[string]any{
+			"name":                "web",
+			"description":         "",
+			"json_class":          "Chef::Role",
+			"chef_type":           "role",
+			"default_attributes":  map[string]any{},
+			"override_attributes": map[string]any{},
+			"run_list":            []any{"recipe[apache2]"},
+			"env_run_lists": map[string]any{
+				"production": []any{},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("CreateRole(web) error = %v", err)
+	}
+
+	productionSolution, _, _, err := service.SolveEnvironmentCookbookVersions("ponyville", "production", map[string]any{
+		"run_list": []any{"role[web]"},
+	})
+	if err != nil {
+		t.Fatalf("SolveEnvironmentCookbookVersions(production) error = %v", err)
+	}
+	if productionSolution == nil {
+		t.Fatalf("production solution = nil, want empty map")
+	}
+	if len(productionSolution) != 0 {
+		t.Fatalf("production solution = %v, want empty solution", productionSolution)
+	}
+
+	defaultSolution, _, _, err := service.SolveEnvironmentCookbookVersions("ponyville", "_default", map[string]any{
+		"run_list": []any{"role[web]"},
+	})
+	if err != nil {
+		t.Fatalf("SolveEnvironmentCookbookVersions(_default) error = %v", err)
+	}
+	if len(defaultSolution) != 1 {
+		t.Fatalf("len(defaultSolution) = %d, want 1 (%v)", len(defaultSolution), defaultSolution)
+	}
+	if defaultSolution["apache2"].Version != "1.0.0" {
+		t.Fatalf("apache2 version = %q, want %q", defaultSolution["apache2"].Version, "1.0.0")
+	}
+}
+
 func TestSolveEnvironmentCookbookVersionsRejectsMissingRole(t *testing.T) {
 	service := newTestBootstrapService(t)
 	createTestCookbookOrg(t, service)
@@ -307,6 +371,41 @@ func TestSolveEnvironmentCookbookVersionsRejectsBogusBracketedRunListItem(t *tes
 	}
 	if len(validationErr.Messages) != 1 || validationErr.Messages[0] != "Field 'run_list' is not a valid run list" {
 		t.Fatalf("validation messages = %v, want invalid run_list message", validationErr.Messages)
+	}
+}
+
+func TestSolveEnvironmentCookbookVersionsReturnsEmptySolutionForEmptyRunList(t *testing.T) {
+	service := newTestBootstrapService(t)
+	createTestCookbookOrg(t, service)
+
+	if _, err := service.CreateEnvironment("ponyville", CreateEnvironmentInput{
+		Payload: map[string]any{
+			"name":                "production",
+			"json_class":          "Chef::Environment",
+			"chef_type":           "environment",
+			"description":         "",
+			"cookbook_versions":   map[string]any{},
+			"default_attributes":  map[string]any{},
+			"override_attributes": map[string]any{},
+		},
+	}); err != nil {
+		t.Fatalf("CreateEnvironment() error = %v", err)
+	}
+
+	solution, orgExists, envExists, err := service.SolveEnvironmentCookbookVersions("ponyville", "production", map[string]any{
+		"run_list": []any{},
+	})
+	if err != nil {
+		t.Fatalf("SolveEnvironmentCookbookVersions() error = %v", err)
+	}
+	if !orgExists || !envExists {
+		t.Fatalf("SolveEnvironmentCookbookVersions() orgExists/envExists = %v/%v, want true/true", orgExists, envExists)
+	}
+	if solution == nil {
+		t.Fatalf("solution = nil, want empty map")
+	}
+	if len(solution) != 0 {
+		t.Fatalf("len(solution) = %d, want 0 (%v)", len(solution), solution)
 	}
 }
 
