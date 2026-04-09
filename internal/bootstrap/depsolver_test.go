@@ -802,6 +802,78 @@ func TestSolveEnvironmentCookbookVersionsReportsFullConstraintPathForTransitiveC
 	}
 }
 
+func TestSolveEnvironmentCookbookVersionsMatchesUpstreamComplexDependencyGraph(t *testing.T) {
+	service := newTestBootstrapService(t)
+	createTestCookbookOrg(t, service)
+
+	if _, err := service.CreateEnvironment("ponyville", CreateEnvironmentInput{
+		Payload: map[string]any{
+			"name":                "production",
+			"json_class":          "Chef::Environment",
+			"chef_type":           "environment",
+			"description":         "",
+			"cookbook_versions":   map[string]any{},
+			"default_attributes":  map[string]any{},
+			"override_attributes": map[string]any{},
+		},
+	}); err != nil {
+		t.Fatalf("CreateEnvironment() error = %v", err)
+	}
+
+	createTestCookbookVersion(t, service, "ponyville", "foo", "1.2.3", map[string]any{
+		"dependencies": map[string]any{
+			"bar":  "= 1.0.0",
+			"buzz": "= 1.0.0",
+		},
+	}, nil)
+	createTestCookbookVersion(t, service, "ponyville", "bar", "1.0.0", map[string]any{
+		"dependencies": map[string]any{
+			"baz": "= 1.0.0",
+		},
+	}, nil)
+	createTestCookbookVersion(t, service, "ponyville", "buzz", "1.0.0", map[string]any{
+		"dependencies": map[string]any{
+			"baz": "> 1.2.0",
+		},
+	}, nil)
+	createTestCookbookVersion(t, service, "ponyville", "buzz", "2.0.0", map[string]any{
+		"dependencies": map[string]any{
+			"baz": "= 1.0.0",
+		},
+	}, nil)
+	createTestCookbookVersion(t, service, "ponyville", "ack", "1.0.0", map[string]any{
+		"dependencies": map[string]any{
+			"foobar": "= 1.0.0",
+		},
+	}, nil)
+	createTestCookbookVersion(t, service, "ponyville", "baz", "1.0.0", nil, nil)
+	createTestCookbookVersion(t, service, "ponyville", "baz", "2.0.0", nil, nil)
+
+	_, _, _, err := service.SolveEnvironmentCookbookVersions("ponyville", "production", map[string]any{
+		"run_list": []any{"foo", "buzz"},
+	})
+	if err == nil {
+		t.Fatal("SolveEnvironmentCookbookVersions() error = nil, want depsolver error")
+	}
+
+	var depsolverErr *DepsolverError
+	if !errors.As(err, &depsolverErr) {
+		t.Fatalf("SolveEnvironmentCookbookVersions() error = %T, want *DepsolverError", err)
+	}
+	if got := depsolverErr.Detail["message"]; got != "Unable to satisfy constraints on package baz due to solution constraint (foo >= 0.0.0). Solution constraints that may result in a constraint on baz: [(foo = 1.2.3) -> (bar = 1.0.0) -> (baz = 1.0.0), (foo = 1.2.3) -> (buzz = 1.0.0) -> (baz > 1.2.0), (buzz = 1.0.0) -> (baz > 1.2.0), (buzz = 2.0.0) -> (baz = 1.0.0)]" {
+		t.Fatalf("message = %v, want upstream complex dependency message", got)
+	}
+	if got := depsolverErr.Detail["unsatisfiable_run_list_item"]; got != "(foo >= 0.0.0)" {
+		t.Fatalf("unsatisfiable_run_list_item = %v, want %q", got, "(foo >= 0.0.0)")
+	}
+	if got := depsolverErr.Detail["non_existent_cookbooks"]; len(got.([]string)) != 0 {
+		t.Fatalf("non_existent_cookbooks = %v, want []", got)
+	}
+	if got := depsolverErr.Detail["most_constrained_cookbooks"]; len(got.([]string)) != 1 || got.([]string)[0] != "baz = 1.0.0 -> []" {
+		t.Fatalf("most_constrained_cookbooks = %v, want [baz = 1.0.0 -> []]", got)
+	}
+}
+
 func TestSolveEnvironmentCookbookVersionsIgnoresUnrelatedEnvironmentConstraintsForConflict(t *testing.T) {
 	service := newTestBootstrapService(t)
 	createTestCookbookOrg(t, service)
