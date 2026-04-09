@@ -805,7 +805,7 @@ func TestEnvironmentCookbookVersionsIgnoresUnrelatedEnvironmentConstraintsForSuc
 	})
 	createCookbookVersion(t, router, "app1", "0.1.0", "", map[string]string{
 		"app2": ">= 0.1.0",
-		"app4": "= 0.2.0",
+		"app4": "0.2.0",
 		"app3": ">= 0.2.0",
 	})
 	createCookbookVersion(t, router, "app2", "0.1.0", "", map[string]string{
@@ -821,13 +821,13 @@ func TestEnvironmentCookbookVersionsIgnoresUnrelatedEnvironmentConstraintsForSuc
 		"app4": ">= 0.2.0",
 	})
 	createCookbookVersion(t, router, "app3", "0.2.0", "", map[string]string{
-		"app4": "= 0.2.0",
+		"app4": "0.2.0",
 	})
 	createCookbookVersion(t, router, "app3", "0.3.0", "", nil)
 	createCookbookVersion(t, router, "app4", "0.1.0", "", nil)
 	createCookbookVersion(t, router, "app4", "0.2.0", "", map[string]string{
 		"app2": ">= 0.2.0",
-		"app3": "= 0.3.0",
+		"app3": "0.3.0",
 	})
 	createCookbookVersion(t, router, "app4", "0.3.0", "", nil)
 
