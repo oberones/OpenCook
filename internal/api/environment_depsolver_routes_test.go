@@ -750,6 +750,74 @@ func TestEnvironmentCookbookVersionsReturns412ForMultiRootConflict(t *testing.T)
 	})
 }
 
+func TestEnvironmentCookbookVersionsMatchesUpstreamFirstGraph(t *testing.T) {
+	router := newTestRouter(t)
+	createEnvironmentForCookbookTests(t, router, "production")
+	createCookbookVersion(t, router, "app1", "0.1.0", "", map[string]string{
+		"app2": "0.2.33",
+		"app3": ">= 0.2.0",
+	})
+	createCookbookVersion(t, router, "app2", "0.1.0", "", nil)
+	createCookbookVersion(t, router, "app2", "0.2.33", "", map[string]string{
+		"app3": "0.3.0",
+	})
+	createCookbookVersion(t, router, "app2", "0.3.0", "", nil)
+	createCookbookVersion(t, router, "app3", "0.1.0", "", nil)
+	createCookbookVersion(t, router, "app3", "0.2.0", "", nil)
+	createCookbookVersion(t, router, "app3", "0.3.0", "", nil)
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/environments/production/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{"app1@0.1.0"},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("depsolver first graph status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	payload := decodeJSONMap(t, rec.Body.Bytes())
+	if len(payload) != 3 {
+		t.Fatalf("len(payload) = %d, want 3 (%v)", len(payload), payload)
+	}
+	assertCookbookVersionBody(t, payload, "app1", "0.1.0")
+	assertCookbookVersionBody(t, payload, "app2", "0.2.33")
+	assertCookbookVersionBody(t, payload, "app3", "0.3.0")
+}
+
+func TestOrganizationEnvironmentCookbookVersionsMatchesUpstreamFirstGraph(t *testing.T) {
+	router := newTestRouter(t)
+	createEnvironmentForCookbookTests(t, router, "production")
+	createCookbookVersion(t, router, "app1", "0.1.0", "", map[string]string{
+		"app2": "0.2.33",
+		"app3": ">= 0.2.0",
+	})
+	createCookbookVersion(t, router, "app2", "0.1.0", "", nil)
+	createCookbookVersion(t, router, "app2", "0.2.33", "", map[string]string{
+		"app3": "0.3.0",
+	})
+	createCookbookVersion(t, router, "app2", "0.3.0", "", nil)
+	createCookbookVersion(t, router, "app3", "0.1.0", "", nil)
+	createCookbookVersion(t, router, "app3", "0.2.0", "", nil)
+	createCookbookVersion(t, router, "app3", "0.3.0", "", nil)
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/organizations/ponyville/environments/production/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{"app1@0.1.0"},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("org-scoped depsolver first graph status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	payload := decodeJSONMap(t, rec.Body.Bytes())
+	if len(payload) != 3 {
+		t.Fatalf("len(payload) = %d, want 3 (%v)", len(payload), payload)
+	}
+	assertCookbookVersionBody(t, payload, "app1", "0.1.0")
+	assertCookbookVersionBody(t, payload, "app2", "0.2.33")
+	assertCookbookVersionBody(t, payload, "app3", "0.3.0")
+}
+
 func TestEnvironmentCookbookVersionsMatchesUpstreamSecondGraph(t *testing.T) {
 	router := newTestRouter(t)
 	createEnvironmentForCookbookTests(t, router, "production")
