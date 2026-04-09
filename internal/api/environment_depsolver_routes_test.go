@@ -111,6 +111,49 @@ func TestEnvironmentCookbookVersionsReturns412ForMissingAndFilteredCookbooks(t *
 	})
 }
 
+func TestEnvironmentCookbookVersionsPrefersMissingRootsOverNoVersionRoots(t *testing.T) {
+	router := newTestRouter(t)
+	createEnvironmentForCookbookTests(t, router, "production")
+	createCookbookVersion(t, router, "foo", "1.2.3", "", nil)
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/environments/production/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{"this_does_not_exist", "foo@2.0.0"},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusPreconditionFailed {
+		t.Fatalf("depsolver mixed missing/no-version status = %d, want %d, body = %s", rec.Code, http.StatusPreconditionFailed, rec.Body.String())
+	}
+
+	payload := decodeJSONMap(t, rec.Body.Bytes())
+	assertDepsolverErrorDetail(t, payload, map[string]any{
+		"message":                    "Run list contains invalid items: no such cookbook this_does_not_exist.",
+		"non_existent_cookbooks":     []string{"this_does_not_exist"},
+		"cookbooks_with_no_versions": []string{},
+	})
+}
+
+func TestEnvironmentCookbookVersionsReportsPluralMissingRootCookbooks(t *testing.T) {
+	router := newTestRouter(t)
+	createEnvironmentForCookbookTests(t, router, "production")
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/environments/production/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{"z_missing", "a_missing"},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusPreconditionFailed {
+		t.Fatalf("depsolver plural missing roots status = %d, want %d, body = %s", rec.Code, http.StatusPreconditionFailed, rec.Body.String())
+	}
+
+	payload := decodeJSONMap(t, rec.Body.Bytes())
+	assertDepsolverErrorDetail(t, payload, map[string]any{
+		"message":                    "Run list contains invalid items: no such cookbooks a_missing, z_missing.",
+		"non_existent_cookbooks":     []string{"a_missing", "z_missing"},
+		"cookbooks_with_no_versions": []string{},
+	})
+}
+
 func TestEnvironmentCookbookVersionsResolvesPinnedAndDependentCookbooks(t *testing.T) {
 	router := newTestRouter(t)
 	createEnvironmentForCookbookTests(t, router, "production")
@@ -435,6 +478,34 @@ func TestEnvironmentCookbookVersionsCombinesEnvironmentAndDependencyConstraints(
 	assertCookbookVersionBody(t, payload, "app3", "0.1.3")
 	assertCookbookVersionBody(t, payload, "app4", "6.0.0")
 	assertCookbookVersionBody(t, payload, "app5", "6.0.0")
+}
+
+func TestEnvironmentCookbookVersionsReturns412ForImpossibleDependencyViaEnvironmentConstraint(t *testing.T) {
+	router := newTestRouter(t)
+	createEnvironmentForCookbookTests(t, router, "production")
+	updateEnvironmentCookbookConstraints(t, router, "production", map[string]string{
+		"bar": "= 1.0.0",
+	})
+	createCookbookVersion(t, router, "foo", "1.2.3", "", map[string]string{"bar": "> 2.0.0"})
+	createCookbookVersion(t, router, "bar", "1.0.0", "", nil)
+	createCookbookVersion(t, router, "bar", "3.0.0", "", nil)
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/environments/production/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{"foo"},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusPreconditionFailed {
+		t.Fatalf("depsolver impossible-via-environment status = %d, want %d, body = %s", rec.Code, http.StatusPreconditionFailed, rec.Body.String())
+	}
+
+	payload := decodeJSONMap(t, rec.Body.Bytes())
+	assertUnsatisfiedDepsolverDetail(t, payload, map[string]any{
+		"message":                     "Unable to satisfy constraints on package bar due to solution constraint (foo >= 0.0.0). Solution constraints that may result in a constraint on bar: [(foo = 1.2.3) -> (bar > 2.0.0)]",
+		"unsatisfiable_run_list_item": "(foo >= 0.0.0)",
+		"non_existent_cookbooks":      []string{},
+		"most_constrained_cookbooks":  []string{"bar = 1.0.0 -> []"},
+	})
 }
 
 func TestEnvironmentCookbookVersionsAllowsCircularDependencies(t *testing.T) {
