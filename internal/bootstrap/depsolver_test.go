@@ -115,6 +115,54 @@ func TestSolveEnvironmentCookbookVersionsReturnsDepsolverErrorForMissingDependen
 	}
 }
 
+func TestSolveEnvironmentCookbookVersionsAttributesMissingDependencyToLaterRoot(t *testing.T) {
+	service := newTestBootstrapService(t)
+	createTestCookbookOrg(t, service)
+
+	if _, err := service.CreateEnvironment("ponyville", CreateEnvironmentInput{
+		Payload: map[string]any{
+			"name":                "production",
+			"json_class":          "Chef::Environment",
+			"chef_type":           "environment",
+			"description":         "",
+			"cookbook_versions":   map[string]any{},
+			"default_attributes":  map[string]any{},
+			"override_attributes": map[string]any{},
+		},
+	}); err != nil {
+		t.Fatalf("CreateEnvironment() error = %v", err)
+	}
+
+	createTestCookbookVersion(t, service, "ponyville", "app1", "1.1.0", nil, nil)
+	createTestCookbookVersion(t, service, "ponyville", "app2", "0.0.1", map[string]any{
+		"dependencies": map[string]any{"oops": ">= 0.0.0"},
+	}, nil)
+
+	_, _, _, err := service.SolveEnvironmentCookbookVersions("ponyville", "production", map[string]any{
+		"run_list": []any{"app1", "app2"},
+	})
+	if err == nil {
+		t.Fatal("SolveEnvironmentCookbookVersions() error = nil, want depsolver error")
+	}
+
+	var depsolverErr *DepsolverError
+	if !errors.As(err, &depsolverErr) {
+		t.Fatalf("SolveEnvironmentCookbookVersions() error = %T, want *DepsolverError", err)
+	}
+	if got := depsolverErr.Detail["message"]; got != "Unable to satisfy constraints on package oops, which does not exist, due to solution constraint (app2 >= 0.0.0). Solution constraints that may result in a constraint on oops: [(app2 = 0.0.1) -> (oops >= 0.0.0)]" {
+		t.Fatalf("message = %v, want missing-dependency attribution to app2", got)
+	}
+	if got := depsolverErr.Detail["unsatisfiable_run_list_item"]; got != "(app2 >= 0.0.0)" {
+		t.Fatalf("unsatisfiable_run_list_item = %v, want %q", got, "(app2 >= 0.0.0)")
+	}
+	if got := depsolverErr.Detail["non_existent_cookbooks"]; len(got.([]string)) != 1 || got.([]string)[0] != "oops" {
+		t.Fatalf("non_existent_cookbooks = %v, want [oops]", got)
+	}
+	if got := depsolverErr.Detail["most_constrained_cookbooks"]; len(got.([]string)) != 0 {
+		t.Fatalf("most_constrained_cookbooks = %v, want []", got)
+	}
+}
+
 func TestSolveEnvironmentCookbookVersionsExpandsNestedRolesWithEnvironmentOverrides(t *testing.T) {
 	service := newTestBootstrapService(t)
 	createTestCookbookOrg(t, service)
