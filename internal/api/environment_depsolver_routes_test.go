@@ -447,6 +447,27 @@ func TestEnvironmentCookbookVersionsSupportsQualifiedAndVersionedRecipeRunListIt
 	assertCookbookVersionBody(t, payload, "bar", "1.0.0")
 }
 
+func TestOrganizationEnvironmentCookbookVersionsSupportsQualifiedAndVersionedRecipeRunListItems(t *testing.T) {
+	router := newTestRouter(t)
+	createEnvironmentForCookbookTests(t, router, "production")
+	createCookbookVersion(t, router, "foo", "1.0.0", "", nil)
+	createCookbookVersion(t, router, "foo", "2.0.0", "", nil)
+	createCookbookVersion(t, router, "bar", "1.0.0", "", nil)
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/organizations/ponyville/environments/production/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{"foo::default", "recipe[bar::install]", "recipe[foo::server@1.0.0]"},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("org-scoped depsolver qualified run_list status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	payload := decodeJSONMap(t, rec.Body.Bytes())
+	assertCookbookVersionBody(t, payload, "foo", "1.0.0")
+	assertCookbookVersionBody(t, payload, "bar", "1.0.0")
+}
+
 func TestEnvironmentCookbookVersionsDeduplicatesEquivalentRunListForms(t *testing.T) {
 	router := newTestRouter(t)
 	createEnvironmentForCookbookTests(t, router, "production")
@@ -460,6 +481,29 @@ func TestEnvironmentCookbookVersionsDeduplicatesEquivalentRunListForms(t *testin
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("depsolver equivalent run_list forms status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	payload := decodeJSONMap(t, rec.Body.Bytes())
+	if len(payload) != 2 {
+		t.Fatalf("len(payload) = %d, want 2 (%v)", len(payload), payload)
+	}
+	assertCookbookVersionBody(t, payload, "foo", "1.0.0")
+	assertCookbookVersionBody(t, payload, "bar", "1.0.0")
+}
+
+func TestOrganizationEnvironmentCookbookVersionsDeduplicatesEquivalentRunListForms(t *testing.T) {
+	router := newTestRouter(t)
+	createEnvironmentForCookbookTests(t, router, "production")
+	createCookbookVersion(t, router, "foo", "1.0.0", "", map[string]string{"bar": "= 1.0.0"})
+	createCookbookVersion(t, router, "bar", "1.0.0", "", nil)
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/organizations/ponyville/environments/production/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{"foo", "recipe[foo]", "foo::default", "recipe[foo::default]"},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("org-scoped depsolver equivalent run_list forms status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
 	}
 
 	payload := decodeJSONMap(t, rec.Body.Bytes())
@@ -484,6 +528,30 @@ func TestEnvironmentCookbookVersionsSelectsPinnedVersionWhenEquivalentFormsArePr
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("depsolver pinned equivalent run_list form status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	payload := decodeJSONMap(t, rec.Body.Bytes())
+	if len(payload) != 2 {
+		t.Fatalf("len(payload) = %d, want 2 (%v)", len(payload), payload)
+	}
+	assertCookbookVersionBody(t, payload, "foo", "2.0.0")
+	assertCookbookVersionBody(t, payload, "bar", "2.0.0")
+}
+
+func TestOrganizationEnvironmentCookbookVersionsSelectsPinnedVersionWhenEquivalentFormsArePresent(t *testing.T) {
+	router := newTestRouter(t)
+	createEnvironmentForCookbookTests(t, router, "production")
+	createCookbookVersion(t, router, "foo", "1.0.0", "", nil)
+	createCookbookVersion(t, router, "foo", "2.0.0", "", map[string]string{"bar": "= 2.0.0"})
+	createCookbookVersion(t, router, "bar", "2.0.0", "", nil)
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/organizations/ponyville/environments/production/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{"foo", "recipe[foo::default@2.0.0]"},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("org-scoped depsolver pinned equivalent run_list form status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
 	}
 
 	payload := decodeJSONMap(t, rec.Body.Bytes())
@@ -1797,6 +1865,58 @@ func TestEnvironmentCookbookVersionsRequiresRolesContainerReadAuthzForRoleRunLis
 	}
 }
 
+func TestOrganizationEnvironmentCookbookVersionsRequiresRolesContainerReadAuthzForRoleRunList(t *testing.T) {
+	var authorizer *recordingDepsolverAuthorizer
+	router, state := newSearchTestRouterWithAuthorizer(t, func(state *bootstrap.Service) authz.Authorizer {
+		authorizer = &recordingDepsolverAuthorizer{
+			base: authz.NewACLAuthorizer(state),
+			deny: map[string]struct{}{
+				"read:container:roles": {},
+			},
+		}
+		return authorizer
+	})
+	createEnvironmentForCookbookTests(t, router, "production")
+	if _, err := state.CreateRole("ponyville", bootstrap.CreateRoleInput{
+		Payload: map[string]any{
+			"name":                "web",
+			"description":         "",
+			"json_class":          "Chef::Role",
+			"chef_type":           "role",
+			"default_attributes":  map[string]any{},
+			"override_attributes": map[string]any{},
+			"run_list":            []any{"recipe[apache2]"},
+			"env_run_lists":       map[string]any{},
+		},
+	}); err != nil {
+		t.Fatalf("CreateRole(web) error = %v", err)
+	}
+	authorizer.calls = nil
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/organizations/ponyville/environments/production/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{"role[web]"},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("org-scoped depsolver roles container authz status = %d, want %d, body = %s", rec.Code, http.StatusForbidden, rec.Body.String())
+	}
+
+	wantCalls := []string{
+		"read:environment:production",
+		"read:container:cookbooks",
+		"read:container:roles",
+	}
+	if len(authorizer.calls) != len(wantCalls) {
+		t.Fatalf("depsolver authz calls = %v, want %v", authorizer.calls, wantCalls)
+	}
+	for idx := range wantCalls {
+		if authorizer.calls[idx] != wantCalls[idx] {
+			t.Fatalf("depsolver authz calls[%d] = %q, want %q (%v)", idx, authorizer.calls[idx], wantCalls[idx], authorizer.calls)
+		}
+	}
+}
+
 func TestEnvironmentCookbookVersionsExpandsRoleRunLists(t *testing.T) {
 	router, state := newSearchTestRouterWithAuthorizer(t, nil)
 	createEnvironmentForCookbookTests(t, router, "production")
@@ -1868,6 +1988,77 @@ func TestEnvironmentCookbookVersionsExpandsRoleRunLists(t *testing.T) {
 	}
 }
 
+func TestOrganizationEnvironmentCookbookVersionsExpandsRoleRunLists(t *testing.T) {
+	router, state := newSearchTestRouterWithAuthorizer(t, nil)
+	createEnvironmentForCookbookTests(t, router, "production")
+	createCookbookVersion(t, router, "apache2", "1.0.0", "", nil)
+	createCookbookVersion(t, router, "nginx", "2.0.0", "", nil)
+	createCookbookVersion(t, router, "users", "3.0.0", "", nil)
+
+	if _, err := state.CreateRole("ponyville", bootstrap.CreateRoleInput{
+		Payload: map[string]any{
+			"name":                "base",
+			"description":         "",
+			"json_class":          "Chef::Role",
+			"chef_type":           "role",
+			"default_attributes":  map[string]any{},
+			"override_attributes": map[string]any{},
+			"run_list":            []any{"recipe[apache2]"},
+			"env_run_lists": map[string]any{
+				"production": []any{"recipe[nginx]"},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("CreateRole(base) error = %v", err)
+	}
+	if _, err := state.CreateRole("ponyville", bootstrap.CreateRoleInput{
+		Payload: map[string]any{
+			"name":                "web",
+			"description":         "",
+			"json_class":          "Chef::Role",
+			"chef_type":           "role",
+			"default_attributes":  map[string]any{},
+			"override_attributes": map[string]any{},
+			"run_list":            []any{"role[base]", "recipe[users]"},
+			"env_run_lists":       map[string]any{},
+		},
+	}); err != nil {
+		t.Fatalf("CreateRole(web) error = %v", err)
+	}
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/organizations/ponyville/environments/production/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{"role[web]"},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("org-scoped depsolver role expansion status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	payload := decodeJSONMap(t, rec.Body.Bytes())
+	assertCookbookVersionBody(t, payload, "nginx", "2.0.0")
+	assertCookbookVersionBody(t, payload, "users", "3.0.0")
+	if _, ok := payload["apache2"]; ok {
+		t.Fatalf("production role-expanded payload unexpectedly contains apache2: %v", payload)
+	}
+
+	defaultReq := newSignedJSONRequest(t, http.MethodPost, "/organizations/ponyville/environments/_default/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{"role[web]"},
+	}))
+	defaultRec := httptest.NewRecorder()
+	router.ServeHTTP(defaultRec, defaultReq)
+	if defaultRec.Code != http.StatusOK {
+		t.Fatalf("org-scoped default role expansion status = %d, want %d, body = %s", defaultRec.Code, http.StatusOK, defaultRec.Body.String())
+	}
+
+	defaultPayload := decodeJSONMap(t, defaultRec.Body.Bytes())
+	assertCookbookVersionBody(t, defaultPayload, "apache2", "1.0.0")
+	assertCookbookVersionBody(t, defaultPayload, "users", "3.0.0")
+	if _, ok := defaultPayload["nginx"]; ok {
+		t.Fatalf("org-scoped default role-expanded payload unexpectedly contains nginx: %v", defaultPayload)
+	}
+}
+
 func TestEnvironmentCookbookVersionsUsesExplicitEmptyEnvironmentRoleRunList(t *testing.T) {
 	router, state := newSearchTestRouterWithAuthorizer(t, nil)
 	createEnvironmentForCookbookTests(t, router, "production")
@@ -1920,6 +2111,58 @@ func TestEnvironmentCookbookVersionsUsesExplicitEmptyEnvironmentRoleRunList(t *t
 	assertCookbookVersionBody(t, defaultPayload, "apache2", "1.0.0")
 }
 
+func TestOrganizationEnvironmentCookbookVersionsUsesExplicitEmptyEnvironmentRoleRunList(t *testing.T) {
+	router, state := newSearchTestRouterWithAuthorizer(t, nil)
+	createEnvironmentForCookbookTests(t, router, "production")
+	createCookbookVersion(t, router, "apache2", "1.0.0", "", nil)
+
+	if _, err := state.CreateRole("ponyville", bootstrap.CreateRoleInput{
+		Payload: map[string]any{
+			"name":                "web",
+			"description":         "",
+			"json_class":          "Chef::Role",
+			"chef_type":           "role",
+			"default_attributes":  map[string]any{},
+			"override_attributes": map[string]any{},
+			"run_list":            []any{"recipe[apache2]"},
+			"env_run_lists": map[string]any{
+				"production": []any{},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("CreateRole(web) error = %v", err)
+	}
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/organizations/ponyville/environments/production/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{"role[web]"},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("org-scoped depsolver empty env role run_list status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	payload := decodeJSONMap(t, rec.Body.Bytes())
+	if len(payload) != 0 {
+		t.Fatalf("production role-expanded payload = %v, want empty object", payload)
+	}
+
+	defaultReq := newSignedJSONRequest(t, http.MethodPost, "/organizations/ponyville/environments/_default/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{"role[web]"},
+	}))
+	defaultRec := httptest.NewRecorder()
+	router.ServeHTTP(defaultRec, defaultReq)
+	if defaultRec.Code != http.StatusOK {
+		t.Fatalf("org-scoped depsolver default role expansion status = %d, want %d, body = %s", defaultRec.Code, http.StatusOK, defaultRec.Body.String())
+	}
+
+	defaultPayload := decodeJSONMap(t, defaultRec.Body.Bytes())
+	if len(defaultPayload) != 1 {
+		t.Fatalf("len(defaultPayload) = %d, want 1 (%v)", len(defaultPayload), defaultPayload)
+	}
+	assertCookbookVersionBody(t, defaultPayload, "apache2", "1.0.0")
+}
+
 func TestEnvironmentCookbookVersionsDeduplicatesRoleExpandedEquivalentRunListForms(t *testing.T) {
 	router, state := newSearchTestRouterWithAuthorizer(t, nil)
 	createEnvironmentForCookbookTests(t, router, "production")
@@ -1958,6 +2201,44 @@ func TestEnvironmentCookbookVersionsDeduplicatesRoleExpandedEquivalentRunListFor
 	assertCookbookVersionBody(t, payload, "bar", "1.0.0")
 }
 
+func TestOrganizationEnvironmentCookbookVersionsDeduplicatesRoleExpandedEquivalentRunListForms(t *testing.T) {
+	router, state := newSearchTestRouterWithAuthorizer(t, nil)
+	createEnvironmentForCookbookTests(t, router, "production")
+	createCookbookVersion(t, router, "foo", "1.0.0", "", map[string]string{"bar": "= 1.0.0"})
+	createCookbookVersion(t, router, "bar", "1.0.0", "", nil)
+
+	if _, err := state.CreateRole("ponyville", bootstrap.CreateRoleInput{
+		Payload: map[string]any{
+			"name":                "web",
+			"description":         "",
+			"json_class":          "Chef::Role",
+			"chef_type":           "role",
+			"default_attributes":  map[string]any{},
+			"override_attributes": map[string]any{},
+			"run_list":            []any{"recipe[foo]", "recipe[foo::default]"},
+			"env_run_lists":       map[string]any{},
+		},
+	}); err != nil {
+		t.Fatalf("CreateRole(web) error = %v", err)
+	}
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/organizations/ponyville/environments/production/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{"role[web]", "foo"},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("org-scoped depsolver role-expanded duplicate normalization status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	payload := decodeJSONMap(t, rec.Body.Bytes())
+	if len(payload) != 2 {
+		t.Fatalf("len(payload) = %d, want 2 (%v)", len(payload), payload)
+	}
+	assertCookbookVersionBody(t, payload, "foo", "1.0.0")
+	assertCookbookVersionBody(t, payload, "bar", "1.0.0")
+}
+
 func TestEnvironmentCookbookVersionsRejectsMissingRoleRunListItem(t *testing.T) {
 	router := newTestRouter(t)
 	createEnvironmentForCookbookTests(t, router, "production")
@@ -1969,6 +2250,22 @@ func TestEnvironmentCookbookVersionsRejectsMissingRoleRunListItem(t *testing.T) 
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("depsolver missing role status = %d, want %d, body = %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+
+	assertEnvironmentErrorMessages(t, rec.Body.Bytes(), "Field 'run_list' contains unknown role item role[missing]")
+}
+
+func TestOrganizationEnvironmentCookbookVersionsRejectsMissingRoleRunListItem(t *testing.T) {
+	router := newTestRouter(t)
+	createEnvironmentForCookbookTests(t, router, "production")
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/organizations/ponyville/environments/production/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{"role[missing]"},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("org-scoped depsolver missing role status = %d, want %d, body = %s", rec.Code, http.StatusBadRequest, rec.Body.String())
 	}
 
 	assertEnvironmentErrorMessages(t, rec.Body.Bytes(), "Field 'run_list' contains unknown role item role[missing]")
@@ -2014,6 +2311,51 @@ func TestEnvironmentCookbookVersionsRejectsRecursiveRoleRunListItem(t *testing.T
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("depsolver recursive role status = %d, want %d, body = %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+
+	assertEnvironmentErrorMessages(t, rec.Body.Bytes(), "Field 'run_list' contains recursive role item role[web]")
+}
+
+func TestOrganizationEnvironmentCookbookVersionsRejectsRecursiveRoleRunListItem(t *testing.T) {
+	router, state := newSearchTestRouterWithAuthorizer(t, nil)
+	createEnvironmentForCookbookTests(t, router, "production")
+
+	if _, err := state.CreateRole("ponyville", bootstrap.CreateRoleInput{
+		Payload: map[string]any{
+			"name":                "web",
+			"description":         "",
+			"json_class":          "Chef::Role",
+			"chef_type":           "role",
+			"default_attributes":  map[string]any{},
+			"override_attributes": map[string]any{},
+			"run_list":            []any{"role[db]"},
+			"env_run_lists":       map[string]any{},
+		},
+	}); err != nil {
+		t.Fatalf("CreateRole(web) error = %v", err)
+	}
+	if _, err := state.CreateRole("ponyville", bootstrap.CreateRoleInput{
+		Payload: map[string]any{
+			"name":                "db",
+			"description":         "",
+			"json_class":          "Chef::Role",
+			"chef_type":           "role",
+			"default_attributes":  map[string]any{},
+			"override_attributes": map[string]any{},
+			"run_list":            []any{"role[web]"},
+			"env_run_lists":       map[string]any{},
+		},
+	}); err != nil {
+		t.Fatalf("CreateRole(db) error = %v", err)
+	}
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/organizations/ponyville/environments/production/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{"role[web]"},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("org-scoped depsolver recursive role status = %d, want %d, body = %s", rec.Code, http.StatusBadRequest, rec.Body.String())
 	}
 
 	assertEnvironmentErrorMessages(t, rec.Body.Bytes(), "Field 'run_list' contains recursive role item role[web]")
