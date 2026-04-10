@@ -138,7 +138,7 @@ func validateDepsolverPayload(payload map[string]any) ([]string, error) {
 
 	runListValue, ok := payload["run_list"]
 	if !ok {
-		return nil, &ValidationError{Messages: []string{"Field 'run_list' is not a valid run list"}}
+		return []string{}, nil
 	}
 	return validateDepsolverRunList(runListValue)
 }
