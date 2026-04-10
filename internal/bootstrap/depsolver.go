@@ -1,13 +1,18 @@
 package bootstrap
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
 )
 
 type DepsolverError struct {
-	Detail map[string]any
+	Detail      map[string]any
+	kind        string
+	cookbook    string
+	rootMessage string
+	sources     []string
 }
 
 func (e *DepsolverError) Error() string {
@@ -106,7 +111,7 @@ func (s *Service) SolveEnvironmentCookbookVersions(orgName, environmentName stri
 		Constraints:  make(map[string][]depsolverConstraintSource),
 		RootMessages: make(map[string]string),
 	}
-	for _, item := range items {
+	for idx, item := range items {
 		if _, exists := solution.RootMessages[item.Cookbook]; !exists {
 			solution.RootMessages[item.Cookbook] = item.Label
 		}
@@ -114,7 +119,7 @@ func (s *Service) SolveEnvironmentCookbookVersions(orgName, environmentName stri
 			Constraint: item.Constraint,
 		})
 		if err != nil {
-			return nil, true, true, err
+			return nil, true, true, enrichDepsolverErrorWithRemainingRoots(org, env, items[idx+1:], err)
 		}
 		solution = next
 	}
@@ -420,6 +425,134 @@ func depsolverConstraintSources(constraints []depsolverConstraintSource) []strin
 	return out
 }
 
+func enrichDepsolverErrorWithRemainingRoots(org *organizationState, env Environment, remaining []depsolverRunListItem, err error) error {
+	if len(remaining) == 0 {
+		return err
+	}
+
+	var depsolverErr *DepsolverError
+	if !errors.As(err, &depsolverErr) {
+		return err
+	}
+	if depsolverErr.kind != "unsatisfied" || depsolverErr.cookbook == "" || depsolverErr.rootMessage == "" {
+		return err
+	}
+
+	sources := append([]string(nil), depsolverErr.sources...)
+	seen := make(map[string]struct{}, len(sources))
+	for _, source := range sources {
+		seen[source] = struct{}{}
+	}
+
+	changed := false
+	for _, item := range remaining {
+		for _, source := range depsolverDiagnosticSourcesForRoot(org, env, item, depsolverErr.cookbook) {
+			if _, ok := seen[source]; ok {
+				continue
+			}
+			seen[source] = struct{}{}
+			sources = append(sources, source)
+			changed = true
+		}
+	}
+	if !changed {
+		return err
+	}
+
+	depsolverErr.sources = sources
+	depsolverErr.Detail["message"] = formatUnsatisfiedDependencyMessage(depsolverErr.cookbook, depsolverErr.rootMessage, sources)
+	return depsolverErr
+}
+
+func depsolverDiagnosticSourcesForRoot(org *organizationState, env Environment, item depsolverRunListItem, target string) []string {
+	versions, ok := org.cookbooks[item.Cookbook]
+	if !ok {
+		return nil
+	}
+
+	refs := cookbookVersionRefs(versions)
+	refs = filterEnvironmentCookbookRefs(refs, env.CookbookVersions[item.Cookbook])
+	refs = filterDepsolverCookbookRefs(refs, []string{item.Constraint})
+	refs = ascendingCookbookVersionRefs(refs)
+
+	out := make([]string, 0)
+	seen := make(map[string]struct{})
+	for _, ref := range refs {
+		version := versions[ref.Version]
+		stack := map[string]struct{}{item.Cookbook: {}}
+		prefix := fmt.Sprintf("(%s = %s)", version.CookbookName, version.Version)
+		for _, source := range depsolverDiagnosticSourcesFromVersion(org, env, version, target, prefix, stack) {
+			if _, ok := seen[source]; ok {
+				continue
+			}
+			seen[source] = struct{}{}
+			out = append(out, source)
+		}
+	}
+	return out
+}
+
+func depsolverDiagnosticSourcesFromVersion(org *organizationState, env Environment, version CookbookVersion, target, prefix string, stack map[string]struct{}) []string {
+	dependencies := cookbookMetadataDependencies(version.Metadata)
+	if len(dependencies) == 0 {
+		return nil
+	}
+
+	names := make([]string, 0, len(dependencies))
+	for name := range dependencies {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	out := make([]string, 0)
+	for _, depName := range names {
+		depConstraint := strings.TrimSpace(dependencies[depName])
+		if depConstraint == "" {
+			depConstraint = ">= 0.0.0"
+		}
+		source := prefix + " -> (" + depName + " " + depConstraint + ")"
+		if depName == target {
+			out = append(out, source)
+			continue
+		}
+		if _, ok := stack[depName]; ok {
+			continue
+		}
+
+		depVersions, ok := org.cookbooks[depName]
+		if !ok {
+			continue
+		}
+
+		refs := cookbookVersionRefs(depVersions)
+		refs = filterEnvironmentCookbookRefs(refs, env.CookbookVersions[depName])
+		refs = filterDepsolverCookbookRefs(refs, []string{depConstraint})
+		refs = ascendingCookbookVersionRefs(refs)
+
+		nextStack := make(map[string]struct{}, len(stack)+1)
+		for key := range stack {
+			nextStack[key] = struct{}{}
+		}
+		nextStack[depName] = struct{}{}
+
+		for _, ref := range refs {
+			out = append(out, depsolverDiagnosticSourcesFromVersion(org, env, depVersions[ref.Version], target, source, nextStack)...)
+		}
+	}
+	return out
+}
+
+func ascendingCookbookVersionRefs(refs []CookbookVersionRef) []CookbookVersionRef {
+	if len(refs) == 0 {
+		return nil
+	}
+	out := append([]CookbookVersionRef(nil), refs...)
+	sort.Slice(out, func(i, j int) bool {
+		return compareCookbookVersions(out[i].Version, out[j].Version) < 0
+	})
+	return out
+}
+
 func rootMissingCookbooksError(cookbooks []string) error {
 	message := "Run list contains invalid items: no such cookbook " + cookbooks[0] + "."
 	if len(cookbooks) > 1 {
@@ -451,6 +584,10 @@ func rootNoVersionsError(labels []string) error {
 
 func missingDependencyCookbookError(cookbook, rootMessage string, sources []string) error {
 	return &DepsolverError{
+		kind:        "missing",
+		cookbook:    cookbook,
+		rootMessage: rootMessage,
+		sources:     append([]string(nil), sources...),
 		Detail: map[string]any{
 			"message": fmt.Sprintf(
 				"Unable to satisfy constraints on package %s, which does not exist, due to solution constraint %s. Solution constraints that may result in a constraint on %s: %s",
@@ -468,19 +605,27 @@ func missingDependencyCookbookError(cookbook, rootMessage string, sources []stri
 
 func unsatisfiedDependencyCookbookError(cookbook string, versions map[string]CookbookVersion, envConstraint, rootMessage string, sources []string, selected CookbookVersion) error {
 	return &DepsolverError{
+		kind:        "unsatisfied",
+		cookbook:    cookbook,
+		rootMessage: rootMessage,
+		sources:     append([]string(nil), sources...),
 		Detail: map[string]any{
-			"message": fmt.Sprintf(
-				"Unable to satisfy constraints on package %s due to solution constraint %s. Solution constraints that may result in a constraint on %s: %s",
-				cookbook,
-				rootMessage,
-				cookbook,
-				formatDepsolverConstraintSources(sources),
-			),
+			"message":                     formatUnsatisfiedDependencyMessage(cookbook, rootMessage, sources),
 			"unsatisfiable_run_list_item": rootMessage,
 			"non_existent_cookbooks":      []string{},
 			"most_constrained_cookbooks":  []string{renderMostConstrainedCookbook(cookbook, versions, envConstraint, selected)},
 		},
 	}
+}
+
+func formatUnsatisfiedDependencyMessage(cookbook, rootMessage string, sources []string) string {
+	return fmt.Sprintf(
+		"Unable to satisfy constraints on package %s due to solution constraint %s. Solution constraints that may result in a constraint on %s: %s",
+		cookbook,
+		rootMessage,
+		cookbook,
+		formatDepsolverConstraintSources(sources),
+	)
 }
 
 func renderMostConstrainedCookbook(cookbook string, versions map[string]CookbookVersion, envConstraint string, selected CookbookVersion) string {
