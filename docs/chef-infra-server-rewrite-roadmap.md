@@ -46,7 +46,7 @@ As of 2026-04-09, OpenCook has moved past pure scaffolding and into the first co
 - the current environment depsolver slice is now live via `/environments/{name}/cookbook_versions` and `/organizations/{org}/environments/{name}/cookbook_versions`
 - default-org and explicit-org node routes now resolve against the same org-scoped compatibility state
 - default-org and explicit-org environment routes now resolve against the same org-scoped compatibility state
-- the first role slice is now live with in-memory list/get/head/create/update/delete behavior
+- the first role slice is now live with in-memory list/get/head/create/update/delete behavior plus Chef-style run-list and env-run-list normalization/deduplication
 - role environment endpoints are implemented via `/roles/{name}/environments` and `/roles/{name}/environments/{environment}`
 - default-org and explicit-org role routes now resolve against the same org-scoped compatibility state
 - default-org client routes are now live for `/clients`, `/clients/{name}`, and `/clients/{name}/keys`

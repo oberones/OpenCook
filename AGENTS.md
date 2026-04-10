@@ -85,6 +85,7 @@ Implemented so far:
   - delete
   - `/roles/{name}/environments`
   - `/roles/{name}/environments/{environment}`
+  - Chef-style normalization and deduplication for top-level `run_list` and `env_run_lists` on role create/update/get plus `/roles/{name}/environments/{environment}` reads
   - default-org and explicit-org routing
 - the first default-org client compatibility slice:
   - `/clients`
@@ -354,7 +355,7 @@ These areas are still intentionally incomplete:
 - OpenSearch-backed indexing and provider capability behavior
 - remaining core Chef object CRUD beyond nodes, environments, roles, and data bags
 - deeper node and environment compatibility such as cookbook constraint edge cases and linked object behavior
-- deeper role compatibility such as run-list normalization and linked environment behavior
+- deeper role compatibility such as linked environment behavior
 - broader search semantics beyond the current in-memory compatibility layer, especially richer Lucene-style query translation and wider object coverage
 - deeper Bookshelf/cookbook flows beyond the current cookbook write/read/artifact slice, especially the remaining cookbook pedant cases outside the current environment-filtered/named-filter/latest/version/depsolver contract, broader upstream run-list/depsolver semantics, and the remaining deeper provider hardening around S3-compatible blob behavior
 - operational parity and migration tooling

@@ -1825,7 +1825,7 @@ func TestRolesEndpointListCreateGetAndHead(t *testing.T) {
 		t.Fatalf("list payload = %v, want empty map", listPayload)
 	}
 
-	createBody := mustMarshalRolePayload(t, "web")
+	createBody := []byte(`{"name":"web","description":"","json_class":"Chef::Role","chef_type":"role","default_attributes":{},"override_attributes":{},"run_list":["base","recipe[base]","foo::default","recipe[foo::default]","role[db]"],"env_run_lists":{"production":["nginx","recipe[nginx]"]}}`)
 	createReq := httptest.NewRequest(http.MethodPost, "/roles", bytes.NewReader(createBody))
 	applySignedHeaders(t, createReq, "silent-bob", "", http.MethodPost, "/roles", createBody, signDescription{
 		Version:   "1.1",
@@ -1868,6 +1868,12 @@ func TestRolesEndpointListCreateGetAndHead(t *testing.T) {
 	if getPayload["chef_type"] != "role" {
 		t.Fatalf("chef_type = %v, want %q", getPayload["chef_type"], "role")
 	}
+	assertStringSliceFromAnyEqual(t, getPayload["run_list"], []string{"recipe[base]", "recipe[foo::default]", "role[db]"})
+	envRunLists, ok := getPayload["env_run_lists"].(map[string]any)
+	if !ok {
+		t.Fatalf("env_run_lists = %T, want map[string]any", getPayload["env_run_lists"])
+	}
+	assertStringSliceFromAnyEqual(t, envRunLists["production"], []string{"recipe[nginx]"})
 
 	headReq := httptest.NewRequest(http.MethodHead, "/roles/web", nil)
 	applySignedHeaders(t, headReq, "silent-bob", "", http.MethodHead, "/roles/web", nil, signDescription{
@@ -1916,7 +1922,7 @@ func TestRolesEndpointUpdateAndDelete(t *testing.T) {
 		t.Fatalf("create role status = %d, want %d, body = %s", createRec.Code, http.StatusCreated, createRec.Body.String())
 	}
 
-	updateBody := []byte(`{"description":"Updated web role","json_class":"Chef::Role","chef_type":"role"}`)
+	updateBody := []byte(`{"description":"Updated web role","json_class":"Chef::Role","chef_type":"role","run_list":["apache2","recipe[apache2]","role[db]","role[db]"],"env_run_lists":{"production":["nginx","recipe[nginx]"],"staging":[]}}`)
 	updateReq := httptest.NewRequest(http.MethodPut, "/roles/web", bytes.NewReader(updateBody))
 	applySignedHeaders(t, updateReq, "silent-bob", "", http.MethodPut, "/roles/web", updateBody, signDescription{
 		Version:   "1.3",
@@ -1939,6 +1945,13 @@ func TestRolesEndpointUpdateAndDelete(t *testing.T) {
 	if updatePayload["description"] != "Updated web role" {
 		t.Fatalf("description = %v, want %q", updatePayload["description"], "Updated web role")
 	}
+	assertStringSliceFromAnyEqual(t, updatePayload["run_list"], []string{"recipe[apache2]", "role[db]"})
+	envRunLists, ok := updatePayload["env_run_lists"].(map[string]any)
+	if !ok {
+		t.Fatalf("env_run_lists = %T, want map[string]any", updatePayload["env_run_lists"])
+	}
+	assertStringSliceFromAnyEqual(t, envRunLists["production"], []string{"recipe[nginx]"})
+	assertStringSliceFromAnyEqual(t, envRunLists["staging"], []string{})
 
 	mismatchBody := []byte(`{"name":"db","json_class":"Chef::Role","chef_type":"role"}`)
 	mismatchReq := httptest.NewRequest(http.MethodPut, "/roles/web", bytes.NewReader(mismatchBody))
@@ -2011,9 +2024,7 @@ func TestRoleEnvironmentsEndpoints(t *testing.T) {
 		t.Fatalf("create staging environment status = %d, want %d, body = %s", stagingRec.Code, http.StatusCreated, stagingRec.Body.String())
 	}
 
-	createRoleBody := mustMarshalRolePayloadWithEnvRunLists(t, "web", map[string][]string{
-		"production": {"recipe[nginx]"},
-	})
+	createRoleBody := []byte(`{"name":"web","description":"","json_class":"Chef::Role","chef_type":"role","default_attributes":{},"override_attributes":{},"run_list":["base","recipe[base]","role[db]","role[db]"],"env_run_lists":{"production":["nginx","recipe[nginx]","role[app]","role[app]"]}}`)
 	createRoleReq := httptest.NewRequest(http.MethodPost, "/roles", bytes.NewReader(createRoleBody))
 	applySignedHeaders(t, createRoleReq, "silent-bob", "", http.MethodPost, "/roles", createRoleBody, signDescription{
 		Version:   "1.1",
@@ -2063,10 +2074,7 @@ func TestRoleEnvironmentsEndpoints(t *testing.T) {
 	if err := json.Unmarshal(defaultRec.Body.Bytes(), &defaultPayload); err != nil {
 		t.Fatalf("json.Unmarshal(default role env) error = %v", err)
 	}
-	defaultRunList := stringSliceFromAny(t, defaultPayload["run_list"])
-	if len(defaultRunList) != 1 || defaultRunList[0] != "recipe[base]" {
-		t.Fatalf("default run_list = %v, want [recipe[base]]", defaultRunList)
-	}
+	assertStringSliceFromAnyEqual(t, defaultPayload["run_list"], []string{"recipe[base]", "role[db]"})
 
 	productionRoleReq := httptest.NewRequest(http.MethodGet, "/organizations/ponyville/roles/web/environments/production", nil)
 	applySignedHeaders(t, productionRoleReq, "silent-bob", "", http.MethodGet, "/organizations/ponyville/roles/web/environments/production", nil, signDescription{
@@ -2084,10 +2092,7 @@ func TestRoleEnvironmentsEndpoints(t *testing.T) {
 	if err := json.Unmarshal(productionRoleRec.Body.Bytes(), &productionPayload); err != nil {
 		t.Fatalf("json.Unmarshal(production role env) error = %v", err)
 	}
-	productionRunList := stringSliceFromAny(t, productionPayload["run_list"])
-	if len(productionRunList) != 1 || productionRunList[0] != "recipe[nginx]" {
-		t.Fatalf("production run_list = %v, want [recipe[nginx]]", productionRunList)
-	}
+	assertStringSliceFromAnyEqual(t, productionPayload["run_list"], []string{"recipe[nginx]", "role[app]"})
 
 	stagingRoleReq := httptest.NewRequest(http.MethodGet, "/roles/web/environments/staging", nil)
 	applySignedHeaders(t, stagingRoleReq, "silent-bob", "", http.MethodGet, "/roles/web/environments/staging", nil, signDescription{
@@ -2539,6 +2544,20 @@ func stringSliceFromAny(t *testing.T, value any) []string {
 		out = append(out, str)
 	}
 	return out
+}
+
+func assertStringSliceFromAnyEqual(t *testing.T, value any, want []string) {
+	t.Helper()
+
+	got := stringSliceFromAny(t, value)
+	if len(got) != len(want) {
+		t.Fatalf("len(%v) = %d, want %d", got, len(got), len(want))
+	}
+	for idx := range want {
+		if got[idx] != want[idx] {
+			t.Fatalf("got[%d] = %q, want %q (full slice %v)", idx, got[idx], want[idx], got)
+		}
+	}
 }
 
 func containsString(values []string, target string) bool {
