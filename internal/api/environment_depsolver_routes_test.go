@@ -2607,6 +2607,62 @@ func TestOrganizationEnvironmentCookbookVersionsSelectsRootVersionThatRespectsEn
 	assertCookbookVersionBody(t, payload, "bar", "1.0.0")
 }
 
+func TestEnvironmentCookbookVersionsSelectsNewerRootVersionWhenEnvironmentAllowsIt(t *testing.T) {
+	router := newTestRouter(t)
+	createEnvironmentForCookbookTests(t, router, "production")
+	updateEnvironmentCookbookConstraints(t, router, "production", map[string]string{
+		"bar": "> 1.1.0",
+	})
+	createCookbookVersion(t, router, "foo", "1.2.3", "", map[string]string{"bar": "> 2.0.0"})
+	createCookbookVersion(t, router, "foo", "1.0.0", "", map[string]string{"bar": "= 1.0.0"})
+	createCookbookVersion(t, router, "bar", "1.0.0", "", nil)
+	createCookbookVersion(t, router, "bar", "3.0.0", "", nil)
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/environments/production/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{"foo"},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("depsolver environment-respected newer-root status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	payload := decodeJSONMap(t, rec.Body.Bytes())
+	if len(payload) != 2 {
+		t.Fatalf("len(payload) = %d, want 2 (%v)", len(payload), payload)
+	}
+	assertCookbookVersionBody(t, payload, "foo", "1.2.3")
+	assertCookbookVersionBody(t, payload, "bar", "3.0.0")
+}
+
+func TestOrganizationEnvironmentCookbookVersionsSelectsNewerRootVersionWhenEnvironmentAllowsIt(t *testing.T) {
+	router := newTestRouter(t)
+	createEnvironmentForCookbookTests(t, router, "production")
+	updateEnvironmentCookbookConstraints(t, router, "production", map[string]string{
+		"bar": "> 1.1.0",
+	})
+	createCookbookVersion(t, router, "foo", "1.2.3", "", map[string]string{"bar": "> 2.0.0"})
+	createCookbookVersion(t, router, "foo", "1.0.0", "", map[string]string{"bar": "= 1.0.0"})
+	createCookbookVersion(t, router, "bar", "1.0.0", "", nil)
+	createCookbookVersion(t, router, "bar", "3.0.0", "", nil)
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/organizations/ponyville/environments/production/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{"foo"},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("org-scoped depsolver environment-respected newer-root status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	payload := decodeJSONMap(t, rec.Body.Bytes())
+	if len(payload) != 2 {
+		t.Fatalf("len(payload) = %d, want 2 (%v)", len(payload), payload)
+	}
+	assertCookbookVersionBody(t, payload, "foo", "1.2.3")
+	assertCookbookVersionBody(t, payload, "bar", "3.0.0")
+}
+
 func TestEnvironmentCookbookVersionsSelectsPinnedVersionForRepeatedRootCookbook(t *testing.T) {
 	router := newTestRouter(t)
 	createEnvironmentForCookbookTests(t, router, "production")
