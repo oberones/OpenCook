@@ -290,6 +290,36 @@ func TestOrganizationEnvironmentCookbookVersionsRejectMalformedVersionedRunListI
 	assertEnvironmentErrorMessages(t, rec.Body.Bytes(), "Field 'run_list' is not a valid run list")
 }
 
+func TestDefaultEnvironmentCookbookVersionsRejectMalformedVersionedRunListItem(t *testing.T) {
+	router := newTestRouter(t)
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/environments/_default/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{"foo@not_a_version"},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("default depsolver malformed versioned run_list status = %d, want %d, body = %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+
+	assertEnvironmentErrorMessages(t, rec.Body.Bytes(), "Field 'run_list' is not a valid run list")
+}
+
+func TestOrganizationDefaultEnvironmentCookbookVersionsRejectMalformedVersionedRunListItem(t *testing.T) {
+	router := newTestRouter(t)
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/organizations/ponyville/environments/_default/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{"foo@not_a_version"},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("org-scoped default depsolver malformed versioned run_list status = %d, want %d, body = %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+
+	assertEnvironmentErrorMessages(t, rec.Body.Bytes(), "Field 'run_list' is not a valid run list")
+}
+
 func TestEnvironmentCookbookVersionsRejectBogusBracketedRunListItem(t *testing.T) {
 	router := newTestRouter(t)
 	createEnvironmentForCookbookTests(t, router, "production")
@@ -317,6 +347,36 @@ func TestOrganizationEnvironmentCookbookVersionsRejectBogusBracketedRunListItem(
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("org-scoped depsolver bogus bracketed run_list status = %d, want %d, body = %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+
+	assertEnvironmentErrorMessages(t, rec.Body.Bytes(), "Field 'run_list' is not a valid run list")
+}
+
+func TestDefaultEnvironmentCookbookVersionsRejectBogusBracketedRunListItem(t *testing.T) {
+	router := newTestRouter(t)
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/environments/_default/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{"fake[not_good]"},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("default depsolver bogus bracketed run_list status = %d, want %d, body = %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+
+	assertEnvironmentErrorMessages(t, rec.Body.Bytes(), "Field 'run_list' is not a valid run list")
+}
+
+func TestOrganizationDefaultEnvironmentCookbookVersionsRejectBogusBracketedRunListItem(t *testing.T) {
+	router := newTestRouter(t)
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/organizations/ponyville/environments/_default/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{"fake[not_good]"},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("org-scoped default depsolver bogus bracketed run_list status = %d, want %d, body = %s", rec.Code, http.StatusBadRequest, rec.Body.String())
 	}
 
 	assertEnvironmentErrorMessages(t, rec.Body.Bytes(), "Field 'run_list' is not a valid run list")
