@@ -7,9 +7,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/oberones/OpenCook/internal/authz"
 	"github.com/oberones/OpenCook/internal/bootstrap"
+	"github.com/oberones/OpenCook/internal/config"
 )
 
 func TestEnvironmentCookbookVersionsRejectInvalidJSON(t *testing.T) {
@@ -35,6 +37,86 @@ func TestOrganizationEnvironmentCookbookVersionsRejectInvalidJSON(t *testing.T) 
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("org-scoped depsolver invalid JSON status = %d, want %d, body = %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+
+	assertEnvironmentErrorMessages(t, rec.Body.Bytes(), "invalid JSON")
+}
+
+func TestDefaultEnvironmentCookbookVersionsRejectInvalidJSON(t *testing.T) {
+	router := newTestRouter(t)
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/environments/_default/cookbook_versions", []byte("this_is_not_json"))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("default depsolver invalid JSON status = %d, want %d, body = %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+
+	assertEnvironmentErrorMessages(t, rec.Body.Bytes(), "invalid JSON")
+}
+
+func TestOrganizationDefaultEnvironmentCookbookVersionsRejectInvalidJSON(t *testing.T) {
+	router := newTestRouter(t)
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/organizations/ponyville/environments/_default/cookbook_versions", []byte("this_is_not_json"))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("org-scoped default depsolver invalid JSON status = %d, want %d, body = %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+
+	assertEnvironmentErrorMessages(t, rec.Body.Bytes(), "invalid JSON")
+}
+
+func TestEnvironmentCookbookVersionsRejectEmptyPayload(t *testing.T) {
+	router := newTestRouter(t)
+	createEnvironmentForCookbookTests(t, router, "production")
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/environments/production/cookbook_versions", []byte(""))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("depsolver empty payload status = %d, want %d, body = %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+
+	assertEnvironmentErrorMessages(t, rec.Body.Bytes(), "invalid JSON")
+}
+
+func TestOrganizationEnvironmentCookbookVersionsRejectEmptyPayload(t *testing.T) {
+	router := newTestRouter(t)
+	createEnvironmentForCookbookTests(t, router, "production")
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/organizations/ponyville/environments/production/cookbook_versions", []byte(""))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("org-scoped depsolver empty payload status = %d, want %d, body = %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+
+	assertEnvironmentErrorMessages(t, rec.Body.Bytes(), "invalid JSON")
+}
+
+func TestDefaultEnvironmentCookbookVersionsRejectEmptyPayload(t *testing.T) {
+	router := newTestRouter(t)
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/environments/_default/cookbook_versions", []byte(""))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("default depsolver empty payload status = %d, want %d, body = %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+
+	assertEnvironmentErrorMessages(t, rec.Body.Bytes(), "invalid JSON")
+}
+
+func TestOrganizationDefaultEnvironmentCookbookVersionsRejectEmptyPayload(t *testing.T) {
+	router := newTestRouter(t)
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/organizations/ponyville/environments/_default/cookbook_versions", []byte(""))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("org-scoped default depsolver empty payload status = %d, want %d, body = %s", rec.Code, http.StatusBadRequest, rec.Body.String())
 	}
 
 	assertEnvironmentErrorMessages(t, rec.Body.Bytes(), "invalid JSON")
@@ -68,6 +150,106 @@ func TestOrganizationEnvironmentCookbookVersionsRejectTrailingJSONDocument(t *te
 	assertEnvironmentErrorMessages(t, rec.Body.Bytes(), "invalid JSON")
 }
 
+func TestDefaultEnvironmentCookbookVersionsRejectTrailingJSONDocument(t *testing.T) {
+	router := newTestRouter(t)
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/environments/_default/cookbook_versions", []byte(`{"run_list":[]}{"run_list":[]}`))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("default depsolver trailing JSON status = %d, want %d, body = %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+
+	assertEnvironmentErrorMessages(t, rec.Body.Bytes(), "invalid JSON")
+}
+
+func TestOrganizationDefaultEnvironmentCookbookVersionsRejectTrailingJSONDocument(t *testing.T) {
+	router := newTestRouter(t)
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/organizations/ponyville/environments/_default/cookbook_versions", []byte(`{"run_list":[]}{"run_list":[]}`))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("org-scoped default depsolver trailing JSON status = %d, want %d, body = %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+
+	assertEnvironmentErrorMessages(t, rec.Body.Bytes(), "invalid JSON")
+}
+
+func TestEnvironmentCookbookVersionsAcceptsTrailingSlash(t *testing.T) {
+	router := newTestRouter(t)
+	createEnvironmentForCookbookTests(t, router, "production")
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/environments/production/cookbook_versions/", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("depsolver trailing slash status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	payload := decodeJSONMap(t, rec.Body.Bytes())
+	if len(payload) != 0 {
+		t.Fatalf("payload = %v, want empty object", payload)
+	}
+}
+
+func TestOrganizationEnvironmentCookbookVersionsAcceptsTrailingSlash(t *testing.T) {
+	router := newTestRouter(t)
+	createEnvironmentForCookbookTests(t, router, "production")
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/organizations/ponyville/environments/production/cookbook_versions/", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("org-scoped depsolver trailing slash status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	payload := decodeJSONMap(t, rec.Body.Bytes())
+	if len(payload) != 0 {
+		t.Fatalf("payload = %v, want empty object", payload)
+	}
+}
+
+func TestDefaultEnvironmentCookbookVersionsAcceptsTrailingSlash(t *testing.T) {
+	router := newTestRouter(t)
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/environments/_default/cookbook_versions/", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("default depsolver trailing slash status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	payload := decodeJSONMap(t, rec.Body.Bytes())
+	if len(payload) != 0 {
+		t.Fatalf("payload = %v, want empty object", payload)
+	}
+}
+
+func TestOrganizationDefaultEnvironmentCookbookVersionsAcceptsTrailingSlash(t *testing.T) {
+	router := newTestRouter(t)
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/organizations/ponyville/environments/_default/cookbook_versions/", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("org-scoped default depsolver trailing slash status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	payload := decodeJSONMap(t, rec.Body.Bytes())
+	if len(payload) != 0 {
+		t.Fatalf("payload = %v, want empty object", payload)
+	}
+}
+
 func TestEnvironmentCookbookVersionsRejectInvalidRunList(t *testing.T) {
 	router := newTestRouter(t)
 	createEnvironmentForCookbookTests(t, router, "production")
@@ -95,6 +277,36 @@ func TestOrganizationEnvironmentCookbookVersionsRejectInvalidRunList(t *testing.
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("org-scoped depsolver invalid run_list status = %d, want %d, body = %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+
+	assertEnvironmentErrorMessages(t, rec.Body.Bytes(), "Field 'run_list' is not a valid run list")
+}
+
+func TestDefaultEnvironmentCookbookVersionsRejectInvalidRunList(t *testing.T) {
+	router := newTestRouter(t)
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/environments/_default/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": "demo",
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("default depsolver invalid run_list status = %d, want %d, body = %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+
+	assertEnvironmentErrorMessages(t, rec.Body.Bytes(), "Field 'run_list' is not a valid run list")
+}
+
+func TestOrganizationDefaultEnvironmentCookbookVersionsRejectInvalidRunList(t *testing.T) {
+	router := newTestRouter(t)
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/organizations/ponyville/environments/_default/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": "demo",
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("org-scoped default depsolver invalid run_list status = %d, want %d, body = %s", rec.Code, http.StatusBadRequest, rec.Body.String())
 	}
 
 	assertEnvironmentErrorMessages(t, rec.Body.Bytes(), "Field 'run_list' is not a valid run list")
@@ -132,6 +344,36 @@ func TestOrganizationEnvironmentCookbookVersionsRejectMalformedVersionedRunListI
 	assertEnvironmentErrorMessages(t, rec.Body.Bytes(), "Field 'run_list' is not a valid run list")
 }
 
+func TestDefaultEnvironmentCookbookVersionsRejectMalformedVersionedRunListItem(t *testing.T) {
+	router := newTestRouter(t)
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/environments/_default/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{"foo@not_a_version"},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("default depsolver malformed versioned run_list status = %d, want %d, body = %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+
+	assertEnvironmentErrorMessages(t, rec.Body.Bytes(), "Field 'run_list' is not a valid run list")
+}
+
+func TestOrganizationDefaultEnvironmentCookbookVersionsRejectMalformedVersionedRunListItem(t *testing.T) {
+	router := newTestRouter(t)
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/organizations/ponyville/environments/_default/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{"foo@not_a_version"},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("org-scoped default depsolver malformed versioned run_list status = %d, want %d, body = %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+
+	assertEnvironmentErrorMessages(t, rec.Body.Bytes(), "Field 'run_list' is not a valid run list")
+}
+
 func TestEnvironmentCookbookVersionsRejectBogusBracketedRunListItem(t *testing.T) {
 	router := newTestRouter(t)
 	createEnvironmentForCookbookTests(t, router, "production")
@@ -159,6 +401,98 @@ func TestOrganizationEnvironmentCookbookVersionsRejectBogusBracketedRunListItem(
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("org-scoped depsolver bogus bracketed run_list status = %d, want %d, body = %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+
+	assertEnvironmentErrorMessages(t, rec.Body.Bytes(), "Field 'run_list' is not a valid run list")
+}
+
+func TestDefaultEnvironmentCookbookVersionsRejectBogusBracketedRunListItem(t *testing.T) {
+	router := newTestRouter(t)
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/environments/_default/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{"fake[not_good]"},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("default depsolver bogus bracketed run_list status = %d, want %d, body = %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+
+	assertEnvironmentErrorMessages(t, rec.Body.Bytes(), "Field 'run_list' is not a valid run list")
+}
+
+func TestOrganizationDefaultEnvironmentCookbookVersionsRejectBogusBracketedRunListItem(t *testing.T) {
+	router := newTestRouter(t)
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/organizations/ponyville/environments/_default/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{"fake[not_good]"},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("org-scoped default depsolver bogus bracketed run_list status = %d, want %d, body = %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+
+	assertEnvironmentErrorMessages(t, rec.Body.Bytes(), "Field 'run_list' is not a valid run list")
+}
+
+func TestEnvironmentCookbookVersionsRejectNonStringRunListItem(t *testing.T) {
+	router := newTestRouter(t)
+	createEnvironmentForCookbookTests(t, router, "production")
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/environments/production/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{12},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("depsolver non-string run_list item status = %d, want %d, body = %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+
+	assertEnvironmentErrorMessages(t, rec.Body.Bytes(), "Field 'run_list' is not a valid run list")
+}
+
+func TestOrganizationEnvironmentCookbookVersionsRejectNonStringRunListItem(t *testing.T) {
+	router := newTestRouter(t)
+	createEnvironmentForCookbookTests(t, router, "production")
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/organizations/ponyville/environments/production/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{12},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("org-scoped depsolver non-string run_list item status = %d, want %d, body = %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+
+	assertEnvironmentErrorMessages(t, rec.Body.Bytes(), "Field 'run_list' is not a valid run list")
+}
+
+func TestDefaultEnvironmentCookbookVersionsRejectNonStringRunListItem(t *testing.T) {
+	router := newTestRouter(t)
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/environments/_default/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{12},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("default depsolver non-string run_list item status = %d, want %d, body = %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+
+	assertEnvironmentErrorMessages(t, rec.Body.Bytes(), "Field 'run_list' is not a valid run list")
+}
+
+func TestOrganizationDefaultEnvironmentCookbookVersionsRejectNonStringRunListItem(t *testing.T) {
+	router := newTestRouter(t)
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/organizations/ponyville/environments/_default/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{12},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("org-scoped default depsolver non-string run_list item status = %d, want %d, body = %s", rec.Code, http.StatusBadRequest, rec.Body.String())
 	}
 
 	assertEnvironmentErrorMessages(t, rec.Body.Bytes(), "Field 'run_list' is not a valid run list")
@@ -230,6 +564,77 @@ func TestOrganizationEnvironmentCookbookVersionsReturnsNotFoundForMissingEnviron
 	}
 
 	assertEnvironmentErrorMessages(t, rec.Body.Bytes(), "Cannot load environment not@environment")
+}
+
+func TestEnvironmentCookbookVersionsRequiresOrganizationWhenAmbiguous(t *testing.T) {
+	router := newTestRouter(t)
+	createOrgForTest(t, router, "canterlot")
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/environments/production/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("ambiguous depsolver status = %d, want %d, body = %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+
+	payload := decodeJSONMap(t, rec.Body.Bytes())
+	if payload["error"] != "organization_required" {
+		t.Fatalf("error = %v, want %q", payload["error"], "organization_required")
+	}
+	if payload["message"] != "organization context is required for this route" {
+		t.Fatalf("message = %v, want %q", payload["message"], "organization context is required for this route")
+	}
+}
+
+func TestEnvironmentCookbookVersionsUsesConfiguredDefaultOrganizationWhenAmbiguous(t *testing.T) {
+	router := newTestRouterWithConfig(t, config.Config{
+		ServiceName:         "opencook",
+		Environment:         "test",
+		AuthSkew:            15 * time.Minute,
+		DefaultOrganization: "canterlot",
+	})
+	createOrgForTest(t, router, "canterlot")
+
+	envBody := mustMarshalEnvironmentPayload(t, "production")
+	envReq := httptest.NewRequest(http.MethodPost, "/environments", bytes.NewReader(envBody))
+	applySignedHeaders(t, envReq, "pivotal", "", http.MethodPost, "/environments", envBody, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	envRec := httptest.NewRecorder()
+	router.ServeHTTP(envRec, envReq)
+	if envRec.Code != http.StatusCreated {
+		t.Fatalf("create environment status = %d, want %d, body = %s", envRec.Code, http.StatusCreated, envRec.Body.String())
+	}
+
+	cookbookBody := mustMarshalSandboxJSON(t, cookbookVersionPayload("foo", "1.2.3", "", nil))
+	cookbookReq := httptest.NewRequest(http.MethodPut, "/cookbooks/foo/1.2.3", bytes.NewReader(cookbookBody))
+	applySignedHeaders(t, cookbookReq, "pivotal", "", http.MethodPut, "/cookbooks/foo/1.2.3", cookbookBody, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	cookbookRec := httptest.NewRecorder()
+	router.ServeHTTP(cookbookRec, cookbookReq)
+	if cookbookRec.Code != http.StatusCreated {
+		t.Fatalf("create cookbook status = %d, want %d, body = %s", cookbookRec.Code, http.StatusCreated, cookbookRec.Body.String())
+	}
+
+	req := newSignedJSONRequestAs(t, "pivotal", http.MethodPost, "/environments/production/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{"foo"},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("default-org depsolver status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	payload := decodeJSONMap(t, rec.Body.Bytes())
+	if len(payload) != 1 {
+		t.Fatalf("len(payload) = %d, want %d (%v)", len(payload), 1, payload)
+	}
+	assertCookbookVersionBody(t, payload, "foo", "1.2.3")
 }
 
 func TestOrganizationEnvironmentCookbookVersionsReturnsNotFoundForMissingOrganization(t *testing.T) {
@@ -1429,6 +1834,78 @@ func TestOrganizationEnvironmentCookbookVersionsMatchesUpstreamFirstGraph(t *tes
 	assertCookbookVersionBody(t, payload, "app3", "0.3.0")
 }
 
+func TestEnvironmentCookbookVersionsMatchesUpstreamPinnedRootNoSolutionGraph(t *testing.T) {
+	router := newTestRouter(t)
+	createEnvironmentForCookbookTests(t, router, "production")
+	createCookbookVersion(t, router, "app1", "0.1.0", "", map[string]string{
+		"app2": "0.2.0",
+		"app3": ">= 0.2.0",
+	})
+	createCookbookVersion(t, router, "app1", "0.2.0", "", nil)
+	createCookbookVersion(t, router, "app1", "0.3.0", "", nil)
+	createCookbookVersion(t, router, "app2", "0.1.0", "", nil)
+	createCookbookVersion(t, router, "app2", "0.2.0", "", map[string]string{
+		"app3": "0.1.0",
+	})
+	createCookbookVersion(t, router, "app2", "0.3.0", "", nil)
+	createCookbookVersion(t, router, "app3", "0.1.0", "", nil)
+	createCookbookVersion(t, router, "app3", "0.2.0", "", nil)
+	createCookbookVersion(t, router, "app3", "0.3.0", "", nil)
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/environments/production/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{"app1@0.1.0"},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusPreconditionFailed {
+		t.Fatalf("depsolver pinned-root no-solution status = %d, want %d, body = %s", rec.Code, http.StatusPreconditionFailed, rec.Body.String())
+	}
+
+	payload := decodeJSONMap(t, rec.Body.Bytes())
+	assertUnsatisfiedDepsolverDetail(t, payload, map[string]any{
+		"message":                     "Unable to satisfy constraints on package app3 due to solution constraint (app1 = 0.1.0). Solution constraints that may result in a constraint on app3: [(app1 = 0.1.0) -> (app3 >= 0.2.0), (app1 = 0.1.0) -> (app2 0.2.0) -> (app3 0.1.0)]",
+		"unsatisfiable_run_list_item": "(app1 = 0.1.0)",
+		"non_existent_cookbooks":      []string{},
+		"most_constrained_cookbooks":  []string{"app3 = 0.3.0 -> []"},
+	})
+}
+
+func TestOrganizationEnvironmentCookbookVersionsMatchesUpstreamPinnedRootNoSolutionGraph(t *testing.T) {
+	router := newTestRouter(t)
+	createEnvironmentForCookbookTests(t, router, "production")
+	createCookbookVersion(t, router, "app1", "0.1.0", "", map[string]string{
+		"app2": "0.2.0",
+		"app3": ">= 0.2.0",
+	})
+	createCookbookVersion(t, router, "app1", "0.2.0", "", nil)
+	createCookbookVersion(t, router, "app1", "0.3.0", "", nil)
+	createCookbookVersion(t, router, "app2", "0.1.0", "", nil)
+	createCookbookVersion(t, router, "app2", "0.2.0", "", map[string]string{
+		"app3": "0.1.0",
+	})
+	createCookbookVersion(t, router, "app2", "0.3.0", "", nil)
+	createCookbookVersion(t, router, "app3", "0.1.0", "", nil)
+	createCookbookVersion(t, router, "app3", "0.2.0", "", nil)
+	createCookbookVersion(t, router, "app3", "0.3.0", "", nil)
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/organizations/ponyville/environments/production/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{"app1@0.1.0"},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusPreconditionFailed {
+		t.Fatalf("org-scoped depsolver pinned-root no-solution status = %d, want %d, body = %s", rec.Code, http.StatusPreconditionFailed, rec.Body.String())
+	}
+
+	payload := decodeJSONMap(t, rec.Body.Bytes())
+	assertUnsatisfiedDepsolverDetail(t, payload, map[string]any{
+		"message":                     "Unable to satisfy constraints on package app3 due to solution constraint (app1 = 0.1.0). Solution constraints that may result in a constraint on app3: [(app1 = 0.1.0) -> (app3 >= 0.2.0), (app1 = 0.1.0) -> (app2 0.2.0) -> (app3 0.1.0)]",
+		"unsatisfiable_run_list_item": "(app1 = 0.1.0)",
+		"non_existent_cookbooks":      []string{},
+		"most_constrained_cookbooks":  []string{"app3 = 0.3.0 -> []"},
+	})
+}
+
 func TestEnvironmentCookbookVersionsMatchesUpstreamSecondGraph(t *testing.T) {
 	router := newTestRouter(t)
 	createEnvironmentForCookbookTests(t, router, "production")
@@ -2312,6 +2789,78 @@ func TestOrganizationEnvironmentCookbookVersionsRequiresCookbookContainerReadAut
 	}
 }
 
+func TestDefaultEnvironmentCookbookVersionsRequiresCookbookContainerReadAuthz(t *testing.T) {
+	var authorizer *recordingDepsolverAuthorizer
+	router, _ := newSearchTestRouterWithAuthorizer(t, func(state *bootstrap.Service) authz.Authorizer {
+		authorizer = &recordingDepsolverAuthorizer{
+			base: authz.NewACLAuthorizer(state),
+			deny: map[string]struct{}{
+				"read:container:cookbooks": {},
+			},
+		}
+		return authorizer
+	})
+	authorizer.calls = nil
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/environments/_default/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("default depsolver cookbook container authz status = %d, want %d, body = %s", rec.Code, http.StatusForbidden, rec.Body.String())
+	}
+
+	wantCalls := []string{
+		"read:environment:_default",
+		"read:container:cookbooks",
+	}
+	if len(authorizer.calls) != len(wantCalls) {
+		t.Fatalf("depsolver authz calls = %v, want %v", authorizer.calls, wantCalls)
+	}
+	for idx := range wantCalls {
+		if authorizer.calls[idx] != wantCalls[idx] {
+			t.Fatalf("depsolver authz calls[%d] = %q, want %q (%v)", idx, authorizer.calls[idx], wantCalls[idx], authorizer.calls)
+		}
+	}
+}
+
+func TestOrganizationDefaultEnvironmentCookbookVersionsRequiresCookbookContainerReadAuthz(t *testing.T) {
+	var authorizer *recordingDepsolverAuthorizer
+	router, _ := newSearchTestRouterWithAuthorizer(t, func(state *bootstrap.Service) authz.Authorizer {
+		authorizer = &recordingDepsolverAuthorizer{
+			base: authz.NewACLAuthorizer(state),
+			deny: map[string]struct{}{
+				"read:container:cookbooks": {},
+			},
+		}
+		return authorizer
+	})
+	authorizer.calls = nil
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/organizations/ponyville/environments/_default/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("org-scoped default depsolver cookbook container authz status = %d, want %d, body = %s", rec.Code, http.StatusForbidden, rec.Body.String())
+	}
+
+	wantCalls := []string{
+		"read:environment:_default",
+		"read:container:cookbooks",
+	}
+	if len(authorizer.calls) != len(wantCalls) {
+		t.Fatalf("depsolver authz calls = %v, want %v", authorizer.calls, wantCalls)
+	}
+	for idx := range wantCalls {
+		if authorizer.calls[idx] != wantCalls[idx] {
+			t.Fatalf("depsolver authz calls[%d] = %q, want %q (%v)", idx, authorizer.calls[idx], wantCalls[idx], authorizer.calls)
+		}
+	}
+}
+
 func TestEnvironmentCookbookVersionsRequiresRolesContainerReadAuthzForRoleRunList(t *testing.T) {
 	var authorizer *recordingDepsolverAuthorizer
 	router, state := newSearchTestRouterWithAuthorizer(t, func(state *bootstrap.Service) authz.Authorizer {
@@ -2403,6 +2952,108 @@ func TestOrganizationEnvironmentCookbookVersionsRequiresRolesContainerReadAuthzF
 
 	wantCalls := []string{
 		"read:environment:production",
+		"read:container:cookbooks",
+		"read:container:roles",
+	}
+	if len(authorizer.calls) != len(wantCalls) {
+		t.Fatalf("depsolver authz calls = %v, want %v", authorizer.calls, wantCalls)
+	}
+	for idx := range wantCalls {
+		if authorizer.calls[idx] != wantCalls[idx] {
+			t.Fatalf("depsolver authz calls[%d] = %q, want %q (%v)", idx, authorizer.calls[idx], wantCalls[idx], authorizer.calls)
+		}
+	}
+}
+
+func TestDefaultEnvironmentCookbookVersionsRequiresRolesContainerReadAuthzForRoleRunList(t *testing.T) {
+	var authorizer *recordingDepsolverAuthorizer
+	router, state := newSearchTestRouterWithAuthorizer(t, func(state *bootstrap.Service) authz.Authorizer {
+		authorizer = &recordingDepsolverAuthorizer{
+			base: authz.NewACLAuthorizer(state),
+			deny: map[string]struct{}{
+				"read:container:roles": {},
+			},
+		}
+		return authorizer
+	})
+	if _, err := state.CreateRole("ponyville", bootstrap.CreateRoleInput{
+		Payload: map[string]any{
+			"name":                "web",
+			"description":         "",
+			"json_class":          "Chef::Role",
+			"chef_type":           "role",
+			"default_attributes":  map[string]any{},
+			"override_attributes": map[string]any{},
+			"run_list":            []any{"recipe[apache2]"},
+			"env_run_lists":       map[string]any{},
+		},
+	}); err != nil {
+		t.Fatalf("CreateRole(web) error = %v", err)
+	}
+	authorizer.calls = nil
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/environments/_default/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{"role[web]"},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("default depsolver roles container authz status = %d, want %d, body = %s", rec.Code, http.StatusForbidden, rec.Body.String())
+	}
+
+	wantCalls := []string{
+		"read:environment:_default",
+		"read:container:cookbooks",
+		"read:container:roles",
+	}
+	if len(authorizer.calls) != len(wantCalls) {
+		t.Fatalf("depsolver authz calls = %v, want %v", authorizer.calls, wantCalls)
+	}
+	for idx := range wantCalls {
+		if authorizer.calls[idx] != wantCalls[idx] {
+			t.Fatalf("depsolver authz calls[%d] = %q, want %q (%v)", idx, authorizer.calls[idx], wantCalls[idx], authorizer.calls)
+		}
+	}
+}
+
+func TestOrganizationDefaultEnvironmentCookbookVersionsRequiresRolesContainerReadAuthzForRoleRunList(t *testing.T) {
+	var authorizer *recordingDepsolverAuthorizer
+	router, state := newSearchTestRouterWithAuthorizer(t, func(state *bootstrap.Service) authz.Authorizer {
+		authorizer = &recordingDepsolverAuthorizer{
+			base: authz.NewACLAuthorizer(state),
+			deny: map[string]struct{}{
+				"read:container:roles": {},
+			},
+		}
+		return authorizer
+	})
+	if _, err := state.CreateRole("ponyville", bootstrap.CreateRoleInput{
+		Payload: map[string]any{
+			"name":                "web",
+			"description":         "",
+			"json_class":          "Chef::Role",
+			"chef_type":           "role",
+			"default_attributes":  map[string]any{},
+			"override_attributes": map[string]any{},
+			"run_list":            []any{"recipe[apache2]"},
+			"env_run_lists":       map[string]any{},
+		},
+	}); err != nil {
+		t.Fatalf("CreateRole(web) error = %v", err)
+	}
+	authorizer.calls = nil
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/organizations/ponyville/environments/_default/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{"role[web]"},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("org-scoped default depsolver roles container authz status = %d, want %d, body = %s", rec.Code, http.StatusForbidden, rec.Body.String())
+	}
+
+	wantCalls := []string{
+		"read:environment:_default",
 		"read:container:cookbooks",
 		"read:container:roles",
 	}
