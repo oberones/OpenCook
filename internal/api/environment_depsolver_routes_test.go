@@ -3918,6 +3918,33 @@ func TestOrganizationEnvironmentCookbookVersionsRejectsMissingRoleRunListItem(t 
 	assertEnvironmentErrorMessages(t, rec.Body.Bytes(), "Field 'run_list' contains unknown role item role[missing]")
 }
 
+func TestDefaultEnvironmentCookbookVersionsRejectsMissingRoleRunListItemOnDefaultAliases(t *testing.T) {
+	router := newTestRouter(t)
+
+	routes := []struct {
+		name string
+		path string
+	}{
+		{name: "default_environment", path: "/environments/_default/cookbook_versions"},
+		{name: "org_scoped_default_environment", path: "/organizations/ponyville/environments/_default/cookbook_versions"},
+	}
+
+	for _, route := range routes {
+		t.Run(route.name, func(t *testing.T) {
+			req := newSignedJSONRequest(t, http.MethodPost, route.path, mustMarshalSandboxJSON(t, map[string]any{
+				"run_list": []any{"role[missing]"},
+			}))
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("%s depsolver missing role status = %d, want %d, body = %s", route.name, rec.Code, http.StatusBadRequest, rec.Body.String())
+			}
+
+			assertEnvironmentErrorMessages(t, rec.Body.Bytes(), "Field 'run_list' contains unknown role item role[missing]")
+		})
+	}
+}
+
 func TestEnvironmentCookbookVersionsRejectsRecursiveRoleRunListItem(t *testing.T) {
 	router, state := newSearchTestRouterWithAuthorizer(t, nil)
 	createEnvironmentForCookbookTests(t, router, "production")
@@ -4006,6 +4033,62 @@ func TestOrganizationEnvironmentCookbookVersionsRejectsRecursiveRoleRunListItem(
 	}
 
 	assertEnvironmentErrorMessages(t, rec.Body.Bytes(), "Field 'run_list' contains recursive role item role[web]")
+}
+
+func TestDefaultEnvironmentCookbookVersionsRejectsRecursiveRoleRunListItemOnDefaultAliases(t *testing.T) {
+	router, state := newSearchTestRouterWithAuthorizer(t, nil)
+
+	if _, err := state.CreateRole("ponyville", bootstrap.CreateRoleInput{
+		Payload: map[string]any{
+			"name":                "web",
+			"description":         "",
+			"json_class":          "Chef::Role",
+			"chef_type":           "role",
+			"default_attributes":  map[string]any{},
+			"override_attributes": map[string]any{},
+			"run_list":            []any{"role[db]"},
+			"env_run_lists":       map[string]any{},
+		},
+	}); err != nil {
+		t.Fatalf("CreateRole(web) error = %v", err)
+	}
+	if _, err := state.CreateRole("ponyville", bootstrap.CreateRoleInput{
+		Payload: map[string]any{
+			"name":                "db",
+			"description":         "",
+			"json_class":          "Chef::Role",
+			"chef_type":           "role",
+			"default_attributes":  map[string]any{},
+			"override_attributes": map[string]any{},
+			"run_list":            []any{"role[web]"},
+			"env_run_lists":       map[string]any{},
+		},
+	}); err != nil {
+		t.Fatalf("CreateRole(db) error = %v", err)
+	}
+
+	routes := []struct {
+		name string
+		path string
+	}{
+		{name: "default_environment", path: "/environments/_default/cookbook_versions"},
+		{name: "org_scoped_default_environment", path: "/organizations/ponyville/environments/_default/cookbook_versions"},
+	}
+
+	for _, route := range routes {
+		t.Run(route.name, func(t *testing.T) {
+			req := newSignedJSONRequest(t, http.MethodPost, route.path, mustMarshalSandboxJSON(t, map[string]any{
+				"run_list": []any{"role[web]"},
+			}))
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("%s depsolver recursive role status = %d, want %d, body = %s", route.name, rec.Code, http.StatusBadRequest, rec.Body.String())
+			}
+
+			assertEnvironmentErrorMessages(t, rec.Body.Bytes(), "Field 'run_list' contains recursive role item role[web]")
+		})
+	}
 }
 
 func assertEnvironmentErrorMessages(t *testing.T, body []byte, want ...string) {
