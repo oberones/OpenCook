@@ -7,9 +7,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/oberones/OpenCook/internal/authz"
 	"github.com/oberones/OpenCook/internal/bootstrap"
+	"github.com/oberones/OpenCook/internal/config"
 )
 
 func TestEnvironmentCookbookVersionsRejectInvalidJSON(t *testing.T) {
@@ -230,6 +232,77 @@ func TestOrganizationEnvironmentCookbookVersionsReturnsNotFoundForMissingEnviron
 	}
 
 	assertEnvironmentErrorMessages(t, rec.Body.Bytes(), "Cannot load environment not@environment")
+}
+
+func TestEnvironmentCookbookVersionsRequiresOrganizationWhenAmbiguous(t *testing.T) {
+	router := newTestRouter(t)
+	createOrgForTest(t, router, "canterlot")
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/environments/production/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("ambiguous depsolver status = %d, want %d, body = %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+
+	payload := decodeJSONMap(t, rec.Body.Bytes())
+	if payload["error"] != "organization_required" {
+		t.Fatalf("error = %v, want %q", payload["error"], "organization_required")
+	}
+	if payload["message"] != "organization context is required for this route" {
+		t.Fatalf("message = %v, want %q", payload["message"], "organization context is required for this route")
+	}
+}
+
+func TestEnvironmentCookbookVersionsUsesConfiguredDefaultOrganizationWhenAmbiguous(t *testing.T) {
+	router := newTestRouterWithConfig(t, config.Config{
+		ServiceName:         "opencook",
+		Environment:         "test",
+		AuthSkew:            15 * time.Minute,
+		DefaultOrganization: "canterlot",
+	})
+	createOrgForTest(t, router, "canterlot")
+
+	envBody := mustMarshalEnvironmentPayload(t, "production")
+	envReq := httptest.NewRequest(http.MethodPost, "/environments", bytes.NewReader(envBody))
+	applySignedHeaders(t, envReq, "pivotal", "", http.MethodPost, "/environments", envBody, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	envRec := httptest.NewRecorder()
+	router.ServeHTTP(envRec, envReq)
+	if envRec.Code != http.StatusCreated {
+		t.Fatalf("create environment status = %d, want %d, body = %s", envRec.Code, http.StatusCreated, envRec.Body.String())
+	}
+
+	cookbookBody := mustMarshalSandboxJSON(t, cookbookVersionPayload("foo", "1.2.3", "", nil))
+	cookbookReq := httptest.NewRequest(http.MethodPut, "/cookbooks/foo/1.2.3", bytes.NewReader(cookbookBody))
+	applySignedHeaders(t, cookbookReq, "pivotal", "", http.MethodPut, "/cookbooks/foo/1.2.3", cookbookBody, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	cookbookRec := httptest.NewRecorder()
+	router.ServeHTTP(cookbookRec, cookbookReq)
+	if cookbookRec.Code != http.StatusCreated {
+		t.Fatalf("create cookbook status = %d, want %d, body = %s", cookbookRec.Code, http.StatusCreated, cookbookRec.Body.String())
+	}
+
+	req := newSignedJSONRequestAs(t, "pivotal", http.MethodPost, "/environments/production/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{"foo"},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("default-org depsolver status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	payload := decodeJSONMap(t, rec.Body.Bytes())
+	if len(payload) != 1 {
+		t.Fatalf("len(payload) = %d, want %d (%v)", len(payload), 1, payload)
+	}
+	assertCookbookVersionBody(t, payload, "foo", "1.2.3")
 }
 
 func TestOrganizationEnvironmentCookbookVersionsReturnsNotFoundForMissingOrganization(t *testing.T) {
