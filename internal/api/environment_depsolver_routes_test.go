@@ -454,6 +454,46 @@ func TestEnvironmentCookbookVersionsResolvesPinnedAndDependentCookbooks(t *testi
 	createCookbookVersion(t, router, "bar", "2.0.0", "", map[string]string{"foo": "= 1.0.0"})
 	createCookbookVersion(t, router, "quux", "4.0.0", "", map[string]string{"bar": "= 2.0.0"})
 
+	req := newSignedJSONRequestAs(t, "normal-user", http.MethodPost, "/environments/production/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{"quux", "foo@1.0.0"},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("depsolver success status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	payload := decodeJSONMap(t, rec.Body.Bytes())
+	assertCookbookVersionBody(t, payload, "foo", "1.0.0")
+	assertCookbookVersionBody(t, payload, "bar", "2.0.0")
+	assertCookbookVersionBody(t, payload, "quux", "4.0.0")
+
+	barDeps := payload["bar"].(map[string]any)["metadata"].(map[string]any)["dependencies"].(map[string]any)
+	if value := barDeps["foo"]; value != "= 1.0.0" {
+		t.Fatalf("bar dependency foo = %v, want %q", value, "= 1.0.0")
+	}
+	quuxDeps := payload["quux"].(map[string]any)["metadata"].(map[string]any)["dependencies"].(map[string]any)
+	if value := quuxDeps["bar"]; value != "= 2.0.0" {
+		t.Fatalf("quux dependency bar = %v, want %q", value, "= 2.0.0")
+	}
+
+	fooMetadata := payload["foo"].(map[string]any)["metadata"].(map[string]any)
+	if _, ok := fooMetadata["attributes"]; ok {
+		t.Fatalf("depsolver metadata.attributes present, want omitted (%v)", fooMetadata)
+	}
+	if _, ok := fooMetadata["long_description"]; ok {
+		t.Fatalf("depsolver metadata.long_description present, want omitted (%v)", fooMetadata)
+	}
+}
+
+func TestOrganizationEnvironmentCookbookVersionsResolvesPinnedAndDependentCookbooks(t *testing.T) {
+	router := newTestRouter(t)
+	createEnvironmentForCookbookTests(t, router, "production")
+	createCookbookVersion(t, router, "foo", "1.0.0", "", nil)
+	createCookbookVersion(t, router, "foo", "2.0.0", "", nil)
+	createCookbookVersion(t, router, "bar", "2.0.0", "", map[string]string{"foo": "= 1.0.0"})
+	createCookbookVersion(t, router, "quux", "4.0.0", "", map[string]string{"bar": "= 2.0.0"})
+
 	req := newSignedJSONRequestAs(t, "normal-user", http.MethodPost, "/organizations/ponyville/environments/production/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
 		"run_list": []any{"quux", "foo@1.0.0"},
 	}))
