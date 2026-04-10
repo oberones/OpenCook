@@ -581,6 +581,36 @@ func TestOrganizationEnvironmentCookbookVersionsReturnsEmptyObjectForEmptyRunLis
 	}
 }
 
+func TestDefaultEnvironmentCookbookVersionsReturnsEmptyObjectForEmptyRunList(t *testing.T) {
+	router := newTestRouter(t)
+
+	routes := []struct {
+		name string
+		path string
+	}{
+		{name: "default_environment", path: "/environments/_default/cookbook_versions"},
+		{name: "org_scoped_default_environment", path: "/organizations/ponyville/environments/_default/cookbook_versions"},
+	}
+
+	for _, route := range routes {
+		t.Run(route.name, func(t *testing.T) {
+			req := newSignedJSONRequest(t, http.MethodPost, route.path, mustMarshalSandboxJSON(t, map[string]any{
+				"run_list": []any{},
+			}))
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("%s depsolver empty run_list status = %d, want %d, body = %s", route.name, rec.Code, http.StatusOK, rec.Body.String())
+			}
+
+			payload := decodeJSONMap(t, rec.Body.Bytes())
+			if len(payload) != 0 {
+				t.Fatalf("payload = %v, want empty object", payload)
+			}
+		})
+	}
+}
+
 func TestEnvironmentCookbookVersionsReturnsEmptyObjectForMissingRunList(t *testing.T) {
 	router := newTestRouter(t)
 	createEnvironmentForCookbookTests(t, router, "production")
