@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -2401,6 +2402,60 @@ func TestOrganizationEnvironmentCookbookVersionsMatchesUpstreamConflictingPassin
 	assertCookbookVersionBody(t, payload, "app5", "2.0.0")
 }
 
+func TestEnvironmentCookbookVersionsMatchesUpstreamConflictingFailingGraph(t *testing.T) {
+	router := newTestRouter(t)
+	createEnvironmentForCookbookTests(t, router, "production")
+	createCookbookVersion(t, router, "app1", "3.0.0", "", map[string]string{
+		"app2": ">= 0.0.0",
+		"app5": "= 2.0.0",
+		"app4": "<= 5.0.0",
+	})
+	createCookbookVersion(t, router, "app2", "0.0.1", "", map[string]string{"app4": ">= 5.0.0"})
+	createCookbookVersion(t, router, "app3", "0.1.0", "", map[string]string{"app5": "= 6.0.0"})
+	createCookbookVersion(t, router, "app4", "5.0.0", "", map[string]string{"app5": "= 2.0.0"})
+	createCookbookVersion(t, router, "app5", "2.0.0", "", nil)
+	createCookbookVersion(t, router, "app5", "6.0.0", "", nil)
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/environments/production/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{"app1", "app3"},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusPreconditionFailed {
+		t.Fatalf("depsolver conflicting failing status = %d, want %d, body = %s", rec.Code, http.StatusPreconditionFailed, rec.Body.String())
+	}
+
+	payload := decodeJSONMap(t, rec.Body.Bytes())
+	assertConflictingFailingDepsolverDetail(t, payload)
+}
+
+func TestOrganizationEnvironmentCookbookVersionsMatchesUpstreamConflictingFailingGraph(t *testing.T) {
+	router := newTestRouter(t)
+	createEnvironmentForCookbookTests(t, router, "production")
+	createCookbookVersion(t, router, "app1", "3.0.0", "", map[string]string{
+		"app2": ">= 0.0.0",
+		"app5": "= 2.0.0",
+		"app4": "<= 5.0.0",
+	})
+	createCookbookVersion(t, router, "app2", "0.0.1", "", map[string]string{"app4": ">= 5.0.0"})
+	createCookbookVersion(t, router, "app3", "0.1.0", "", map[string]string{"app5": "= 6.0.0"})
+	createCookbookVersion(t, router, "app4", "5.0.0", "", map[string]string{"app5": "= 2.0.0"})
+	createCookbookVersion(t, router, "app5", "2.0.0", "", nil)
+	createCookbookVersion(t, router, "app5", "6.0.0", "", nil)
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/organizations/ponyville/environments/production/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{"app1", "app3"},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusPreconditionFailed {
+		t.Fatalf("org-scoped depsolver conflicting failing status = %d, want %d, body = %s", rec.Code, http.StatusPreconditionFailed, rec.Body.String())
+	}
+
+	payload := decodeJSONMap(t, rec.Body.Bytes())
+	assertConflictingFailingDepsolverDetail(t, payload)
+}
+
 func TestEnvironmentCookbookVersionsCombinesEnvironmentAndDependencyConstraints(t *testing.T) {
 	router := newTestRouter(t)
 	createEnvironmentForCookbookTests(t, router, "production")
@@ -3691,6 +3746,37 @@ func assertUnsatisfiedDepsolverDetail(t *testing.T, payload map[string]any, want
 	}
 	assertStringSliceValue(t, detail["non_existent_cookbooks"], want["non_existent_cookbooks"].([]string))
 	assertStringSliceValue(t, detail["most_constrained_cookbooks"], want["most_constrained_cookbooks"].([]string))
+}
+
+func assertConflictingFailingDepsolverDetail(t *testing.T, payload map[string]any) {
+	t.Helper()
+
+	errorList, ok := payload["error"].([]any)
+	if !ok || len(errorList) != 1 {
+		t.Fatalf("error payload = %v, want one depsolver error object", payload["error"])
+	}
+	detail, ok := errorList[0].(map[string]any)
+	if !ok {
+		t.Fatalf("error detail type = %T, want map[string]any", errorList[0])
+	}
+	message, ok := detail["message"].(string)
+	if !ok {
+		t.Fatalf("message type = %T, want string", detail["message"])
+	}
+	if !strings.Contains(message, "Unable to satisfy constraints on package app5 due to solution constraint (app3 >= 0.0.0).") {
+		t.Fatalf("message = %q, want later-root conflicting failing prefix", message)
+	}
+	if !strings.Contains(message, "(app1 = 3.0.0) -> (app5 = 2.0.0)") {
+		t.Fatalf("message = %q, want direct app1 path", message)
+	}
+	if !strings.Contains(message, "(app3 = 0.1.0) -> (app5 = 6.0.0)") {
+		t.Fatalf("message = %q, want app3 conflicting path", message)
+	}
+	if detail["unsatisfiable_run_list_item"] != "(app3 >= 0.0.0)" {
+		t.Fatalf("unsatisfiable_run_list_item = %v, want %q", detail["unsatisfiable_run_list_item"], "(app3 >= 0.0.0)")
+	}
+	assertStringSliceValue(t, detail["non_existent_cookbooks"], []string{})
+	assertStringSliceValue(t, detail["most_constrained_cookbooks"], []string{"app5 = 2.0.0 -> []"})
 }
 
 func assertCookbookVersionBody(t *testing.T, payload map[string]any, cookbook, version string) {
