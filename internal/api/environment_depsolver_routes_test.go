@@ -1615,6 +1615,40 @@ func TestOrganizationEnvironmentCookbookVersionsReturns412ForMissingDependency(t
 	assertStringSliceValue(t, detail["most_constrained_cookbooks"], []string{})
 }
 
+func TestDefaultEnvironmentCookbookVersionsReturns412ForMissingDependency(t *testing.T) {
+	router := newTestRouter(t)
+	createCookbookVersion(t, router, "foo", "1.2.3", "", map[string]string{"this_does_not_exist": ">= 0.0.0"})
+
+	routes := []struct {
+		name string
+		path string
+	}{
+		{name: "default_environment", path: "/environments/_default/cookbook_versions"},
+		{name: "org_scoped_default_environment", path: "/organizations/ponyville/environments/_default/cookbook_versions"},
+	}
+
+	for _, route := range routes {
+		t.Run(route.name, func(t *testing.T) {
+			req := newSignedJSONRequest(t, http.MethodPost, route.path, mustMarshalSandboxJSON(t, map[string]any{
+				"run_list": []any{"foo"},
+			}))
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+			if rec.Code != http.StatusPreconditionFailed {
+				t.Fatalf("%s depsolver missing dependency status = %d, want %d, body = %s", route.name, rec.Code, http.StatusPreconditionFailed, rec.Body.String())
+			}
+
+			payload := decodeJSONMap(t, rec.Body.Bytes())
+			assertUnsatisfiedDepsolverDetail(t, payload, map[string]any{
+				"message":                     "Unable to satisfy constraints on package this_does_not_exist, which does not exist, due to solution constraint (foo >= 0.0.0). Solution constraints that may result in a constraint on this_does_not_exist: [(foo = 1.2.3) -> (this_does_not_exist >= 0.0.0)]",
+				"unsatisfiable_run_list_item": "(foo >= 0.0.0)",
+				"non_existent_cookbooks":      []string{"this_does_not_exist"},
+				"most_constrained_cookbooks":  []string{},
+			})
+		})
+	}
+}
+
 func TestEnvironmentCookbookVersionsAttributesMissingDependencyToLaterRoot(t *testing.T) {
 	router := newTestRouter(t)
 	createEnvironmentForCookbookTests(t, router, "production")
@@ -1711,6 +1745,41 @@ func TestOrganizationEnvironmentCookbookVersionsReturns412ForUnsatisfiedDependen
 	})
 }
 
+func TestDefaultEnvironmentCookbookVersionsReturns412ForUnsatisfiedDependencyVersion(t *testing.T) {
+	router := newTestRouter(t)
+	createCookbookVersion(t, router, "foo", "1.2.3", "", map[string]string{"bar": "> 2.0.0"})
+	createCookbookVersion(t, router, "bar", "2.0.0", "", nil)
+
+	routes := []struct {
+		name string
+		path string
+	}{
+		{name: "default_environment", path: "/environments/_default/cookbook_versions"},
+		{name: "org_scoped_default_environment", path: "/organizations/ponyville/environments/_default/cookbook_versions"},
+	}
+
+	for _, route := range routes {
+		t.Run(route.name, func(t *testing.T) {
+			req := newSignedJSONRequest(t, http.MethodPost, route.path, mustMarshalSandboxJSON(t, map[string]any{
+				"run_list": []any{"foo"},
+			}))
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+			if rec.Code != http.StatusPreconditionFailed {
+				t.Fatalf("%s depsolver unsatisfied dependency status = %d, want %d, body = %s", route.name, rec.Code, http.StatusPreconditionFailed, rec.Body.String())
+			}
+
+			payload := decodeJSONMap(t, rec.Body.Bytes())
+			assertUnsatisfiedDepsolverDetail(t, payload, map[string]any{
+				"message":                     "Unable to satisfy constraints on package bar due to solution constraint (foo >= 0.0.0). Solution constraints that may result in a constraint on bar: [(foo = 1.2.3) -> (bar > 2.0.0)]",
+				"unsatisfiable_run_list_item": "(foo >= 0.0.0)",
+				"non_existent_cookbooks":      []string{},
+				"most_constrained_cookbooks":  []string{"bar = 2.0.0 -> []"},
+			})
+		})
+	}
+}
+
 func TestEnvironmentCookbookVersionsReturns412ForImpossibleDependency(t *testing.T) {
 	router := newTestRouter(t)
 	createEnvironmentForCookbookTests(t, router, "production")
@@ -1757,6 +1826,41 @@ func TestOrganizationEnvironmentCookbookVersionsReturns412ForImpossibleDependenc
 		"non_existent_cookbooks":      []string{},
 		"most_constrained_cookbooks":  []string{"bar = 2.0.0 -> [(foo > 3.0.0)]"},
 	})
+}
+
+func TestDefaultEnvironmentCookbookVersionsReturns412ForImpossibleDependency(t *testing.T) {
+	router := newTestRouter(t)
+	createCookbookVersion(t, router, "foo", "1.2.3", "", map[string]string{"bar": "> 2.0.0"})
+	createCookbookVersion(t, router, "bar", "2.0.0", "", map[string]string{"foo": "> 3.0.0"})
+
+	routes := []struct {
+		name string
+		path string
+	}{
+		{name: "default_environment", path: "/environments/_default/cookbook_versions"},
+		{name: "org_scoped_default_environment", path: "/organizations/ponyville/environments/_default/cookbook_versions"},
+	}
+
+	for _, route := range routes {
+		t.Run(route.name, func(t *testing.T) {
+			req := newSignedJSONRequest(t, http.MethodPost, route.path, mustMarshalSandboxJSON(t, map[string]any{
+				"run_list": []any{"foo"},
+			}))
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+			if rec.Code != http.StatusPreconditionFailed {
+				t.Fatalf("%s depsolver impossible dependency status = %d, want %d, body = %s", route.name, rec.Code, http.StatusPreconditionFailed, rec.Body.String())
+			}
+
+			payload := decodeJSONMap(t, rec.Body.Bytes())
+			assertUnsatisfiedDepsolverDetail(t, payload, map[string]any{
+				"message":                     "Unable to satisfy constraints on package bar due to solution constraint (foo >= 0.0.0). Solution constraints that may result in a constraint on bar: [(foo = 1.2.3) -> (bar > 2.0.0)]",
+				"unsatisfiable_run_list_item": "(foo >= 0.0.0)",
+				"non_existent_cookbooks":      []string{},
+				"most_constrained_cookbooks":  []string{"bar = 2.0.0 -> [(foo > 3.0.0)]"},
+			})
+		})
+	}
 }
 
 func TestEnvironmentCookbookVersionsReturns412ForTransitiveConflict(t *testing.T) {
