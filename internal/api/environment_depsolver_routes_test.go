@@ -437,6 +437,50 @@ func TestOrganizationDefaultEnvironmentCookbookVersionsRejectBogusBracketedRunLi
 	assertEnvironmentErrorMessages(t, rec.Body.Bytes(), "Field 'run_list' is not a valid run list")
 }
 
+func TestEnvironmentCookbookVersionsRejectChefInvalidRunListItemShapes(t *testing.T) {
+	router := newTestRouter(t)
+	createEnvironmentForCookbookTests(t, router, "production")
+
+	routes := []struct {
+		name string
+		path string
+	}{
+		{name: "named_environment", path: "/environments/production/cookbook_versions"},
+		{name: "org_scoped_named_environment", path: "/organizations/ponyville/environments/production/cookbook_versions"},
+		{name: "default_environment", path: "/environments/_default/cookbook_versions"},
+		{name: "org_scoped_default_environment", path: "/organizations/ponyville/environments/_default/cookbook_versions"},
+	}
+	items := []struct {
+		name string
+		item string
+	}{
+		{name: "one_part_unqualified_version", item: "gibberish@1"},
+		{name: "one_part_qualified_recipe_version", item: "recipe[gibberish@1]"},
+		{name: "single_colon_separator", item: "foo:bar"},
+		{name: "triple_colon_separator", item: "foo:::bar"},
+		{name: "qualified_role_with_colon", item: "role[foo:bar]"},
+	}
+
+	for _, route := range routes {
+		t.Run(route.name, func(t *testing.T) {
+			for _, item := range items {
+				t.Run(item.name, func(t *testing.T) {
+					req := newSignedJSONRequest(t, http.MethodPost, route.path, mustMarshalSandboxJSON(t, map[string]any{
+						"run_list": []any{item.item},
+					}))
+					rec := httptest.NewRecorder()
+					router.ServeHTTP(rec, req)
+					if rec.Code != http.StatusBadRequest {
+						t.Fatalf("%s invalid run_list item status = %d, want %d, body = %s", route.name, rec.Code, http.StatusBadRequest, rec.Body.String())
+					}
+
+					assertEnvironmentErrorMessages(t, rec.Body.Bytes(), "Field 'run_list' is not a valid run list")
+				})
+			}
+		})
+	}
+}
+
 func TestEnvironmentCookbookVersionsRejectNonStringRunListItem(t *testing.T) {
 	router := newTestRouter(t)
 	createEnvironmentForCookbookTests(t, router, "production")
@@ -568,6 +612,54 @@ func TestOrganizationEnvironmentCookbookVersionsReturnsEmptyObjectForMissingRunL
 	payload := decodeJSONMap(t, rec.Body.Bytes())
 	if len(payload) != 0 {
 		t.Fatalf("payload = %v, want empty object", payload)
+	}
+}
+
+func TestEnvironmentCookbookVersionsAcceptsChefCompatibleRunListItemShapes(t *testing.T) {
+	router := newTestRouter(t)
+	createEnvironmentForCookbookTests(t, router, "production")
+
+	routes := []struct {
+		name string
+		path string
+	}{
+		{name: "named_environment", path: "/environments/production/cookbook_versions"},
+		{name: "org_scoped_named_environment", path: "/organizations/ponyville/environments/production/cookbook_versions"},
+		{name: "default_environment", path: "/environments/_default/cookbook_versions"},
+		{name: "org_scoped_default_environment", path: "/organizations/ponyville/environments/_default/cookbook_versions"},
+	}
+	payload := map[string]any{
+		"run_list": []any{
+			"recipe",
+			"recipe::foo",
+			"recipe::bar@1.0.0",
+			"role",
+			"role::foo",
+			"role::bar@1.0.0",
+			"1",
+			"recipe[1]",
+			"recipe[recipe]",
+			"recipe[role]",
+			"recipe[recipe@1.0]",
+			"recipe[role@1.0.1]",
+		},
+	}
+
+	for _, route := range routes {
+		t.Run(route.name, func(t *testing.T) {
+			req := newSignedJSONRequest(t, http.MethodPost, route.path, mustMarshalSandboxJSON(t, payload))
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+			if rec.Code != http.StatusPreconditionFailed {
+				t.Fatalf("%s compatible run_list item shapes status = %d, want %d, body = %s", route.name, rec.Code, http.StatusPreconditionFailed, rec.Body.String())
+			}
+
+			assertDepsolverErrorDetail(t, decodeJSONMap(t, rec.Body.Bytes()), map[string]any{
+				"message":                    "Run list contains invalid items: no such cookbooks 1, recipe, role.",
+				"non_existent_cookbooks":     []string{"1", "recipe", "role"},
+				"cookbooks_with_no_versions": []string{},
+			})
+		})
 	}
 }
 
