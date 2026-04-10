@@ -1834,6 +1834,78 @@ func TestOrganizationEnvironmentCookbookVersionsMatchesUpstreamFirstGraph(t *tes
 	assertCookbookVersionBody(t, payload, "app3", "0.3.0")
 }
 
+func TestEnvironmentCookbookVersionsMatchesUpstreamPinnedRootNoSolutionGraph(t *testing.T) {
+	router := newTestRouter(t)
+	createEnvironmentForCookbookTests(t, router, "production")
+	createCookbookVersion(t, router, "app1", "0.1.0", "", map[string]string{
+		"app2": "0.2.0",
+		"app3": ">= 0.2.0",
+	})
+	createCookbookVersion(t, router, "app1", "0.2.0", "", nil)
+	createCookbookVersion(t, router, "app1", "0.3.0", "", nil)
+	createCookbookVersion(t, router, "app2", "0.1.0", "", nil)
+	createCookbookVersion(t, router, "app2", "0.2.0", "", map[string]string{
+		"app3": "0.1.0",
+	})
+	createCookbookVersion(t, router, "app2", "0.3.0", "", nil)
+	createCookbookVersion(t, router, "app3", "0.1.0", "", nil)
+	createCookbookVersion(t, router, "app3", "0.2.0", "", nil)
+	createCookbookVersion(t, router, "app3", "0.3.0", "", nil)
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/environments/production/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{"app1@0.1.0"},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusPreconditionFailed {
+		t.Fatalf("depsolver pinned-root no-solution status = %d, want %d, body = %s", rec.Code, http.StatusPreconditionFailed, rec.Body.String())
+	}
+
+	payload := decodeJSONMap(t, rec.Body.Bytes())
+	assertUnsatisfiedDepsolverDetail(t, payload, map[string]any{
+		"message":                     "Unable to satisfy constraints on package app3 due to solution constraint (app1 = 0.1.0). Solution constraints that may result in a constraint on app3: [(app1 = 0.1.0) -> (app3 >= 0.2.0), (app1 = 0.1.0) -> (app2 0.2.0) -> (app3 0.1.0)]",
+		"unsatisfiable_run_list_item": "(app1 = 0.1.0)",
+		"non_existent_cookbooks":      []string{},
+		"most_constrained_cookbooks":  []string{"app3 = 0.3.0 -> []"},
+	})
+}
+
+func TestOrganizationEnvironmentCookbookVersionsMatchesUpstreamPinnedRootNoSolutionGraph(t *testing.T) {
+	router := newTestRouter(t)
+	createEnvironmentForCookbookTests(t, router, "production")
+	createCookbookVersion(t, router, "app1", "0.1.0", "", map[string]string{
+		"app2": "0.2.0",
+		"app3": ">= 0.2.0",
+	})
+	createCookbookVersion(t, router, "app1", "0.2.0", "", nil)
+	createCookbookVersion(t, router, "app1", "0.3.0", "", nil)
+	createCookbookVersion(t, router, "app2", "0.1.0", "", nil)
+	createCookbookVersion(t, router, "app2", "0.2.0", "", map[string]string{
+		"app3": "0.1.0",
+	})
+	createCookbookVersion(t, router, "app2", "0.3.0", "", nil)
+	createCookbookVersion(t, router, "app3", "0.1.0", "", nil)
+	createCookbookVersion(t, router, "app3", "0.2.0", "", nil)
+	createCookbookVersion(t, router, "app3", "0.3.0", "", nil)
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/organizations/ponyville/environments/production/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{"app1@0.1.0"},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusPreconditionFailed {
+		t.Fatalf("org-scoped depsolver pinned-root no-solution status = %d, want %d, body = %s", rec.Code, http.StatusPreconditionFailed, rec.Body.String())
+	}
+
+	payload := decodeJSONMap(t, rec.Body.Bytes())
+	assertUnsatisfiedDepsolverDetail(t, payload, map[string]any{
+		"message":                     "Unable to satisfy constraints on package app3 due to solution constraint (app1 = 0.1.0). Solution constraints that may result in a constraint on app3: [(app1 = 0.1.0) -> (app3 >= 0.2.0), (app1 = 0.1.0) -> (app2 0.2.0) -> (app3 0.1.0)]",
+		"unsatisfiable_run_list_item": "(app1 = 0.1.0)",
+		"non_existent_cookbooks":      []string{},
+		"most_constrained_cookbooks":  []string{"app3 = 0.3.0 -> []"},
+	})
+}
+
 func TestEnvironmentCookbookVersionsMatchesUpstreamSecondGraph(t *testing.T) {
 	router := newTestRouter(t)
 	createEnvironmentForCookbookTests(t, router, "production")

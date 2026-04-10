@@ -1132,6 +1132,68 @@ func TestSolveEnvironmentCookbookVersionsMatchesUpstreamFirstGraph(t *testing.T)
 	}
 }
 
+func TestSolveEnvironmentCookbookVersionsMatchesUpstreamPinnedRootNoSolutionGraph(t *testing.T) {
+	service := newTestBootstrapService(t)
+	createTestCookbookOrg(t, service)
+
+	if _, err := service.CreateEnvironment("ponyville", CreateEnvironmentInput{
+		Payload: map[string]any{
+			"name":                "production",
+			"json_class":          "Chef::Environment",
+			"chef_type":           "environment",
+			"description":         "",
+			"cookbook_versions":   map[string]any{},
+			"default_attributes":  map[string]any{},
+			"override_attributes": map[string]any{},
+		},
+	}); err != nil {
+		t.Fatalf("CreateEnvironment() error = %v", err)
+	}
+
+	createTestCookbookVersion(t, service, "ponyville", "app1", "0.1.0", map[string]any{
+		"dependencies": map[string]any{
+			"app2": "0.2.0",
+			"app3": ">= 0.2.0",
+		},
+	}, nil)
+	createTestCookbookVersion(t, service, "ponyville", "app1", "0.2.0", nil, nil)
+	createTestCookbookVersion(t, service, "ponyville", "app1", "0.3.0", nil, nil)
+	createTestCookbookVersion(t, service, "ponyville", "app2", "0.1.0", nil, nil)
+	createTestCookbookVersion(t, service, "ponyville", "app2", "0.2.0", map[string]any{
+		"dependencies": map[string]any{
+			"app3": "0.1.0",
+		},
+	}, nil)
+	createTestCookbookVersion(t, service, "ponyville", "app2", "0.3.0", nil, nil)
+	createTestCookbookVersion(t, service, "ponyville", "app3", "0.1.0", nil, nil)
+	createTestCookbookVersion(t, service, "ponyville", "app3", "0.2.0", nil, nil)
+	createTestCookbookVersion(t, service, "ponyville", "app3", "0.3.0", nil, nil)
+
+	_, _, _, err := service.SolveEnvironmentCookbookVersions("ponyville", "production", map[string]any{
+		"run_list": []any{"app1@0.1.0"},
+	})
+	if err == nil {
+		t.Fatal("SolveEnvironmentCookbookVersions() error = nil, want depsolver error")
+	}
+
+	var depsolverErr *DepsolverError
+	if !errors.As(err, &depsolverErr) {
+		t.Fatalf("SolveEnvironmentCookbookVersions() error = %T, want *DepsolverError", err)
+	}
+	if got := depsolverErr.Detail["message"]; got != "Unable to satisfy constraints on package app3 due to solution constraint (app1 = 0.1.0). Solution constraints that may result in a constraint on app3: [(app1 = 0.1.0) -> (app3 >= 0.2.0), (app1 = 0.1.0) -> (app2 0.2.0) -> (app3 0.1.0)]" {
+		t.Fatalf("message = %v, want pinned-root no-solution message", got)
+	}
+	if got := depsolverErr.Detail["unsatisfiable_run_list_item"]; got != "(app1 = 0.1.0)" {
+		t.Fatalf("unsatisfiable_run_list_item = %v, want %q", got, "(app1 = 0.1.0)")
+	}
+	if got := depsolverErr.Detail["non_existent_cookbooks"]; len(got.([]string)) != 0 {
+		t.Fatalf("non_existent_cookbooks = %v, want []", got)
+	}
+	if got := depsolverErr.Detail["most_constrained_cookbooks"]; len(got.([]string)) != 1 || got.([]string)[0] != "app3 = 0.3.0 -> []" {
+		t.Fatalf("most_constrained_cookbooks = %v, want [app3 = 0.3.0 -> []]", got)
+	}
+}
+
 func TestSolveEnvironmentCookbookVersionsMatchesUpstreamSecondGraph(t *testing.T) {
 	service := newTestBootstrapService(t)
 	createTestCookbookOrg(t, service)
