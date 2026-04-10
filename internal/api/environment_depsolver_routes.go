@@ -9,7 +9,7 @@ import (
 	"github.com/oberones/OpenCook/internal/bootstrap"
 )
 
-var depsolverRoleRunListPattern = regexp.MustCompile(`^role\[[A-Za-z0-9_.:-]+\]$`)
+var depsolverRoleRunListPattern = regexp.MustCompile(`^role\[[A-Za-z0-9_.-]+\]$`)
 
 func (s *server) handleEnvironmentCookbookVersions(w http.ResponseWriter, r *http.Request) {
 	state := s.deps.Bootstrap
