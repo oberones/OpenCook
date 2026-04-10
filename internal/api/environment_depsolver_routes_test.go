@@ -1042,7 +1042,7 @@ func TestOrganizationEnvironmentCookbookVersionsIgnoresUnrelatedEnvironmentConst
 	})
 }
 
-func TestEnvironmentCookbookVersionsSupportsPessimisticDependencyConstraint(t *testing.T) {
+func TestEnvironmentCookbookVersionsSupportsPessimisticDependencyConstraintMajorMinor(t *testing.T) {
 	router := newTestRouter(t)
 	createEnvironmentForCookbookTests(t, router, "production")
 	createCookbookVersion(t, router, "app1", "3.0.0", "", map[string]string{
@@ -1069,7 +1069,7 @@ func TestEnvironmentCookbookVersionsSupportsPessimisticDependencyConstraint(t *t
 	assertCookbookVersionBody(t, payload, "app2", "2.2.0")
 }
 
-func TestOrganizationEnvironmentCookbookVersionsSupportsPessimisticDependencyConstraint(t *testing.T) {
+func TestOrganizationEnvironmentCookbookVersionsSupportsPessimisticDependencyConstraintMajorMinor(t *testing.T) {
 	router := newTestRouter(t)
 	createEnvironmentForCookbookTests(t, router, "production")
 	createCookbookVersion(t, router, "app1", "3.0.0", "", map[string]string{
@@ -1094,6 +1094,60 @@ func TestOrganizationEnvironmentCookbookVersionsSupportsPessimisticDependencyCon
 
 	payload := decodeJSONMap(t, rec.Body.Bytes())
 	assertCookbookVersionBody(t, payload, "app2", "2.2.0")
+}
+
+func TestEnvironmentCookbookVersionsSupportsPessimisticDependencyConstraintMajorMinorPatch(t *testing.T) {
+	router := newTestRouter(t)
+	createEnvironmentForCookbookTests(t, router, "production")
+	createCookbookVersion(t, router, "app1", "3.0.0", "", map[string]string{
+		"app2": "~> 2.1.1",
+		"app3": ">= 0.1.1",
+	})
+	createCookbookVersion(t, router, "app2", "2.1.5", "", map[string]string{"app4": ">= 5.0.0"})
+	createCookbookVersion(t, router, "app2", "2.2.0", "", map[string]string{"app4": ">= 5.0.0"})
+	createCookbookVersion(t, router, "app2", "3.0.0", "", map[string]string{"app4": ">= 5.0.0"})
+	createCookbookVersion(t, router, "app3", "0.1.3", "", map[string]string{"app5": ">= 2.0.0"})
+	createCookbookVersion(t, router, "app4", "6.0.0", "", map[string]string{"app5": ">= 0.0.0"})
+	createCookbookVersion(t, router, "app5", "6.0.0", "", nil)
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/environments/production/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{"app1@3.0.0"},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("depsolver pessimistic major/minor/patch constraint status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	payload := decodeJSONMap(t, rec.Body.Bytes())
+	assertCookbookVersionBody(t, payload, "app2", "2.1.5")
+}
+
+func TestOrganizationEnvironmentCookbookVersionsSupportsPessimisticDependencyConstraintMajorMinorPatch(t *testing.T) {
+	router := newTestRouter(t)
+	createEnvironmentForCookbookTests(t, router, "production")
+	createCookbookVersion(t, router, "app1", "3.0.0", "", map[string]string{
+		"app2": "~> 2.1.1",
+		"app3": ">= 0.1.1",
+	})
+	createCookbookVersion(t, router, "app2", "2.1.5", "", map[string]string{"app4": ">= 5.0.0"})
+	createCookbookVersion(t, router, "app2", "2.2.0", "", map[string]string{"app4": ">= 5.0.0"})
+	createCookbookVersion(t, router, "app2", "3.0.0", "", map[string]string{"app4": ">= 5.0.0"})
+	createCookbookVersion(t, router, "app3", "0.1.3", "", map[string]string{"app5": ">= 2.0.0"})
+	createCookbookVersion(t, router, "app4", "6.0.0", "", map[string]string{"app5": ">= 0.0.0"})
+	createCookbookVersion(t, router, "app5", "6.0.0", "", nil)
+
+	req := newSignedJSONRequest(t, http.MethodPost, "/organizations/ponyville/environments/production/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{"app1@3.0.0"},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("org-scoped depsolver pessimistic major/minor/patch constraint status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	payload := decodeJSONMap(t, rec.Body.Bytes())
+	assertCookbookVersionBody(t, payload, "app2", "2.1.5")
 }
 
 func TestEnvironmentCookbookVersionsReturns412ForMultiRootConflict(t *testing.T) {
