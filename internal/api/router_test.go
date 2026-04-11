@@ -1825,7 +1825,14 @@ func TestRolesEndpointListCreateGetAndHead(t *testing.T) {
 		t.Fatalf("list payload = %v, want empty map", listPayload)
 	}
 
-	createBody := []byte(`{"name":"web","description":"","json_class":"Chef::Role","chef_type":"role","default_attributes":{},"override_attributes":{},"run_list":["base","recipe[base]","foo::default","recipe[foo::default]","role[db]"],"env_run_lists":{"production":["nginx","recipe[nginx]"]}}`)
+	createBody := mustMarshalRolePayloadWithRunListAndEnvRunLists(
+		t,
+		"web",
+		[]string{"base", "recipe[base]", "foo::default", "recipe[foo::default]", "role[db]"},
+		map[string][]string{
+			"production": []string{"nginx", "recipe[nginx]"},
+		},
+	)
 	createReq := httptest.NewRequest(http.MethodPost, "/roles", bytes.NewReader(createBody))
 	applySignedHeaders(t, createReq, "silent-bob", "", http.MethodPost, "/roles", createBody, signDescription{
 		Version:   "1.1",
@@ -1922,7 +1929,15 @@ func TestRolesEndpointUpdateAndDelete(t *testing.T) {
 		t.Fatalf("create role status = %d, want %d, body = %s", createRec.Code, http.StatusCreated, createRec.Body.String())
 	}
 
-	updateBody := []byte(`{"description":"Updated web role","json_class":"Chef::Role","chef_type":"role","run_list":["apache2","recipe[apache2]","role[db]","role[db]"],"env_run_lists":{"production":["nginx","recipe[nginx]"],"staging":[]}}`)
+	updateBody := mustMarshalRoleUpdatePayload(
+		t,
+		"Updated web role",
+		[]string{"apache2", "recipe[apache2]", "role[db]", "role[db]"},
+		map[string][]string{
+			"production": []string{"nginx", "recipe[nginx]"},
+			"staging":    []string{},
+		},
+	)
 	updateReq := httptest.NewRequest(http.MethodPut, "/roles/web", bytes.NewReader(updateBody))
 	applySignedHeaders(t, updateReq, "silent-bob", "", http.MethodPut, "/roles/web", updateBody, signDescription{
 		Version:   "1.3",
@@ -2024,7 +2039,14 @@ func TestRoleEnvironmentsEndpoints(t *testing.T) {
 		t.Fatalf("create staging environment status = %d, want %d, body = %s", stagingRec.Code, http.StatusCreated, stagingRec.Body.String())
 	}
 
-	createRoleBody := []byte(`{"name":"web","description":"","json_class":"Chef::Role","chef_type":"role","default_attributes":{},"override_attributes":{},"run_list":["base","recipe[base]","role[db]","role[db]"],"env_run_lists":{"production":["nginx","recipe[nginx]","role[app]","role[app]"]}}`)
+	createRoleBody := mustMarshalRolePayloadWithRunListAndEnvRunLists(
+		t,
+		"web",
+		[]string{"base", "recipe[base]", "role[db]", "role[db]"},
+		map[string][]string{
+			"production": []string{"nginx", "recipe[nginx]", "role[app]", "role[app]"},
+		},
+	)
 	createRoleReq := httptest.NewRequest(http.MethodPost, "/roles", bytes.NewReader(createRoleBody))
 	applySignedHeaders(t, createRoleReq, "silent-bob", "", http.MethodPost, "/roles", createRoleBody, signDescription{
 		Version:   "1.1",
@@ -2504,10 +2526,14 @@ func mustMarshalEnvironmentPayload(t *testing.T, name string) []byte {
 }
 
 func mustMarshalRolePayload(t *testing.T, name string) []byte {
-	return mustMarshalRolePayloadWithEnvRunLists(t, name, map[string][]string{})
+	return mustMarshalRolePayloadWithRunListAndEnvRunLists(t, name, []string{"recipe[base]"}, map[string][]string{})
 }
 
 func mustMarshalRolePayloadWithEnvRunLists(t *testing.T, name string, envRunLists map[string][]string) []byte {
+	return mustMarshalRolePayloadWithRunListAndEnvRunLists(t, name, []string{"recipe[base]"}, envRunLists)
+}
+
+func mustMarshalRolePayloadWithRunListAndEnvRunLists(t *testing.T, name string, runList []string, envRunLists map[string][]string) []byte {
 	t.Helper()
 
 	body, err := json.Marshal(map[string]any{
@@ -2517,11 +2543,28 @@ func mustMarshalRolePayloadWithEnvRunLists(t *testing.T, name string, envRunList
 		"chef_type":           "role",
 		"default_attributes":  map[string]any{},
 		"override_attributes": map[string]any{},
-		"run_list":            []string{"recipe[base]"},
+		"run_list":            runList,
 		"env_run_lists":       envRunLists,
 	})
 	if err != nil {
 		t.Fatalf("json.Marshal(role payload) error = %v", err)
+	}
+
+	return body
+}
+
+func mustMarshalRoleUpdatePayload(t *testing.T, description string, runList []string, envRunLists map[string][]string) []byte {
+	t.Helper()
+
+	body, err := json.Marshal(map[string]any{
+		"description":   description,
+		"json_class":    "Chef::Role",
+		"chef_type":     "role",
+		"run_list":      runList,
+		"env_run_lists": envRunLists,
+	})
+	if err != nil {
+		t.Fatalf("json.Marshal(role update payload) error = %v", err)
 	}
 
 	return body
