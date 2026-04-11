@@ -156,8 +156,8 @@ func normalizeRolePayload(payload map[string]any, targetName string, current Rol
 		ChefType:           fallback(current.ChefType, "role"),
 		DefaultAttributes:  cloneMap(current.DefaultAttributes),
 		OverrideAttributes: cloneMap(current.OverrideAttributes),
-		RunList:            append([]string(nil), current.RunList...),
-		EnvRunLists:        cloneStringSliceMap(current.EnvRunLists),
+		RunList:            normalizeRoleRunList(current.RunList),
+		EnvRunLists:        normalizeRoleEnvRunLists(current.EnvRunLists),
 	}
 
 	if create {
@@ -232,7 +232,7 @@ func normalizeRolePayload(payload map[string]any, targetName string, current Rol
 		if err != nil {
 			return Role{}, err
 		}
-		role.RunList = runList
+		role.RunList = normalizeRoleRunList(runList)
 	}
 
 	if value, ok := payload["env_run_lists"]; ok {
@@ -240,7 +240,7 @@ func normalizeRolePayload(payload map[string]any, targetName string, current Rol
 		if err != nil {
 			return Role{}, err
 		}
-		role.EnvRunLists = envRunLists
+		role.EnvRunLists = normalizeRoleEnvRunLists(envRunLists)
 	}
 
 	return role, nil
@@ -291,6 +291,46 @@ func validateEnvironmentRunLists(value any) (map[string][]string, error) {
 	}
 }
 
+func normalizeRoleRunList(in []string) []string {
+	if len(in) == 0 {
+		return []string{}
+	}
+
+	out := make([]string, 0, len(in))
+	seen := make(map[string]struct{}, len(in))
+	for _, item := range in {
+		switch {
+		case validRecipeRunListPattern.MatchString(item):
+		case validRoleRunListPattern.MatchString(item):
+		default:
+			item = "recipe[" + item + "]"
+		}
+		if _, ok := seen[item]; ok {
+			continue
+		}
+		seen[item] = struct{}{}
+		out = append(out, item)
+	}
+	return out
+}
+
+func normalizeRoleEnvRunLists(in map[string][]string) map[string][]string {
+	if len(in) == 0 {
+		return map[string][]string{}
+	}
+
+	out := make(map[string][]string, len(in))
+	keys := make([]string, 0, len(in))
+	for key := range in {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		out[key] = normalizeRoleRunList(in[key])
+	}
+	return out
+}
+
 func copyRole(role Role) Role {
 	return Role{
 		Name:               role.Name,
@@ -316,7 +356,7 @@ func cloneStringSliceMap(in map[string][]string) map[string][]string {
 	}
 	sort.Strings(keys)
 	for _, key := range keys {
-		out[key] = append([]string(nil), in[key]...)
+		out[key] = append([]string{}, in[key]...)
 	}
 	return out
 }
