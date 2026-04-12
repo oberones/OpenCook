@@ -86,6 +86,7 @@ Implemented so far:
   - `/roles/{name}/environments`
   - `/roles/{name}/environments/{environment}`
   - Chef-style normalization and deduplication for top-level `run_list` and `env_run_lists` on role create/update/get plus `/roles/{name}/environments/{environment}` reads
+  - linked-missing-environment parity where `/roles/{name}/environments` still lists referenced environment names even if the environment object is gone, while direct reads still return `404`
   - default-org and explicit-org routing
 - the first default-org client compatibility slice:
   - `/clients`
