@@ -2570,6 +2570,98 @@ func TestOrganizationRoleEnvironmentsEndpointsReturnNotFoundForMissingOrganizati
 	}
 }
 
+func TestRoleEnvironmentsEndpointsReturnNotFoundForMissingRole(t *testing.T) {
+	router := newTestRouter(t)
+
+	routes := []struct {
+		name string
+		path string
+	}{
+		{
+			name: "default-org collection",
+			path: "/roles/missing/environments",
+		},
+		{
+			name: "default-org default environment",
+			path: "/roles/missing/environments/_default",
+		},
+		{
+			name: "org-scoped collection",
+			path: "/organizations/ponyville/roles/missing/environments",
+		},
+		{
+			name: "org-scoped default environment",
+			path: "/organizations/ponyville/roles/missing/environments/_default",
+		},
+	}
+
+	for _, route := range routes {
+		t.Run(route.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, route.path, nil)
+			applySignedHeaders(t, req, "silent-bob", "", http.MethodGet, route.path, nil, signDescription{
+				Version:   "1.1",
+				Algorithm: "sha1",
+			}, "2026-04-02T15:04:05Z")
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusNotFound {
+				t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusNotFound, rec.Body.String())
+			}
+
+			var payload map[string][]string
+			if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+				t.Fatalf("json.Unmarshal(missing role) error = %v", err)
+			}
+			if len(payload["error"]) != 1 || payload["error"][0] != "Cannot load role missing" {
+				t.Fatalf("missing role payload = %v, want Cannot load role missing", payload)
+			}
+		})
+	}
+}
+
+func TestRoleEnvironmentReadMissingRoleWinsOverMissingEnvironment(t *testing.T) {
+	router := newTestRouter(t)
+
+	routes := []struct {
+		name string
+		path string
+	}{
+		{
+			name: "default-org missing role precedence",
+			path: "/roles/missing/environments/preprod",
+		},
+		{
+			name: "org-scoped missing role precedence",
+			path: "/organizations/ponyville/roles/missing/environments/preprod",
+		},
+	}
+
+	for _, route := range routes {
+		t.Run(route.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, route.path, nil)
+			applySignedHeaders(t, req, "silent-bob", "", http.MethodGet, route.path, nil, signDescription{
+				Version:   "1.1",
+				Algorithm: "sha1",
+			}, "2026-04-02T15:04:05Z")
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusNotFound {
+				t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusNotFound, rec.Body.String())
+			}
+
+			var payload map[string][]string
+			if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+				t.Fatalf("json.Unmarshal(missing role precedence) error = %v", err)
+			}
+			if len(payload["error"]) != 1 || payload["error"][0] != "Cannot load role missing" {
+				t.Fatalf("missing role precedence payload = %v, want Cannot load role missing", payload)
+			}
+		})
+	}
+}
+
 func TestRoleEnvironmentsEndpointsAuthorizeAgainstRoleReadOnly(t *testing.T) {
 	routes := []struct {
 		name          string
