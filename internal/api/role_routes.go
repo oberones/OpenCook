@@ -69,11 +69,21 @@ func (s *server) handleRoleEnvironments(w http.ResponseWriter, r *http.Request) 
 
 	roleName := r.PathValue("name")
 	envsBasePath := rolesBasePath + "/" + roleName + "/environments"
+	isCollection := matchesCollectionPath(r.URL.Path, envsBasePath)
+	envName := ""
+	if !isCollection {
+		var ok bool
+		envName, ok = pathTail(r.URL.Path, envsBasePath+"/")
+		if !ok {
+			writeJSON(w, http.StatusNotFound, apiError{
+				Error:   "not_found",
+				Message: "route not found in scaffold router",
+			})
+			return
+		}
+	}
 	if r.Method != http.MethodGet {
-		writeJSON(w, http.StatusMethodNotAllowed, apiError{
-			Error:   "method_not_allowed",
-			Message: "method not allowed for role environments route",
-		})
+		writeMethodNotAllowed(w, "method not allowed for role environments route", http.MethodGet)
 		return
 	}
 
@@ -97,17 +107,8 @@ func (s *server) handleRoleEnvironments(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	if matchesCollectionPath(r.URL.Path, envsBasePath) {
+	if isCollection {
 		writeJSON(w, http.StatusOK, roleEnvironmentNames(role))
-		return
-	}
-
-	envName, ok := pathTail(r.URL.Path, envsBasePath+"/")
-	if !ok {
-		writeJSON(w, http.StatusNotFound, apiError{
-			Error:   "not_found",
-			Message: "route not found in scaffold router",
-		})
 		return
 	}
 
