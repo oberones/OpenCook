@@ -2424,6 +2424,152 @@ func TestRoleEnvironmentsEndpointsReturnNotFoundForExtraPath(t *testing.T) {
 	}
 }
 
+func TestRoleEnvironmentsEndpointsRequireOrganizationWhenAmbiguous(t *testing.T) {
+	router := newTestRouter(t)
+	createOrgForTest(t, router, "canterlot")
+
+	routes := []struct {
+		name string
+		path string
+	}{
+		{
+			name: "default-org collection",
+			path: "/roles/web/environments",
+		},
+		{
+			name: "default-org default environment",
+			path: "/roles/web/environments/_default",
+		},
+	}
+
+	for _, route := range routes {
+		t.Run(route.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, route.path, nil)
+			applySignedHeaders(t, req, "pivotal", "", http.MethodGet, route.path, nil, signDescription{
+				Version:   "1.1",
+				Algorithm: "sha1",
+			}, "2026-04-02T15:04:05Z")
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+			}
+
+			payload := decodeJSONMap(t, rec.Body.Bytes())
+			if payload["error"] != "organization_required" {
+				t.Fatalf("error = %v, want %q", payload["error"], "organization_required")
+			}
+		})
+	}
+}
+
+func TestRoleEnvironmentsEndpointsUseConfiguredDefaultOrganization(t *testing.T) {
+	router := newTestRouterWithConfig(t, config.Config{
+		ServiceName:         "opencook",
+		Environment:         "test",
+		AuthSkew:            15 * time.Minute,
+		DefaultOrganization: "canterlot",
+	})
+	createOrgForTest(t, router, "canterlot")
+
+	createRoleBody := mustMarshalRolePayloadWithRunListAndEnvRunLists(
+		t,
+		"web",
+		[]string{"recipe[base]"},
+		map[string][]string{},
+	)
+	createRoleReq := httptest.NewRequest(http.MethodPost, "/organizations/canterlot/roles", bytes.NewReader(createRoleBody))
+	applySignedHeaders(t, createRoleReq, "pivotal", "", http.MethodPost, "/organizations/canterlot/roles", createRoleBody, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	createRoleRec := httptest.NewRecorder()
+	router.ServeHTTP(createRoleRec, createRoleReq)
+
+	if createRoleRec.Code != http.StatusCreated {
+		t.Fatalf("create role status = %d, want %d, body = %s", createRoleRec.Code, http.StatusCreated, createRoleRec.Body.String())
+	}
+
+	collectionReq := httptest.NewRequest(http.MethodGet, "/roles/web/environments", nil)
+	applySignedHeaders(t, collectionReq, "pivotal", "", http.MethodGet, "/roles/web/environments", nil, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	collectionRec := httptest.NewRecorder()
+	router.ServeHTTP(collectionRec, collectionReq)
+
+	if collectionRec.Code != http.StatusOK {
+		t.Fatalf("collection status = %d, want %d, body = %s", collectionRec.Code, http.StatusOK, collectionRec.Body.String())
+	}
+
+	var envNames []any
+	if err := json.Unmarshal(collectionRec.Body.Bytes(), &envNames); err != nil {
+		t.Fatalf("json.Unmarshal(role environments) error = %v", err)
+	}
+	gotNames := stringSliceFromAny(t, envNames)
+	if len(gotNames) != 1 || gotNames[0] != "_default" {
+		t.Fatalf("role environments = %v, want [_default]", gotNames)
+	}
+
+	defaultReq := httptest.NewRequest(http.MethodGet, "/roles/web/environments/_default", nil)
+	applySignedHeaders(t, defaultReq, "pivotal", "", http.MethodGet, "/roles/web/environments/_default", nil, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	defaultRec := httptest.NewRecorder()
+	router.ServeHTTP(defaultRec, defaultReq)
+
+	if defaultRec.Code != http.StatusOK {
+		t.Fatalf("default environment status = %d, want %d, body = %s", defaultRec.Code, http.StatusOK, defaultRec.Body.String())
+	}
+
+	payload := decodeJSONMap(t, defaultRec.Body.Bytes())
+	assertStringSliceFromAnyEqual(t, payload["run_list"], []string{"recipe[base]"})
+}
+
+func TestOrganizationRoleEnvironmentsEndpointsReturnNotFoundForMissingOrganization(t *testing.T) {
+	router := newTestRouter(t)
+
+	routes := []struct {
+		name string
+		path string
+	}{
+		{
+			name: "org-scoped collection",
+			path: "/organizations/missing/roles/web/environments",
+		},
+		{
+			name: "org-scoped default environment",
+			path: "/organizations/missing/roles/web/environments/_default",
+		},
+	}
+
+	for _, route := range routes {
+		t.Run(route.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, route.path, nil)
+			applySignedHeaders(t, req, "pivotal", "", http.MethodGet, route.path, nil, signDescription{
+				Version:   "1.1",
+				Algorithm: "sha1",
+			}, "2026-04-02T15:04:05Z")
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusNotFound {
+				t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusNotFound, rec.Body.String())
+			}
+
+			payload := decodeJSONMap(t, rec.Body.Bytes())
+			if payload["error"] != "not_found" {
+				t.Fatalf("error = %v, want %q", payload["error"], "not_found")
+			}
+			if payload["message"] != "organization not found" {
+				t.Fatalf("message = %v, want %q", payload["message"], "organization not found")
+			}
+		})
+	}
+}
+
 func TestRoleEnvironmentsEndpointsAuthorizeAgainstRoleReadOnly(t *testing.T) {
 	routes := []struct {
 		name          string
