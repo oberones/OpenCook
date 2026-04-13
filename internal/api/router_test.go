@@ -2236,6 +2236,177 @@ func TestRoleEnvironmentsEndpointsListLinkedMissingEnvironmentsBut404OnRead(t *t
 	}
 }
 
+func TestEnvironmentRoleReadEndpoints(t *testing.T) {
+	router := newTestRouter(t)
+
+	productionBody := mustMarshalEnvironmentPayload(t, "production")
+	productionReq := httptest.NewRequest(http.MethodPost, "/environments", bytes.NewReader(productionBody))
+	applySignedHeaders(t, productionReq, "silent-bob", "", http.MethodPost, "/environments", productionBody, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	productionRec := httptest.NewRecorder()
+	router.ServeHTTP(productionRec, productionReq)
+
+	if productionRec.Code != http.StatusCreated {
+		t.Fatalf("create production environment status = %d, want %d, body = %s", productionRec.Code, http.StatusCreated, productionRec.Body.String())
+	}
+
+	createWebRoleBody := mustMarshalRolePayloadWithRunListAndEnvRunLists(
+		t,
+		"web",
+		[]string{"recipe[base]"},
+		map[string][]string{
+			"production": []string{"recipe[nginx]"},
+		},
+	)
+	createWebRoleReq := httptest.NewRequest(http.MethodPost, "/roles", bytes.NewReader(createWebRoleBody))
+	applySignedHeaders(t, createWebRoleReq, "silent-bob", "", http.MethodPost, "/roles", createWebRoleBody, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	createWebRoleRec := httptest.NewRecorder()
+	router.ServeHTTP(createWebRoleRec, createWebRoleReq)
+
+	if createWebRoleRec.Code != http.StatusCreated {
+		t.Fatalf("create web role status = %d, want %d, body = %s", createWebRoleRec.Code, http.StatusCreated, createWebRoleRec.Body.String())
+	}
+
+	createDBRoleBody := mustMarshalRolePayloadWithRunListAndEnvRunLists(
+		t,
+		"db",
+		[]string{"recipe[mysql]"},
+		map[string][]string{},
+	)
+	createDBRoleReq := httptest.NewRequest(http.MethodPost, "/roles", bytes.NewReader(createDBRoleBody))
+	applySignedHeaders(t, createDBRoleReq, "silent-bob", "", http.MethodPost, "/roles", createDBRoleBody, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	createDBRoleRec := httptest.NewRecorder()
+	router.ServeHTTP(createDBRoleRec, createDBRoleReq)
+
+	if createDBRoleRec.Code != http.StatusCreated {
+		t.Fatalf("create db role status = %d, want %d, body = %s", createDBRoleRec.Code, http.StatusCreated, createDBRoleRec.Body.String())
+	}
+
+	defaultReq := httptest.NewRequest(http.MethodGet, "/environments/_default/roles/web", nil)
+	applySignedHeaders(t, defaultReq, "silent-bob", "", http.MethodGet, "/environments/_default/roles/web", nil, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	defaultRec := httptest.NewRecorder()
+	router.ServeHTTP(defaultRec, defaultReq)
+
+	if defaultRec.Code != http.StatusOK {
+		t.Fatalf("default environment role status = %d, want %d, body = %s", defaultRec.Code, http.StatusOK, defaultRec.Body.String())
+	}
+
+	var defaultPayload map[string]any
+	if err := json.Unmarshal(defaultRec.Body.Bytes(), &defaultPayload); err != nil {
+		t.Fatalf("json.Unmarshal(default environment role) error = %v", err)
+	}
+	assertStringSliceFromAnyEqual(t, defaultPayload["run_list"], []string{"recipe[base]"})
+
+	productionRoleReq := httptest.NewRequest(http.MethodGet, "/environments/production/roles/web", nil)
+	applySignedHeaders(t, productionRoleReq, "silent-bob", "", http.MethodGet, "/environments/production/roles/web", nil, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	productionRoleRec := httptest.NewRecorder()
+	router.ServeHTTP(productionRoleRec, productionRoleReq)
+
+	if productionRoleRec.Code != http.StatusOK {
+		t.Fatalf("production environment role status = %d, want %d, body = %s", productionRoleRec.Code, http.StatusOK, productionRoleRec.Body.String())
+	}
+
+	var productionPayload map[string]any
+	if err := json.Unmarshal(productionRoleRec.Body.Bytes(), &productionPayload); err != nil {
+		t.Fatalf("json.Unmarshal(production environment role) error = %v", err)
+	}
+	assertStringSliceFromAnyEqual(t, productionPayload["run_list"], []string{"recipe[nginx]"})
+
+	nilOverrideReq := httptest.NewRequest(http.MethodGet, "/organizations/ponyville/environments/production/roles/db", nil)
+	applySignedHeaders(t, nilOverrideReq, "silent-bob", "", http.MethodGet, "/organizations/ponyville/environments/production/roles/db", nil, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	nilOverrideRec := httptest.NewRecorder()
+	router.ServeHTTP(nilOverrideRec, nilOverrideReq)
+
+	if nilOverrideRec.Code != http.StatusOK {
+		t.Fatalf("nil override environment role status = %d, want %d, body = %s", nilOverrideRec.Code, http.StatusOK, nilOverrideRec.Body.String())
+	}
+
+	var nilOverridePayload map[string]any
+	if err := json.Unmarshal(nilOverrideRec.Body.Bytes(), &nilOverridePayload); err != nil {
+		t.Fatalf("json.Unmarshal(nil override environment role) error = %v", err)
+	}
+	if value, ok := nilOverridePayload["run_list"]; !ok || value != nil {
+		t.Fatalf("nil override run_list = %v, want nil", nilOverridePayload["run_list"])
+	}
+
+	missingRoleReq := httptest.NewRequest(http.MethodGet, "/environments/_default/roles/missing", nil)
+	applySignedHeaders(t, missingRoleReq, "silent-bob", "", http.MethodGet, "/environments/_default/roles/missing", nil, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	missingRoleRec := httptest.NewRecorder()
+	router.ServeHTTP(missingRoleRec, missingRoleReq)
+
+	if missingRoleRec.Code != http.StatusNotFound {
+		t.Fatalf("missing role status = %d, want %d, body = %s", missingRoleRec.Code, http.StatusNotFound, missingRoleRec.Body.String())
+	}
+
+	var missingRolePayload map[string][]string
+	if err := json.Unmarshal(missingRoleRec.Body.Bytes(), &missingRolePayload); err != nil {
+		t.Fatalf("json.Unmarshal(missing role) error = %v", err)
+	}
+	if len(missingRolePayload["error"]) != 1 || missingRolePayload["error"][0] != "Cannot load role missing" {
+		t.Fatalf("missing role payload = %v, want Cannot load role missing", missingRolePayload)
+	}
+
+	missingEnvReq := httptest.NewRequest(http.MethodGet, "/environments/preprod/roles/web", nil)
+	applySignedHeaders(t, missingEnvReq, "silent-bob", "", http.MethodGet, "/environments/preprod/roles/web", nil, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	missingEnvRec := httptest.NewRecorder()
+	router.ServeHTTP(missingEnvRec, missingEnvReq)
+
+	if missingEnvRec.Code != http.StatusNotFound {
+		t.Fatalf("missing environment role status = %d, want %d, body = %s", missingEnvRec.Code, http.StatusNotFound, missingEnvRec.Body.String())
+	}
+
+	var missingEnvPayload map[string][]string
+	if err := json.Unmarshal(missingEnvRec.Body.Bytes(), &missingEnvPayload); err != nil {
+		t.Fatalf("json.Unmarshal(missing environment role) error = %v", err)
+	}
+	if len(missingEnvPayload["error"]) != 1 || missingEnvPayload["error"][0] != "Cannot load environment preprod" {
+		t.Fatalf("missing environment role payload = %v, want Cannot load environment preprod", missingEnvPayload)
+	}
+
+	missingRoleWinsReq := httptest.NewRequest(http.MethodGet, "/organizations/ponyville/environments/preprod/roles/missing", nil)
+	applySignedHeaders(t, missingRoleWinsReq, "silent-bob", "", http.MethodGet, "/organizations/ponyville/environments/preprod/roles/missing", nil, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	missingRoleWinsRec := httptest.NewRecorder()
+	router.ServeHTTP(missingRoleWinsRec, missingRoleWinsReq)
+
+	if missingRoleWinsRec.Code != http.StatusNotFound {
+		t.Fatalf("missing role precedence status = %d, want %d, body = %s", missingRoleWinsRec.Code, http.StatusNotFound, missingRoleWinsRec.Body.String())
+	}
+
+	var missingRoleWinsPayload map[string][]string
+	if err := json.Unmarshal(missingRoleWinsRec.Body.Bytes(), &missingRoleWinsPayload); err != nil {
+		t.Fatalf("json.Unmarshal(missing role precedence) error = %v", err)
+	}
+	if len(missingRoleWinsPayload["error"]) != 1 || missingRoleWinsPayload["error"][0] != "Cannot load role missing" {
+		t.Fatalf("missing role precedence payload = %v, want Cannot load role missing", missingRoleWinsPayload)
+	}
+}
+
 func TestUsersEndpointRejectsOversizedBodyBeforeVerification(t *testing.T) {
 	router := newTestRouterWithConfig(t, config.Config{
 		ServiceName:      "opencook",

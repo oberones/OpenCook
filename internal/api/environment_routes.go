@@ -262,6 +262,88 @@ func (s *server) handleEnvironmentRecipes(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, recipes)
 }
 
+func (s *server) handleEnvironmentRoles(w http.ResponseWriter, r *http.Request) {
+	state := s.deps.Bootstrap
+	if state == nil {
+		writeJSON(w, http.StatusInternalServerError, apiError{
+			Error:   "bootstrap_unavailable",
+			Message: "bootstrap state service is not configured",
+		})
+		return
+	}
+
+	org, envBasePath, ok := s.resolveEnvironmentRoute(w, r)
+	if !ok {
+		return
+	}
+	envName := r.PathValue("name")
+	roleName := r.PathValue("role")
+	rolePath := envBasePath + "/" + envName + "/roles/" + roleName
+
+	if _, exists := state.GetOrganization(org); !exists {
+		writeJSON(w, http.StatusNotFound, apiError{
+			Error:   "not_found",
+			Message: "organization not found",
+		})
+		return
+	}
+
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, apiError{
+			Error:   "method_not_allowed",
+			Message: "method not allowed for environment roles route",
+		})
+		return
+	}
+	if !(r.URL.Path == rolePath || r.URL.Path == rolePath+"/") {
+		writeJSON(w, http.StatusNotFound, apiError{
+			Error:   "not_found",
+			Message: "route not found in scaffold router",
+		})
+		return
+	}
+
+	role, orgExists, roleExists := state.GetRole(org, roleName)
+	if !orgExists {
+		writeJSON(w, http.StatusNotFound, apiError{
+			Error:   "not_found",
+			Message: "organization not found",
+		})
+		return
+	}
+	if !roleExists {
+		writeRoleMessages(w, http.StatusNotFound, cannotLoadRoleMessage(roleName))
+		return
+	}
+
+	_, _, envExists := state.GetEnvironment(org, envName)
+	if !envExists {
+		writeEnvironmentMessages(w, http.StatusNotFound, cannotLoadEnvironmentMessage(envName))
+		return
+	}
+
+	if !s.authorizeRequest(w, r, authz.ActionRead, authz.Resource{
+		Type:         "role",
+		Name:         roleName,
+		Organization: org,
+	}) {
+		return
+	}
+
+	runList := role.RunList
+	if envName != "_default" {
+		if envRunList, ok := role.EnvRunLists[envName]; ok {
+			runList = envRunList
+		} else {
+			runList = nil
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"run_list": runList,
+	})
+}
+
 func (s *server) handleEnvironmentGet(w http.ResponseWriter, r *http.Request, state *bootstrap.Service, org, basePath string) {
 	if matchesCollectionPath(r.URL.Path, basePath) {
 		if !s.authorizeRequest(w, r, authz.ActionRead, authz.Resource{
