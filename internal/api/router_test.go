@@ -2718,6 +2718,124 @@ func TestEnvironmentRoleReadEndpointsRejectOutsideUser(t *testing.T) {
 	}
 }
 
+func TestEnvironmentRoleReadEndpointsAuthorizeAgainstRoleReadOnly(t *testing.T) {
+	routes := []struct {
+		name string
+		path string
+	}{
+		{
+			name: "default-org named environment",
+			path: "/environments/production/roles/web",
+		},
+		{
+			name: "org-scoped named environment",
+			path: "/organizations/ponyville/environments/production/roles/web",
+		},
+	}
+
+	for _, route := range routes {
+		t.Run(route.name, func(t *testing.T) {
+			var authorizer *recordingDepsolverAuthorizer
+			router, state := newSearchTestRouterWithAuthorizer(t, func(state *bootstrap.Service) authz.Authorizer {
+				authorizer = &recordingDepsolverAuthorizer{
+					base: authz.NewACLAuthorizer(state),
+					deny: map[string]struct{}{
+						"read:environment:production": {},
+					},
+				}
+				return authorizer
+			})
+			seedEnvironmentRoleReadFixtures(t, state)
+			authorizer.calls = nil
+
+			req := httptest.NewRequest(http.MethodGet, route.path, nil)
+			applySignedHeaders(t, req, "silent-bob", "", http.MethodGet, route.path, nil, signDescription{
+				Version:   "1.1",
+				Algorithm: "sha1",
+			}, "2026-04-02T15:04:05Z")
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+			}
+
+			payload := decodeJSONMap(t, rec.Body.Bytes())
+			assertStringSliceFromAnyEqual(t, payload["run_list"], []string{"recipe[nginx]"})
+
+			wantCalls := []string{"read:role:web"}
+			if len(authorizer.calls) != len(wantCalls) {
+				t.Fatalf("authz calls = %v, want %v", authorizer.calls, wantCalls)
+			}
+			for idx := range wantCalls {
+				if authorizer.calls[idx] != wantCalls[idx] {
+					t.Fatalf("authz calls[%d] = %q, want %q (%v)", idx, authorizer.calls[idx], wantCalls[idx], authorizer.calls)
+				}
+			}
+		})
+	}
+}
+
+func TestEnvironmentRoleReadEndpointsRequireRoleReadAuthz(t *testing.T) {
+	routes := []struct {
+		name string
+		path string
+	}{
+		{
+			name: "default-org named environment",
+			path: "/environments/production/roles/web",
+		},
+		{
+			name: "org-scoped named environment",
+			path: "/organizations/ponyville/environments/production/roles/web",
+		},
+	}
+
+	for _, route := range routes {
+		t.Run(route.name, func(t *testing.T) {
+			var authorizer *recordingDepsolverAuthorizer
+			router, state := newSearchTestRouterWithAuthorizer(t, func(state *bootstrap.Service) authz.Authorizer {
+				authorizer = &recordingDepsolverAuthorizer{
+					base: authz.NewACLAuthorizer(state),
+					deny: map[string]struct{}{
+						"read:role:web": {},
+					},
+				}
+				return authorizer
+			})
+			seedEnvironmentRoleReadFixtures(t, state)
+			authorizer.calls = nil
+
+			req := httptest.NewRequest(http.MethodGet, route.path, nil)
+			applySignedHeaders(t, req, "silent-bob", "", http.MethodGet, route.path, nil, signDescription{
+				Version:   "1.1",
+				Algorithm: "sha1",
+			}, "2026-04-02T15:04:05Z")
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusForbidden, rec.Body.String())
+			}
+
+			payload := decodeJSONMap(t, rec.Body.Bytes())
+			if payload["error"] != "forbidden" {
+				t.Fatalf("error = %v, want %q", payload["error"], "forbidden")
+			}
+
+			wantCalls := []string{"read:role:web"}
+			if len(authorizer.calls) != len(wantCalls) {
+				t.Fatalf("authz calls = %v, want %v", authorizer.calls, wantCalls)
+			}
+			for idx := range wantCalls {
+				if authorizer.calls[idx] != wantCalls[idx] {
+					t.Fatalf("authz calls[%d] = %q, want %q (%v)", idx, authorizer.calls[idx], wantCalls[idx], authorizer.calls)
+				}
+			}
+		})
+	}
+}
+
 func TestUsersEndpointRejectsOversizedBodyBeforeVerification(t *testing.T) {
 	router := newTestRouterWithConfig(t, config.Config{
 		ServiceName:      "opencook",
@@ -3039,6 +3157,44 @@ func createOrgForTest(t *testing.T, router http.Handler, orgName string) {
 
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("create org status = %d, want %d, body = %s", rec.Code, http.StatusCreated, rec.Body.String())
+	}
+}
+
+func seedEnvironmentRoleReadFixtures(t *testing.T, state *bootstrap.Service) {
+	t.Helper()
+
+	creator := authn.Principal{Type: "user", Name: "silent-bob"}
+	if _, err := state.CreateEnvironment("ponyville", bootstrap.CreateEnvironmentInput{
+		Payload: map[string]any{
+			"name":                "production",
+			"json_class":          "Chef::Environment",
+			"chef_type":           "environment",
+			"description":         "",
+			"cookbook_versions":   map[string]string{},
+			"default_attributes":  map[string]any{},
+			"override_attributes": map[string]any{},
+		},
+		Creator: creator,
+	}); err != nil {
+		t.Fatalf("CreateEnvironment(production) error = %v", err)
+	}
+
+	if _, err := state.CreateRole("ponyville", bootstrap.CreateRoleInput{
+		Payload: map[string]any{
+			"name":                "web",
+			"description":         "",
+			"json_class":          "Chef::Role",
+			"chef_type":           "role",
+			"default_attributes":  map[string]any{},
+			"override_attributes": map[string]any{},
+			"run_list":            []any{"recipe[base]"},
+			"env_run_lists": map[string]any{
+				"production": []any{"recipe[nginx]"},
+			},
+		},
+		Creator: creator,
+	}); err != nil {
+		t.Fatalf("CreateRole(web) error = %v", err)
 	}
 }
 

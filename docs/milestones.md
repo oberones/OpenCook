@@ -39,7 +39,7 @@ Status: in progress
 - `/environments/{name}/nodes` is live and filters the current node compatibility state
 - `/environments/{name}/cookbooks`, `/environments/{name}/cookbooks/{cookbook}`, and `/environments/{name}/recipes` are now live and apply Chef-style environment cookbook constraints
 - in-memory role list/get/head/create/update/delete behavior is implemented
-- `/roles/{name}/environments`, `/roles/{name}/environments/{environment}`, and `/environments/{name}/roles/{role}` are live, including `_default` run-list resolution plus Chef-style environment-linked role reads and pinned route semantics for missing-org/default-org resolution, trailing slashes, method-not-allowed, extra-path `404`s, and outside-user auth
+- `/roles/{name}/environments`, `/roles/{name}/environments/{environment}`, and `/environments/{name}/roles/{role}` are live, including `_default` run-list resolution plus Chef-style environment-linked role reads, role-read-only auth parity on the environment-linked role route, and pinned route semantics for missing-org/default-org resolution, trailing slashes, method-not-allowed, extra-path `404`s, and outside-user auth
 - in-memory data bag list/get/create/delete behavior is implemented for both default-org and explicit-org routes
 - in-memory data bag item get/create/update/delete behavior is implemented with Chef-style response shapes and error messages
 - default-org and explicit-org client read/create/delete routes are now available too
