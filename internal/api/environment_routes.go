@@ -288,18 +288,15 @@ func (s *server) handleEnvironmentRoles(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	if r.Method != http.MethodGet {
-		writeJSON(w, http.StatusMethodNotAllowed, apiError{
-			Error:   "method_not_allowed",
-			Message: "method not allowed for environment roles route",
-		})
-		return
-	}
 	if !(r.URL.Path == rolePath || r.URL.Path == rolePath+"/") {
 		writeJSON(w, http.StatusNotFound, apiError{
 			Error:   "not_found",
 			Message: "route not found in scaffold router",
 		})
+		return
+	}
+	if r.Method != http.MethodGet {
+		writeMethodNotAllowed(w, "method not allowed for environment roles route", http.MethodGet)
 		return
 	}
 

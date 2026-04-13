@@ -89,6 +89,7 @@ Implemented so far:
   - Chef-style normalization and deduplication for top-level `run_list` and `env_run_lists` on role create/update/get plus `/roles/{name}/environments/{environment}` reads
   - linked-missing-environment parity where `/roles/{name}/environments` still lists referenced environment names even if the environment object is gone, while direct reads still return `404`
   - Chef-style environment-linked role reads where `_default` returns the top-level run list, named environments return the environment-specific override or `null`, and missing roles win over missing environments for `404` precedence
+  - pinned route semantics for environment-linked role reads including missing-organization, ambiguous/configured default-org resolution, trailing slashes, method-not-allowed with `Allow: GET`, extra-path `404`s, and outside-user `403`s
   - default-org and explicit-org routing
 - the first default-org client compatibility slice:
   - `/clients`

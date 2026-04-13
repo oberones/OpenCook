@@ -2407,6 +2407,317 @@ func TestEnvironmentRoleReadEndpoints(t *testing.T) {
 	}
 }
 
+func TestEnvironmentRoleReadEndpointsAcceptTrailingSlash(t *testing.T) {
+	router := newTestRouter(t)
+
+	productionBody := mustMarshalEnvironmentPayload(t, "production")
+	productionReq := httptest.NewRequest(http.MethodPost, "/environments", bytes.NewReader(productionBody))
+	applySignedHeaders(t, productionReq, "silent-bob", "", http.MethodPost, "/environments", productionBody, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	productionRec := httptest.NewRecorder()
+	router.ServeHTTP(productionRec, productionReq)
+
+	if productionRec.Code != http.StatusCreated {
+		t.Fatalf("create production environment status = %d, want %d, body = %s", productionRec.Code, http.StatusCreated, productionRec.Body.String())
+	}
+
+	createRoleBody := mustMarshalRolePayloadWithRunListAndEnvRunLists(
+		t,
+		"web",
+		[]string{"recipe[base]"},
+		map[string][]string{
+			"production": {"recipe[nginx]"},
+		},
+	)
+	createRoleReq := httptest.NewRequest(http.MethodPost, "/roles", bytes.NewReader(createRoleBody))
+	applySignedHeaders(t, createRoleReq, "silent-bob", "", http.MethodPost, "/roles", createRoleBody, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	createRoleRec := httptest.NewRecorder()
+	router.ServeHTTP(createRoleRec, createRoleReq)
+
+	if createRoleRec.Code != http.StatusCreated {
+		t.Fatalf("create role status = %d, want %d, body = %s", createRoleRec.Code, http.StatusCreated, createRoleRec.Body.String())
+	}
+
+	routes := []struct {
+		name string
+		path string
+		want []string
+	}{
+		{
+			name: "default-org default environment",
+			path: "/environments/_default/roles/web/",
+			want: []string{"recipe[base]"},
+		},
+		{
+			name: "org-scoped named environment",
+			path: "/organizations/ponyville/environments/production/roles/web/",
+			want: []string{"recipe[nginx]"},
+		},
+	}
+
+	for _, route := range routes {
+		t.Run(route.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, route.path, nil)
+			applySignedHeaders(t, req, "silent-bob", "", http.MethodGet, route.path, nil, signDescription{
+				Version:   "1.1",
+				Algorithm: "sha1",
+			}, "2026-04-02T15:04:05Z")
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+			}
+
+			payload := decodeJSONMap(t, rec.Body.Bytes())
+			assertStringSliceFromAnyEqual(t, payload["run_list"], route.want)
+		})
+	}
+}
+
+func TestEnvironmentRoleReadEndpointsReturnMethodNotAllowedWithAllowHeader(t *testing.T) {
+	router := newTestRouter(t)
+
+	routes := []struct {
+		name string
+		path string
+	}{
+		{
+			name: "default-org named environment",
+			path: "/environments/production/roles/web",
+		},
+		{
+			name: "default-org default environment",
+			path: "/environments/_default/roles/web",
+		},
+		{
+			name: "org-scoped named environment",
+			path: "/organizations/ponyville/environments/production/roles/web",
+		},
+		{
+			name: "org-scoped default environment",
+			path: "/organizations/ponyville/environments/_default/roles/web",
+		},
+	}
+
+	for _, route := range routes {
+		t.Run(route.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, route.path, nil)
+			applySignedHeaders(t, req, "silent-bob", "", http.MethodPost, route.path, nil, signDescription{
+				Version:   "1.1",
+				Algorithm: "sha1",
+			}, "2026-04-02T15:04:05Z")
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusMethodNotAllowed {
+				t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusMethodNotAllowed, rec.Body.String())
+			}
+			if rec.Header().Get("Allow") != http.MethodGet {
+				t.Fatalf("Allow = %q, want %q", rec.Header().Get("Allow"), http.MethodGet)
+			}
+
+			payload := decodeJSONMap(t, rec.Body.Bytes())
+			if payload["error"] != "method_not_allowed" {
+				t.Fatalf("error = %v, want %q", payload["error"], "method_not_allowed")
+			}
+			if payload["message"] != "method not allowed for environment roles route" {
+				t.Fatalf("message = %v, want %q", payload["message"], "method not allowed for environment roles route")
+			}
+		})
+	}
+}
+
+func TestEnvironmentRoleReadEndpointsReturnNotFoundForExtraPath(t *testing.T) {
+	router := newTestRouter(t)
+
+	routes := []struct {
+		name string
+		path string
+	}{
+		{
+			name: "default-org default environment",
+			path: "/environments/_default/roles/web/extra",
+		},
+		{
+			name: "org-scoped named environment",
+			path: "/organizations/ponyville/environments/production/roles/web/extra",
+		},
+	}
+
+	for _, route := range routes {
+		t.Run(route.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, route.path, nil)
+			applySignedHeaders(t, req, "silent-bob", "", http.MethodPost, route.path, nil, signDescription{
+				Version:   "1.1",
+				Algorithm: "sha1",
+			}, "2026-04-02T15:04:05Z")
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusNotFound {
+				t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusNotFound, rec.Body.String())
+			}
+
+			payload := decodeJSONMap(t, rec.Body.Bytes())
+			if payload["error"] != "not_found" {
+				t.Fatalf("error = %v, want %q", payload["error"], "not_found")
+			}
+			if payload["message"] != "route not found in scaffold router" {
+				t.Fatalf("message = %v, want %q", payload["message"], "route not found in scaffold router")
+			}
+		})
+	}
+}
+
+func TestEnvironmentRoleReadEndpointsRequireOrganizationWhenAmbiguous(t *testing.T) {
+	router := newTestRouter(t)
+	createOrgForTest(t, router, "canterlot")
+
+	req := httptest.NewRequest(http.MethodGet, "/environments/_default/roles/web", nil)
+	applySignedHeaders(t, req, "pivotal", "", http.MethodGet, "/environments/_default/roles/web", nil, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+
+	payload := decodeJSONMap(t, rec.Body.Bytes())
+	if payload["error"] != "organization_required" {
+		t.Fatalf("error = %v, want %q", payload["error"], "organization_required")
+	}
+}
+
+func TestEnvironmentRoleReadEndpointsUseConfiguredDefaultOrganization(t *testing.T) {
+	router := newTestRouterWithConfig(t, config.Config{
+		ServiceName:         "opencook",
+		Environment:         "test",
+		AuthSkew:            15 * time.Minute,
+		DefaultOrganization: "canterlot",
+	})
+	createOrgForTest(t, router, "canterlot")
+
+	createRoleBody := mustMarshalRolePayloadWithRunListAndEnvRunLists(
+		t,
+		"web",
+		[]string{"recipe[base]"},
+		map[string][]string{},
+	)
+	createRoleReq := httptest.NewRequest(http.MethodPost, "/organizations/canterlot/roles", bytes.NewReader(createRoleBody))
+	applySignedHeaders(t, createRoleReq, "pivotal", "", http.MethodPost, "/organizations/canterlot/roles", createRoleBody, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	createRoleRec := httptest.NewRecorder()
+	router.ServeHTTP(createRoleRec, createRoleReq)
+
+	if createRoleRec.Code != http.StatusCreated {
+		t.Fatalf("create role status = %d, want %d, body = %s", createRoleRec.Code, http.StatusCreated, createRoleRec.Body.String())
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/environments/_default/roles/web", nil)
+	applySignedHeaders(t, req, "pivotal", "", http.MethodGet, "/environments/_default/roles/web", nil, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	payload := decodeJSONMap(t, rec.Body.Bytes())
+	assertStringSliceFromAnyEqual(t, payload["run_list"], []string{"recipe[base]"})
+}
+
+func TestOrganizationEnvironmentRoleReadEndpointReturnsNotFoundForMissingOrganization(t *testing.T) {
+	router := newTestRouter(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/organizations/missing/environments/_default/roles/web", nil)
+	applySignedHeaders(t, req, "pivotal", "", http.MethodGet, "/organizations/missing/environments/_default/roles/web", nil, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusNotFound, rec.Body.String())
+	}
+
+	payload := decodeJSONMap(t, rec.Body.Bytes())
+	if payload["error"] != "not_found" {
+		t.Fatalf("error = %v, want %q", payload["error"], "not_found")
+	}
+	if payload["message"] != "organization not found" {
+		t.Fatalf("message = %v, want %q", payload["message"], "organization not found")
+	}
+}
+
+func TestEnvironmentRoleReadEndpointsRejectOutsideUser(t *testing.T) {
+	router := newTestRouter(t)
+
+	productionBody := mustMarshalEnvironmentPayload(t, "production")
+	productionReq := httptest.NewRequest(http.MethodPost, "/environments", bytes.NewReader(productionBody))
+	applySignedHeaders(t, productionReq, "silent-bob", "", http.MethodPost, "/environments", productionBody, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	productionRec := httptest.NewRecorder()
+	router.ServeHTTP(productionRec, productionReq)
+
+	if productionRec.Code != http.StatusCreated {
+		t.Fatalf("create production environment status = %d, want %d, body = %s", productionRec.Code, http.StatusCreated, productionRec.Body.String())
+	}
+
+	createRoleBody := mustMarshalRolePayloadWithRunListAndEnvRunLists(
+		t,
+		"web",
+		[]string{"recipe[base]"},
+		map[string][]string{
+			"production": {"recipe[nginx]"},
+		},
+	)
+	createRoleReq := httptest.NewRequest(http.MethodPost, "/roles", bytes.NewReader(createRoleBody))
+	applySignedHeaders(t, createRoleReq, "silent-bob", "", http.MethodPost, "/roles", createRoleBody, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	createRoleRec := httptest.NewRecorder()
+	router.ServeHTTP(createRoleRec, createRoleReq)
+
+	if createRoleRec.Code != http.StatusCreated {
+		t.Fatalf("create role status = %d, want %d, body = %s", createRoleRec.Code, http.StatusCreated, createRoleRec.Body.String())
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/environments/production/roles/web", nil)
+	applySignedHeaders(t, req, "outside-user", "", http.MethodGet, "/environments/production/roles/web", nil, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusForbidden, rec.Body.String())
+	}
+
+	payload := decodeJSONMap(t, rec.Body.Bytes())
+	if payload["error"] != "forbidden" {
+		t.Fatalf("error = %v, want %q", payload["error"], "forbidden")
+	}
+}
+
 func TestUsersEndpointRejectsOversizedBodyBeforeVerification(t *testing.T) {
 	router := newTestRouterWithConfig(t, config.Config{
 		ServiceName:      "opencook",
