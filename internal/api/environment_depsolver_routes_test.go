@@ -1442,6 +1442,132 @@ func TestOrganizationEnvironmentCookbookVersionsReportsPluralNoVersionRootCookbo
 	})
 }
 
+func TestEnvironmentCookbookVersionsRequiresEnvironmentReadAuthz(t *testing.T) {
+	routes := []struct {
+		name    string
+		path    string
+		envName string
+	}{
+		{name: "named_environment", path: "/environments/production/cookbook_versions", envName: "production"},
+		{name: "org_scoped_named_environment", path: "/organizations/ponyville/environments/production/cookbook_versions", envName: "production"},
+		{name: "default_environment", path: "/environments/_default/cookbook_versions", envName: "_default"},
+		{name: "org_scoped_default_environment", path: "/organizations/ponyville/environments/_default/cookbook_versions", envName: "_default"},
+	}
+
+	for _, route := range routes {
+		t.Run(route.name, func(t *testing.T) {
+			var authorizer *recordingDepsolverAuthorizer
+			router, _ := newSearchTestRouterWithAuthorizer(t, func(state *bootstrap.Service) authz.Authorizer {
+				authorizer = &recordingDepsolverAuthorizer{
+					base: authz.NewACLAuthorizer(state),
+					deny: map[string]struct{}{
+						"read:environment:" + route.envName: {},
+					},
+				}
+				return authorizer
+			})
+			if route.envName != "_default" {
+				createEnvironmentForCookbookTests(t, router, route.envName)
+			}
+			authorizer.calls = nil
+
+			req := newSignedJSONRequest(t, http.MethodPost, route.path, mustMarshalSandboxJSON(t, map[string]any{
+				"run_list": []any{},
+			}))
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("%s depsolver environment authz status = %d, want %d, body = %s", route.name, rec.Code, http.StatusForbidden, rec.Body.String())
+			}
+
+			payload := decodeJSONMap(t, rec.Body.Bytes())
+			if payload["error"] != "forbidden" {
+				t.Fatalf("%s error = %v, want %q", route.name, payload["error"], "forbidden")
+			}
+
+			wantCalls := []string{"read:environment:" + route.envName}
+			if len(authorizer.calls) != len(wantCalls) {
+				t.Fatalf("%s depsolver authz calls = %v, want %v", route.name, authorizer.calls, wantCalls)
+			}
+			for idx := range wantCalls {
+				if authorizer.calls[idx] != wantCalls[idx] {
+					t.Fatalf("%s depsolver authz calls[%d] = %q, want %q (%v)", route.name, idx, authorizer.calls[idx], wantCalls[idx], authorizer.calls)
+				}
+			}
+		})
+	}
+}
+
+func TestEnvironmentCookbookVersionsChecksEnvironmentReadBeforeRoleExpandedAuthz(t *testing.T) {
+	routes := []struct {
+		name    string
+		path    string
+		envName string
+	}{
+		{name: "named_environment", path: "/environments/production/cookbook_versions", envName: "production"},
+		{name: "org_scoped_named_environment", path: "/organizations/ponyville/environments/production/cookbook_versions", envName: "production"},
+		{name: "default_environment", path: "/environments/_default/cookbook_versions", envName: "_default"},
+		{name: "org_scoped_default_environment", path: "/organizations/ponyville/environments/_default/cookbook_versions", envName: "_default"},
+	}
+
+	for _, route := range routes {
+		t.Run(route.name, func(t *testing.T) {
+			var authorizer *recordingDepsolverAuthorizer
+			router, state := newSearchTestRouterWithAuthorizer(t, func(state *bootstrap.Service) authz.Authorizer {
+				authorizer = &recordingDepsolverAuthorizer{
+					base: authz.NewACLAuthorizer(state),
+					deny: map[string]struct{}{
+						"read:environment:" + route.envName: {},
+					},
+				}
+				return authorizer
+			})
+			if route.envName != "_default" {
+				createEnvironmentForCookbookTests(t, router, route.envName)
+			}
+			if _, err := state.CreateRole("ponyville", bootstrap.CreateRoleInput{
+				Payload: map[string]any{
+					"name":                "web",
+					"description":         "",
+					"json_class":          "Chef::Role",
+					"chef_type":           "role",
+					"default_attributes":  map[string]any{},
+					"override_attributes": map[string]any{},
+					"run_list":            []any{"recipe[apache2]"},
+					"env_run_lists":       map[string]any{},
+				},
+			}); err != nil {
+				t.Fatalf("CreateRole(web) error = %v", err)
+			}
+			authorizer.calls = nil
+
+			req := newSignedJSONRequest(t, http.MethodPost, route.path, mustMarshalSandboxJSON(t, map[string]any{
+				"run_list": []any{"role[web]"},
+			}))
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("%s depsolver role-expanded environment authz status = %d, want %d, body = %s", route.name, rec.Code, http.StatusForbidden, rec.Body.String())
+			}
+
+			payload := decodeJSONMap(t, rec.Body.Bytes())
+			if payload["error"] != "forbidden" {
+				t.Fatalf("%s error = %v, want %q", route.name, payload["error"], "forbidden")
+			}
+
+			wantCalls := []string{"read:environment:" + route.envName}
+			if len(authorizer.calls) != len(wantCalls) {
+				t.Fatalf("%s depsolver authz calls = %v, want %v", route.name, authorizer.calls, wantCalls)
+			}
+			for idx := range wantCalls {
+				if authorizer.calls[idx] != wantCalls[idx] {
+					t.Fatalf("%s depsolver authz calls[%d] = %q, want %q (%v)", route.name, idx, authorizer.calls[idx], wantCalls[idx], authorizer.calls)
+				}
+			}
+		})
+	}
+}
+
 func TestEnvironmentCookbookVersionsResolvesPinnedAndDependentCookbooks(t *testing.T) {
 	router := newTestRouter(t)
 	createEnvironmentForCookbookTests(t, router, "production")
