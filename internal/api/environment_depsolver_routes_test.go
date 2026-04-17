@@ -69,6 +69,77 @@ func TestOrganizationDefaultEnvironmentCookbookVersionsRejectInvalidJSON(t *test
 	assertEnvironmentErrorMessages(t, rec.Body.Bytes(), "invalid JSON")
 }
 
+func TestEnvironmentCookbookVersionsRejectInvalidRunListBeforeEnvironmentReadAuthz(t *testing.T) {
+	routes := []struct {
+		name    string
+		path    string
+		envName string
+	}{
+		{name: "named_environment", path: "/environments/production/cookbook_versions", envName: "production"},
+		{name: "org_scoped_named_environment", path: "/organizations/ponyville/environments/production/cookbook_versions", envName: "production"},
+		{name: "default_environment", path: "/environments/_default/cookbook_versions", envName: "_default"},
+		{name: "org_scoped_default_environment", path: "/organizations/ponyville/environments/_default/cookbook_versions", envName: "_default"},
+	}
+
+	for _, route := range routes {
+		t.Run(route.name, func(t *testing.T) {
+			var authorizer *recordingDepsolverAuthorizer
+			router, _ := newSearchTestRouterWithAuthorizer(t, func(state *bootstrap.Service) authz.Authorizer {
+				authorizer = &recordingDepsolverAuthorizer{
+					base: authz.NewACLAuthorizer(state),
+					deny: map[string]struct{}{
+						"read:environment:" + route.envName: {},
+					},
+				}
+				return authorizer
+			})
+			if route.envName != "_default" {
+				createEnvironmentForCookbookTests(t, router, route.envName)
+			}
+			authorizer.calls = nil
+
+			req := newSignedJSONRequest(t, http.MethodPost, route.path, mustMarshalSandboxJSON(t, map[string]any{
+				"run_list": "not-an-array",
+			}))
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("%s invalid run_list precedence status = %d, want %d, body = %s", route.name, rec.Code, http.StatusBadRequest, rec.Body.String())
+			}
+
+			assertEnvironmentErrorMessages(t, rec.Body.Bytes(), "Field 'run_list' is not a valid run list")
+			if len(authorizer.calls) != 0 {
+				t.Fatalf("%s authz calls = %v, want none", route.name, authorizer.calls)
+			}
+		})
+	}
+}
+
+func TestEnvironmentCookbookVersionsRejectInvalidRunListBeforeMissingEnvironment(t *testing.T) {
+	routes := []struct {
+		name string
+		path string
+	}{
+		{name: "named_environment", path: "/environments/missing-env/cookbook_versions"},
+		{name: "org_scoped_named_environment", path: "/organizations/ponyville/environments/missing-env/cookbook_versions"},
+	}
+
+	for _, route := range routes {
+		t.Run(route.name, func(t *testing.T) {
+			req := newSignedJSONRequest(t, http.MethodPost, route.path, mustMarshalSandboxJSON(t, map[string]any{
+				"run_list": "not-an-array",
+			}))
+			rec := httptest.NewRecorder()
+			newTestRouter(t).ServeHTTP(rec, req)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("%s invalid run_list before missing environment status = %d, want %d, body = %s", route.name, rec.Code, http.StatusBadRequest, rec.Body.String())
+			}
+
+			assertEnvironmentErrorMessages(t, rec.Body.Bytes(), "Field 'run_list' is not a valid run list")
+		})
+	}
+}
+
 func TestEnvironmentCookbookVersionsRejectInvalidJSONBeforeEnvironmentReadAuthz(t *testing.T) {
 	routes := []struct {
 		name    string

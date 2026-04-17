@@ -143,6 +143,13 @@ func validateDepsolverPayload(payload map[string]any) ([]string, error) {
 	return validateDepsolverRunList(runListValue)
 }
 
+// ValidateDepsolverPayload checks the depsolver request body fields that upstream
+// validates during malformed-request handling, before environment lookup or authz.
+func ValidateDepsolverPayload(payload map[string]any) error {
+	_, err := validateDepsolverPayload(payload)
+	return err
+}
+
 func validateDepsolverRunList(value any) ([]string, error) {
 	return validateRunList(value)
 }
