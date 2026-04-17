@@ -47,6 +47,12 @@ func (s *server) handleEnvironmentCookbookVersions(w http.ResponseWriter, r *htt
 		})
 		return
 	}
+
+	payload, ok := decodeDepsolverJSON(w, r)
+	if !ok {
+		return
+	}
+
 	if _, orgExists, envExists := state.GetEnvironment(org, envName); !orgExists {
 		writeJSON(w, http.StatusNotFound, apiError{
 			Error:   "not_found",
@@ -69,11 +75,6 @@ func (s *server) handleEnvironmentCookbookVersions(w http.ResponseWriter, r *htt
 		Name:         "cookbooks",
 		Organization: org,
 	}) {
-		return
-	}
-
-	payload, ok := decodeDepsolverJSON(w, r)
-	if !ok {
 		return
 	}
 	if depsolverPayloadReferencesRoles(payload) {
