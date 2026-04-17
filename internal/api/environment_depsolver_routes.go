@@ -52,6 +52,19 @@ func (s *server) handleEnvironmentCookbookVersions(w http.ResponseWriter, r *htt
 	if !ok {
 		return
 	}
+	if err := bootstrap.ValidateDepsolverPayload(payload); err != nil {
+		var validationErr *bootstrap.ValidationError
+		if errors.As(err, &validationErr) {
+			writeEnvironmentMessages(w, http.StatusBadRequest, validationErr.Messages...)
+			return
+		}
+		s.logf("environment depsolver payload validation failure: %v", err)
+		writeJSON(w, http.StatusInternalServerError, apiError{
+			Error:   "environment_failed",
+			Message: "internal environment compatibility error",
+		})
+		return
+	}
 
 	if _, orgExists, envExists := state.GetEnvironment(org, envName); !orgExists {
 		writeJSON(w, http.StatusNotFound, apiError{
