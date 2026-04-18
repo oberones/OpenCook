@@ -72,6 +72,7 @@ Implemented so far:
   - depsolver invalid-run-list precedence now also wins over missing-environment lookup and environment-read auth on both default-org and org-scoped routes, including the `_default` auth cases
   - depsolver malformed-item precedence now also wins over missing-environment lookup and environment-read auth on both default-org and org-scoped routes, including the `_default` auth cases
   - depsolver trailing-JSON precedence now also wins over missing-environment lookup and environment-read auth on both default-org and org-scoped routes, including the `_default` auth cases
+  - depsolver empty-payload invalid-JSON precedence now also wins over missing-environment lookup and environment-read auth on both default-org and org-scoped routes, including the `_default` auth cases
 - the first core object slice for nodes:
   - list
   - get
