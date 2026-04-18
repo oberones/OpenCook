@@ -48,6 +48,7 @@ As of 2026-04-09, OpenCook has moved past pure scaffolding and into the first co
 - depsolver invalid-JSON handling now also wins before missing-environment lookup and environment-read auth on both default-org and org-scoped routes, including the `_default` auth cases
 - depsolver invalid-run-list handling now also wins before missing-environment lookup and environment-read auth on both default-org and org-scoped routes, including the `_default` auth cases
 - depsolver malformed-item handling is now also explicitly pinned before missing-environment lookup and environment-read auth on both default-org and org-scoped routes, including the `_default` auth cases
+- depsolver trailing-JSON handling is now also explicitly pinned before missing-environment lookup and environment-read auth on both default-org and org-scoped routes, including the `_default` auth cases
 - default-org and explicit-org node routes now resolve against the same org-scoped compatibility state
 - default-org and explicit-org environment routes now resolve against the same org-scoped compatibility state
 - the first role slice is now live with in-memory list/get/head/create/update/delete behavior plus Chef-style run-list and env-run-list normalization/deduplication
