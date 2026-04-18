@@ -386,6 +386,73 @@ func TestOrganizationDefaultEnvironmentCookbookVersionsRejectTrailingJSONDocumen
 	assertEnvironmentErrorMessages(t, rec.Body.Bytes(), "invalid JSON")
 }
 
+func TestEnvironmentCookbookVersionsRejectTrailingJSONBeforeEnvironmentReadAuthz(t *testing.T) {
+	routes := []struct {
+		name    string
+		path    string
+		envName string
+	}{
+		{name: "named_environment", path: "/environments/production/cookbook_versions", envName: "production"},
+		{name: "org_scoped_named_environment", path: "/organizations/ponyville/environments/production/cookbook_versions", envName: "production"},
+		{name: "default_environment", path: "/environments/_default/cookbook_versions", envName: "_default"},
+		{name: "org_scoped_default_environment", path: "/organizations/ponyville/environments/_default/cookbook_versions", envName: "_default"},
+	}
+
+	for _, route := range routes {
+		t.Run(route.name, func(t *testing.T) {
+			var authorizer *recordingDepsolverAuthorizer
+			router, _ := newSearchTestRouterWithAuthorizer(t, func(state *bootstrap.Service) authz.Authorizer {
+				authorizer = &recordingDepsolverAuthorizer{
+					base: authz.NewACLAuthorizer(state),
+					deny: map[string]struct{}{
+						"read:environment:" + route.envName: {},
+					},
+				}
+				return authorizer
+			})
+			if route.envName != "_default" {
+				createEnvironmentForCookbookTests(t, router, route.envName)
+			}
+			authorizer.calls = nil
+
+			req := newSignedJSONRequest(t, http.MethodPost, route.path, []byte(`{"run_list":[]}{"run_list":[]}`))
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("%s trailing JSON precedence status = %d, want %d, body = %s", route.name, rec.Code, http.StatusBadRequest, rec.Body.String())
+			}
+
+			assertEnvironmentErrorMessages(t, rec.Body.Bytes(), "invalid JSON")
+			if len(authorizer.calls) != 0 {
+				t.Fatalf("%s authz calls = %v, want none", route.name, authorizer.calls)
+			}
+		})
+	}
+}
+
+func TestEnvironmentCookbookVersionsRejectTrailingJSONBeforeMissingEnvironment(t *testing.T) {
+	routes := []struct {
+		name string
+		path string
+	}{
+		{name: "named_environment", path: "/environments/missing-env/cookbook_versions"},
+		{name: "org_scoped_named_environment", path: "/organizations/ponyville/environments/missing-env/cookbook_versions"},
+	}
+
+	for _, route := range routes {
+		t.Run(route.name, func(t *testing.T) {
+			req := newSignedJSONRequest(t, http.MethodPost, route.path, []byte(`{"run_list":[]}{"run_list":[]}`))
+			rec := httptest.NewRecorder()
+			newTestRouter(t).ServeHTTP(rec, req)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("%s trailing JSON before missing environment status = %d, want %d, body = %s", route.name, rec.Code, http.StatusBadRequest, rec.Body.String())
+			}
+
+			assertEnvironmentErrorMessages(t, rec.Body.Bytes(), "invalid JSON")
+		})
+	}
+}
+
 func TestEnvironmentCookbookVersionsAcceptsTrailingSlash(t *testing.T) {
 	router := newTestRouter(t)
 	createEnvironmentForCookbookTests(t, router, "production")
