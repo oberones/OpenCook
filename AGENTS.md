@@ -73,6 +73,7 @@ Implemented so far:
   - depsolver malformed-item precedence now also wins over missing-environment lookup and environment-read auth on both default-org and org-scoped routes, including the `_default` auth cases
   - depsolver trailing-JSON precedence now also wins over missing-environment lookup and environment-read auth on both default-org and org-scoped routes, including the `_default` auth cases
   - depsolver empty-payload invalid-JSON precedence now also wins over missing-environment lookup and environment-read auth on both default-org and org-scoped routes, including the `_default` auth cases
+  - org-scoped depsolver missing-organization precedence is now also pinned ahead of invalid JSON, empty payload, trailing JSON, invalid `run_list`, and malformed-item request bodies on both named-environment and `_default` paths
 - the first core object slice for nodes:
   - list
   - get
