@@ -5272,6 +5272,71 @@ func TestOrganizationDefaultEnvironmentCookbookVersionsRequiresCookbookContainer
 	}
 }
 
+func TestEnvironmentCookbookVersionsUseConfiguredDefaultOrganizationForCookbookContainerReadAuthz(t *testing.T) {
+	routes := []struct {
+		name    string
+		path    string
+		envName string
+	}{
+		{name: "named_environment", path: "/environments/production/cookbook_versions", envName: "production"},
+		{name: "default_environment", path: "/environments/_default/cookbook_versions", envName: "_default"},
+	}
+
+	for _, route := range routes {
+		t.Run(route.name, func(t *testing.T) {
+			var authorizer *recordingDepsolverAuthorizer
+			router, state := newSearchTestRouterWithConfigAndAuthorizer(t, config.Config{
+				ServiceName:         "opencook",
+				Environment:         "test",
+				AuthSkew:            15 * time.Minute,
+				DefaultOrganization: "canterlot",
+			}, func(state *bootstrap.Service) authz.Authorizer {
+				authorizer = &recordingDepsolverAuthorizer{
+					base: authz.NewACLAuthorizer(state),
+					deny: map[string]struct{}{
+						"read:container:cookbooks": {},
+					},
+				}
+				return authorizer
+			})
+			createOrgForTest(t, router, "canterlot")
+			if route.envName != "_default" {
+				if _, err := state.CreateEnvironment("canterlot", bootstrap.CreateEnvironmentInput{
+					Payload: map[string]any{
+						"name": route.envName,
+					},
+					Creator: authn.Principal{Type: "user", Name: "pivotal"},
+				}); err != nil {
+					t.Fatalf("CreateEnvironment(%s) error = %v", route.envName, err)
+				}
+			}
+			authorizer.calls = nil
+
+			req := newSignedJSONRequestAs(t, "pivotal", http.MethodPost, route.path, mustMarshalSandboxJSON(t, map[string]any{
+				"run_list": []any{},
+			}))
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("%s configured default-org cookbook container authz status = %d, want %d, body = %s", route.name, rec.Code, http.StatusForbidden, rec.Body.String())
+			}
+
+			wantCalls := []string{
+				"read:environment:" + route.envName,
+				"read:container:cookbooks",
+			}
+			if len(authorizer.calls) != len(wantCalls) {
+				t.Fatalf("%s depsolver authz calls = %v, want %v", route.name, authorizer.calls, wantCalls)
+			}
+			for idx := range wantCalls {
+				if authorizer.calls[idx] != wantCalls[idx] {
+					t.Fatalf("%s depsolver authz calls[%d] = %q, want %q (%v)", route.name, idx, authorizer.calls[idx], wantCalls[idx], authorizer.calls)
+				}
+			}
+		})
+	}
+}
+
 func TestEnvironmentCookbookVersionsRequiresRolesContainerReadAuthzForRoleRunList(t *testing.T) {
 	var authorizer *recordingDepsolverAuthorizer
 	router, state := newSearchTestRouterWithAuthorizer(t, func(state *bootstrap.Service) authz.Authorizer {
