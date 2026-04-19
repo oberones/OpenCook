@@ -332,51 +332,25 @@ func TestOrganizationDefaultEnvironmentCookbookVersionsRejectEmptyPayload(t *tes
 	assertEnvironmentErrorMessages(t, rec.Body.Bytes(), "invalid JSON")
 }
 
-func TestOrganizationEnvironmentCookbookVersionsReturnMissingOrganizationBeforeMalformedRequest(t *testing.T) {
-	malformedBodies := []struct {
-		name string
-		body []byte
-	}{
-		{name: "invalid_json", body: []byte("this_is_not_json")},
-		{name: "empty_payload", body: []byte("")},
-		{name: "trailing_json", body: []byte(`{"run_list":[]}{"run_list":[]}`)},
-		{name: "invalid_run_list", body: mustMarshalSandboxJSON(t, map[string]any{"run_list": "not-an-array"})},
-		{name: "malformed_item", body: mustMarshalSandboxJSON(t, map[string]any{"run_list": []any{"fake[not_good]"}})},
-	}
-
-	for _, tt := range malformedBodies {
-		t.Run(tt.name, func(t *testing.T) {
-			var authorizer *recordingDepsolverAuthorizer
-			router, _ := newSearchTestRouterWithAuthorizer(t, func(state *bootstrap.Service) authz.Authorizer {
-				authorizer = &recordingDepsolverAuthorizer{
-					base: authz.NewACLAuthorizer(state),
-				}
-				return authorizer
-			})
-			authorizer.calls = nil
-
-			req := newSignedJSONRequest(t, http.MethodPost, "/organizations/missing-org/environments/production/cookbook_versions", tt.body)
-			rec := httptest.NewRecorder()
-			router.ServeHTTP(rec, req)
-			if rec.Code != http.StatusNotFound {
-				t.Fatalf("%s missing organization precedence status = %d, want %d, body = %s", tt.name, rec.Code, http.StatusNotFound, rec.Body.String())
-			}
-
-			payload := decodeJSONMap(t, rec.Body.Bytes())
-			if payload["error"] != "not_found" {
-				t.Fatalf("%s error = %v, want %q", tt.name, payload["error"], "not_found")
-			}
-			if payload["message"] != "organization not found" {
-				t.Fatalf("%s message = %v, want %q", tt.name, payload["message"], "organization not found")
-			}
-			if len(authorizer.calls) != 0 {
-				t.Fatalf("%s authz calls = %v, want none", tt.name, authorizer.calls)
-			}
-		})
-	}
+func TestOrganizationEnvironmentCookbookVersionsReturnsMissingOrganizationBeforeMalformedRequest(t *testing.T) {
+	assertOrgScopedDepsolverMissingOrganizationBeforeMalformedRequest(
+		t,
+		"/organizations/missing-org/environments/production/cookbook_versions",
+		"missing organization precedence",
+	)
 }
 
-func TestOrganizationDefaultEnvironmentCookbookVersionsReturnMissingOrganizationBeforeMalformedRequest(t *testing.T) {
+func TestOrganizationDefaultEnvironmentCookbookVersionsReturnsMissingOrganizationBeforeMalformedRequest(t *testing.T) {
+	assertOrgScopedDepsolverMissingOrganizationBeforeMalformedRequest(
+		t,
+		"/organizations/missing-org/environments/_default/cookbook_versions",
+		"default missing organization precedence",
+	)
+}
+
+func assertOrgScopedDepsolverMissingOrganizationBeforeMalformedRequest(t *testing.T, path, statusLabel string) {
+	t.Helper()
+
 	malformedBodies := []struct {
 		name string
 		body []byte
@@ -399,11 +373,11 @@ func TestOrganizationDefaultEnvironmentCookbookVersionsReturnMissingOrganization
 			})
 			authorizer.calls = nil
 
-			req := newSignedJSONRequest(t, http.MethodPost, "/organizations/missing-org/environments/_default/cookbook_versions", tt.body)
+			req := newSignedJSONRequest(t, http.MethodPost, path, tt.body)
 			rec := httptest.NewRecorder()
 			router.ServeHTTP(rec, req)
 			if rec.Code != http.StatusNotFound {
-				t.Fatalf("%s default missing organization precedence status = %d, want %d, body = %s", tt.name, rec.Code, http.StatusNotFound, rec.Body.String())
+				t.Fatalf("%s %s status = %d, want %d, body = %s", tt.name, statusLabel, rec.Code, http.StatusNotFound, rec.Body.String())
 			}
 
 			payload := decodeJSONMap(t, rec.Body.Bytes())
