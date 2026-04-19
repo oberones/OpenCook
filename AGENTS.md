@@ -81,6 +81,7 @@ Implemented so far:
   - configured default-org depsolver cookbook-container read auth is now also pinned on both named-environment and `_default` paths in the multi-org case
   - configured default-org depsolver roles-container read auth is now also pinned for role-expanded requests on both named-environment and `_default` paths in the multi-org case
   - configured default-org depsolver missing-role and recursive-role `400`s are now also pinned for role-expanded requests on both named-environment and `_default` paths in the multi-org case
+  - configured default-org depsolver role-expanded success is now also pinned on both named-environment and `_default` paths in the multi-org case, including environment-specific role run-list selection
 - the first core object slice for nodes:
   - list
   - get

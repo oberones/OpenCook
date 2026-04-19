@@ -5739,6 +5739,120 @@ func TestEnvironmentCookbookVersionsUseConfiguredDefaultOrganizationForRecursive
 	}
 }
 
+func TestEnvironmentCookbookVersionsUseConfiguredDefaultOrganizationForRoleExpandedSuccess(t *testing.T) {
+	router, state := newSearchTestRouterWithConfigAndAuthorizer(t, config.Config{
+		ServiceName:         "opencook",
+		Environment:         "test",
+		AuthSkew:            15 * time.Minute,
+		DefaultOrganization: "canterlot",
+	}, nil)
+	createOrgForTest(t, router, "canterlot")
+	if _, err := state.CreateEnvironment("canterlot", bootstrap.CreateEnvironmentInput{
+		Payload: map[string]any{
+			"name": "production",
+		},
+		Creator: authn.Principal{Type: "user", Name: "pivotal"},
+	}); err != nil {
+		t.Fatalf("CreateEnvironment(production) error = %v", err)
+	}
+
+	createCookbookInOrganization := func(name, version string) {
+		t.Helper()
+
+		body := mustMarshalSandboxJSON(t, cookbookVersionPayload(name, version, "", nil))
+		req := newSignedJSONRequestAs(t, "pivotal", http.MethodPut, "/organizations/canterlot/cookbooks/"+name+"/"+version, body)
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("create cookbook %s-%s status = %d, want %d, body = %s", name, version, rec.Code, http.StatusCreated, rec.Body.String())
+		}
+	}
+
+	createCookbookInOrganization("apache2", "1.0.0")
+	createCookbookInOrganization("nginx", "2.0.0")
+	createCookbookInOrganization("users", "3.0.0")
+
+	if _, err := state.CreateRole("canterlot", bootstrap.CreateRoleInput{
+		Payload: map[string]any{
+			"name":                "base",
+			"description":         "",
+			"json_class":          "Chef::Role",
+			"chef_type":           "role",
+			"default_attributes":  map[string]any{},
+			"override_attributes": map[string]any{},
+			"run_list":            []any{"recipe[apache2]"},
+			"env_run_lists": map[string]any{
+				"production": []any{"recipe[nginx]"},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("CreateRole(base) error = %v", err)
+	}
+	if _, err := state.CreateRole("canterlot", bootstrap.CreateRoleInput{
+		Payload: map[string]any{
+			"name":                "web",
+			"description":         "",
+			"json_class":          "Chef::Role",
+			"chef_type":           "role",
+			"default_attributes":  map[string]any{},
+			"override_attributes": map[string]any{},
+			"run_list":            []any{"role[base]", "recipe[users]"},
+			"env_run_lists":       map[string]any{},
+		},
+	}); err != nil {
+		t.Fatalf("CreateRole(web) error = %v", err)
+	}
+
+	routes := []struct {
+		name       string
+		path       string
+		wantName   string
+		wantVer    string
+		wantName2  string
+		wantVer2   string
+		absentName string
+	}{
+		{
+			name:       "named_environment",
+			path:       "/environments/production/cookbook_versions",
+			wantName:   "nginx",
+			wantVer:    "2.0.0",
+			wantName2:  "users",
+			wantVer2:   "3.0.0",
+			absentName: "apache2",
+		},
+		{
+			name:       "default_environment",
+			path:       "/environments/_default/cookbook_versions",
+			wantName:   "apache2",
+			wantVer:    "1.0.0",
+			wantName2:  "users",
+			wantVer2:   "3.0.0",
+			absentName: "nginx",
+		},
+	}
+
+	for _, route := range routes {
+		t.Run(route.name, func(t *testing.T) {
+			req := newSignedJSONRequestAs(t, "pivotal", http.MethodPost, route.path, mustMarshalSandboxJSON(t, map[string]any{
+				"run_list": []any{"role[web]"},
+			}))
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("%s configured default-org role-expanded success status = %d, want %d, body = %s", route.name, rec.Code, http.StatusOK, rec.Body.String())
+			}
+
+			payload := decodeJSONMap(t, rec.Body.Bytes())
+			assertCookbookVersionBody(t, payload, route.wantName, route.wantVer)
+			assertCookbookVersionBody(t, payload, route.wantName2, route.wantVer2)
+			if _, ok := payload[route.absentName]; ok {
+				t.Fatalf("%s configured default-org role-expanded payload unexpectedly contains %s: %v", route.name, route.absentName, payload)
+			}
+		})
+	}
+}
+
 func TestEnvironmentCookbookVersionsExpandsRoleRunLists(t *testing.T) {
 	router, state := newSearchTestRouterWithAuthorizer(t, nil)
 	createEnvironmentForCookbookTests(t, router, "production")
