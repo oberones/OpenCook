@@ -1225,6 +1225,69 @@ func TestDefaultEnvironmentCookbookVersionsRequiresOrganizationWhenAmbiguous(t *
 	}
 }
 
+func TestEnvironmentCookbookVersionsRequireOrganizationBeforeMalformedRequestWhenAmbiguous(t *testing.T) {
+	assertDefaultOrgDepsolverRequiresOrganizationBeforeMalformedRequest(
+		t,
+		"/environments/production/cookbook_versions",
+		"ambiguous organization precedence",
+	)
+}
+
+func TestDefaultEnvironmentCookbookVersionsRequireOrganizationBeforeMalformedRequestWhenAmbiguous(t *testing.T) {
+	assertDefaultOrgDepsolverRequiresOrganizationBeforeMalformedRequest(
+		t,
+		"/environments/_default/cookbook_versions",
+		"ambiguous default organization precedence",
+	)
+}
+
+func assertDefaultOrgDepsolverRequiresOrganizationBeforeMalformedRequest(t *testing.T, path, statusLabel string) {
+	t.Helper()
+
+	malformedBodies := []struct {
+		name string
+		body []byte
+	}{
+		{name: "invalid_json", body: []byte("this_is_not_json")},
+		{name: "empty_payload", body: []byte("")},
+		{name: "trailing_json", body: []byte(`{"run_list":[]}{"run_list":[]}`)},
+		{name: "invalid_run_list", body: mustMarshalSandboxJSON(t, map[string]any{"run_list": "not-an-array"})},
+		{name: "malformed_item", body: mustMarshalSandboxJSON(t, map[string]any{"run_list": []any{"fake[not_good]"}})},
+	}
+
+	for _, tt := range malformedBodies {
+		t.Run(tt.name, func(t *testing.T) {
+			var authorizer *recordingDepsolverAuthorizer
+			router, _ := newSearchTestRouterWithAuthorizer(t, func(state *bootstrap.Service) authz.Authorizer {
+				authorizer = &recordingDepsolverAuthorizer{
+					base: authz.NewACLAuthorizer(state),
+				}
+				return authorizer
+			})
+			createOrgForTest(t, router, "canterlot")
+			authorizer.calls = nil
+
+			req := newSignedJSONRequest(t, http.MethodPost, path, tt.body)
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("%s %s status = %d, want %d, body = %s", tt.name, statusLabel, rec.Code, http.StatusBadRequest, rec.Body.String())
+			}
+
+			payload := decodeJSONMap(t, rec.Body.Bytes())
+			if payload["error"] != "organization_required" {
+				t.Fatalf("%s error = %v, want %q", tt.name, payload["error"], "organization_required")
+			}
+			if payload["message"] != "organization context is required for this route" {
+				t.Fatalf("%s message = %v, want %q", tt.name, payload["message"], "organization context is required for this route")
+			}
+			if len(authorizer.calls) != 0 {
+				t.Fatalf("%s authz calls = %v, want none", tt.name, authorizer.calls)
+			}
+		})
+	}
+}
+
 func TestEnvironmentCookbookVersionsUsesConfiguredDefaultOrganizationWhenAmbiguous(t *testing.T) {
 	router := newTestRouterWithConfig(t, config.Config{
 		ServiceName:         "opencook",
