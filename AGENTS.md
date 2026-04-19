@@ -84,6 +84,7 @@ Implemented so far:
   - configured default-org depsolver role-expanded success is now also pinned on both named-environment and `_default` paths in the multi-org case, including environment-specific role run-list selection
   - configured default-org depsolver explicit-empty environment-specific role run-list behavior is now also pinned on both named-environment and `_default` paths in the multi-org case
   - configured default-org depsolver role-expanded equivalent-root deduplication is now also pinned on both named-environment and `_default` paths in the multi-org case
+  - configured default-org depsolver missing-environment `404` is now also pinned on the named-environment default-org route in the multi-org case
 - the first core object slice for nodes:
   - list
   - get
