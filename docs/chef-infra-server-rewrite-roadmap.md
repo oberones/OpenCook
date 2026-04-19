@@ -59,6 +59,7 @@ As of 2026-04-09, OpenCook has moved past pure scaffolding and into the first co
 - configured default-org depsolver resolution now also has explicit multi-org roles-container read auth parity for role-expanded requests on both named-environment and `_default` paths
 - configured default-org depsolver resolution now also has explicit multi-org missing-role and recursive-role `400` parity for role-expanded requests on both named-environment and `_default` paths
 - configured default-org depsolver resolution now also has explicit multi-org role-expanded success parity, including environment-specific role run-list selection on named-environment and `_default` paths
+- configured default-org depsolver resolution now also has explicit multi-org explicit-empty environment-specific role run-list parity on named-environment and `_default` paths
 - default-org and explicit-org node routes now resolve against the same org-scoped compatibility state
 - default-org and explicit-org environment routes now resolve against the same org-scoped compatibility state
 - the first role slice is now live with in-memory list/get/head/create/update/delete behavior plus Chef-style run-list and env-run-list normalization/deduplication
