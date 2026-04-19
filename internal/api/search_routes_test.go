@@ -846,6 +846,16 @@ func (a denyingSearchAuthorizer) Authorize(ctx context.Context, subject authz.Su
 func newSearchTestRouterWithAuthorizer(t *testing.T, authorizerFactory func(*bootstrap.Service) authz.Authorizer) (http.Handler, *bootstrap.Service) {
 	t.Helper()
 
+	return newSearchTestRouterWithConfigAndAuthorizer(t, config.Config{
+		ServiceName: "opencook",
+		Environment: "test",
+		AuthSkew:    15 * time.Minute,
+	}, authorizerFactory)
+}
+
+func newSearchTestRouterWithConfigAndAuthorizer(t *testing.T, cfg config.Config, authorizerFactory func(*bootstrap.Service) authz.Authorizer) (http.Handler, *bootstrap.Service) {
+	t.Helper()
+
 	privateKey := mustParsePrivateKey(t)
 	store := authn.NewMemoryKeyStore()
 	mustPutKey(t, store, authn.Key{
@@ -887,18 +897,26 @@ func newSearchTestRouterWithAuthorizer(t *testing.T, authorizerFactory func(*boo
 		authorizer = authorizerFactory(state)
 	}
 
-	skew := 15 * time.Minute
+	if cfg.ServiceName == "" {
+		cfg.ServiceName = "opencook"
+	}
+	if cfg.Environment == "" {
+		cfg.Environment = "test"
+	}
+	if cfg.AuthSkew == 0 {
+		cfg.AuthSkew = 15 * time.Minute
+	}
+	if cfg.MaxAuthBodyBytes == 0 {
+		cfg.MaxAuthBodyBytes = config.DefaultMaxAuthBodyBytes
+	}
+
+	skew := cfg.AuthSkew
 	now := func() time.Time {
 		return mustParseTime(t, "2026-04-02T15:04:35Z")
 	}
 	router := NewRouter(Dependencies{
-		Logger: log.New(ioDiscard{}, "", 0),
-		Config: config.Config{
-			ServiceName:      "opencook",
-			Environment:      "test",
-			AuthSkew:         skew,
-			MaxAuthBodyBytes: config.DefaultMaxAuthBodyBytes,
-		},
+		Logger:  log.New(ioDiscard{}, "", 0),
+		Config:  cfg,
 		Version: version.Current(),
 		Compat:  compat.NewDefaultRegistry(),
 		Now:     now,

@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/oberones/OpenCook/internal/authn"
 	"github.com/oberones/OpenCook/internal/authz"
 	"github.com/oberones/OpenCook/internal/bootstrap"
 	"github.com/oberones/OpenCook/internal/config"
@@ -1281,6 +1282,84 @@ func assertDefaultOrgDepsolverRequiresOrganizationBeforeMalformedRequest(t *test
 			if payload["message"] != "organization context is required for this route" {
 				t.Fatalf("%s message = %v, want %q", tt.name, payload["message"], "organization context is required for this route")
 			}
+			if len(authorizer.calls) != 0 {
+				t.Fatalf("%s authz calls = %v, want none", tt.name, authorizer.calls)
+			}
+		})
+	}
+}
+
+func TestEnvironmentCookbookVersionsUseConfiguredDefaultOrganizationBeforeMalformedRequest(t *testing.T) {
+	assertConfiguredDefaultOrgDepsolverRejectsMalformedRequestBeforeEnvironmentReadAuthz(
+		t,
+		"/environments/production/cookbook_versions",
+		"production",
+		"configured default-org named environment precedence",
+	)
+}
+
+func TestDefaultEnvironmentCookbookVersionsUseConfiguredDefaultOrganizationBeforeMalformedRequest(t *testing.T) {
+	assertConfiguredDefaultOrgDepsolverRejectsMalformedRequestBeforeEnvironmentReadAuthz(
+		t,
+		"/environments/_default/cookbook_versions",
+		"_default",
+		"configured default-org _default precedence",
+	)
+}
+
+func assertConfiguredDefaultOrgDepsolverRejectsMalformedRequestBeforeEnvironmentReadAuthz(t *testing.T, path, envName, statusLabel string) {
+	t.Helper()
+
+	malformedBodies := []struct {
+		name     string
+		body     []byte
+		messages []string
+	}{
+		{name: "invalid_json", body: []byte("this_is_not_json"), messages: []string{"invalid JSON"}},
+		{name: "empty_payload", body: []byte(""), messages: []string{"invalid JSON"}},
+		{name: "trailing_json", body: []byte(`{"run_list":[]}{"run_list":[]}`), messages: []string{"invalid JSON"}},
+		{name: "invalid_run_list", body: mustMarshalSandboxJSON(t, map[string]any{"run_list": "not-an-array"}), messages: []string{"Field 'run_list' is not a valid run list"}},
+		{name: "malformed_item", body: mustMarshalSandboxJSON(t, map[string]any{"run_list": []any{"fake[not_good]"}}), messages: []string{"Field 'run_list' is not a valid run list"}},
+	}
+
+	for _, tt := range malformedBodies {
+		t.Run(tt.name, func(t *testing.T) {
+			var authorizer *recordingDepsolverAuthorizer
+			router, state := newSearchTestRouterWithConfigAndAuthorizer(t, config.Config{
+				ServiceName:         "opencook",
+				Environment:         "test",
+				AuthSkew:            15 * time.Minute,
+				DefaultOrganization: "canterlot",
+			}, func(state *bootstrap.Service) authz.Authorizer {
+				authorizer = &recordingDepsolverAuthorizer{
+					base: authz.NewACLAuthorizer(state),
+					deny: map[string]struct{}{
+						"read:environment:" + envName: {},
+					},
+				}
+				return authorizer
+			})
+			createOrgForTest(t, router, "canterlot")
+			if envName != "_default" {
+				if _, err := state.CreateEnvironment("canterlot", bootstrap.CreateEnvironmentInput{
+					Payload: map[string]any{
+						"name": envName,
+					},
+					Creator: authn.Principal{Type: "user", Name: "pivotal"},
+				}); err != nil {
+					t.Fatalf("CreateEnvironment(%s) error = %v", envName, err)
+				}
+			}
+			authorizer.calls = nil
+
+			req := newSignedJSONRequestAs(t, "pivotal", http.MethodPost, path, tt.body)
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("%s %s status = %d, want %d, body = %s", tt.name, statusLabel, rec.Code, http.StatusBadRequest, rec.Body.String())
+			}
+
+			assertEnvironmentErrorMessages(t, rec.Body.Bytes(), tt.messages...)
 			if len(authorizer.calls) != 0 {
 				t.Fatalf("%s authz calls = %v, want none", tt.name, authorizer.calls)
 			}
