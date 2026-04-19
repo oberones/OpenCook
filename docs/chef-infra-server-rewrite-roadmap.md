@@ -55,6 +55,7 @@ As of 2026-04-09, OpenCook has moved past pure scaffolding and into the first co
 - configured default-org depsolver resolution is now also explicitly pinned before malformed-request bodies and environment-read auth, and on named-environment routes also before missing-environment lookup, including invalid JSON, empty payload, trailing JSON, invalid `run_list`, and malformed-item inputs
 - configured default-org depsolver resolution now also has explicit multi-org route-semantics coverage for trailing slashes, method-not-allowed with `Allow: POST`, and extra-path `404`s on both named-environment and `_default` paths
 - configured default-org depsolver resolution now also has explicit multi-org environment-read auth parity, including role-expanded short-circuiting before role-container auth on both named-environment and `_default` paths
+- configured default-org depsolver resolution now also has explicit multi-org cookbook-container read auth parity on both named-environment and `_default` paths
 - default-org and explicit-org node routes now resolve against the same org-scoped compatibility state
 - default-org and explicit-org environment routes now resolve against the same org-scoped compatibility state
 - the first role slice is now live with in-memory list/get/head/create/update/delete behavior plus Chef-style run-list and env-run-list normalization/deduplication
