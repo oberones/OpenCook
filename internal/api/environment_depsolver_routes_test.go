@@ -1082,6 +1082,52 @@ func TestEnvironmentCookbookVersionsReturnsEmptyObjectForEmptyRunListWithConfigu
 	}
 }
 
+func TestEnvironmentCookbookVersionsReturnsEmptyObjectForMissingRunListWithConfiguredDefaultOrganization(t *testing.T) {
+	router := newTestRouterWithConfig(t, config.Config{
+		ServiceName:         "opencook",
+		Environment:         "test",
+		AuthSkew:            15 * time.Minute,
+		DefaultOrganization: "canterlot",
+	})
+	createOrgForTest(t, router, "canterlot")
+
+	productionBody := mustMarshalEnvironmentPayload(t, "production")
+	productionReq := httptest.NewRequest(http.MethodPost, "/environments", bytes.NewReader(productionBody))
+	applySignedHeaders(t, productionReq, "pivotal", "", http.MethodPost, "/environments", productionBody, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	productionRec := httptest.NewRecorder()
+	router.ServeHTTP(productionRec, productionReq)
+	if productionRec.Code != http.StatusCreated {
+		t.Fatalf("create production environment status = %d, want %d, body = %s", productionRec.Code, http.StatusCreated, productionRec.Body.String())
+	}
+
+	routes := []struct {
+		name string
+		path string
+	}{
+		{name: "named_environment", path: "/environments/production/cookbook_versions"},
+		{name: "default_environment", path: "/environments/_default/cookbook_versions"},
+	}
+
+	for _, route := range routes {
+		t.Run(route.name, func(t *testing.T) {
+			req := newSignedJSONRequestAs(t, "pivotal", http.MethodPost, route.path, mustMarshalSandboxJSON(t, map[string]any{}))
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("%s configured default-org missing run_list status = %d, want %d, body = %s", route.name, rec.Code, http.StatusOK, rec.Body.String())
+			}
+
+			payload := decodeJSONMap(t, rec.Body.Bytes())
+			if len(payload) != 0 {
+				t.Fatalf("%s payload = %v, want empty object", route.name, payload)
+			}
+		})
+	}
+}
+
 func TestOrganizationEnvironmentCookbookVersionsReturnsEmptyObjectForMissingRunList(t *testing.T) {
 	router := newTestRouter(t)
 	createEnvironmentForCookbookTests(t, router, "production")
