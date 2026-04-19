@@ -119,6 +119,7 @@ Status: in progress
 - configured default-org depsolver role-expanded success is now also pinned on both named-environment and `_default` paths in the multi-org case, including environment-specific role run-list selection
 - configured default-org depsolver explicit-empty environment-specific role run-list behavior is now also pinned on both named-environment and `_default` paths in the multi-org case
 - configured default-org depsolver role-expanded equivalent-root deduplication is now also pinned on both named-environment and `_default` paths in the multi-org case
+- configured default-org depsolver missing-environment `404` is now also pinned on the named-environment default-org route in the multi-org case
 - PostgreSQL-backed cookbook persistence, broader cookbook pedant coverage beyond the current environment-filtered/named-filter/latest/version read-write contract, broader upstream run-list/depsolver semantics, and deeper operational hardening around provider-backed blob behavior are still pending
 - S3-compatible blob storage remains the target production mode after the compatibility contract settles
 
