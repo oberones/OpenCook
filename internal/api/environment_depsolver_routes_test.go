@@ -1245,18 +1245,7 @@ func TestDefaultEnvironmentCookbookVersionsRequireOrganizationBeforeMalformedReq
 func assertDefaultOrgDepsolverRequiresOrganizationBeforeMalformedRequest(t *testing.T, path, statusLabel string) {
 	t.Helper()
 
-	malformedBodies := []struct {
-		name string
-		body []byte
-	}{
-		{name: "invalid_json", body: []byte("this_is_not_json")},
-		{name: "empty_payload", body: []byte("")},
-		{name: "trailing_json", body: []byte(`{"run_list":[]}{"run_list":[]}`)},
-		{name: "invalid_run_list", body: mustMarshalSandboxJSON(t, map[string]any{"run_list": "not-an-array"})},
-		{name: "malformed_item", body: mustMarshalSandboxJSON(t, map[string]any{"run_list": []any{"fake[not_good]"}})},
-	}
-
-	for _, tt := range malformedBodies {
+	for _, tt := range depsolverMalformedRequestCases(t) {
 		t.Run(tt.name, func(t *testing.T) {
 			var authorizer *recordingDepsolverAuthorizer
 			router, _ := newSearchTestRouterWithAuthorizer(t, func(state *bootstrap.Service) authz.Authorizer {
@@ -1307,22 +1296,18 @@ func TestDefaultEnvironmentCookbookVersionsUseConfiguredDefaultOrganizationBefor
 	)
 }
 
+func TestEnvironmentCookbookVersionsUseConfiguredDefaultOrganizationBeforeMissingEnvironmentForMalformedRequest(t *testing.T) {
+	assertConfiguredDefaultOrgDepsolverRejectsMalformedRequestBeforeMissingEnvironment(
+		t,
+		"/environments/missing-env/cookbook_versions",
+		"configured default-org missing environment precedence",
+	)
+}
+
 func assertConfiguredDefaultOrgDepsolverRejectsMalformedRequestBeforeEnvironmentReadAuthz(t *testing.T, path, envName, statusLabel string) {
 	t.Helper()
 
-	malformedBodies := []struct {
-		name     string
-		body     []byte
-		messages []string
-	}{
-		{name: "invalid_json", body: []byte("this_is_not_json"), messages: []string{"invalid JSON"}},
-		{name: "empty_payload", body: []byte(""), messages: []string{"invalid JSON"}},
-		{name: "trailing_json", body: []byte(`{"run_list":[]}{"run_list":[]}`), messages: []string{"invalid JSON"}},
-		{name: "invalid_run_list", body: mustMarshalSandboxJSON(t, map[string]any{"run_list": "not-an-array"}), messages: []string{"Field 'run_list' is not a valid run list"}},
-		{name: "malformed_item", body: mustMarshalSandboxJSON(t, map[string]any{"run_list": []any{"fake[not_good]"}}), messages: []string{"Field 'run_list' is not a valid run list"}},
-	}
-
-	for _, tt := range malformedBodies {
+	for _, tt := range depsolverMalformedRequestCases(t) {
 		t.Run(tt.name, func(t *testing.T) {
 			var authorizer *recordingDepsolverAuthorizer
 			router, state := newSearchTestRouterWithConfigAndAuthorizer(t, config.Config{
@@ -1350,6 +1335,41 @@ func assertConfiguredDefaultOrgDepsolverRejectsMalformedRequestBeforeEnvironment
 					t.Fatalf("CreateEnvironment(%s) error = %v", envName, err)
 				}
 			}
+			authorizer.calls = nil
+
+			req := newSignedJSONRequestAs(t, "pivotal", http.MethodPost, path, tt.body)
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("%s %s status = %d, want %d, body = %s", tt.name, statusLabel, rec.Code, http.StatusBadRequest, rec.Body.String())
+			}
+
+			assertEnvironmentErrorMessages(t, rec.Body.Bytes(), tt.messages...)
+			if len(authorizer.calls) != 0 {
+				t.Fatalf("%s authz calls = %v, want none", tt.name, authorizer.calls)
+			}
+		})
+	}
+}
+
+func assertConfiguredDefaultOrgDepsolverRejectsMalformedRequestBeforeMissingEnvironment(t *testing.T, path, statusLabel string) {
+	t.Helper()
+
+	for _, tt := range depsolverMalformedRequestCases(t) {
+		t.Run(tt.name, func(t *testing.T) {
+			var authorizer *recordingDepsolverAuthorizer
+			router, _ := newSearchTestRouterWithConfigAndAuthorizer(t, config.Config{
+				ServiceName:         "opencook",
+				Environment:         "test",
+				AuthSkew:            15 * time.Minute,
+				DefaultOrganization: "canterlot",
+			}, func(state *bootstrap.Service) authz.Authorizer {
+				authorizer = &recordingDepsolverAuthorizer{
+					base: authz.NewACLAuthorizer(state),
+				}
+				return authorizer
+			})
+			createOrgForTest(t, router, "canterlot")
 			authorizer.calls = nil
 
 			req := newSignedJSONRequestAs(t, "pivotal", http.MethodPost, path, tt.body)
@@ -5952,6 +5972,24 @@ type recordingDepsolverAuthorizer struct {
 	base  authz.Authorizer
 	deny  map[string]struct{}
 	calls []string
+}
+
+type depsolverMalformedRequestCase struct {
+	name     string
+	body     []byte
+	messages []string
+}
+
+func depsolverMalformedRequestCases(t *testing.T) []depsolverMalformedRequestCase {
+	t.Helper()
+
+	return []depsolverMalformedRequestCase{
+		{name: "invalid_json", body: []byte("this_is_not_json"), messages: []string{"invalid JSON"}},
+		{name: "empty_payload", body: []byte(""), messages: []string{"invalid JSON"}},
+		{name: "trailing_json", body: []byte(`{"run_list":[]}{"run_list":[]}`), messages: []string{"invalid JSON"}},
+		{name: "invalid_run_list", body: mustMarshalSandboxJSON(t, map[string]any{"run_list": "not-an-array"}), messages: []string{"Field 'run_list' is not a valid run list"}},
+		{name: "malformed_item", body: mustMarshalSandboxJSON(t, map[string]any{"run_list": []any{"fake[not_good]"}}), messages: []string{"Field 'run_list' is not a valid run list"}},
+	}
 }
 
 func (a *recordingDepsolverAuthorizer) Name() string {
