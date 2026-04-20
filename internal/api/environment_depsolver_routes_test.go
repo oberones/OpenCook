@@ -2106,6 +2106,53 @@ func TestEnvironmentCookbookVersionsUseConfiguredDefaultOrganizationForEnvironme
 	assertCookbookVersionBody(t, payload, "bar", "3.0.0")
 }
 
+func TestEnvironmentCookbookVersionsUseConfiguredDefaultOrganizationForCombinedEnvironmentAndDependencyConstraints(t *testing.T) {
+	router := newConfiguredDefaultOrgDepsolverRouter(t)
+	createConfiguredDefaultOrgEnvironmentForCookbookTests(t, router, "production")
+	updateConfiguredDefaultOrgEnvironmentCookbookConstraints(t, router, "production", map[string]string{
+		"app3": "<= 0.1.5",
+	})
+	createConfiguredDefaultOrgCookbookVersion(t, router, "app1", "3.0.0", "", map[string]string{
+		"app2": ">= 0.1.0",
+		"app3": ">= 0.1.1",
+	})
+	createConfiguredDefaultOrgCookbookVersion(t, router, "app2", "3.0.0", "", map[string]string{
+		"app4": ">= 5.0.0",
+	})
+	createConfiguredDefaultOrgCookbookVersion(t, router, "app3", "0.1.0", "", map[string]string{
+		"app5": ">= 2.0.0",
+	})
+	createConfiguredDefaultOrgCookbookVersion(t, router, "app3", "0.1.3", "", map[string]string{
+		"app5": ">= 2.0.0",
+	})
+	createConfiguredDefaultOrgCookbookVersion(t, router, "app3", "2.0.0", "", map[string]string{
+		"app5": ">= 2.0.0",
+	})
+	createConfiguredDefaultOrgCookbookVersion(t, router, "app4", "6.0.0", "", map[string]string{
+		"app5": ">= 0.0.0",
+	})
+	createConfiguredDefaultOrgCookbookVersion(t, router, "app5", "6.0.0", "", nil)
+
+	req := newSignedJSONRequestAs(t, "pivotal", http.MethodPost, "/environments/production/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{"app1@3.0.0"},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("configured default-org combined constraints status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	payload := decodeJSONMap(t, rec.Body.Bytes())
+	if len(payload) != 5 {
+		t.Fatalf("len(payload) = %d, want 5 (%v)", len(payload), payload)
+	}
+	assertCookbookVersionBody(t, payload, "app1", "3.0.0")
+	assertCookbookVersionBody(t, payload, "app2", "3.0.0")
+	assertCookbookVersionBody(t, payload, "app3", "0.1.3")
+	assertCookbookVersionBody(t, payload, "app4", "6.0.0")
+	assertCookbookVersionBody(t, payload, "app5", "6.0.0")
+}
+
 func TestDefaultEnvironmentCookbookVersionsReturns412ForMissingAndNoVersionCookbooks(t *testing.T) {
 	router := newTestRouter(t)
 	createCookbookVersion(t, router, "foo", "1.2.3", "", nil)
