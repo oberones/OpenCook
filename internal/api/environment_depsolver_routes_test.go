@@ -1705,6 +1705,31 @@ func createConfiguredDefaultOrgEnvironmentForCookbookTests(t *testing.T, router 
 	}
 }
 
+func updateConfiguredDefaultOrgEnvironmentCookbookConstraints(t *testing.T, router http.Handler, name string, constraints map[string]string) {
+	t.Helper()
+
+	bodyMap := map[string]any{
+		"name":                name,
+		"json_class":          "Chef::Environment",
+		"chef_type":           "environment",
+		"description":         "",
+		"cookbook_versions":   constraints,
+		"default_attributes":  map[string]any{},
+		"override_attributes": map[string]any{},
+	}
+	body, err := json.Marshal(bodyMap)
+	if err != nil {
+		t.Fatalf("json.Marshal(configured default-org environment update) error = %v", err)
+	}
+
+	req := newSignedJSONRequestAs(t, "pivotal", http.MethodPut, "/environments/"+name, body)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("update configured default-org environment status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+}
+
 func createConfiguredDefaultOrgCookbookVersion(t *testing.T, router http.Handler, name, version, checksum string, dependencies map[string]string) {
 	t.Helper()
 
@@ -1966,6 +1991,31 @@ func TestOrganizationEnvironmentCookbookVersionsReturns412ForMissingAndFilteredC
 
 	filteredPayload := decodeJSONMap(t, filteredRec.Body.Bytes())
 	assertDepsolverErrorDetail(t, filteredPayload, map[string]any{
+		"message":                    "Run list contains invalid items: no versions match the constraints on cookbook (foo >= 0.0.0).",
+		"non_existent_cookbooks":     []string{},
+		"cookbooks_with_no_versions": []string{"(foo >= 0.0.0)"},
+	})
+}
+
+func TestEnvironmentCookbookVersionsUseConfiguredDefaultOrganizationForFilteredCookbook(t *testing.T) {
+	router := newConfiguredDefaultOrgDepsolverRouter(t)
+	createConfiguredDefaultOrgEnvironmentForCookbookTests(t, router, "production")
+	createConfiguredDefaultOrgCookbookVersion(t, router, "foo", "1.2.3", "", nil)
+	updateConfiguredDefaultOrgEnvironmentCookbookConstraints(t, router, "production", map[string]string{
+		"foo": "= 400.0.0",
+	})
+
+	req := newSignedJSONRequestAs(t, "pivotal", http.MethodPost, "/environments/production/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{"foo"},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusPreconditionFailed {
+		t.Fatalf("configured default-org filtered cookbook status = %d, want %d, body = %s", rec.Code, http.StatusPreconditionFailed, rec.Body.String())
+	}
+
+	payload := decodeJSONMap(t, rec.Body.Bytes())
+	assertDepsolverErrorDetail(t, payload, map[string]any{
 		"message":                    "Run list contains invalid items: no versions match the constraints on cookbook (foo >= 0.0.0).",
 		"non_existent_cookbooks":     []string{},
 		"cookbooks_with_no_versions": []string{"(foo >= 0.0.0)"},

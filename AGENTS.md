@@ -89,6 +89,7 @@ Implemented so far:
   - configured default-org depsolver omitted-`run_list` success is now also pinned on both named-environment and `_default` paths in the multi-org case
   - configured default-org depsolver single missing-root, single no-version-root, and mixed missing-vs-no-version root precedence are now also pinned on both named-environment and `_default` paths in the multi-org case
   - configured default-org depsolver plural missing-root and plural no-version-root detail are now also pinned on both named-environment and `_default` paths in the multi-org case
+  - configured default-org depsolver named-environment filtered-root no-version detail is now also pinned when environment cookbook constraints exclude every candidate version
 - the first core object slice for nodes:
   - list
   - get
