@@ -93,6 +93,8 @@ Implemented so far:
   - configured default-org depsolver named-environment impossible-dependency detail is now also pinned when environment cookbook constraints make a dependency unsatisfiable
   - configured default-org depsolver named-environment environment-respected root selection is now also pinned for both the older-root fallback and newer-root-allowed branches
   - configured default-org depsolver named-environment combined environment-plus-dependency constraint success is now also pinned
+  - configured default-org depsolver named-environment conflict and success stability are now also pinned when unrelated environment cookbook constraints are present
+  - configured default-org depsolver upstream conflicting-failing graph detail is now also pinned on both named-environment and `_default` paths in the multi-org case
 - the first core object slice for nodes:
   - list
   - get
