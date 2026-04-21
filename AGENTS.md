@@ -101,6 +101,7 @@ Implemented so far:
   - configured default-org depsolver recipe-qualified success, equivalent-root deduplication, and pinned equivalent-form selection are now also pinned on both named-environment and `_default` paths in the multi-org case
   - configured default-org depsolver upstream first-graph, pinned-root-no-solution, and second-graph selection are now also pinned on both named-environment and `_default` paths in the multi-org case
   - configured default-org depsolver pessimistic major/minor and major/minor/patch constraints, repeated-root pinned selection and first-label attribution, and circular dependency handling are now also pinned on both named-environment and `_default` paths in the multi-org case
+  - configured default-org depsolver named-environment datestamp-version support is now also pinned
 - the first core object slice for nodes:
   - list
   - get
