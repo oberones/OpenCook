@@ -3256,6 +3256,30 @@ func TestEnvironmentCookbookVersionsUseConfiguredDefaultOrganizationForDatestamp
 	assertCookbookVersionBody(t, payload, "datestamp", "1.2.20130730201745")
 }
 
+func TestEnvironmentCookbookVersionsUseConfiguredDefaultOrganizationForOrgMemberDatestampVersions(t *testing.T) {
+	router, state := newConfiguredDefaultOrgDepsolverRouterWithState(t)
+	if err := state.AddUserToGroup("canterlot", "users", "silent-bob"); err != nil {
+		t.Fatalf("AddUserToGroup(silent-bob) error = %v", err)
+	}
+	createConfiguredDefaultOrgEnvironmentForCookbookTests(t, router, "datestamp-env")
+	createConfiguredDefaultOrgCookbookVersion(t, router, "datestamp", "1.2.20130730201745", "", nil)
+	updateConfiguredDefaultOrgEnvironmentCookbookConstraints(t, router, "datestamp-env", map[string]string{
+		"datestamp": ">= 1.2.20130730200000",
+	})
+
+	req := newSignedJSONRequestAs(t, "silent-bob", http.MethodPost, "/environments/datestamp-env/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{"datestamp"},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("configured default-org org-member datestamp status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	payload := decodeJSONMap(t, rec.Body.Bytes())
+	assertCookbookVersionBody(t, payload, "datestamp", "1.2.20130730201745")
+}
+
 func TestEnvironmentCookbookVersionsUseConfiguredDefaultOrganizationForOrgMemberDependencyMetadataShaping(t *testing.T) {
 	router, state := newConfiguredDefaultOrgDepsolverRouterWithState(t)
 	if err := state.AddUserToGroup("canterlot", "users", "silent-bob"); err != nil {
