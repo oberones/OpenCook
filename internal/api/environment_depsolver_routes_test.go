@@ -3620,6 +3620,134 @@ func TestEnvironmentCookbookVersionsUseConfiguredDefaultOrganizationForOrgMember
 	})
 }
 
+func TestEnvironmentCookbookVersionsUseConfiguredDefaultOrganizationForOrgMemberDependencyDetail(t *testing.T) {
+	newOrgMemberRouter := func(t *testing.T) http.Handler {
+		t.Helper()
+
+		router, state := newConfiguredDefaultOrgDepsolverRouterWithState(t)
+		if err := state.AddUserToGroup("canterlot", "users", "silent-bob"); err != nil {
+			t.Fatalf("AddUserToGroup(silent-bob) error = %v", err)
+		}
+		createConfiguredDefaultOrgEnvironmentForCookbookTests(t, router, "production")
+		return router
+	}
+
+	routes := []struct {
+		name string
+		path string
+	}{
+		{name: "named_environment", path: "/environments/production/cookbook_versions"},
+		{name: "default_environment", path: "/environments/_default/cookbook_versions"},
+	}
+
+	t.Run("missing_dependency", func(t *testing.T) {
+		router := newOrgMemberRouter(t)
+		createConfiguredDefaultOrgCookbookVersion(t, router, "foo", "1.2.3", "", map[string]string{"this_does_not_exist": ">= 0.0.0"})
+
+		for _, route := range routes {
+			t.Run(route.name, func(t *testing.T) {
+				req := newSignedJSONRequestAs(t, "silent-bob", http.MethodPost, route.path, mustMarshalSandboxJSON(t, map[string]any{
+					"run_list": []any{"foo"},
+				}))
+				rec := httptest.NewRecorder()
+				router.ServeHTTP(rec, req)
+				if rec.Code != http.StatusPreconditionFailed {
+					t.Fatalf("%s configured default-org org-member missing dependency status = %d, want %d, body = %s", route.name, rec.Code, http.StatusPreconditionFailed, rec.Body.String())
+				}
+
+				payload := decodeJSONMap(t, rec.Body.Bytes())
+				assertUnsatisfiedDepsolverDetail(t, payload, map[string]any{
+					"message":                     "Unable to satisfy constraints on package this_does_not_exist, which does not exist, due to solution constraint (foo >= 0.0.0). Solution constraints that may result in a constraint on this_does_not_exist: [(foo = 1.2.3) -> (this_does_not_exist >= 0.0.0)]",
+					"unsatisfiable_run_list_item": "(foo >= 0.0.0)",
+					"non_existent_cookbooks":      []string{"this_does_not_exist"},
+					"most_constrained_cookbooks":  []string{},
+				})
+			})
+		}
+	})
+
+	t.Run("later_root_missing_dependency", func(t *testing.T) {
+		router := newOrgMemberRouter(t)
+		createConfiguredDefaultOrgCookbookVersion(t, router, "app1", "1.1.0", "", nil)
+		createConfiguredDefaultOrgCookbookVersion(t, router, "app2", "0.0.1", "", map[string]string{"oops": ">= 0.0.0"})
+
+		for _, route := range routes {
+			t.Run(route.name, func(t *testing.T) {
+				req := newSignedJSONRequestAs(t, "silent-bob", http.MethodPost, route.path, mustMarshalSandboxJSON(t, map[string]any{
+					"run_list": []any{"app1", "app2"},
+				}))
+				rec := httptest.NewRecorder()
+				router.ServeHTTP(rec, req)
+				if rec.Code != http.StatusPreconditionFailed {
+					t.Fatalf("%s configured default-org org-member later-root missing dependency status = %d, want %d, body = %s", route.name, rec.Code, http.StatusPreconditionFailed, rec.Body.String())
+				}
+
+				payload := decodeJSONMap(t, rec.Body.Bytes())
+				assertUnsatisfiedDepsolverDetail(t, payload, map[string]any{
+					"message":                     "Unable to satisfy constraints on package oops, which does not exist, due to solution constraint (app2 >= 0.0.0). Solution constraints that may result in a constraint on oops: [(app2 = 0.0.1) -> (oops >= 0.0.0)]",
+					"unsatisfiable_run_list_item": "(app2 >= 0.0.0)",
+					"non_existent_cookbooks":      []string{"oops"},
+					"most_constrained_cookbooks":  []string{},
+				})
+			})
+		}
+	})
+
+	t.Run("unsatisfied_dependency_version", func(t *testing.T) {
+		router := newOrgMemberRouter(t)
+		createConfiguredDefaultOrgCookbookVersion(t, router, "foo", "1.2.3", "", map[string]string{"bar": "> 2.0.0"})
+		createConfiguredDefaultOrgCookbookVersion(t, router, "bar", "2.0.0", "", nil)
+
+		for _, route := range routes {
+			t.Run(route.name, func(t *testing.T) {
+				req := newSignedJSONRequestAs(t, "silent-bob", http.MethodPost, route.path, mustMarshalSandboxJSON(t, map[string]any{
+					"run_list": []any{"foo"},
+				}))
+				rec := httptest.NewRecorder()
+				router.ServeHTTP(rec, req)
+				if rec.Code != http.StatusPreconditionFailed {
+					t.Fatalf("%s configured default-org org-member unsatisfied dependency status = %d, want %d, body = %s", route.name, rec.Code, http.StatusPreconditionFailed, rec.Body.String())
+				}
+
+				payload := decodeJSONMap(t, rec.Body.Bytes())
+				assertUnsatisfiedDepsolverDetail(t, payload, map[string]any{
+					"message":                     "Unable to satisfy constraints on package bar due to solution constraint (foo >= 0.0.0). Solution constraints that may result in a constraint on bar: [(foo = 1.2.3) -> (bar > 2.0.0)]",
+					"unsatisfiable_run_list_item": "(foo >= 0.0.0)",
+					"non_existent_cookbooks":      []string{},
+					"most_constrained_cookbooks":  []string{"bar = 2.0.0 -> []"},
+				})
+			})
+		}
+	})
+
+	t.Run("impossible_dependency", func(t *testing.T) {
+		router := newOrgMemberRouter(t)
+		createConfiguredDefaultOrgCookbookVersion(t, router, "foo", "1.2.3", "", map[string]string{"bar": "> 2.0.0"})
+		createConfiguredDefaultOrgCookbookVersion(t, router, "bar", "2.0.0", "", map[string]string{"foo": "> 3.0.0"})
+
+		for _, route := range routes {
+			t.Run(route.name, func(t *testing.T) {
+				req := newSignedJSONRequestAs(t, "silent-bob", http.MethodPost, route.path, mustMarshalSandboxJSON(t, map[string]any{
+					"run_list": []any{"foo"},
+				}))
+				rec := httptest.NewRecorder()
+				router.ServeHTTP(rec, req)
+				if rec.Code != http.StatusPreconditionFailed {
+					t.Fatalf("%s configured default-org org-member impossible dependency status = %d, want %d, body = %s", route.name, rec.Code, http.StatusPreconditionFailed, rec.Body.String())
+				}
+
+				payload := decodeJSONMap(t, rec.Body.Bytes())
+				assertUnsatisfiedDepsolverDetail(t, payload, map[string]any{
+					"message":                     "Unable to satisfy constraints on package bar due to solution constraint (foo >= 0.0.0). Solution constraints that may result in a constraint on bar: [(foo = 1.2.3) -> (bar > 2.0.0)]",
+					"unsatisfiable_run_list_item": "(foo >= 0.0.0)",
+					"non_existent_cookbooks":      []string{},
+					"most_constrained_cookbooks":  []string{"bar = 2.0.0 -> [(foo > 3.0.0)]"},
+				})
+			})
+		}
+	})
+}
+
 func TestDefaultEnvironmentCookbookVersionsReturns412ForMissingAndNoVersionCookbooks(t *testing.T) {
 	router := newTestRouter(t)
 	createCookbookVersion(t, router, "foo", "1.2.3", "", nil)
