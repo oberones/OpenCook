@@ -76,6 +76,7 @@ As of 2026-04-09, OpenCook has moved past pure scaffolding and into the first co
 - configured default-org depsolver resolution now also has explicit transitive-conflict, complex-dependency, and multi-root conflict detail parity on both named-environment and `_default` paths
 - configured default-org depsolver resolution now also has explicit pinned/dependent success and dependency-metadata shaping parity on both named-environment and `_default` paths
 - configured default-org depsolver resolution now also has explicit recipe-qualified success, equivalent-root deduplication, and pinned equivalent-form selection parity on both named-environment and `_default` paths
+- configured default-org depsolver resolution now also has explicit upstream first-graph, pinned-root-no-solution, and second-graph selection parity on both named-environment and `_default` paths
 - default-org and explicit-org node routes now resolve against the same org-scoped compatibility state
 - default-org and explicit-org environment routes now resolve against the same org-scoped compatibility state
 - the first role slice is now live with in-memory list/get/head/create/update/delete behavior plus Chef-style run-list and env-run-list normalization/deduplication
