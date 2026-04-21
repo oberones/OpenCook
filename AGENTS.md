@@ -97,6 +97,7 @@ Implemented so far:
   - configured default-org depsolver upstream conflicting-failing graph detail is now also pinned on both named-environment and `_default` paths in the multi-org case
   - configured default-org depsolver missing-dependency, later-root missing-dependency attribution, unsatisfied-dependency, and impossible-dependency detail are now also pinned on both named-environment and `_default` paths in the multi-org case
   - configured default-org depsolver transitive-conflict, complex-dependency, and multi-root conflict detail are now also pinned on both named-environment and `_default` paths in the multi-org case
+  - configured default-org depsolver pinned/dependent success and dependency-metadata shaping are now also pinned on both named-environment and `_default` paths in the multi-org case
 - the first core object slice for nodes:
   - list
   - get
