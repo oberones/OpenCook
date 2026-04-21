@@ -109,6 +109,7 @@ Implemented so far:
   - configured default-org depsolver non-admin org-member plural missing-root and plural no-version-root detail are now also pinned on both named-environment and `_default` paths in the multi-org case
   - configured default-org depsolver non-admin org-member missing-dependency, later-root missing-dependency attribution, unsatisfied-dependency, and impossible-dependency detail are now also pinned on both named-environment and `_default` paths in the multi-org case
   - configured default-org depsolver non-admin org-member transitive-conflict, complex-dependency, and multi-root conflict detail are now also pinned on both named-environment and `_default` paths in the multi-org case
+  - configured default-org depsolver non-admin org-member upstream first-graph, pinned-root-no-solution, and second-graph selection are now also pinned on both named-environment and `_default` paths in the multi-org case
 - the first core object slice for nodes:
   - list
   - get
