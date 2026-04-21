@@ -1694,6 +1694,19 @@ func newConfiguredDefaultOrgDepsolverRouter(t *testing.T) http.Handler {
 	return router
 }
 
+func newConfiguredDefaultOrgDepsolverRouterWithState(t *testing.T) (http.Handler, *bootstrap.Service) {
+	t.Helper()
+
+	router, state := newSearchTestRouterWithConfigAndAuthorizer(t, config.Config{
+		ServiceName:         "opencook",
+		Environment:         "test",
+		AuthSkew:            15 * time.Minute,
+		DefaultOrganization: "canterlot",
+	}, nil)
+	createOrgForTest(t, router, "canterlot")
+	return router, state
+}
+
 func createConfiguredDefaultOrgEnvironmentForCookbookTests(t *testing.T, router http.Handler, name string) {
 	t.Helper()
 
@@ -3241,6 +3254,59 @@ func TestEnvironmentCookbookVersionsUseConfiguredDefaultOrganizationForDatestamp
 
 	payload := decodeJSONMap(t, rec.Body.Bytes())
 	assertCookbookVersionBody(t, payload, "datestamp", "1.2.20130730201745")
+}
+
+func TestEnvironmentCookbookVersionsUseConfiguredDefaultOrganizationForOrgMemberDependencyMetadataShaping(t *testing.T) {
+	router, state := newConfiguredDefaultOrgDepsolverRouterWithState(t)
+	if err := state.AddUserToGroup("canterlot", "users", "silent-bob"); err != nil {
+		t.Fatalf("AddUserToGroup(silent-bob) error = %v", err)
+	}
+	createConfiguredDefaultOrgEnvironmentForCookbookTests(t, router, "production")
+	createConfiguredDefaultOrgCookbookVersion(t, router, "foo", "1.0.0", "", nil)
+	createConfiguredDefaultOrgCookbookVersion(t, router, "bar", "2.0.0", "", map[string]string{"foo": "> 0.0.0"})
+	createConfiguredDefaultOrgCookbookVersion(t, router, "baz", "3.0.0", "", nil)
+	createConfiguredDefaultOrgCookbookVersion(t, router, "quux", "4.0.0", "", map[string]string{
+		"bar": "= 2.0.0",
+		"baz": "= 3.0.0",
+	})
+
+	routes := []struct {
+		name string
+		path string
+	}{
+		{name: "named_environment", path: "/environments/production/cookbook_versions"},
+		{name: "default_environment", path: "/environments/_default/cookbook_versions"},
+	}
+
+	for _, route := range routes {
+		t.Run(route.name, func(t *testing.T) {
+			req := newSignedJSONRequestAs(t, "silent-bob", http.MethodPost, route.path, mustMarshalSandboxJSON(t, map[string]any{
+				"run_list": []any{"quux"},
+			}))
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("%s configured default-org org-member dependency metadata status = %d, want %d, body = %s", route.name, rec.Code, http.StatusOK, rec.Body.String())
+			}
+
+			payload := decodeJSONMap(t, rec.Body.Bytes())
+			if len(payload) != 4 {
+				t.Fatalf("%s len(payload) = %d, want 4 (%v)", route.name, len(payload), payload)
+			}
+			assertCookbookVersionBody(t, payload, "foo", "1.0.0")
+			assertCookbookVersionBody(t, payload, "bar", "2.0.0")
+			assertCookbookVersionBody(t, payload, "baz", "3.0.0")
+			assertCookbookVersionBody(t, payload, "quux", "4.0.0")
+
+			assertDepsolverResponseDependencies(t, payload["foo"], map[string]string{})
+			assertDepsolverResponseDependencies(t, payload["bar"], map[string]string{"foo": "> 0.0.0"})
+			assertDepsolverResponseDependencies(t, payload["baz"], map[string]string{})
+			assertDepsolverResponseDependencies(t, payload["quux"], map[string]string{
+				"bar": "= 2.0.0",
+				"baz": "= 3.0.0",
+			})
+		})
+	}
 }
 
 func TestDefaultEnvironmentCookbookVersionsReturns412ForMissingAndNoVersionCookbooks(t *testing.T) {
