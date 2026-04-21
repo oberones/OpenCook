@@ -141,6 +141,7 @@ Status: in progress
 - configured default-org depsolver non-admin org-member pinned-and-dependent success is now also pinned on both named-environment and `_default` paths in the multi-org case
 - configured default-org depsolver non-admin org-member recipe-qualified success, equivalent-root deduplication, and pinned equivalent-form selection are now also pinned on both named-environment and `_default` paths in the multi-org case
 - configured default-org depsolver non-admin org-member single missing-root, single no-version-root, and mixed missing-vs-no-version root precedence are now also pinned on both named-environment and `_default` paths in the multi-org case
+- configured default-org depsolver non-admin org-member plural missing-root and plural no-version-root detail are now also pinned on both named-environment and `_default` paths in the multi-org case
 - PostgreSQL-backed cookbook persistence, broader cookbook pedant coverage beyond the current environment-filtered/named-filter/latest/version read-write contract, broader upstream run-list/depsolver semantics, and deeper operational hardening around provider-backed blob behavior are still pending
 - S3-compatible blob storage remains the target production mode after the compatibility contract settles
 
