@@ -2035,6 +2035,34 @@ func TestEnvironmentCookbookVersionsUseConfiguredDefaultOrganizationForFilteredC
 	})
 }
 
+func TestEnvironmentCookbookVersionsUseConfiguredDefaultOrganizationForOrgMemberFilteredCookbook(t *testing.T) {
+	router, state := newConfiguredDefaultOrgDepsolverRouterWithState(t)
+	if err := state.AddUserToGroup("canterlot", "users", "silent-bob"); err != nil {
+		t.Fatalf("AddUserToGroup(silent-bob) error = %v", err)
+	}
+	createConfiguredDefaultOrgEnvironmentForCookbookTests(t, router, "production")
+	createConfiguredDefaultOrgCookbookVersion(t, router, "foo", "1.2.3", "", nil)
+	updateConfiguredDefaultOrgEnvironmentCookbookConstraints(t, router, "production", map[string]string{
+		"foo": "= 400.0.0",
+	})
+
+	req := newSignedJSONRequestAs(t, "silent-bob", http.MethodPost, "/environments/production/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{"foo"},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusPreconditionFailed {
+		t.Fatalf("configured default-org org-member filtered cookbook status = %d, want %d, body = %s", rec.Code, http.StatusPreconditionFailed, rec.Body.String())
+	}
+
+	payload := decodeJSONMap(t, rec.Body.Bytes())
+	assertDepsolverErrorDetail(t, payload, map[string]any{
+		"message":                    "Run list contains invalid items: no versions match the constraints on cookbook (foo >= 0.0.0).",
+		"non_existent_cookbooks":     []string{},
+		"cookbooks_with_no_versions": []string{"(foo >= 0.0.0)"},
+	})
+}
+
 func TestEnvironmentCookbookVersionsUseConfiguredDefaultOrganizationForImpossibleDependencyViaEnvironmentConstraint(t *testing.T) {
 	router := newConfiguredDefaultOrgDepsolverRouter(t)
 	createConfiguredDefaultOrgEnvironmentForCookbookTests(t, router, "production")
