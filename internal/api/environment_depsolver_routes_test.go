@@ -3309,6 +3309,61 @@ func TestEnvironmentCookbookVersionsUseConfiguredDefaultOrganizationForOrgMember
 	}
 }
 
+func TestEnvironmentCookbookVersionsUseConfiguredDefaultOrganizationForOrgMemberPinnedAndDependentSuccess(t *testing.T) {
+	router, state := newConfiguredDefaultOrgDepsolverRouterWithState(t)
+	if err := state.AddUserToGroup("canterlot", "users", "silent-bob"); err != nil {
+		t.Fatalf("AddUserToGroup(silent-bob) error = %v", err)
+	}
+	createConfiguredDefaultOrgEnvironmentForCookbookTests(t, router, "production")
+	createConfiguredDefaultOrgCookbookVersion(t, router, "foo", "1.0.0", "", nil)
+	createConfiguredDefaultOrgCookbookVersion(t, router, "foo", "2.0.0", "", nil)
+	createConfiguredDefaultOrgCookbookVersion(t, router, "bar", "2.0.0", "", map[string]string{"foo": "= 1.0.0"})
+	createConfiguredDefaultOrgCookbookVersion(t, router, "quux", "4.0.0", "", map[string]string{"bar": "= 2.0.0"})
+
+	routes := []struct {
+		name string
+		path string
+	}{
+		{name: "named_environment", path: "/environments/production/cookbook_versions"},
+		{name: "default_environment", path: "/environments/_default/cookbook_versions"},
+	}
+
+	for _, route := range routes {
+		t.Run(route.name, func(t *testing.T) {
+			req := newSignedJSONRequestAs(t, "silent-bob", http.MethodPost, route.path, mustMarshalSandboxJSON(t, map[string]any{
+				"run_list": []any{"quux", "foo@1.0.0"},
+			}))
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("%s configured default-org org-member pinned/dependent success status = %d, want %d, body = %s", route.name, rec.Code, http.StatusOK, rec.Body.String())
+			}
+
+			payload := decodeJSONMap(t, rec.Body.Bytes())
+			assertCookbookVersionBody(t, payload, "foo", "1.0.0")
+			assertCookbookVersionBody(t, payload, "bar", "2.0.0")
+			assertCookbookVersionBody(t, payload, "quux", "4.0.0")
+
+			barDeps := payload["bar"].(map[string]any)["metadata"].(map[string]any)["dependencies"].(map[string]any)
+			if value := barDeps["foo"]; value != "= 1.0.0" {
+				t.Fatalf("%s bar dependency foo = %v, want %q", route.name, value, "= 1.0.0")
+			}
+			quuxDeps := payload["quux"].(map[string]any)["metadata"].(map[string]any)["dependencies"].(map[string]any)
+			if value := quuxDeps["bar"]; value != "= 2.0.0" {
+				t.Fatalf("%s quux dependency bar = %v, want %q", route.name, value, "= 2.0.0")
+			}
+
+			fooMetadata := payload["foo"].(map[string]any)["metadata"].(map[string]any)
+			if _, ok := fooMetadata["attributes"]; ok {
+				t.Fatalf("%s depsolver metadata.attributes present, want omitted (%v)", route.name, fooMetadata)
+			}
+			if _, ok := fooMetadata["long_description"]; ok {
+				t.Fatalf("%s depsolver metadata.long_description present, want omitted (%v)", route.name, fooMetadata)
+			}
+		})
+	}
+}
+
 func TestDefaultEnvironmentCookbookVersionsReturns412ForMissingAndNoVersionCookbooks(t *testing.T) {
 	router := newTestRouter(t)
 	createCookbookVersion(t, router, "foo", "1.2.3", "", nil)
