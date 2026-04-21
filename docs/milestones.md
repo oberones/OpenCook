@@ -132,6 +132,7 @@ Status: in progress
 - configured default-org depsolver upstream conflicting-failing graph detail is now also pinned on both named-environment and `_default` paths in the multi-org case
 - configured default-org depsolver missing-dependency, later-root missing-dependency attribution, unsatisfied-dependency, and impossible-dependency detail are now also pinned on both named-environment and `_default` paths in the multi-org case
 - configured default-org depsolver transitive-conflict, complex-dependency, and multi-root conflict detail are now also pinned on both named-environment and `_default` paths in the multi-org case
+- configured default-org depsolver pinned/dependent success and dependency-metadata shaping are now also pinned on both named-environment and `_default` paths in the multi-org case
 - PostgreSQL-backed cookbook persistence, broader cookbook pedant coverage beyond the current environment-filtered/named-filter/latest/version read-write contract, broader upstream run-list/depsolver semantics, and deeper operational hardening around provider-backed blob behavior are still pending
 - S3-compatible blob storage remains the target production mode after the compatibility contract settles
 
