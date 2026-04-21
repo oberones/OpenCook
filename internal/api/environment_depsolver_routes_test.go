@@ -3462,6 +3462,93 @@ func TestEnvironmentCookbookVersionsUseConfiguredDefaultOrganizationForOrgMember
 	})
 }
 
+func TestEnvironmentCookbookVersionsUseConfiguredDefaultOrganizationForOrgMemberRootFailureDetail(t *testing.T) {
+	newOrgMemberRouter := func(t *testing.T) http.Handler {
+		t.Helper()
+
+		router, state := newConfiguredDefaultOrgDepsolverRouterWithState(t)
+		if err := state.AddUserToGroup("canterlot", "users", "silent-bob"); err != nil {
+			t.Fatalf("AddUserToGroup(silent-bob) error = %v", err)
+		}
+		createConfiguredDefaultOrgEnvironmentForCookbookTests(t, router, "production")
+		return router
+	}
+
+	routes := []struct {
+		name string
+		path string
+	}{
+		{name: "named_environment", path: "/environments/production/cookbook_versions"},
+		{name: "default_environment", path: "/environments/_default/cookbook_versions"},
+	}
+
+	t.Run("missing_and_no_version_roots", func(t *testing.T) {
+		router := newOrgMemberRouter(t)
+		createConfiguredDefaultOrgCookbookVersion(t, router, "foo", "1.2.3", "", nil)
+
+		for _, route := range routes {
+			t.Run(route.name, func(t *testing.T) {
+				missingReq := newSignedJSONRequestAs(t, "silent-bob", http.MethodPost, route.path, mustMarshalSandboxJSON(t, map[string]any{
+					"run_list": []any{"this_does_not_exist"},
+				}))
+				missingRec := httptest.NewRecorder()
+				router.ServeHTTP(missingRec, missingReq)
+				if missingRec.Code != http.StatusPreconditionFailed {
+					t.Fatalf("%s configured default-org org-member missing cookbook status = %d, want %d, body = %s", route.name, missingRec.Code, http.StatusPreconditionFailed, missingRec.Body.String())
+				}
+
+				missingPayload := decodeJSONMap(t, missingRec.Body.Bytes())
+				assertDepsolverErrorDetail(t, missingPayload, map[string]any{
+					"message":                    "Run list contains invalid items: no such cookbook this_does_not_exist.",
+					"non_existent_cookbooks":     []string{"this_does_not_exist"},
+					"cookbooks_with_no_versions": []string{},
+				})
+
+				noVersionReq := newSignedJSONRequestAs(t, "silent-bob", http.MethodPost, route.path, mustMarshalSandboxJSON(t, map[string]any{
+					"run_list": []any{"foo@400.0.0"},
+				}))
+				noVersionRec := httptest.NewRecorder()
+				router.ServeHTTP(noVersionRec, noVersionReq)
+				if noVersionRec.Code != http.StatusPreconditionFailed {
+					t.Fatalf("%s configured default-org org-member no-version cookbook status = %d, want %d, body = %s", route.name, noVersionRec.Code, http.StatusPreconditionFailed, noVersionRec.Body.String())
+				}
+
+				noVersionPayload := decodeJSONMap(t, noVersionRec.Body.Bytes())
+				assertDepsolverErrorDetail(t, noVersionPayload, map[string]any{
+					"message":                    "Run list contains invalid items: no versions match the constraints on cookbook (foo = 400.0.0).",
+					"non_existent_cookbooks":     []string{},
+					"cookbooks_with_no_versions": []string{"(foo = 400.0.0)"},
+				})
+			})
+		}
+	})
+
+	t.Run("mixed_missing_and_no_version_precedence", func(t *testing.T) {
+		router := newOrgMemberRouter(t)
+		createConfiguredDefaultOrgCookbookVersion(t, router, "foo", "1.2.3", "", nil)
+
+		for _, route := range routes {
+			t.Run(route.name, func(t *testing.T) {
+				req := newSignedJSONRequestAs(t, "silent-bob", http.MethodPost, route.path, mustMarshalSandboxJSON(t, map[string]any{
+					"run_list": []any{"this_does_not_exist", "foo@2.0.0"},
+				}))
+				rec := httptest.NewRecorder()
+				router.ServeHTTP(rec, req)
+				if rec.Code != http.StatusPreconditionFailed {
+					t.Fatalf("%s configured default-org org-member mixed missing/no-version status = %d, want %d, body = %s", route.name, rec.Code, http.StatusPreconditionFailed, rec.Body.String())
+				}
+
+				payload := decodeJSONMap(t, rec.Body.Bytes())
+				assertDepsolverErrorDetail(t, payload, map[string]any{
+					"message":                    "Run list contains invalid items: no such cookbook this_does_not_exist.",
+					"non_existent_cookbooks":     []string{"this_does_not_exist"},
+					"cookbooks_with_no_versions": []string{},
+				})
+			})
+		}
+	})
+}
+
 func TestDefaultEnvironmentCookbookVersionsReturns412ForMissingAndNoVersionCookbooks(t *testing.T) {
 	router := newTestRouter(t)
 	createCookbookVersion(t, router, "foo", "1.2.3", "", nil)
