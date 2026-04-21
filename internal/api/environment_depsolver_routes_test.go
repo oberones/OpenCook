@@ -2531,6 +2531,148 @@ func TestEnvironmentCookbookVersionsUseConfiguredDefaultOrganizationForImpossibl
 	}
 }
 
+func TestEnvironmentCookbookVersionsUseConfiguredDefaultOrganizationForTransitiveConflict(t *testing.T) {
+	router := newConfiguredDefaultOrgDepsolverRouter(t)
+	createConfiguredDefaultOrgEnvironmentForCookbookTests(t, router, "production")
+	createConfiguredDefaultOrgCookbookVersion(t, router, "foo", "1.2.3", "", map[string]string{
+		"bar":  "= 1.0.0",
+		"buzz": "= 1.0.0",
+	})
+	createConfiguredDefaultOrgCookbookVersion(t, router, "bar", "1.0.0", "", map[string]string{
+		"baz": "= 1.0.0",
+	})
+	createConfiguredDefaultOrgCookbookVersion(t, router, "buzz", "1.0.0", "", map[string]string{
+		"baz": "> 1.2.0",
+	})
+	createConfiguredDefaultOrgCookbookVersion(t, router, "baz", "1.0.0", "", nil)
+	createConfiguredDefaultOrgCookbookVersion(t, router, "baz", "2.0.0", "", nil)
+
+	routes := []struct {
+		name string
+		path string
+	}{
+		{name: "named_environment", path: "/environments/production/cookbook_versions"},
+		{name: "default_environment", path: "/environments/_default/cookbook_versions"},
+	}
+
+	for _, route := range routes {
+		t.Run(route.name, func(t *testing.T) {
+			req := newSignedJSONRequestAs(t, "pivotal", http.MethodPost, route.path, mustMarshalSandboxJSON(t, map[string]any{
+				"run_list": []any{"foo"},
+			}))
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+			if rec.Code != http.StatusPreconditionFailed {
+				t.Fatalf("%s configured default-org transitive conflict status = %d, want %d, body = %s", route.name, rec.Code, http.StatusPreconditionFailed, rec.Body.String())
+			}
+
+			payload := decodeJSONMap(t, rec.Body.Bytes())
+			assertUnsatisfiedDepsolverDetail(t, payload, map[string]any{
+				"message":                     "Unable to satisfy constraints on package baz due to solution constraint (foo >= 0.0.0). Solution constraints that may result in a constraint on baz: [(foo = 1.2.3) -> (bar = 1.0.0) -> (baz = 1.0.0), (foo = 1.2.3) -> (buzz = 1.0.0) -> (baz > 1.2.0)]",
+				"unsatisfiable_run_list_item": "(foo >= 0.0.0)",
+				"non_existent_cookbooks":      []string{},
+				"most_constrained_cookbooks":  []string{"baz = 1.0.0 -> []"},
+			})
+		})
+	}
+}
+
+func TestEnvironmentCookbookVersionsUseConfiguredDefaultOrganizationForComplexDependencyGraph(t *testing.T) {
+	router := newConfiguredDefaultOrgDepsolverRouter(t)
+	createConfiguredDefaultOrgEnvironmentForCookbookTests(t, router, "production")
+	createConfiguredDefaultOrgCookbookVersion(t, router, "foo", "1.2.3", "", map[string]string{
+		"bar":  "= 1.0.0",
+		"buzz": "= 1.0.0",
+	})
+	createConfiguredDefaultOrgCookbookVersion(t, router, "bar", "1.0.0", "", map[string]string{
+		"baz": "= 1.0.0",
+	})
+	createConfiguredDefaultOrgCookbookVersion(t, router, "buzz", "1.0.0", "", map[string]string{
+		"baz": "> 1.2.0",
+	})
+	createConfiguredDefaultOrgCookbookVersion(t, router, "buzz", "2.0.0", "", map[string]string{
+		"baz": "= 1.0.0",
+	})
+	createConfiguredDefaultOrgCookbookVersion(t, router, "ack", "1.0.0", "", map[string]string{
+		"foobar": "= 1.0.0",
+	})
+	createConfiguredDefaultOrgCookbookVersion(t, router, "baz", "1.0.0", "", nil)
+	createConfiguredDefaultOrgCookbookVersion(t, router, "baz", "2.0.0", "", nil)
+
+	routes := []struct {
+		name string
+		path string
+	}{
+		{name: "named_environment", path: "/environments/production/cookbook_versions"},
+		{name: "default_environment", path: "/environments/_default/cookbook_versions"},
+	}
+
+	for _, route := range routes {
+		t.Run(route.name, func(t *testing.T) {
+			req := newSignedJSONRequestAs(t, "pivotal", http.MethodPost, route.path, mustMarshalSandboxJSON(t, map[string]any{
+				"run_list": []any{"foo", "buzz"},
+			}))
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+			if rec.Code != http.StatusPreconditionFailed {
+				t.Fatalf("%s configured default-org complex dependency status = %d, want %d, body = %s", route.name, rec.Code, http.StatusPreconditionFailed, rec.Body.String())
+			}
+
+			payload := decodeJSONMap(t, rec.Body.Bytes())
+			assertUnsatisfiedDepsolverDetail(t, payload, map[string]any{
+				"message":                     "Unable to satisfy constraints on package baz due to solution constraint (foo >= 0.0.0). Solution constraints that may result in a constraint on baz: [(foo = 1.2.3) -> (bar = 1.0.0) -> (baz = 1.0.0), (foo = 1.2.3) -> (buzz = 1.0.0) -> (baz > 1.2.0), (buzz = 1.0.0) -> (baz > 1.2.0), (buzz = 2.0.0) -> (baz = 1.0.0)]",
+				"unsatisfiable_run_list_item": "(foo >= 0.0.0)",
+				"non_existent_cookbooks":      []string{},
+				"most_constrained_cookbooks":  []string{"baz = 1.0.0 -> []"},
+			})
+		})
+	}
+}
+
+func TestEnvironmentCookbookVersionsUseConfiguredDefaultOrganizationForMultiRootConflict(t *testing.T) {
+	router := newConfiguredDefaultOrgDepsolverRouter(t)
+	createConfiguredDefaultOrgEnvironmentForCookbookTests(t, router, "production")
+	createConfiguredDefaultOrgCookbookVersion(t, router, "app1", "3.0.0", "", map[string]string{
+		"app2": ">= 0.0.0",
+		"app5": "= 2.0.0",
+		"app4": ">= 0.3.0",
+	})
+	createConfiguredDefaultOrgCookbookVersion(t, router, "app2", "0.0.1", "", map[string]string{"app4": ">= 5.0.0"})
+	createConfiguredDefaultOrgCookbookVersion(t, router, "app3", "0.1.0", "", map[string]string{"app5": "= 6.0.0"})
+	createConfiguredDefaultOrgCookbookVersion(t, router, "app4", "5.0.0", "", map[string]string{"app5": "= 2.0.0"})
+	createConfiguredDefaultOrgCookbookVersion(t, router, "app5", "2.0.0", "", nil)
+	createConfiguredDefaultOrgCookbookVersion(t, router, "app5", "6.0.0", "", nil)
+
+	routes := []struct {
+		name string
+		path string
+	}{
+		{name: "named_environment", path: "/environments/production/cookbook_versions"},
+		{name: "default_environment", path: "/environments/_default/cookbook_versions"},
+	}
+
+	for _, route := range routes {
+		t.Run(route.name, func(t *testing.T) {
+			req := newSignedJSONRequestAs(t, "pivotal", http.MethodPost, route.path, mustMarshalSandboxJSON(t, map[string]any{
+				"run_list": []any{"app1", "app3"},
+			}))
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+			if rec.Code != http.StatusPreconditionFailed {
+				t.Fatalf("%s configured default-org multi-root conflict status = %d, want %d, body = %s", route.name, rec.Code, http.StatusPreconditionFailed, rec.Body.String())
+			}
+
+			payload := decodeJSONMap(t, rec.Body.Bytes())
+			assertUnsatisfiedDepsolverDetail(t, payload, map[string]any{
+				"message":                     "Unable to satisfy constraints on package app5 due to solution constraint (app3 >= 0.0.0). Solution constraints that may result in a constraint on app5: [(app1 = 3.0.0) -> (app5 = 2.0.0), (app1 = 3.0.0) -> (app4 >= 0.3.0) -> (app5 = 2.0.0), (app1 = 3.0.0) -> (app2 >= 0.0.0) -> (app4 >= 5.0.0) -> (app5 = 2.0.0), (app3 = 0.1.0) -> (app5 = 6.0.0)]",
+				"unsatisfiable_run_list_item": "(app3 >= 0.0.0)",
+				"non_existent_cookbooks":      []string{},
+				"most_constrained_cookbooks":  []string{"app5 = 2.0.0 -> []"},
+			})
+		})
+	}
+}
+
 func TestDefaultEnvironmentCookbookVersionsReturns412ForMissingAndNoVersionCookbooks(t *testing.T) {
 	router := newTestRouter(t)
 	createCookbookVersion(t, router, "foo", "1.2.3", "", nil)
