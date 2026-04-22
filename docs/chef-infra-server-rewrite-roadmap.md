@@ -90,6 +90,7 @@ As of 2026-04-09, OpenCook has moved past pure scaffolding and into the first co
 - configured default-org depsolver resolution now also has explicit non-admin org-member pessimistic major/minor and major/minor/patch constraints, repeated-root pinned selection and first-label attribution, and circular dependency handling parity on both named-environment and `_default` paths
 - configured default-org depsolver resolution now also has explicit non-admin org-member named-environment datestamp-version parity
 - configured default-org depsolver resolution now also has explicit non-admin org-member role-expanded missing-role, recursive-role, environment-specific success, explicit-empty environment override, and equivalent-root deduplication parity on both named-environment and `_default` paths
+- configured default-org depsolver resolution now also has explicit non-admin org-member named-environment filtered-root no-version detail parity when environment cookbook constraints exclude every candidate version
 - default-org and explicit-org node routes now resolve against the same org-scoped compatibility state
 - default-org and explicit-org environment routes now resolve against the same org-scoped compatibility state
 - the first role slice is now live with in-memory list/get/head/create/update/delete behavior plus Chef-style run-list and env-run-list normalization/deduplication
