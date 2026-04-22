@@ -154,6 +154,7 @@ Status: in progress
 - configured default-org depsolver non-admin org-member named-environment combined environment-plus-dependency constraint success is now also pinned
 - configured default-org depsolver non-admin org-member named-environment conflict and success stability are now also pinned when unrelated environment cookbook constraints are present
 - configured default-org depsolver non-admin org-member named-environment upstream third-graph and conflicting-passing graph selection are now also pinned
+- configured default-org depsolver non-admin org-member conflicting-failing graph detail is now also pinned on both named-environment and `_default` paths in the multi-org case
 - PostgreSQL-backed cookbook persistence, broader cookbook pedant coverage beyond the current environment-filtered/named-filter/latest/version read-write contract, broader upstream run-list/depsolver semantics, and deeper operational hardening around provider-backed blob behavior are still pending
 - S3-compatible blob storage remains the target production mode after the compatibility contract settles
 
