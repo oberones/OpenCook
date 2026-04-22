@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestLoadFromEnvDefaults(t *testing.T) {
 	t.Setenv("OPENCOOK_SERVICE_NAME", "")
@@ -172,5 +175,29 @@ func TestLoadFromEnvBlobProviderSettings(t *testing.T) {
 	}
 	if cfg.BlobS3MaxRetries != 4 {
 		t.Fatalf("BlobS3MaxRetries = %d, want %d", cfg.BlobS3MaxRetries, 4)
+	}
+}
+
+func TestLoadFromEnvRejectsNonPositiveBlobS3RequestTimeout(t *testing.T) {
+	t.Setenv("OPENCOOK_BLOB_S3_REQUEST_TIMEOUT", "0s")
+
+	_, err := LoadFromEnv()
+	if err == nil {
+		t.Fatal("LoadFromEnv() error = nil, want timeout validation error")
+	}
+	if !strings.Contains(err.Error(), "OPENCOOK_BLOB_S3_REQUEST_TIMEOUT: must be positive") {
+		t.Fatalf("LoadFromEnv() error = %v, want positive timeout validation error", err)
+	}
+}
+
+func TestLoadFromEnvRejectsNegativeBlobS3MaxRetries(t *testing.T) {
+	t.Setenv("OPENCOOK_BLOB_S3_MAX_RETRIES", "-1")
+
+	_, err := LoadFromEnv()
+	if err == nil {
+		t.Fatal("LoadFromEnv() error = nil, want retry validation error")
+	}
+	if !strings.Contains(err.Error(), "OPENCOOK_BLOB_S3_MAX_RETRIES: must be zero or greater") {
+		t.Fatalf("LoadFromEnv() error = %v, want non-negative retry validation error", err)
 	}
 }
