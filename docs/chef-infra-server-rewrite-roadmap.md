@@ -97,6 +97,7 @@ As of 2026-04-09, OpenCook has moved past pure scaffolding and into the first co
 - configured default-org depsolver resolution now also has explicit non-admin org-member named-environment conflict and success stability parity when unrelated environment cookbook constraints are present
 - configured default-org depsolver resolution now also has explicit non-admin org-member named-environment upstream third-graph and conflicting-passing graph parity
 - configured default-org depsolver resolution now also has explicit non-admin org-member conflicting-failing graph detail parity on both named-environment and `_default` paths
+- configured default-org depsolver resolution now also has explicit non-admin org-member environment-read auth parity on both named-environment and `_default` paths, including role-expanded short-circuiting before role-container auth
 - default-org and explicit-org node routes now resolve against the same org-scoped compatibility state
 - default-org and explicit-org environment routes now resolve against the same org-scoped compatibility state
 - the first role slice is now live with in-memory list/get/head/create/update/delete behavior plus Chef-style run-list and env-run-list normalization/deduplication

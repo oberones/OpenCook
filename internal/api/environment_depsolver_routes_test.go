@@ -5407,6 +5407,76 @@ func TestEnvironmentCookbookVersionsUseConfiguredDefaultOrganizationForEnvironme
 	}
 }
 
+func TestEnvironmentCookbookVersionsUseConfiguredDefaultOrganizationForOrgMemberEnvironmentReadAuthz(t *testing.T) {
+	routes := []struct {
+		name    string
+		path    string
+		envName string
+	}{
+		{name: "named_environment", path: "/environments/production/cookbook_versions", envName: "production"},
+		{name: "default_environment", path: "/environments/_default/cookbook_versions", envName: "_default"},
+	}
+
+	for _, route := range routes {
+		t.Run(route.name, func(t *testing.T) {
+			var authorizer *recordingDepsolverAuthorizer
+			router, state := newSearchTestRouterWithConfigAndAuthorizer(t, config.Config{
+				ServiceName:         "opencook",
+				Environment:         "test",
+				AuthSkew:            15 * time.Minute,
+				DefaultOrganization: "canterlot",
+			}, func(state *bootstrap.Service) authz.Authorizer {
+				authorizer = &recordingDepsolverAuthorizer{
+					base: authz.NewACLAuthorizer(state),
+					deny: map[string]struct{}{
+						"read:environment:" + route.envName: {},
+					},
+				}
+				return authorizer
+			})
+			createOrgForTest(t, router, "canterlot")
+			if err := state.AddUserToGroup("canterlot", "users", "silent-bob"); err != nil {
+				t.Fatalf("AddUserToGroup(silent-bob) error = %v", err)
+			}
+			if route.envName != "_default" {
+				if _, err := state.CreateEnvironment("canterlot", bootstrap.CreateEnvironmentInput{
+					Payload: map[string]any{
+						"name": route.envName,
+					},
+					Creator: authn.Principal{Type: "user", Name: "pivotal"},
+				}); err != nil {
+					t.Fatalf("CreateEnvironment(%s) error = %v", route.envName, err)
+				}
+			}
+			authorizer.calls = nil
+
+			req := newSignedJSONRequestAs(t, "silent-bob", http.MethodPost, route.path, mustMarshalSandboxJSON(t, map[string]any{
+				"run_list": []any{},
+			}))
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("%s configured default-org org-member environment authz status = %d, want %d, body = %s", route.name, rec.Code, http.StatusForbidden, rec.Body.String())
+			}
+
+			payload := decodeJSONMap(t, rec.Body.Bytes())
+			if payload["error"] != "forbidden" {
+				t.Fatalf("%s error = %v, want %q", route.name, payload["error"], "forbidden")
+			}
+
+			wantCalls := []string{"read:environment:" + route.envName}
+			if len(authorizer.calls) != len(wantCalls) {
+				t.Fatalf("%s depsolver authz calls = %v, want %v", route.name, authorizer.calls, wantCalls)
+			}
+			for idx := range wantCalls {
+				if authorizer.calls[idx] != wantCalls[idx] {
+					t.Fatalf("%s depsolver authz calls[%d] = %q, want %q (%v)", route.name, idx, authorizer.calls[idx], wantCalls[idx], authorizer.calls)
+				}
+			}
+		})
+	}
+}
+
 func TestEnvironmentCookbookVersionsChecksEnvironmentReadBeforeRoleExpandedAuthz(t *testing.T) {
 	routes := []struct {
 		name    string
@@ -5457,6 +5527,90 @@ func TestEnvironmentCookbookVersionsChecksEnvironmentReadBeforeRoleExpandedAuthz
 			router.ServeHTTP(rec, req)
 			if rec.Code != http.StatusForbidden {
 				t.Fatalf("%s depsolver role-expanded environment authz status = %d, want %d, body = %s", route.name, rec.Code, http.StatusForbidden, rec.Body.String())
+			}
+
+			payload := decodeJSONMap(t, rec.Body.Bytes())
+			if payload["error"] != "forbidden" {
+				t.Fatalf("%s error = %v, want %q", route.name, payload["error"], "forbidden")
+			}
+
+			wantCalls := []string{"read:environment:" + route.envName}
+			if len(authorizer.calls) != len(wantCalls) {
+				t.Fatalf("%s depsolver authz calls = %v, want %v", route.name, authorizer.calls, wantCalls)
+			}
+			for idx := range wantCalls {
+				if authorizer.calls[idx] != wantCalls[idx] {
+					t.Fatalf("%s depsolver authz calls[%d] = %q, want %q (%v)", route.name, idx, authorizer.calls[idx], wantCalls[idx], authorizer.calls)
+				}
+			}
+		})
+	}
+}
+
+func TestEnvironmentCookbookVersionsUseConfiguredDefaultOrganizationForOrgMemberEnvironmentReadBeforeRoleExpandedAuthz(t *testing.T) {
+	routes := []struct {
+		name    string
+		path    string
+		envName string
+	}{
+		{name: "named_environment", path: "/environments/production/cookbook_versions", envName: "production"},
+		{name: "default_environment", path: "/environments/_default/cookbook_versions", envName: "_default"},
+	}
+
+	for _, route := range routes {
+		t.Run(route.name, func(t *testing.T) {
+			var authorizer *recordingDepsolverAuthorizer
+			router, state := newSearchTestRouterWithConfigAndAuthorizer(t, config.Config{
+				ServiceName:         "opencook",
+				Environment:         "test",
+				AuthSkew:            15 * time.Minute,
+				DefaultOrganization: "canterlot",
+			}, func(state *bootstrap.Service) authz.Authorizer {
+				authorizer = &recordingDepsolverAuthorizer{
+					base: authz.NewACLAuthorizer(state),
+					deny: map[string]struct{}{
+						"read:environment:" + route.envName: {},
+					},
+				}
+				return authorizer
+			})
+			createOrgForTest(t, router, "canterlot")
+			if err := state.AddUserToGroup("canterlot", "users", "silent-bob"); err != nil {
+				t.Fatalf("AddUserToGroup(silent-bob) error = %v", err)
+			}
+			if route.envName != "_default" {
+				if _, err := state.CreateEnvironment("canterlot", bootstrap.CreateEnvironmentInput{
+					Payload: map[string]any{
+						"name": route.envName,
+					},
+					Creator: authn.Principal{Type: "user", Name: "pivotal"},
+				}); err != nil {
+					t.Fatalf("CreateEnvironment(%s) error = %v", route.envName, err)
+				}
+			}
+			if _, err := state.CreateRole("canterlot", bootstrap.CreateRoleInput{
+				Payload: map[string]any{
+					"name":                "web",
+					"description":         "",
+					"json_class":          "Chef::Role",
+					"chef_type":           "role",
+					"default_attributes":  map[string]any{},
+					"override_attributes": map[string]any{},
+					"run_list":            []any{"recipe[apache2]"},
+					"env_run_lists":       map[string]any{},
+				},
+			}); err != nil {
+				t.Fatalf("CreateRole(web) error = %v", err)
+			}
+			authorizer.calls = nil
+
+			req := newSignedJSONRequestAs(t, "silent-bob", http.MethodPost, route.path, mustMarshalSandboxJSON(t, map[string]any{
+				"run_list": []any{"role[web]"},
+			}))
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("%s configured default-org org-member role-expanded environment authz status = %d, want %d, body = %s", route.name, rec.Code, http.StatusForbidden, rec.Body.String())
 			}
 
 			payload := decodeJSONMap(t, rec.Body.Bytes())
