@@ -3280,6 +3280,210 @@ func TestEnvironmentCookbookVersionsUseConfiguredDefaultOrganizationForOrgMember
 	assertCookbookVersionBody(t, payload, "datestamp", "1.2.20130730201745")
 }
 
+func TestEnvironmentCookbookVersionsUseConfiguredDefaultOrganizationForOrgMemberRoleExpansion(t *testing.T) {
+	newOrgMemberRouter := func(t *testing.T) (http.Handler, *bootstrap.Service) {
+		t.Helper()
+
+		router, state := newConfiguredDefaultOrgDepsolverRouterWithState(t)
+		if err := state.AddUserToGroup("canterlot", "users", "silent-bob"); err != nil {
+			t.Fatalf("AddUserToGroup(silent-bob) error = %v", err)
+		}
+		createConfiguredDefaultOrgEnvironmentForCookbookTests(t, router, "production")
+		return router, state
+	}
+
+	createRole := func(t *testing.T, state *bootstrap.Service, name string, runList []any, envRunLists map[string]any) {
+		t.Helper()
+
+		if _, err := state.CreateRole("canterlot", bootstrap.CreateRoleInput{
+			Payload: map[string]any{
+				"name":                name,
+				"description":         "",
+				"json_class":          "Chef::Role",
+				"chef_type":           "role",
+				"default_attributes":  map[string]any{},
+				"override_attributes": map[string]any{},
+				"run_list":            runList,
+				"env_run_lists":       envRunLists,
+			},
+		}); err != nil {
+			t.Fatalf("CreateRole(%s) error = %v", name, err)
+		}
+	}
+
+	routes := []struct {
+		name string
+		path string
+	}{
+		{name: "named_environment", path: "/environments/production/cookbook_versions"},
+		{name: "default_environment", path: "/environments/_default/cookbook_versions"},
+	}
+
+	t.Run("missing_role", func(t *testing.T) {
+		router, _ := newOrgMemberRouter(t)
+
+		for _, route := range routes {
+			t.Run(route.name, func(t *testing.T) {
+				req := newSignedJSONRequestAs(t, "silent-bob", http.MethodPost, route.path, mustMarshalSandboxJSON(t, map[string]any{
+					"run_list": []any{"role[missing]"},
+				}))
+				rec := httptest.NewRecorder()
+				router.ServeHTTP(rec, req)
+				if rec.Code != http.StatusBadRequest {
+					t.Fatalf("%s configured default-org org-member missing role status = %d, want %d, body = %s", route.name, rec.Code, http.StatusBadRequest, rec.Body.String())
+				}
+
+				assertEnvironmentErrorMessages(t, rec.Body.Bytes(), "Field 'run_list' contains unknown role item role[missing]")
+			})
+		}
+	})
+
+	t.Run("recursive_role", func(t *testing.T) {
+		router, state := newOrgMemberRouter(t)
+		createRole(t, state, "web", []any{"role[db]"}, map[string]any{})
+		createRole(t, state, "db", []any{"role[web]"}, map[string]any{})
+
+		for _, route := range routes {
+			t.Run(route.name, func(t *testing.T) {
+				req := newSignedJSONRequestAs(t, "silent-bob", http.MethodPost, route.path, mustMarshalSandboxJSON(t, map[string]any{
+					"run_list": []any{"role[web]"},
+				}))
+				rec := httptest.NewRecorder()
+				router.ServeHTTP(rec, req)
+				if rec.Code != http.StatusBadRequest {
+					t.Fatalf("%s configured default-org org-member recursive role status = %d, want %d, body = %s", route.name, rec.Code, http.StatusBadRequest, rec.Body.String())
+				}
+
+				assertEnvironmentErrorMessages(t, rec.Body.Bytes(), "Field 'run_list' contains recursive role item role[web]")
+			})
+		}
+	})
+
+	t.Run("success", func(t *testing.T) {
+		router, state := newOrgMemberRouter(t)
+		createConfiguredDefaultOrgCookbookVersion(t, router, "apache2", "1.0.0", "", nil)
+		createConfiguredDefaultOrgCookbookVersion(t, router, "nginx", "2.0.0", "", nil)
+		createConfiguredDefaultOrgCookbookVersion(t, router, "users", "3.0.0", "", nil)
+		createRole(t, state, "base", []any{"recipe[apache2]"}, map[string]any{
+			"production": []any{"recipe[nginx]"},
+		})
+		createRole(t, state, "web", []any{"role[base]", "recipe[users]"}, map[string]any{})
+
+		expectations := []struct {
+			name       string
+			path       string
+			wantName   string
+			wantVer    string
+			wantName2  string
+			wantVer2   string
+			absentName string
+		}{
+			{
+				name:       "named_environment",
+				path:       "/environments/production/cookbook_versions",
+				wantName:   "nginx",
+				wantVer:    "2.0.0",
+				wantName2:  "users",
+				wantVer2:   "3.0.0",
+				absentName: "apache2",
+			},
+			{
+				name:       "default_environment",
+				path:       "/environments/_default/cookbook_versions",
+				wantName:   "apache2",
+				wantVer:    "1.0.0",
+				wantName2:  "users",
+				wantVer2:   "3.0.0",
+				absentName: "nginx",
+			},
+		}
+
+		for _, route := range expectations {
+			t.Run(route.name, func(t *testing.T) {
+				req := newSignedJSONRequestAs(t, "silent-bob", http.MethodPost, route.path, mustMarshalSandboxJSON(t, map[string]any{
+					"run_list": []any{"role[web]"},
+				}))
+				rec := httptest.NewRecorder()
+				router.ServeHTTP(rec, req)
+				if rec.Code != http.StatusOK {
+					t.Fatalf("%s configured default-org org-member role-expanded success status = %d, want %d, body = %s", route.name, rec.Code, http.StatusOK, rec.Body.String())
+				}
+
+				payload := decodeJSONMap(t, rec.Body.Bytes())
+				assertCookbookVersionBody(t, payload, route.wantName, route.wantVer)
+				assertCookbookVersionBody(t, payload, route.wantName2, route.wantVer2)
+				if _, ok := payload[route.absentName]; ok {
+					t.Fatalf("%s configured default-org org-member role-expanded payload unexpectedly contains %s: %v", route.name, route.absentName, payload)
+				}
+			})
+		}
+	})
+
+	t.Run("explicit_empty_environment_role_run_list", func(t *testing.T) {
+		router, state := newOrgMemberRouter(t)
+		createConfiguredDefaultOrgCookbookVersion(t, router, "apache2", "1.0.0", "", nil)
+		createRole(t, state, "web", []any{"recipe[apache2]"}, map[string]any{
+			"production": []any{},
+		})
+
+		namedReq := newSignedJSONRequestAs(t, "silent-bob", http.MethodPost, "/environments/production/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+			"run_list": []any{"role[web]"},
+		}))
+		namedRec := httptest.NewRecorder()
+		router.ServeHTTP(namedRec, namedReq)
+		if namedRec.Code != http.StatusOK {
+			t.Fatalf("configured default-org org-member empty env role run_list status = %d, want %d, body = %s", namedRec.Code, http.StatusOK, namedRec.Body.String())
+		}
+
+		namedPayload := decodeJSONMap(t, namedRec.Body.Bytes())
+		if len(namedPayload) != 0 {
+			t.Fatalf("configured default-org org-member production role-expanded payload = %v, want empty object", namedPayload)
+		}
+
+		defaultReq := newSignedJSONRequestAs(t, "silent-bob", http.MethodPost, "/environments/_default/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+			"run_list": []any{"role[web]"},
+		}))
+		defaultRec := httptest.NewRecorder()
+		router.ServeHTTP(defaultRec, defaultReq)
+		if defaultRec.Code != http.StatusOK {
+			t.Fatalf("configured default-org org-member default role expansion status = %d, want %d, body = %s", defaultRec.Code, http.StatusOK, defaultRec.Body.String())
+		}
+
+		defaultPayload := decodeJSONMap(t, defaultRec.Body.Bytes())
+		if len(defaultPayload) != 1 {
+			t.Fatalf("len(defaultPayload) = %d, want 1 (%v)", len(defaultPayload), defaultPayload)
+		}
+		assertCookbookVersionBody(t, defaultPayload, "apache2", "1.0.0")
+	})
+
+	t.Run("equivalent_root_deduplication", func(t *testing.T) {
+		router, state := newOrgMemberRouter(t)
+		createConfiguredDefaultOrgCookbookVersion(t, router, "foo", "1.0.0", "", map[string]string{"bar": "= 1.0.0"})
+		createConfiguredDefaultOrgCookbookVersion(t, router, "bar", "1.0.0", "", nil)
+		createRole(t, state, "web", []any{"recipe[foo]", "recipe[foo::default]"}, map[string]any{})
+
+		for _, route := range routes {
+			t.Run(route.name, func(t *testing.T) {
+				req := newSignedJSONRequestAs(t, "silent-bob", http.MethodPost, route.path, mustMarshalSandboxJSON(t, map[string]any{
+					"run_list": []any{"role[web]", "foo"},
+				}))
+				rec := httptest.NewRecorder()
+				router.ServeHTTP(rec, req)
+				if rec.Code != http.StatusOK {
+					t.Fatalf("%s configured default-org org-member role-expanded duplicate normalization status = %d, want %d, body = %s", route.name, rec.Code, http.StatusOK, rec.Body.String())
+				}
+
+				payload := decodeJSONMap(t, rec.Body.Bytes())
+				if len(payload) != 2 {
+					t.Fatalf("len(payload) = %d, want 2 (%v)", len(payload), payload)
+				}
+				assertCookbookVersionBody(t, payload, "foo", "1.0.0")
+				assertCookbookVersionBody(t, payload, "bar", "1.0.0")
+			})
+		}
+	})
+}
+
 func TestEnvironmentCookbookVersionsUseConfiguredDefaultOrganizationForOrgMemberDependencyMetadataShaping(t *testing.T) {
 	router, state := newConfiguredDefaultOrgDepsolverRouterWithState(t)
 	if err := state.AddUserToGroup("canterlot", "users", "silent-bob"); err != nil {
