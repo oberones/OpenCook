@@ -1527,6 +1527,24 @@ func TestDefaultEnvironmentCookbookVersionsUseConfiguredDefaultOrganizationBefor
 	)
 }
 
+func TestEnvironmentCookbookVersionsUseConfiguredDefaultOrganizationForOrgMemberBeforeMalformedRequest(t *testing.T) {
+	assertConfiguredDefaultOrgDepsolverRejectsMalformedRequestBeforeEnvironmentReadAuthzForOrgMember(
+		t,
+		"/environments/production/cookbook_versions",
+		"production",
+		"configured default-org org-member named environment precedence",
+	)
+}
+
+func TestDefaultEnvironmentCookbookVersionsUseConfiguredDefaultOrganizationForOrgMemberBeforeMalformedRequest(t *testing.T) {
+	assertConfiguredDefaultOrgDepsolverRejectsMalformedRequestBeforeEnvironmentReadAuthzForOrgMember(
+		t,
+		"/environments/_default/cookbook_versions",
+		"_default",
+		"configured default-org org-member _default precedence",
+	)
+}
+
 func TestEnvironmentCookbookVersionsUseConfiguredDefaultOrganizationBeforeMissingEnvironmentForMalformedRequest(t *testing.T) {
 	assertConfiguredDefaultOrgDepsolverRejectsMalformedRequestBeforeMissingEnvironment(
 		t,
@@ -1569,6 +1587,57 @@ func assertConfiguredDefaultOrgDepsolverRejectsMalformedRequestBeforeEnvironment
 			authorizer.calls = nil
 
 			req := newSignedJSONRequestAs(t, "pivotal", http.MethodPost, path, tt.body)
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("%s %s status = %d, want %d, body = %s", tt.name, statusLabel, rec.Code, http.StatusBadRequest, rec.Body.String())
+			}
+
+			assertEnvironmentErrorMessages(t, rec.Body.Bytes(), tt.messages...)
+			if len(authorizer.calls) != 0 {
+				t.Fatalf("%s authz calls = %v, want none", tt.name, authorizer.calls)
+			}
+		})
+	}
+}
+
+func assertConfiguredDefaultOrgDepsolverRejectsMalformedRequestBeforeEnvironmentReadAuthzForOrgMember(t *testing.T, path, envName, statusLabel string) {
+	t.Helper()
+
+	for _, tt := range depsolverMalformedRequestCases(t) {
+		t.Run(tt.name, func(t *testing.T) {
+			var authorizer *recordingDepsolverAuthorizer
+			router, state := newSearchTestRouterWithConfigAndAuthorizer(t, config.Config{
+				ServiceName:         "opencook",
+				Environment:         "test",
+				AuthSkew:            15 * time.Minute,
+				DefaultOrganization: "canterlot",
+			}, func(state *bootstrap.Service) authz.Authorizer {
+				authorizer = &recordingDepsolverAuthorizer{
+					base: authz.NewACLAuthorizer(state),
+					deny: map[string]struct{}{
+						"read:environment:" + envName: {},
+					},
+				}
+				return authorizer
+			})
+			createOrgForTest(t, router, "canterlot")
+			if err := state.AddUserToGroup("canterlot", "users", "silent-bob"); err != nil {
+				t.Fatalf("AddUserToGroup(silent-bob) error = %v", err)
+			}
+			if envName != "_default" {
+				if _, err := state.CreateEnvironment("canterlot", bootstrap.CreateEnvironmentInput{
+					Payload: map[string]any{
+						"name": envName,
+					},
+					Creator: authn.Principal{Type: "user", Name: "pivotal"},
+				}); err != nil {
+					t.Fatalf("CreateEnvironment(%s) error = %v", envName, err)
+				}
+			}
+			authorizer.calls = nil
+
+			req := newSignedJSONRequestAs(t, "silent-bob", http.MethodPost, path, tt.body)
 			rec := httptest.NewRecorder()
 			router.ServeHTTP(rec, req)
 			if rec.Code != http.StatusBadRequest {

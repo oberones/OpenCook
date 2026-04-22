@@ -127,6 +127,7 @@ Implemented so far:
   - configured default-org depsolver non-admin org-member empty- and omitted-`run_list` success are now also pinned on both named-environment and `_default` paths in the multi-org case
   - configured default-org depsolver non-admin org-member route semantics are now also pinned for trailing-slash acceptance, `405` plus `Allow: POST`, and extra-path `404`s on both named-environment and `_default` paths in the multi-org case
   - configured default-org depsolver non-admin org-member missing-environment `404` is now also pinned on the named-environment path in the multi-org case
+  - configured default-org depsolver non-admin org-member malformed-request precedence is now also pinned before environment-read auth on both named-environment and `_default` paths in the multi-org case
 - the first core object slice for nodes:
   - list
   - get
