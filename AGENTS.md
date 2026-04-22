@@ -121,6 +121,7 @@ Implemented so far:
   - configured default-org depsolver non-admin org-member named-environment upstream third-graph and conflicting-passing graph selection are now also pinned
   - configured default-org depsolver non-admin org-member conflicting-failing graph detail is now also pinned on both named-environment and `_default` paths in the multi-org case
   - configured default-org depsolver non-admin org-member environment-read auth is now also pinned on both named-environment and `_default` paths in the multi-org case, including role-expanded short-circuiting before role-container auth
+  - configured default-org depsolver non-admin org-member cookbook-container read auth is now also pinned on both named-environment and `_default` paths in the multi-org case
 - the first core object slice for nodes:
   - list
   - get
