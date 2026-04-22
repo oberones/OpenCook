@@ -1696,6 +1696,22 @@ func TestDefaultEnvironmentCookbookVersionsUseConfiguredDefaultOrganizationForRo
 	)
 }
 
+func TestEnvironmentCookbookVersionsUseConfiguredDefaultOrganizationForOrgMemberRouteSemantics(t *testing.T) {
+	assertConfiguredDefaultOrgDepsolverRouteSemanticsForOrgMember(
+		t,
+		"/environments/production/cookbook_versions",
+		"production",
+	)
+}
+
+func TestDefaultEnvironmentCookbookVersionsUseConfiguredDefaultOrganizationForOrgMemberRouteSemantics(t *testing.T) {
+	assertConfiguredDefaultOrgDepsolverRouteSemanticsForOrgMember(
+		t,
+		"/environments/_default/cookbook_versions",
+		"_default",
+	)
+}
+
 func assertConfiguredDefaultOrgDepsolverRouteSemantics(t *testing.T, path, envName string) {
 	t.Helper()
 
@@ -1761,6 +1777,86 @@ func assertConfiguredDefaultOrgDepsolverRouteSemantics(t *testing.T, path, envNa
 		router.ServeHTTP(rec, req)
 		if rec.Code != http.StatusNotFound {
 			t.Fatalf("configured default-org extra path status = %d, want %d, body = %s", rec.Code, http.StatusNotFound, rec.Body.String())
+		}
+
+		payload := decodeJSONMap(t, rec.Body.Bytes())
+		if payload["error"] != "not_found" {
+			t.Fatalf("error = %v, want %q", payload["error"], "not_found")
+		}
+		if payload["message"] != "route not found in scaffold router" {
+			t.Fatalf("message = %v, want %q", payload["message"], "route not found in scaffold router")
+		}
+	})
+}
+
+func assertConfiguredDefaultOrgDepsolverRouteSemanticsForOrgMember(t *testing.T, path, envName string) {
+	t.Helper()
+
+	router, state := newSearchTestRouterWithConfigAndAuthorizer(t, config.Config{
+		ServiceName:         "opencook",
+		Environment:         "test",
+		AuthSkew:            15 * time.Minute,
+		DefaultOrganization: "canterlot",
+	}, nil)
+	createOrgForTest(t, router, "canterlot")
+	if err := state.AddUserToGroup("canterlot", "users", "silent-bob"); err != nil {
+		t.Fatalf("AddUserToGroup(silent-bob) error = %v", err)
+	}
+	if envName != "_default" {
+		if _, err := state.CreateEnvironment("canterlot", bootstrap.CreateEnvironmentInput{
+			Payload: map[string]any{
+				"name": envName,
+			},
+			Creator: authn.Principal{Type: "user", Name: "pivotal"},
+		}); err != nil {
+			t.Fatalf("CreateEnvironment(%s) error = %v", envName, err)
+		}
+	}
+
+	t.Run("trailing_slash", func(t *testing.T) {
+		req := newSignedJSONRequestAs(t, "silent-bob", http.MethodPost, path+"/", mustMarshalSandboxJSON(t, map[string]any{
+			"run_list": []any{},
+		}))
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("configured default-org org-member trailing slash status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+		}
+
+		payload := decodeJSONMap(t, rec.Body.Bytes())
+		if len(payload) != 0 {
+			t.Fatalf("payload = %v, want empty object", payload)
+		}
+	})
+
+	t.Run("method_not_allowed", func(t *testing.T) {
+		req := newSignedJSONRequestAs(t, "silent-bob", http.MethodGet, path, nil)
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("configured default-org org-member method status = %d, want %d, body = %s", rec.Code, http.StatusMethodNotAllowed, rec.Body.String())
+		}
+		if rec.Header().Get("Allow") != http.MethodPost {
+			t.Fatalf("Allow = %q, want %q", rec.Header().Get("Allow"), http.MethodPost)
+		}
+
+		payload := decodeJSONMap(t, rec.Body.Bytes())
+		if payload["error"] != "method_not_allowed" {
+			t.Fatalf("error = %v, want %q", payload["error"], "method_not_allowed")
+		}
+		if payload["message"] != "method not allowed for environment cookbook_versions route" {
+			t.Fatalf("message = %v, want %q", payload["message"], "method not allowed for environment cookbook_versions route")
+		}
+	})
+
+	t.Run("extra_path", func(t *testing.T) {
+		req := newSignedJSONRequestAs(t, "silent-bob", http.MethodPost, path+"/extra", mustMarshalSandboxJSON(t, map[string]any{
+			"run_list": []any{},
+		}))
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("configured default-org org-member extra path status = %d, want %d, body = %s", rec.Code, http.StatusNotFound, rec.Body.String())
 		}
 
 		payload := decodeJSONMap(t, rec.Body.Bytes())
