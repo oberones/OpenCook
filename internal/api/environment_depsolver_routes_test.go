@@ -1368,6 +1368,30 @@ func TestEnvironmentCookbookVersionsReturnsNotFoundForMissingEnvironmentWithConf
 	assertEnvironmentErrorMessages(t, rec.Body.Bytes(), "Cannot load environment not@environment")
 }
 
+func TestEnvironmentCookbookVersionsReturnsNotFoundForOrgMemberMissingEnvironmentWithConfiguredDefaultOrganization(t *testing.T) {
+	router, state := newSearchTestRouterWithConfigAndAuthorizer(t, config.Config{
+		ServiceName:         "opencook",
+		Environment:         "test",
+		AuthSkew:            15 * time.Minute,
+		DefaultOrganization: "canterlot",
+	}, nil)
+	createOrgForTest(t, router, "canterlot")
+	if err := state.AddUserToGroup("canterlot", "users", "silent-bob"); err != nil {
+		t.Fatalf("AddUserToGroup(silent-bob) error = %v", err)
+	}
+
+	req := newSignedJSONRequestAs(t, "silent-bob", http.MethodPost, "/environments/not@environment/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("configured default-org org-member missing environment status = %d, want %d, body = %s", rec.Code, http.StatusNotFound, rec.Body.String())
+	}
+
+	assertEnvironmentErrorMessages(t, rec.Body.Bytes(), "Cannot load environment not@environment")
+}
+
 func TestOrganizationDefaultEnvironmentCookbookVersionsReturnsNotFoundForMissingOrganization(t *testing.T) {
 	router := newTestRouter(t)
 
