@@ -124,6 +124,7 @@ Implemented so far:
   - configured default-org depsolver non-admin org-member cookbook-container read auth is now also pinned on both named-environment and `_default` paths in the multi-org case
   - configured default-org depsolver non-admin org-member roles-container read auth is now also pinned for role-expanded requests on both named-environment and `_default` paths in the multi-org case
   - configured default-org depsolver non-admin org-member missing-role and recursive-role parity are now also pinned for role-expanded requests on both named-environment and `_default` paths in the multi-org case
+  - configured default-org depsolver non-admin org-member empty- and omitted-`run_list` success are now also pinned on both named-environment and `_default` paths in the multi-org case
 - the first core object slice for nodes:
   - list
   - get
