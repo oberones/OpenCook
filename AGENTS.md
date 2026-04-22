@@ -141,6 +141,7 @@ Implemented so far:
   - org-scoped depsolver non-admin org-member role-expanded missing-role, recursive-role, environment-specific success, explicit-empty environment override, and equivalent-root deduplication are now also pinned on both named-environment and `_default` paths
   - org-scoped depsolver non-admin org-member environment-read auth is now also pinned on both named-environment and `_default` paths, including role-expanded short-circuiting before role-container auth
   - org-scoped depsolver non-admin org-member cookbook-container read auth is now also pinned on both named-environment and `_default` paths
+  - org-scoped depsolver non-admin org-member roles-container read auth is now also pinned for role-expanded requests on both named-environment and `_default` paths
 - the first core object slice for nodes:
   - list
   - get
