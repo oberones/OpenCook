@@ -1128,6 +1128,98 @@ func TestEnvironmentCookbookVersionsReturnsEmptyObjectForMissingRunListWithConfi
 	}
 }
 
+func TestEnvironmentCookbookVersionsReturnsEmptyObjectForOrgMemberEmptyRunListWithConfiguredDefaultOrganization(t *testing.T) {
+	router, state := newSearchTestRouterWithConfigAndAuthorizer(t, config.Config{
+		ServiceName:         "opencook",
+		Environment:         "test",
+		AuthSkew:            15 * time.Minute,
+		DefaultOrganization: "canterlot",
+	}, nil)
+	createOrgForTest(t, router, "canterlot")
+	if err := state.AddUserToGroup("canterlot", "users", "silent-bob"); err != nil {
+		t.Fatalf("AddUserToGroup(silent-bob) error = %v", err)
+	}
+	if _, err := state.CreateEnvironment("canterlot", bootstrap.CreateEnvironmentInput{
+		Payload: map[string]any{
+			"name": "production",
+		},
+		Creator: authn.Principal{Type: "user", Name: "pivotal"},
+	}); err != nil {
+		t.Fatalf("CreateEnvironment(production) error = %v", err)
+	}
+
+	routes := []struct {
+		name string
+		path string
+	}{
+		{name: "named_environment", path: "/environments/production/cookbook_versions"},
+		{name: "default_environment", path: "/environments/_default/cookbook_versions"},
+	}
+
+	for _, route := range routes {
+		t.Run(route.name, func(t *testing.T) {
+			req := newSignedJSONRequestAs(t, "silent-bob", http.MethodPost, route.path, mustMarshalSandboxJSON(t, map[string]any{
+				"run_list": []any{},
+			}))
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("%s configured default-org org-member empty run_list status = %d, want %d, body = %s", route.name, rec.Code, http.StatusOK, rec.Body.String())
+			}
+
+			payload := decodeJSONMap(t, rec.Body.Bytes())
+			if len(payload) != 0 {
+				t.Fatalf("%s payload = %v, want empty object", route.name, payload)
+			}
+		})
+	}
+}
+
+func TestEnvironmentCookbookVersionsReturnsEmptyObjectForOrgMemberMissingRunListWithConfiguredDefaultOrganization(t *testing.T) {
+	router, state := newSearchTestRouterWithConfigAndAuthorizer(t, config.Config{
+		ServiceName:         "opencook",
+		Environment:         "test",
+		AuthSkew:            15 * time.Minute,
+		DefaultOrganization: "canterlot",
+	}, nil)
+	createOrgForTest(t, router, "canterlot")
+	if err := state.AddUserToGroup("canterlot", "users", "silent-bob"); err != nil {
+		t.Fatalf("AddUserToGroup(silent-bob) error = %v", err)
+	}
+	if _, err := state.CreateEnvironment("canterlot", bootstrap.CreateEnvironmentInput{
+		Payload: map[string]any{
+			"name": "production",
+		},
+		Creator: authn.Principal{Type: "user", Name: "pivotal"},
+	}); err != nil {
+		t.Fatalf("CreateEnvironment(production) error = %v", err)
+	}
+
+	routes := []struct {
+		name string
+		path string
+	}{
+		{name: "named_environment", path: "/environments/production/cookbook_versions"},
+		{name: "default_environment", path: "/environments/_default/cookbook_versions"},
+	}
+
+	for _, route := range routes {
+		t.Run(route.name, func(t *testing.T) {
+			req := newSignedJSONRequestAs(t, "silent-bob", http.MethodPost, route.path, mustMarshalSandboxJSON(t, map[string]any{}))
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("%s configured default-org org-member missing run_list status = %d, want %d, body = %s", route.name, rec.Code, http.StatusOK, rec.Body.String())
+			}
+
+			payload := decodeJSONMap(t, rec.Body.Bytes())
+			if len(payload) != 0 {
+				t.Fatalf("%s payload = %v, want empty object", route.name, payload)
+			}
+		})
+	}
+}
+
 func TestOrganizationEnvironmentCookbookVersionsReturnsEmptyObjectForMissingRunList(t *testing.T) {
 	router := newTestRouter(t)
 	createEnvironmentForCookbookTests(t, router, "production")
