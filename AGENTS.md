@@ -142,6 +142,9 @@ Implemented so far:
   - org-scoped depsolver non-admin org-member environment-read auth is now also pinned on both named-environment and `_default` paths, including role-expanded short-circuiting before role-container auth
   - org-scoped depsolver non-admin org-member cookbook-container read auth is now also pinned on both named-environment and `_default` paths
   - org-scoped depsolver non-admin org-member roles-container read auth is now also pinned for role-expanded requests on both named-environment and `_default` paths
+  - org-scoped depsolver non-admin org-member empty- and omitted-`run_list` success plus route semantics are now also pinned on both named-environment and `_default` paths
+  - org-scoped depsolver non-admin org-member missing-environment `404` is now also pinned on the named-environment path
+  - org-scoped depsolver non-admin org-member malformed-request precedence is now also pinned before environment-read auth on both named-environment and `_default` paths, and before named-environment missing-environment lookup
 - the first core object slice for nodes:
   - list
   - get
@@ -436,7 +439,7 @@ These areas are still intentionally incomplete:
 - deeper node and environment compatibility such as cookbook constraint edge cases and linked object behavior
 - deeper role compatibility beyond the current normalization and linked-environment read behavior
 - broader search semantics beyond the current in-memory compatibility layer, especially richer Lucene-style query translation and wider object coverage
-- deeper Bookshelf/cookbook flows beyond the current cookbook write/read/artifact slice, especially the remaining cookbook pedant cases outside the current environment-filtered/named-filter/latest/version/depsolver contract, broader upstream run-list/depsolver semantics, and the remaining deeper provider hardening around S3-compatible blob behavior
+- deeper Bookshelf/cookbook flows beyond the current cookbook write/read/artifact slice, especially the remaining cookbook pedant cases outside the current environment-filtered/named-filter/latest/version/depsolver contract and the remaining deeper provider hardening around S3-compatible blob behavior
 - operational parity and migration tooling
 
-The next likely major slice is broader upstream run-list/depsolver parity beyond the current role-expanded depsolver coverage, or deeper provider hardening around S3-compatible blob behavior before moving stabilized slices toward PostgreSQL/OpenSearch-backed providers.
+The next likely major slice is deeper provider hardening around S3-compatible blob behavior, or the remaining cookbook pedant coverage outside the current environment-filtered/named-filter/latest/version/depsolver contract before moving stabilized slices toward PostgreSQL/OpenSearch-backed providers.

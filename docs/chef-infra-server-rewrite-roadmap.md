@@ -119,6 +119,9 @@ As of 2026-04-09, OpenCook has moved past pure scaffolding and into the first co
 - org-scoped depsolver routes now also have explicit non-admin org-member environment-read auth parity on both named-environment and `_default` paths, including role-expanded short-circuiting before role-container auth
 - org-scoped depsolver routes now also have explicit non-admin org-member cookbook-container read auth parity on both named-environment and `_default` paths
 - org-scoped depsolver routes now also have explicit non-admin org-member roles-container read auth parity for role-expanded requests on both named-environment and `_default` paths
+- org-scoped depsolver routes now also have explicit non-admin org-member empty- and omitted-`run_list` success plus route-semantics parity on both named-environment and `_default` paths
+- org-scoped depsolver routes now also have explicit non-admin org-member missing-environment `404` parity on the named-environment path
+- org-scoped depsolver routes now also have explicit non-admin org-member malformed-request precedence parity before environment-read auth on both named-environment and `_default` paths, and before named-environment missing-environment lookup
 - default-org and explicit-org node routes now resolve against the same org-scoped compatibility state
 - default-org and explicit-org environment routes now resolve against the same org-scoped compatibility state
 - the first role slice is now live with in-memory list/get/head/create/update/delete behavior plus Chef-style run-list and env-run-list normalization/deduplication
@@ -172,7 +175,7 @@ Current focus:
 
 - preserve API-version-sensitive actor key behavior without carrying forward Chef licensing concerns
 - deepen search query translation beyond the current simple compatibility subset and widen object/index coverage further
-- deepen cookbook/blob compatibility beyond the current cookbook write/read/artifact slice, especially the remaining cookbook pedant cases outside the current environment-filtered/named-filter/latest/version/depsolver contract, broader upstream run-list/depsolver semantics, and the remaining deeper provider hardening around S3-compatible object storage behavior
+- deepen cookbook/blob compatibility beyond the current cookbook write/read/artifact slice, especially the remaining cookbook pedant cases outside the current environment-filtered/named-filter/latest/version/depsolver contract plus the remaining deeper provider hardening around S3-compatible object storage behavior
 - replace the in-memory bootstrap layer with PostgreSQL-backed persistence after the contracts stabilize
 
 ## What Exists Upstream
