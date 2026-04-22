@@ -1553,6 +1553,14 @@ func TestEnvironmentCookbookVersionsUseConfiguredDefaultOrganizationBeforeMissin
 	)
 }
 
+func TestEnvironmentCookbookVersionsUseConfiguredDefaultOrganizationForOrgMemberBeforeMissingEnvironmentForMalformedRequest(t *testing.T) {
+	assertConfiguredDefaultOrgDepsolverRejectsMalformedRequestBeforeMissingEnvironmentForOrgMember(
+		t,
+		"/environments/missing-env/cookbook_versions",
+		"configured default-org org-member missing environment precedence",
+	)
+}
+
 func assertConfiguredDefaultOrgDepsolverRejectsMalformedRequestBeforeEnvironmentReadAuthz(t *testing.T, path, envName, statusLabel string) {
 	t.Helper()
 
@@ -1673,6 +1681,44 @@ func assertConfiguredDefaultOrgDepsolverRejectsMalformedRequestBeforeMissingEnvi
 			authorizer.calls = nil
 
 			req := newSignedJSONRequestAs(t, "pivotal", http.MethodPost, path, tt.body)
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("%s %s status = %d, want %d, body = %s", tt.name, statusLabel, rec.Code, http.StatusBadRequest, rec.Body.String())
+			}
+
+			assertEnvironmentErrorMessages(t, rec.Body.Bytes(), tt.messages...)
+			if len(authorizer.calls) != 0 {
+				t.Fatalf("%s authz calls = %v, want none", tt.name, authorizer.calls)
+			}
+		})
+	}
+}
+
+func assertConfiguredDefaultOrgDepsolverRejectsMalformedRequestBeforeMissingEnvironmentForOrgMember(t *testing.T, path, statusLabel string) {
+	t.Helper()
+
+	for _, tt := range depsolverMalformedRequestCases(t) {
+		t.Run(tt.name, func(t *testing.T) {
+			var authorizer *recordingDepsolverAuthorizer
+			router, state := newSearchTestRouterWithConfigAndAuthorizer(t, config.Config{
+				ServiceName:         "opencook",
+				Environment:         "test",
+				AuthSkew:            15 * time.Minute,
+				DefaultOrganization: "canterlot",
+			}, func(state *bootstrap.Service) authz.Authorizer {
+				authorizer = &recordingDepsolverAuthorizer{
+					base: authz.NewACLAuthorizer(state),
+				}
+				return authorizer
+			})
+			createOrgForTest(t, router, "canterlot")
+			if err := state.AddUserToGroup("canterlot", "users", "silent-bob"); err != nil {
+				t.Fatalf("AddUserToGroup(silent-bob) error = %v", err)
+			}
+			authorizer.calls = nil
+
+			req := newSignedJSONRequestAs(t, "silent-bob", http.MethodPost, path, tt.body)
 			rec := httptest.NewRecorder()
 			router.ServeHTTP(rec, req)
 			if rec.Code != http.StatusBadRequest {
