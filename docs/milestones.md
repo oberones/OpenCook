@@ -110,7 +110,77 @@ Status: in progress
 - depsolver empty-payload invalid-JSON precedence now also wins over missing-environment lookup and environment-read auth on both default-org and org-scoped routes, including the `_default` auth cases
 - org-scoped depsolver missing-organization precedence is now also pinned ahead of invalid JSON, empty payload, trailing JSON, invalid `run_list`, and malformed-item request bodies on both named-environment and `_default` paths
 - default-org depsolver ambiguous-organization precedence is now also pinned ahead of invalid JSON, empty payload, trailing JSON, invalid `run_list`, and malformed-item request bodies on both named-environment and `_default` paths
-- PostgreSQL-backed cookbook persistence, broader cookbook pedant coverage beyond the current environment-filtered/named-filter/latest/version read-write contract, broader upstream run-list/depsolver semantics, and deeper operational hardening around provider-backed blob behavior are still pending
+- configured default-org depsolver resolution is now also pinned ahead of invalid JSON, empty payload, trailing JSON, invalid `run_list`, and malformed-item request bodies plus environment-read auth on both named-environment and `_default` paths, and on named-environment routes also ahead of missing-environment lookup
+- configured default-org depsolver route semantics are now also pinned for trailing-slash acceptance, `405` plus `Allow: POST`, and extra-path `404`s on both named-environment and `_default` paths in the multi-org case
+- configured default-org depsolver environment-read auth is now also pinned on both named-environment and `_default` paths in the multi-org case, including role-expanded short-circuiting before role-container auth
+- configured default-org depsolver cookbook-container read auth is now also pinned on both named-environment and `_default` paths in the multi-org case
+- configured default-org depsolver roles-container read auth is now also pinned for role-expanded requests on both named-environment and `_default` paths in the multi-org case
+- configured default-org depsolver missing-role and recursive-role `400`s are now also pinned for role-expanded requests on both named-environment and `_default` paths in the multi-org case
+- configured default-org depsolver role-expanded success is now also pinned on both named-environment and `_default` paths in the multi-org case, including environment-specific role run-list selection
+- configured default-org depsolver explicit-empty environment-specific role run-list behavior is now also pinned on both named-environment and `_default` paths in the multi-org case
+- configured default-org depsolver role-expanded equivalent-root deduplication is now also pinned on both named-environment and `_default` paths in the multi-org case
+- configured default-org depsolver missing-environment `404` is now also pinned on the named-environment default-org route in the multi-org case
+- configured default-org depsolver empty-`run_list` success is now also pinned on both named-environment and `_default` paths in the multi-org case
+- configured default-org depsolver omitted-`run_list` success is now also pinned on both named-environment and `_default` paths in the multi-org case
+- configured default-org depsolver single missing-root, single no-version-root, and mixed missing-vs-no-version root precedence are now also pinned on both named-environment and `_default` paths in the multi-org case
+- configured default-org depsolver plural missing-root and plural no-version-root detail are now also pinned on both named-environment and `_default` paths in the multi-org case
+- configured default-org depsolver named-environment filtered-root no-version detail is now also pinned when environment cookbook constraints exclude every candidate version
+- configured default-org depsolver named-environment impossible-dependency detail is now also pinned when environment cookbook constraints make a dependency unsatisfiable
+- configured default-org depsolver named-environment environment-respected root selection is now also pinned for both the older-root fallback and newer-root-allowed branches
+- configured default-org depsolver named-environment combined environment-plus-dependency constraint success is now also pinned
+- configured default-org depsolver named-environment conflict and success stability are now also pinned when unrelated environment cookbook constraints are present
+- configured default-org depsolver upstream conflicting-failing graph detail is now also pinned on both named-environment and `_default` paths in the multi-org case
+- configured default-org depsolver missing-dependency, later-root missing-dependency attribution, unsatisfied-dependency, and impossible-dependency detail are now also pinned on both named-environment and `_default` paths in the multi-org case
+- configured default-org depsolver transitive-conflict, complex-dependency, and multi-root conflict detail are now also pinned on both named-environment and `_default` paths in the multi-org case
+- configured default-org depsolver pinned/dependent success and dependency-metadata shaping are now also pinned on both named-environment and `_default` paths in the multi-org case
+- configured default-org depsolver recipe-qualified success, equivalent-root deduplication, and pinned equivalent-form selection are now also pinned on both named-environment and `_default` paths in the multi-org case
+- configured default-org depsolver upstream first-graph, pinned-root-no-solution, and second-graph selection are now also pinned on both named-environment and `_default` paths in the multi-org case
+- configured default-org depsolver pessimistic major/minor and major/minor/patch constraints, repeated-root pinned selection and first-label attribution, and circular dependency handling are now also pinned on both named-environment and `_default` paths in the multi-org case
+- configured default-org depsolver named-environment datestamp-version support is now also pinned
+- configured default-org depsolver non-admin org-member dependency-metadata shaping is now also pinned on both named-environment and `_default` paths in the multi-org case
+- configured default-org depsolver non-admin org-member pinned-and-dependent success is now also pinned on both named-environment and `_default` paths in the multi-org case
+- configured default-org depsolver non-admin org-member recipe-qualified success, equivalent-root deduplication, and pinned equivalent-form selection are now also pinned on both named-environment and `_default` paths in the multi-org case
+- configured default-org depsolver non-admin org-member single missing-root, single no-version-root, and mixed missing-vs-no-version root precedence are now also pinned on both named-environment and `_default` paths in the multi-org case
+- configured default-org depsolver non-admin org-member plural missing-root and plural no-version-root detail are now also pinned on both named-environment and `_default` paths in the multi-org case
+- configured default-org depsolver non-admin org-member missing-dependency, later-root missing-dependency attribution, unsatisfied-dependency, and impossible-dependency detail are now also pinned on both named-environment and `_default` paths in the multi-org case
+- configured default-org depsolver non-admin org-member transitive-conflict, complex-dependency, and multi-root conflict detail are now also pinned on both named-environment and `_default` paths in the multi-org case
+- configured default-org depsolver non-admin org-member upstream first-graph, pinned-root-no-solution, and second-graph selection are now also pinned on both named-environment and `_default` paths in the multi-org case
+- configured default-org depsolver non-admin org-member pessimistic major/minor and major/minor/patch constraints, repeated-root pinned selection and first-label attribution, and circular dependency handling are now also pinned on both named-environment and `_default` paths in the multi-org case
+- configured default-org depsolver non-admin org-member named-environment datestamp-version support is now also pinned
+- configured default-org depsolver non-admin org-member role-expanded missing-role, recursive-role, environment-specific success, explicit-empty environment override, and equivalent-root deduplication are now also pinned on both named-environment and `_default` paths in the multi-org case
+- configured default-org depsolver non-admin org-member named-environment filtered-root no-version detail is now also pinned when environment cookbook constraints exclude every candidate version
+- configured default-org depsolver non-admin org-member named-environment impossible-dependency detail is now also pinned when environment cookbook constraints make a dependency unsatisfiable
+- configured default-org depsolver non-admin org-member named-environment environment-respected root selection is now also pinned for both the older-root fallback and newer-root-allowed branches
+- configured default-org depsolver non-admin org-member named-environment combined environment-plus-dependency constraint success is now also pinned
+- configured default-org depsolver non-admin org-member named-environment conflict and success stability are now also pinned when unrelated environment cookbook constraints are present
+- configured default-org depsolver non-admin org-member named-environment upstream third-graph and conflicting-passing graph selection are now also pinned
+- configured default-org depsolver non-admin org-member conflicting-failing graph detail is now also pinned on both named-environment and `_default` paths in the multi-org case
+- configured default-org depsolver non-admin org-member environment-read auth is now also pinned on both named-environment and `_default` paths in the multi-org case, including role-expanded short-circuiting before role-container auth
+- configured default-org depsolver non-admin org-member cookbook-container read auth is now also pinned on both named-environment and `_default` paths in the multi-org case
+- configured default-org depsolver non-admin org-member roles-container read auth is now also pinned for role-expanded requests on both named-environment and `_default` paths in the multi-org case
+- configured default-org depsolver non-admin org-member missing-role and recursive-role parity are now also pinned for role-expanded requests on both named-environment and `_default` paths in the multi-org case
+- configured default-org depsolver non-admin org-member empty- and omitted-`run_list` success are now also pinned on both named-environment and `_default` paths in the multi-org case
+- configured default-org depsolver non-admin org-member route semantics are now also pinned for trailing-slash acceptance, `405` plus `Allow: POST`, and extra-path `404`s on both named-environment and `_default` paths in the multi-org case
+- configured default-org depsolver non-admin org-member missing-environment `404` is now also pinned on the named-environment path in the multi-org case
+- configured default-org depsolver non-admin org-member malformed-request precedence is now also pinned before environment-read auth on both named-environment and `_default` paths in the multi-org case
+- configured default-org depsolver non-admin org-member malformed-request precedence is now also pinned before named-environment missing-environment lookup in the multi-org case
+- org-scoped depsolver non-admin org-member dependency-metadata shaping and pinned-and-dependent success are now also pinned on both named-environment and `_default` paths
+- org-scoped depsolver non-admin org-member root-form success is now also pinned for recipe-qualified items, equivalent-root deduplication, and pinned equivalent-form selection on both named-environment and `_default` paths
+- org-scoped depsolver non-admin org-member root-failure detail is now also pinned for single missing-root, single no-version-root, and mixed missing-vs-no-version precedence on both named-environment and `_default` paths
+- org-scoped depsolver non-admin org-member plural-root detail is now also pinned for plural missing-root and plural no-version-root shaping on both named-environment and `_default` paths
+- org-scoped depsolver non-admin org-member dependency detail is now also pinned for missing-dependency, later-root attribution, unsatisfied-dependency, and impossible-dependency shaping on both named-environment and `_default` paths
+- org-scoped depsolver non-admin org-member richer conflict detail is now also pinned for transitive conflict, complex dependency, and multi-root conflict shaping on both named-environment and `_default` paths
+- org-scoped depsolver non-admin org-member graph selection is now also pinned for the upstream first graph, pinned-root-no-solution graph, and second graph on both named-environment and `_default` paths
+- org-scoped depsolver non-admin org-member solver mechanics are now also pinned for pessimistic constraints, repeated-root pinned selection and first-label attribution, and circular dependency handling on both named-environment and `_default` paths
+- org-scoped depsolver non-admin org-member named-environment datestamp-version support is now also pinned
+- org-scoped depsolver non-admin org-member role-expanded missing-role, recursive-role, environment-specific success, explicit-empty environment override, and equivalent-root deduplication are now also pinned on both named-environment and `_default` paths
+- org-scoped depsolver non-admin org-member environment-read auth is now also pinned on both named-environment and `_default` paths, including role-expanded short-circuiting before role-container auth
+- org-scoped depsolver non-admin org-member cookbook-container read auth is now also pinned on both named-environment and `_default` paths
+- org-scoped depsolver non-admin org-member roles-container read auth is now also pinned for role-expanded requests on both named-environment and `_default` paths
+- org-scoped depsolver non-admin org-member empty- and omitted-`run_list` success plus route semantics are now also pinned on both named-environment and `_default` paths
+- org-scoped depsolver non-admin org-member missing-environment `404` is now also pinned on the named-environment path
+- org-scoped depsolver non-admin org-member malformed-request precedence is now also pinned before environment-read auth on both named-environment and `_default` paths, and before named-environment missing-environment lookup
+- PostgreSQL-backed cookbook persistence, broader cookbook pedant coverage beyond the current environment-filtered/named-filter/latest/version read-write contract, and deeper operational hardening around provider-backed blob behavior are still pending
 - S3-compatible blob storage remains the target production mode after the compatibility contract settles
 
 ## Milestone 7: Operations and Migration

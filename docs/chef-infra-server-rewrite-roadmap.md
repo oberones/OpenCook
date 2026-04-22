@@ -52,6 +52,76 @@ As of 2026-04-09, OpenCook has moved past pure scaffolding and into the first co
 - depsolver empty-payload invalid-JSON handling is now also explicitly pinned before missing-environment lookup and environment-read auth on both default-org and org-scoped routes, including the `_default` auth cases
 - org-scoped depsolver missing-organization handling is now also explicitly pinned before malformed-request bodies, including invalid JSON, empty payload, trailing JSON, invalid `run_list`, and malformed-item inputs on both named-environment and `_default` paths
 - default-org depsolver ambiguous-organization handling is now also explicitly pinned before malformed-request bodies, including invalid JSON, empty payload, trailing JSON, invalid `run_list`, and malformed-item inputs on both named-environment and `_default` paths
+- configured default-org depsolver resolution is now also explicitly pinned before malformed-request bodies and environment-read auth, and on named-environment routes also before missing-environment lookup, including invalid JSON, empty payload, trailing JSON, invalid `run_list`, and malformed-item inputs
+- configured default-org depsolver resolution now also has explicit multi-org route-semantics coverage for trailing slashes, method-not-allowed with `Allow: POST`, and extra-path `404`s on both named-environment and `_default` paths
+- configured default-org depsolver resolution now also has explicit multi-org environment-read auth parity, including role-expanded short-circuiting before role-container auth on both named-environment and `_default` paths
+- configured default-org depsolver resolution now also has explicit multi-org cookbook-container read auth parity on both named-environment and `_default` paths
+- configured default-org depsolver resolution now also has explicit multi-org roles-container read auth parity for role-expanded requests on both named-environment and `_default` paths
+- configured default-org depsolver resolution now also has explicit multi-org missing-role and recursive-role `400` parity for role-expanded requests on both named-environment and `_default` paths
+- configured default-org depsolver resolution now also has explicit multi-org role-expanded success parity, including environment-specific role run-list selection on named-environment and `_default` paths
+- configured default-org depsolver resolution now also has explicit multi-org explicit-empty environment-specific role run-list parity on named-environment and `_default` paths
+- configured default-org depsolver resolution now also has explicit multi-org role-expanded equivalent-root deduplication parity on named-environment and `_default` paths
+- configured default-org depsolver resolution now also has explicit named-environment missing-environment `404` parity on the resolved default-org route
+- configured default-org depsolver resolution now also has explicit empty-`run_list` success parity on both named-environment and `_default` paths
+- configured default-org depsolver resolution now also has explicit omitted-`run_list` success parity on both named-environment and `_default` paths
+- configured default-org depsolver resolution now also has explicit single missing-root, single no-version-root, and mixed missing-vs-no-version root precedence parity on both named-environment and `_default` paths
+- configured default-org depsolver resolution now also has explicit plural missing-root and plural no-version-root detail parity on both named-environment and `_default` paths
+- configured default-org depsolver resolution now also has explicit named-environment filtered-root no-version detail parity when environment cookbook constraints exclude every candidate version
+- configured default-org depsolver resolution now also has explicit named-environment impossible-dependency detail parity when environment cookbook constraints make a dependency unsatisfiable
+- configured default-org depsolver resolution now also has explicit named-environment environment-respected root-selection parity for both the older-root fallback and newer-root-allowed branches
+- configured default-org depsolver resolution now also has explicit named-environment combined environment-plus-dependency constraint success parity
+- configured default-org depsolver resolution now also has explicit named-environment stability parity showing unrelated environment cookbook constraints do not perturb either conflict detail or successful selection
+- configured default-org depsolver resolution now also has explicit upstream conflicting-failing graph parity on both named-environment and `_default` paths
+- configured default-org depsolver resolution now also has explicit missing-dependency, later-root missing-dependency attribution, unsatisfied-dependency, and impossible-dependency detail parity on both named-environment and `_default` paths
+- configured default-org depsolver resolution now also has explicit transitive-conflict, complex-dependency, and multi-root conflict detail parity on both named-environment and `_default` paths
+- configured default-org depsolver resolution now also has explicit pinned/dependent success and dependency-metadata shaping parity on both named-environment and `_default` paths
+- configured default-org depsolver resolution now also has explicit recipe-qualified success, equivalent-root deduplication, and pinned equivalent-form selection parity on both named-environment and `_default` paths
+- configured default-org depsolver resolution now also has explicit upstream first-graph, pinned-root-no-solution, and second-graph selection parity on both named-environment and `_default` paths
+- configured default-org depsolver resolution now also has explicit pessimistic major/minor and major/minor/patch constraint parity, repeated-root pinned-selection and first-label attribution parity, and circular-dependency parity on both named-environment and `_default` paths
+- configured default-org depsolver resolution now also has explicit named-environment datestamp-version parity
+- configured default-org depsolver resolution now also has explicit non-admin org-member dependency-metadata shaping parity on both named-environment and `_default` paths
+- configured default-org depsolver resolution now also has explicit non-admin org-member pinned-and-dependent success parity on both named-environment and `_default` paths
+- configured default-org depsolver resolution now also has explicit non-admin org-member recipe-qualified success, equivalent-root deduplication, and pinned equivalent-form selection parity on both named-environment and `_default` paths
+- configured default-org depsolver resolution now also has explicit non-admin org-member single missing-root, single no-version-root, and mixed missing-vs-no-version root precedence parity on both named-environment and `_default` paths
+- configured default-org depsolver resolution now also has explicit non-admin org-member plural missing-root and plural no-version-root detail parity on both named-environment and `_default` paths
+- configured default-org depsolver resolution now also has explicit non-admin org-member missing-dependency, later-root missing-dependency attribution, unsatisfied-dependency, and impossible-dependency detail parity on both named-environment and `_default` paths
+- configured default-org depsolver resolution now also has explicit non-admin org-member transitive-conflict, complex-dependency, and multi-root conflict detail parity on both named-environment and `_default` paths
+- configured default-org depsolver resolution now also has explicit non-admin org-member upstream first-graph, pinned-root-no-solution, and second-graph selection parity on both named-environment and `_default` paths
+- configured default-org depsolver resolution now also has explicit non-admin org-member pessimistic major/minor and major/minor/patch constraints, repeated-root pinned selection and first-label attribution, and circular dependency handling parity on both named-environment and `_default` paths
+- configured default-org depsolver resolution now also has explicit non-admin org-member named-environment datestamp-version parity
+- configured default-org depsolver resolution now also has explicit non-admin org-member role-expanded missing-role, recursive-role, environment-specific success, explicit-empty environment override, and equivalent-root deduplication parity on both named-environment and `_default` paths
+- configured default-org depsolver resolution now also has explicit non-admin org-member named-environment filtered-root no-version detail parity when environment cookbook constraints exclude every candidate version
+- configured default-org depsolver resolution now also has explicit non-admin org-member named-environment impossible-dependency detail parity when environment cookbook constraints make a dependency unsatisfiable
+- configured default-org depsolver resolution now also has explicit non-admin org-member named-environment environment-respected root-selection parity for both the older-root fallback and newer-root-allowed branches
+- configured default-org depsolver resolution now also has explicit non-admin org-member named-environment combined environment-plus-dependency constraint success parity
+- configured default-org depsolver resolution now also has explicit non-admin org-member named-environment conflict and success stability parity when unrelated environment cookbook constraints are present
+- configured default-org depsolver resolution now also has explicit non-admin org-member named-environment upstream third-graph and conflicting-passing graph parity
+- configured default-org depsolver resolution now also has explicit non-admin org-member conflicting-failing graph detail parity on both named-environment and `_default` paths
+- configured default-org depsolver resolution now also has explicit non-admin org-member environment-read auth parity on both named-environment and `_default` paths, including role-expanded short-circuiting before role-container auth
+- configured default-org depsolver resolution now also has explicit non-admin org-member cookbook-container read auth parity on both named-environment and `_default` paths in the multi-org case
+- configured default-org depsolver resolution now also has explicit non-admin org-member roles-container read auth parity for role-expanded requests on both named-environment and `_default` paths in the multi-org case
+- configured default-org depsolver resolution now also has explicit non-admin org-member missing-role and recursive-role parity for role-expanded requests on both named-environment and `_default` paths in the multi-org case
+- configured default-org depsolver resolution now also has explicit non-admin org-member empty- and omitted-`run_list` success parity on both named-environment and `_default` paths in the multi-org case
+- configured default-org depsolver resolution now also has explicit non-admin org-member route-semantics parity for trailing-slash acceptance, `405` plus `Allow: POST`, and extra-path `404`s on both named-environment and `_default` paths in the multi-org case
+- configured default-org depsolver resolution now also has explicit non-admin org-member named-environment missing-environment `404` parity
+- configured default-org depsolver resolution now also has explicit non-admin org-member malformed-request precedence parity before environment-read auth on both named-environment and `_default` paths
+- configured default-org depsolver resolution now also has explicit non-admin org-member malformed-request precedence parity before named-environment missing-environment lookup
+- org-scoped depsolver routes now also have explicit non-admin org-member dependency-metadata shaping and pinned-and-dependent success parity on both named-environment and `_default` paths
+- org-scoped depsolver routes now also have explicit non-admin org-member root-form success parity for recipe-qualified items, equivalent-root deduplication, and pinned equivalent-form selection on both named-environment and `_default` paths
+- org-scoped depsolver routes now also have explicit non-admin org-member root-failure detail parity for single missing-root, single no-version-root, and mixed missing-vs-no-version precedence on both named-environment and `_default` paths
+- org-scoped depsolver routes now also have explicit non-admin org-member plural-root detail parity for plural missing-root and plural no-version-root shaping on both named-environment and `_default` paths
+- org-scoped depsolver routes now also have explicit non-admin org-member dependency-detail parity for missing-dependency, later-root attribution, unsatisfied-dependency, and impossible-dependency shaping on both named-environment and `_default` paths
+- org-scoped depsolver routes now also have explicit non-admin org-member richer-conflict detail parity for transitive conflict, complex dependency, and multi-root conflict shaping on both named-environment and `_default` paths
+- org-scoped depsolver routes now also have explicit non-admin org-member graph-selection parity for the upstream first graph, pinned-root-no-solution graph, and second graph on both named-environment and `_default` paths
+- org-scoped depsolver routes now also have explicit non-admin org-member solver-mechanics parity for pessimistic constraints, repeated-root pinned selection and first-label attribution, and circular dependency handling on both named-environment and `_default` paths
+- org-scoped depsolver routes now also have explicit non-admin org-member named-environment datestamp-version parity
+- org-scoped depsolver routes now also have explicit non-admin org-member role-expansion parity for missing-role, recursive-role, environment-specific success, explicit-empty environment override, and equivalent-root deduplication on both named-environment and `_default` paths
+- org-scoped depsolver routes now also have explicit non-admin org-member environment-read auth parity on both named-environment and `_default` paths, including role-expanded short-circuiting before role-container auth
+- org-scoped depsolver routes now also have explicit non-admin org-member cookbook-container read auth parity on both named-environment and `_default` paths
+- org-scoped depsolver routes now also have explicit non-admin org-member roles-container read auth parity for role-expanded requests on both named-environment and `_default` paths
+- org-scoped depsolver routes now also have explicit non-admin org-member empty- and omitted-`run_list` success plus route-semantics parity on both named-environment and `_default` paths
+- org-scoped depsolver routes now also have explicit non-admin org-member missing-environment `404` parity on the named-environment path
+- org-scoped depsolver routes now also have explicit non-admin org-member malformed-request precedence parity before environment-read auth on both named-environment and `_default` paths, and before named-environment missing-environment lookup
 - default-org and explicit-org node routes now resolve against the same org-scoped compatibility state
 - default-org and explicit-org environment routes now resolve against the same org-scoped compatibility state
 - the first role slice is now live with in-memory list/get/head/create/update/delete behavior plus Chef-style run-list and env-run-list normalization/deduplication
@@ -105,7 +175,7 @@ Current focus:
 
 - preserve API-version-sensitive actor key behavior without carrying forward Chef licensing concerns
 - deepen search query translation beyond the current simple compatibility subset and widen object/index coverage further
-- deepen cookbook/blob compatibility beyond the current cookbook write/read/artifact slice, especially the remaining cookbook pedant cases outside the current environment-filtered/named-filter/latest/version/depsolver contract, broader upstream run-list/depsolver semantics, and the remaining deeper provider hardening around S3-compatible object storage behavior
+- deepen cookbook/blob compatibility beyond the current cookbook write/read/artifact slice, especially the remaining cookbook pedant cases outside the current environment-filtered/named-filter/latest/version/depsolver contract plus the remaining deeper provider hardening around S3-compatible object storage behavior
 - replace the in-memory bootstrap layer with PostgreSQL-backed persistence after the contracts stabilize
 
 ## What Exists Upstream
