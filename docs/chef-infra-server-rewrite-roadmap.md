@@ -113,6 +113,7 @@ As of 2026-04-09, OpenCook has moved past pure scaffolding and into the first co
 - org-scoped depsolver routes now also have explicit non-admin org-member dependency-detail parity for missing-dependency, later-root attribution, unsatisfied-dependency, and impossible-dependency shaping on both named-environment and `_default` paths
 - org-scoped depsolver routes now also have explicit non-admin org-member richer-conflict detail parity for transitive conflict, complex dependency, and multi-root conflict shaping on both named-environment and `_default` paths
 - org-scoped depsolver routes now also have explicit non-admin org-member graph-selection parity for the upstream first graph, pinned-root-no-solution graph, and second graph on both named-environment and `_default` paths
+- org-scoped depsolver routes now also have explicit non-admin org-member solver-mechanics parity for pessimistic constraints, repeated-root pinned selection and first-label attribution, and circular dependency handling on both named-environment and `_default` paths
 - default-org and explicit-org node routes now resolve against the same org-scoped compatibility state
 - default-org and explicit-org environment routes now resolve against the same org-scoped compatibility state
 - the first role slice is now live with in-memory list/get/head/create/update/delete behavior plus Chef-style run-list and env-run-list normalization/deduplication
