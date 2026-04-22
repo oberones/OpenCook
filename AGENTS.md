@@ -114,6 +114,7 @@ Implemented so far:
   - configured default-org depsolver non-admin org-member named-environment datestamp-version support is now also pinned
   - configured default-org depsolver non-admin org-member role-expanded missing-role, recursive-role, environment-specific success, explicit-empty environment override, and equivalent-root deduplication are now also pinned on both named-environment and `_default` paths in the multi-org case
   - configured default-org depsolver non-admin org-member named-environment filtered-root no-version detail is now also pinned when environment cookbook constraints exclude every candidate version
+  - configured default-org depsolver non-admin org-member named-environment impossible-dependency detail is now also pinned when environment cookbook constraints make a dependency unsatisfiable
 - the first core object slice for nodes:
   - list
   - get

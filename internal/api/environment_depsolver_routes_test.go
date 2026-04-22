@@ -2063,6 +2063,37 @@ func TestEnvironmentCookbookVersionsUseConfiguredDefaultOrganizationForOrgMember
 	})
 }
 
+func TestEnvironmentCookbookVersionsUseConfiguredDefaultOrganizationForOrgMemberImpossibleDependencyViaEnvironmentConstraint(t *testing.T) {
+	router, state := newConfiguredDefaultOrgDepsolverRouterWithState(t)
+	if err := state.AddUserToGroup("canterlot", "users", "silent-bob"); err != nil {
+		t.Fatalf("AddUserToGroup(silent-bob) error = %v", err)
+	}
+	createConfiguredDefaultOrgEnvironmentForCookbookTests(t, router, "production")
+	updateConfiguredDefaultOrgEnvironmentCookbookConstraints(t, router, "production", map[string]string{
+		"bar": "= 1.0.0",
+	})
+	createConfiguredDefaultOrgCookbookVersion(t, router, "foo", "1.2.3", "", map[string]string{"bar": "> 2.0.0"})
+	createConfiguredDefaultOrgCookbookVersion(t, router, "bar", "1.0.0", "", nil)
+	createConfiguredDefaultOrgCookbookVersion(t, router, "bar", "3.0.0", "", nil)
+
+	req := newSignedJSONRequestAs(t, "silent-bob", http.MethodPost, "/environments/production/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{"foo"},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusPreconditionFailed {
+		t.Fatalf("configured default-org org-member impossible-via-environment status = %d, want %d, body = %s", rec.Code, http.StatusPreconditionFailed, rec.Body.String())
+	}
+
+	payload := decodeJSONMap(t, rec.Body.Bytes())
+	assertUnsatisfiedDepsolverDetail(t, payload, map[string]any{
+		"message":                     "Unable to satisfy constraints on package bar due to solution constraint (foo >= 0.0.0). Solution constraints that may result in a constraint on bar: [(foo = 1.2.3) -> (bar > 2.0.0)]",
+		"unsatisfiable_run_list_item": "(foo >= 0.0.0)",
+		"non_existent_cookbooks":      []string{},
+		"most_constrained_cookbooks":  []string{"bar = 1.0.0 -> []"},
+	})
+}
+
 func TestEnvironmentCookbookVersionsUseConfiguredDefaultOrganizationForImpossibleDependencyViaEnvironmentConstraint(t *testing.T) {
 	router := newConfiguredDefaultOrgDepsolverRouter(t)
 	createConfiguredDefaultOrgEnvironmentForCookbookTests(t, router, "production")
