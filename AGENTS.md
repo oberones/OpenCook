@@ -132,6 +132,7 @@ Implemented so far:
   - org-scoped depsolver non-admin org-member dependency-metadata shaping and pinned-and-dependent success are now also pinned on both named-environment and `_default` paths
   - org-scoped depsolver non-admin org-member root-form success is now also pinned for recipe-qualified items, equivalent-root deduplication, and pinned equivalent-form selection on both named-environment and `_default` paths
   - org-scoped depsolver non-admin org-member root-failure detail is now also pinned for single missing-root, single no-version-root, and mixed missing-vs-no-version precedence on both named-environment and `_default` paths
+  - org-scoped depsolver non-admin org-member plural-root detail is now also pinned for plural missing-root and plural no-version-root shaping on both named-environment and `_default` paths
 - the first core object slice for nodes:
   - list
   - get
