@@ -118,6 +118,7 @@ Implemented so far:
   - configured default-org depsolver non-admin org-member named-environment environment-respected root selection is now also pinned for both the older-root fallback and newer-root-allowed branches
   - configured default-org depsolver non-admin org-member named-environment combined environment-plus-dependency constraint success is now also pinned
   - configured default-org depsolver non-admin org-member named-environment conflict and success stability are now also pinned when unrelated environment cookbook constraints are present
+  - configured default-org depsolver non-admin org-member named-environment upstream third-graph and conflicting-passing graph selection are now also pinned
 - the first core object slice for nodes:
   - list
   - get
