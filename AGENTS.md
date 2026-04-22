@@ -117,6 +117,7 @@ Implemented so far:
   - configured default-org depsolver non-admin org-member named-environment impossible-dependency detail is now also pinned when environment cookbook constraints make a dependency unsatisfiable
   - configured default-org depsolver non-admin org-member named-environment environment-respected root selection is now also pinned for both the older-root fallback and newer-root-allowed branches
   - configured default-org depsolver non-admin org-member named-environment combined environment-plus-dependency constraint success is now also pinned
+  - configured default-org depsolver non-admin org-member named-environment conflict and success stability are now also pinned when unrelated environment cookbook constraints are present
 - the first core object slice for nodes:
   - list
   - get
