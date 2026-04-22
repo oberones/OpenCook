@@ -33,7 +33,7 @@ This roadmap is based on a review of the upstream Chef Infra Server repository a
 
 ## Current Progress Snapshot
 
-As of 2026-04-09, OpenCook has moved past pure scaffolding and into the first compatibility slices:
+As of 2026-04-22, OpenCook has moved past pure scaffolding and into the first compatibility slices:
 
 - Chef request signing verification is implemented in Go and enforced on the first authenticated routes
 - initial user, organization, client, group, container, and ACL bootstrap flows are working in an in-memory compatibility layer
@@ -142,7 +142,8 @@ As of 2026-04-09, OpenCook has moved past pure scaffolding and into the first co
 - node `policy_name` and `policy_group` semantics remain compatibility-safe searchable fields rather than newly enforced foreign keys
 - the first sandbox/blob slice is now live with signed sandbox create/commit flows, absolute checksum upload URLs, and in-memory checksum blob storage
 - the first provider-backed blob seam is now live with backend selection, a filesystem adapter for local dev/test persistence, and S3-compatible request-path blob operations for configured endpoints and static credentials
-- the S3-compatible blob path now has configurable request timeout and retry settings, and transient/provider-auth failures now degrade through the existing blob-unavailable path instead of surfacing as generic internal blob failures
+- the S3-compatible blob path now also has pinned transport/status classification, retry/backoff and `Retry-After` behavior, request-construction coverage for path-style, virtual-hosted, session-token, and TLS-disabled cases, plus config/status validation for malformed endpoints and missing credentials
+- sandbox and cookbook routes now also pin provider-backed `blob_unavailable` degradation for checksum upload/download and checksum-existence failures through the S3-compatible path instead of surfacing generic internal blob failures
 - sandbox commit now enforces upload completeness before marking a sandbox complete, matching the expected Chef-style lifecycle shape
 - the first cookbook slice is now live with `PUT/GET/DELETE /cookbook_artifacts/{name}/{identifier}` plus collection and named-artifact reads on both default-org and explicit-org routes
 - cookbook version create/update/delete behavior is now live on `/cookbooks/{name}/{version}` and `/organizations/{org}/cookbooks/{name}/{version}`
@@ -175,7 +176,7 @@ Current focus:
 
 - preserve API-version-sensitive actor key behavior without carrying forward Chef licensing concerns
 - deepen search query translation beyond the current simple compatibility subset and widen object/index coverage further
-- deepen cookbook/blob compatibility beyond the current cookbook write/read/artifact slice, especially the remaining cookbook pedant cases outside the current environment-filtered/named-filter/latest/version/depsolver contract plus the remaining deeper provider hardening around S3-compatible object storage behavior
+- deepen cookbook/blob compatibility beyond the current cookbook write/read/artifact slice, especially the remaining cookbook pedant cases outside the current environment-filtered/named-filter/latest/version/depsolver contract
 - replace the in-memory bootstrap layer with PostgreSQL-backed persistence after the contracts stabilize
 
 ## What Exists Upstream
@@ -364,7 +365,7 @@ These should become regression tests for OpenCook.
 - Support S3-compatible storage as the primary production mode
 - Provide local dev/test filesystem mode
 - Emulate Bookshelf upload/download contracts, including signed URL behavior expected by clients
-- Current status: provider selection now exists, the filesystem adapter is live for local dev/test persistence, and the S3-compatible path now supports real request-time blob operations for configured endpoints and static credentials, with configurable timeout/retry behavior and blob-unavailable degradation for transient/provider-auth failures
+- Current status: provider selection now exists, the filesystem adapter is live for local dev/test persistence, and the S3-compatible path now supports real request-time blob operations for configured endpoints and static credentials, with pinned status/transport classification, retry and `Retry-After` behavior, request-construction parity for path-style and virtual-hosted flows, malformed-endpoint and missing-credential diagnostics, and sandbox/cookbook `blob_unavailable` degradation on the current provider-backed paths
 
 ### Operations layer
 

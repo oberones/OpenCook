@@ -3,11 +3,17 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"sort"
+	"sync"
 	"testing"
+	"time"
+
+	"github.com/oberones/OpenCook/internal/blob"
+	"github.com/oberones/OpenCook/internal/config"
 )
 
 func TestCookbookArtifactEndpointsCreateReadDownloadAndDelete(t *testing.T) {
@@ -116,6 +122,49 @@ func TestCookbookArtifactEndpointsRejectMissingUploadedChecksum(t *testing.T) {
 	}
 }
 
+func TestCookbookArtifactRoutesReturn503WhenS3BlobCheckerUnavailable(t *testing.T) {
+	store, control := newCookbookRouteTestS3BlobStore(t)
+	router := newTestRouterWithBlob(t, config.Config{
+		ServiceName: "opencook",
+		Environment: "test",
+		AuthSkew:    15 * time.Minute,
+	}, store)
+
+	t.Run("create", func(t *testing.T) {
+		checksum := uploadCookbookChecksum(t, router, []byte("puts 'artifact create unavailable'"))
+		control.setExistsUnavailable(true)
+		defer control.setExistsUnavailable(false)
+
+		req := newSignedJSONRequest(t, http.MethodPut, "/cookbook_artifacts/unavailable-create/1111111111111111111111111111111111111111",
+			mustMarshalSandboxJSON(t, cookbookArtifactPayload("unavailable-create", "1111111111111111111111111111111111111111", "1.2.3", checksum, nil)))
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Fatalf("artifact create status = %d, want %d, body = %s", rec.Code, http.StatusServiceUnavailable, rec.Body.String())
+		}
+		assertCookbookAPIError(t, rec.Body.Bytes(), "blob_unavailable", "blob existence backend is not available")
+	})
+
+	t.Run("repeated put", func(t *testing.T) {
+		checksum := uploadCookbookChecksum(t, router, []byte("puts 'artifact update unavailable'"))
+		createCookbookArtifact(t, router, "unavailable-update", "2222222222222222222222222222222222222222", "1.2.3", checksum, nil)
+
+		control.setExistsUnavailable(true)
+		defer control.setExistsUnavailable(false)
+
+		req := newSignedJSONRequest(t, http.MethodPut, "/cookbook_artifacts/unavailable-update/2222222222222222222222222222222222222222",
+			mustMarshalSandboxJSON(t, cookbookArtifactPayload("unavailable-update", "2222222222222222222222222222222222222222", "1.2.3", checksum, nil)))
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Fatalf("artifact repeated put status = %d, want %d, body = %s", rec.Code, http.StatusServiceUnavailable, rec.Body.String())
+		}
+		assertCookbookAPIError(t, rec.Body.Bytes(), "blob_unavailable", "blob existence backend is not available")
+	})
+}
+
 func TestCookbookArtifactCollectionEndpointsMatchPedantShapes(t *testing.T) {
 	router := newTestRouter(t)
 
@@ -205,6 +254,31 @@ func TestCookbookArtifactCollectionEndpointsMatchPedantShapes(t *testing.T) {
 	}
 }
 
+func TestCookbookArtifactDownloadReturns503WhenS3BlobGetterUnavailable(t *testing.T) {
+	store, control := newCookbookRouteTestS3BlobStore(t)
+	router := newTestRouterWithBlob(t, config.Config{
+		ServiceName: "opencook",
+		Environment: "test",
+		AuthSkew:    15 * time.Minute,
+	}, store)
+
+	checksum := uploadCookbookChecksum(t, router, []byte("puts 'artifact download unavailable'"))
+	createCookbookArtifact(t, router, "artifact-download-unavailable", "3333333333333333333333333333333333333333", "1.2.3", checksum, nil)
+	downloadURL := cookbookArtifactFileURL(t, router, "/cookbook_artifacts/artifact-download-unavailable/3333333333333333333333333333333333333333")
+
+	control.setGetUnavailable(true)
+	defer control.setGetUnavailable(false)
+
+	downloadReq := httptest.NewRequest(http.MethodGet, downloadURL, nil)
+	downloadRec := httptest.NewRecorder()
+	router.ServeHTTP(downloadRec, downloadReq)
+
+	if downloadRec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("artifact download status = %d, want %d, body = %s", downloadRec.Code, http.StatusServiceUnavailable, downloadRec.Body.String())
+	}
+	assertCookbookAPIError(t, downloadRec.Body.Bytes(), "blob_unavailable", "blob download backend is not available")
+}
+
 func TestCookbookArtifactEndpointsSupportAPIV2AllFilesReadShape(t *testing.T) {
 	router := newTestRouter(t)
 
@@ -259,6 +333,75 @@ func TestCookbookArtifactEndpointsSupportAPIV2AllFilesReadShape(t *testing.T) {
 	if !ok || recipes["demo::default"] != "" {
 		t.Fatalf("v2 metadata.recipes = %v, want default recipe entry", metadata["recipes"])
 	}
+}
+
+func TestCookbookVersionRoutesReturn503WhenS3BlobCheckerUnavailable(t *testing.T) {
+	store, control := newCookbookRouteTestS3BlobStore(t)
+	router := newTestRouterWithBlob(t, config.Config{
+		ServiceName: "opencook",
+		Environment: "test",
+		AuthSkew:    15 * time.Minute,
+	}, store)
+
+	t.Run("create", func(t *testing.T) {
+		checksum := uploadCookbookChecksum(t, router, []byte("puts 'cookbook create unavailable'"))
+		control.setExistsUnavailable(true)
+		defer control.setExistsUnavailable(false)
+
+		req := newSignedJSONRequest(t, http.MethodPut, "/cookbooks/unavailable-create/1.2.3",
+			mustMarshalSandboxJSON(t, cookbookVersionPayload("unavailable-create", "1.2.3", checksum, nil)))
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Fatalf("cookbook create status = %d, want %d, body = %s", rec.Code, http.StatusServiceUnavailable, rec.Body.String())
+		}
+		assertCookbookAPIError(t, rec.Body.Bytes(), "blob_unavailable", "blob existence backend is not available")
+	})
+
+	t.Run("update", func(t *testing.T) {
+		originalChecksum := uploadCookbookChecksum(t, router, []byte("puts 'cookbook existing body'"))
+		replacementChecksum := uploadCookbookChecksum(t, router, []byte("puts 'cookbook replacement body'"))
+		createCookbookVersion(t, router, "unavailable-update", "1.2.3", originalChecksum, nil)
+
+		control.setExistsUnavailable(true)
+		defer control.setExistsUnavailable(false)
+
+		req := newSignedJSONRequest(t, http.MethodPut, "/cookbooks/unavailable-update/1.2.3",
+			mustMarshalSandboxJSON(t, cookbookVersionPayload("unavailable-update", "1.2.3", replacementChecksum, nil)))
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Fatalf("cookbook update status = %d, want %d, body = %s", rec.Code, http.StatusServiceUnavailable, rec.Body.String())
+		}
+		assertCookbookAPIError(t, rec.Body.Bytes(), "blob_unavailable", "blob existence backend is not available")
+	})
+}
+
+func TestCookbookDownloadReturns503WhenS3BlobGetterUnavailable(t *testing.T) {
+	store, control := newCookbookRouteTestS3BlobStore(t)
+	router := newTestRouterWithBlob(t, config.Config{
+		ServiceName: "opencook",
+		Environment: "test",
+		AuthSkew:    15 * time.Minute,
+	}, store)
+
+	checksum := uploadCookbookChecksum(t, router, []byte("puts 'cookbook download unavailable'"))
+	createCookbookVersion(t, router, "download-unavailable", "1.2.3", checksum, nil)
+	downloadURL := cookbookFileURL(t, router, "/cookbooks/download-unavailable/1.2.3")
+
+	control.setGetUnavailable(true)
+	defer control.setGetUnavailable(false)
+
+	downloadReq := httptest.NewRequest(http.MethodGet, downloadURL, nil)
+	downloadRec := httptest.NewRecorder()
+	router.ServeHTTP(downloadRec, downloadReq)
+
+	if downloadRec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("cookbook download status = %d, want %d, body = %s", downloadRec.Code, http.StatusServiceUnavailable, downloadRec.Body.String())
+	}
+	assertCookbookAPIError(t, downloadRec.Body.Bytes(), "blob_unavailable", "blob download backend is not available")
 }
 
 func TestCookbookArtifactCreateValidationAndVersionParity(t *testing.T) {
@@ -3149,6 +3292,21 @@ func assertCookbookArtifactStringError(t *testing.T, body []byte, want string) {
 	}
 }
 
+func assertCookbookAPIError(t *testing.T, body []byte, wantError, wantMessage string) {
+	t.Helper()
+
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("json.Unmarshal(api error payload) error = %v", err)
+	}
+	if got := payload["error"]; got != wantError {
+		t.Fatalf("error = %v, want %q", got, wantError)
+	}
+	if got := payload["message"]; got != wantMessage {
+		t.Fatalf("message = %v, want %q", got, wantMessage)
+	}
+}
+
 func assertCookbookErrorList(t *testing.T, body []byte, want []string) {
 	t.Helper()
 
@@ -3190,6 +3348,94 @@ func cookbookVersionListForName(t *testing.T, payload map[string]any, name strin
 		t.Fatalf("payload[%q].versions = %T, want []any (%v)", name, rawVersions, cookbookEntry)
 	}
 	return versions
+}
+
+type cookbookRouteTestS3BlobControl struct {
+	mu                sync.Mutex
+	objects           map[string][]byte
+	existsUnavailable bool
+	getUnavailable    bool
+}
+
+func (c *cookbookRouteTestS3BlobControl) setExistsUnavailable(v bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.existsUnavailable = v
+}
+
+func (c *cookbookRouteTestS3BlobControl) setGetUnavailable(v bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.getUnavailable = v
+}
+
+func newCookbookRouteTestS3BlobStore(t *testing.T) (*blob.S3CompatibleStore, *cookbookRouteTestS3BlobControl) {
+	t.Helper()
+
+	control := &cookbookRouteTestS3BlobControl{
+		objects: map[string][]byte{},
+	}
+
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		control.mu.Lock()
+		defer control.mu.Unlock()
+
+		switch r.Method {
+		case http.MethodPut:
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Errorf("ReadAll() error = %v", err)
+				return testRoundTripResponse(r, http.StatusInternalServerError, ""), nil
+			}
+			control.objects[r.URL.Path] = body
+			return testRoundTripResponse(r, http.StatusOK, ""), nil
+		case http.MethodHead:
+			if control.existsUnavailable {
+				return testRoundTripResponse(r, http.StatusForbidden, ""), nil
+			}
+			if _, ok := control.objects[r.URL.Path]; !ok {
+				return testRoundTripResponse(r, http.StatusNotFound, ""), nil
+			}
+			return testRoundTripResponse(r, http.StatusOK, ""), nil
+		case http.MethodGet:
+			if control.getUnavailable {
+				return testRoundTripResponse(r, http.StatusForbidden, ""), nil
+			}
+			body, ok := control.objects[r.URL.Path]
+			if !ok {
+				return testRoundTripResponse(r, http.StatusNotFound, ""), nil
+			}
+			return testRoundTripResponse(r, http.StatusOK, string(body)), nil
+		case http.MethodDelete:
+			if _, ok := control.objects[r.URL.Path]; !ok {
+				return testRoundTripResponse(r, http.StatusNotFound, ""), nil
+			}
+			delete(control.objects, r.URL.Path)
+			return testRoundTripResponse(r, http.StatusNoContent, ""), nil
+		default:
+			return testRoundTripResponse(r, http.StatusMethodNotAllowed, ""), nil
+		}
+	})}
+
+	store, err := blob.NewS3CompatibleStore(blob.S3CompatibleConfig{
+		StorageURL:     "s3://chef-bucket/checksums",
+		Endpoint:       "http://s3.test",
+		Region:         "us-east-1",
+		ForcePathStyle: true,
+		AccessKeyID:    "access-key",
+		SecretKey:      "secret-key",
+		SessionToken:   "session-token",
+		HTTPClient:     client,
+		MaxRetries:     0,
+		Now: func() time.Time {
+			return time.Date(2026, 4, 7, 12, 0, 0, 0, time.UTC)
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewS3CompatibleStore() error = %v", err)
+	}
+
+	return store, control
 }
 
 func createCookbookVersionWithFiles(t *testing.T, router http.Handler, name, version string, files []map[string]any) {
