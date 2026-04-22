@@ -5455,6 +5455,58 @@ func TestOrganizationEnvironmentCookbookVersionsForOrgMemberSolverMechanics(t *t
 	})
 }
 
+func TestOrganizationEnvironmentCookbookVersionsForOrgMemberDatestampVersions(t *testing.T) {
+	router, state := newSearchTestRouterWithAuthorizer(t, nil)
+	createOrgForTest(t, router, "canterlot")
+	if err := state.AddUserToGroup("canterlot", "users", "silent-bob"); err != nil {
+		t.Fatalf("AddUserToGroup(silent-bob) error = %v", err)
+	}
+	if _, err := state.CreateEnvironment("canterlot", bootstrap.CreateEnvironmentInput{
+		Payload: map[string]any{
+			"name": "datestamp-env",
+		},
+		Creator: authn.Principal{Type: "user", Name: "pivotal"},
+	}); err != nil {
+		t.Fatalf("CreateEnvironment(datestamp-env) error = %v", err)
+	}
+
+	body := mustMarshalSandboxJSON(t, cookbookVersionPayload("datestamp", "1.2.20130730201745", "", nil))
+	createReq := newSignedJSONRequestAs(t, "pivotal", http.MethodPut, "/organizations/canterlot/cookbooks/datestamp/1.2.20130730201745", body)
+	createRec := httptest.NewRecorder()
+	router.ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("create datestamp cookbook status = %d, want %d, body = %s", createRec.Code, http.StatusCreated, createRec.Body.String())
+	}
+
+	updateBody := mustMarshalSandboxJSON(t, map[string]any{
+		"name":                "datestamp-env",
+		"json_class":          "Chef::Environment",
+		"chef_type":           "environment",
+		"description":         "",
+		"cookbook_versions":   map[string]string{"datestamp": ">= 1.2.20130730200000"},
+		"default_attributes":  map[string]any{},
+		"override_attributes": map[string]any{},
+	})
+	updateReq := newSignedJSONRequestAs(t, "pivotal", http.MethodPut, "/organizations/canterlot/environments/datestamp-env", updateBody)
+	updateRec := httptest.NewRecorder()
+	router.ServeHTTP(updateRec, updateReq)
+	if updateRec.Code != http.StatusOK {
+		t.Fatalf("update datestamp environment constraints status = %d, want %d, body = %s", updateRec.Code, http.StatusOK, updateRec.Body.String())
+	}
+
+	req := newSignedJSONRequestAs(t, "silent-bob", http.MethodPost, "/organizations/canterlot/environments/datestamp-env/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{"datestamp"},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("org-scoped org-member datestamp status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	payload := decodeJSONMap(t, rec.Body.Bytes())
+	assertCookbookVersionBody(t, payload, "datestamp", "1.2.20130730201745")
+}
+
 func TestEnvironmentCookbookVersionsUseConfiguredDefaultOrganizationForOrgMemberRootFormSuccess(t *testing.T) {
 	newOrgMemberRouter := func(t *testing.T) http.Handler {
 		t.Helper()
