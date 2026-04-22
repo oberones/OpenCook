@@ -2094,6 +2094,70 @@ func TestEnvironmentCookbookVersionsUseConfiguredDefaultOrganizationForOrgMember
 	})
 }
 
+func TestEnvironmentCookbookVersionsUseConfiguredDefaultOrganizationForOrgMemberEnvironmentRespectedRootSelection(t *testing.T) {
+	t.Run("older_root_fallback", func(t *testing.T) {
+		router, state := newConfiguredDefaultOrgDepsolverRouterWithState(t)
+		if err := state.AddUserToGroup("canterlot", "users", "silent-bob"); err != nil {
+			t.Fatalf("AddUserToGroup(silent-bob) error = %v", err)
+		}
+		createConfiguredDefaultOrgEnvironmentForCookbookTests(t, router, "production")
+		updateConfiguredDefaultOrgEnvironmentCookbookConstraints(t, router, "production", map[string]string{
+			"bar": "= 1.0.0",
+		})
+		createConfiguredDefaultOrgCookbookVersion(t, router, "foo", "1.2.3", "", map[string]string{"bar": "> 2.0.0"})
+		createConfiguredDefaultOrgCookbookVersion(t, router, "foo", "1.0.0", "", map[string]string{"bar": "= 1.0.0"})
+		createConfiguredDefaultOrgCookbookVersion(t, router, "bar", "1.0.0", "", nil)
+		createConfiguredDefaultOrgCookbookVersion(t, router, "bar", "3.0.0", "", nil)
+
+		req := newSignedJSONRequestAs(t, "silent-bob", http.MethodPost, "/environments/production/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+			"run_list": []any{"foo"},
+		}))
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("configured default-org org-member environment-respected root selection status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+		}
+
+		payload := decodeJSONMap(t, rec.Body.Bytes())
+		if len(payload) != 2 {
+			t.Fatalf("len(payload) = %d, want 2 (%v)", len(payload), payload)
+		}
+		assertCookbookVersionBody(t, payload, "foo", "1.0.0")
+		assertCookbookVersionBody(t, payload, "bar", "1.0.0")
+	})
+
+	t.Run("newer_root_allowed", func(t *testing.T) {
+		router, state := newConfiguredDefaultOrgDepsolverRouterWithState(t)
+		if err := state.AddUserToGroup("canterlot", "users", "silent-bob"); err != nil {
+			t.Fatalf("AddUserToGroup(silent-bob) error = %v", err)
+		}
+		createConfiguredDefaultOrgEnvironmentForCookbookTests(t, router, "production")
+		updateConfiguredDefaultOrgEnvironmentCookbookConstraints(t, router, "production", map[string]string{
+			"bar": "> 1.1.0",
+		})
+		createConfiguredDefaultOrgCookbookVersion(t, router, "foo", "1.2.3", "", map[string]string{"bar": "> 2.0.0"})
+		createConfiguredDefaultOrgCookbookVersion(t, router, "foo", "1.0.0", "", map[string]string{"bar": "= 1.0.0"})
+		createConfiguredDefaultOrgCookbookVersion(t, router, "bar", "1.0.0", "", nil)
+		createConfiguredDefaultOrgCookbookVersion(t, router, "bar", "3.0.0", "", nil)
+
+		req := newSignedJSONRequestAs(t, "silent-bob", http.MethodPost, "/environments/production/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+			"run_list": []any{"foo"},
+		}))
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("configured default-org org-member environment-respected newer-root status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+		}
+
+		payload := decodeJSONMap(t, rec.Body.Bytes())
+		if len(payload) != 2 {
+			t.Fatalf("len(payload) = %d, want 2 (%v)", len(payload), payload)
+		}
+		assertCookbookVersionBody(t, payload, "foo", "1.2.3")
+		assertCookbookVersionBody(t, payload, "bar", "3.0.0")
+	})
+}
+
 func TestEnvironmentCookbookVersionsUseConfiguredDefaultOrganizationForImpossibleDependencyViaEnvironmentConstraint(t *testing.T) {
 	router := newConfiguredDefaultOrgDepsolverRouter(t)
 	createConfiguredDefaultOrgEnvironmentForCookbookTests(t, router, "production")
