@@ -107,6 +107,7 @@ As of 2026-04-09, OpenCook has moved past pure scaffolding and into the first co
 - configured default-org depsolver resolution now also has explicit non-admin org-member malformed-request precedence parity before environment-read auth on both named-environment and `_default` paths
 - configured default-org depsolver resolution now also has explicit non-admin org-member malformed-request precedence parity before named-environment missing-environment lookup
 - org-scoped depsolver routes now also have explicit non-admin org-member dependency-metadata shaping and pinned-and-dependent success parity on both named-environment and `_default` paths
+- org-scoped depsolver routes now also have explicit non-admin org-member root-form success parity for recipe-qualified items, equivalent-root deduplication, and pinned equivalent-form selection on both named-environment and `_default` paths
 - default-org and explicit-org node routes now resolve against the same org-scoped compatibility state
 - default-org and explicit-org environment routes now resolve against the same org-scoped compatibility state
 - the first role slice is now live with in-memory list/get/head/create/update/delete behavior plus Chef-style run-list and env-run-list normalization/deduplication

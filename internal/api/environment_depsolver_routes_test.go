@@ -4482,6 +4482,124 @@ func TestOrganizationEnvironmentCookbookVersionsForOrgMemberPinnedAndDependentSu
 	}
 }
 
+func TestOrganizationEnvironmentCookbookVersionsForOrgMemberRootFormSuccess(t *testing.T) {
+	newOrgMemberRouter := func(t *testing.T) http.Handler {
+		t.Helper()
+
+		router, state := newSearchTestRouterWithAuthorizer(t, nil)
+		createOrgForTest(t, router, "canterlot")
+		if err := state.AddUserToGroup("canterlot", "users", "silent-bob"); err != nil {
+			t.Fatalf("AddUserToGroup(silent-bob) error = %v", err)
+		}
+		if _, err := state.CreateEnvironment("canterlot", bootstrap.CreateEnvironmentInput{
+			Payload: map[string]any{
+				"name": "production",
+			},
+			Creator: authn.Principal{Type: "user", Name: "pivotal"},
+		}); err != nil {
+			t.Fatalf("CreateEnvironment(production) error = %v", err)
+		}
+		return router
+	}
+
+	createCookbookInOrganization := func(t *testing.T, router http.Handler, name, version string, dependencies map[string]string) {
+		t.Helper()
+
+		body := mustMarshalSandboxJSON(t, cookbookVersionPayload(name, version, "", dependencies))
+		req := newSignedJSONRequestAs(t, "pivotal", http.MethodPut, "/organizations/canterlot/cookbooks/"+name+"/"+version, body)
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("create cookbook %s-%s status = %d, want %d, body = %s", name, version, rec.Code, http.StatusCreated, rec.Body.String())
+		}
+	}
+
+	routes := []struct {
+		name string
+		path string
+	}{
+		{name: "named_environment", path: "/organizations/canterlot/environments/production/cookbook_versions"},
+		{name: "default_environment", path: "/organizations/canterlot/environments/_default/cookbook_versions"},
+	}
+
+	t.Run("qualified_and_versioned_recipe_items", func(t *testing.T) {
+		router := newOrgMemberRouter(t)
+		createCookbookInOrganization(t, router, "foo", "1.0.0", nil)
+		createCookbookInOrganization(t, router, "foo", "2.0.0", nil)
+		createCookbookInOrganization(t, router, "bar", "1.0.0", nil)
+
+		for _, route := range routes {
+			t.Run(route.name, func(t *testing.T) {
+				req := newSignedJSONRequestAs(t, "silent-bob", http.MethodPost, route.path, mustMarshalSandboxJSON(t, map[string]any{
+					"run_list": []any{"foo::default", "recipe[bar::install]", "recipe[foo::server@1.0.0]"},
+				}))
+				rec := httptest.NewRecorder()
+				router.ServeHTTP(rec, req)
+				if rec.Code != http.StatusOK {
+					t.Fatalf("%s org-scoped org-member qualified run_list status = %d, want %d, body = %s", route.name, rec.Code, http.StatusOK, rec.Body.String())
+				}
+
+				payload := decodeJSONMap(t, rec.Body.Bytes())
+				assertCookbookVersionBody(t, payload, "foo", "1.0.0")
+				assertCookbookVersionBody(t, payload, "bar", "1.0.0")
+			})
+		}
+	})
+
+	t.Run("equivalent_run_list_forms", func(t *testing.T) {
+		router := newOrgMemberRouter(t)
+		createCookbookInOrganization(t, router, "foo", "1.0.0", map[string]string{"bar": "= 1.0.0"})
+		createCookbookInOrganization(t, router, "bar", "1.0.0", nil)
+
+		for _, route := range routes {
+			t.Run(route.name, func(t *testing.T) {
+				req := newSignedJSONRequestAs(t, "silent-bob", http.MethodPost, route.path, mustMarshalSandboxJSON(t, map[string]any{
+					"run_list": []any{"foo", "recipe[foo]", "foo::default", "recipe[foo::default]"},
+				}))
+				rec := httptest.NewRecorder()
+				router.ServeHTTP(rec, req)
+				if rec.Code != http.StatusOK {
+					t.Fatalf("%s org-scoped org-member equivalent run_list forms status = %d, want %d, body = %s", route.name, rec.Code, http.StatusOK, rec.Body.String())
+				}
+
+				payload := decodeJSONMap(t, rec.Body.Bytes())
+				if len(payload) != 2 {
+					t.Fatalf("%s len(payload) = %d, want 2 (%v)", route.name, len(payload), payload)
+				}
+				assertCookbookVersionBody(t, payload, "foo", "1.0.0")
+				assertCookbookVersionBody(t, payload, "bar", "1.0.0")
+			})
+		}
+	})
+
+	t.Run("pinned_equivalent_forms", func(t *testing.T) {
+		router := newOrgMemberRouter(t)
+		createCookbookInOrganization(t, router, "foo", "1.0.0", nil)
+		createCookbookInOrganization(t, router, "foo", "2.0.0", map[string]string{"bar": "= 2.0.0"})
+		createCookbookInOrganization(t, router, "bar", "2.0.0", nil)
+
+		for _, route := range routes {
+			t.Run(route.name, func(t *testing.T) {
+				req := newSignedJSONRequestAs(t, "silent-bob", http.MethodPost, route.path, mustMarshalSandboxJSON(t, map[string]any{
+					"run_list": []any{"foo", "recipe[foo::default@2.0.0]"},
+				}))
+				rec := httptest.NewRecorder()
+				router.ServeHTTP(rec, req)
+				if rec.Code != http.StatusOK {
+					t.Fatalf("%s org-scoped org-member pinned equivalent run_list form status = %d, want %d, body = %s", route.name, rec.Code, http.StatusOK, rec.Body.String())
+				}
+
+				payload := decodeJSONMap(t, rec.Body.Bytes())
+				if len(payload) != 2 {
+					t.Fatalf("%s len(payload) = %d, want 2 (%v)", route.name, len(payload), payload)
+				}
+				assertCookbookVersionBody(t, payload, "foo", "2.0.0")
+				assertCookbookVersionBody(t, payload, "bar", "2.0.0")
+			})
+		}
+	})
+}
+
 func TestEnvironmentCookbookVersionsUseConfiguredDefaultOrganizationForOrgMemberRootFormSuccess(t *testing.T) {
 	newOrgMemberRouter := func(t *testing.T) http.Handler {
 		t.Helper()
