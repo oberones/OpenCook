@@ -137,6 +137,7 @@ Implemented so far:
   - org-scoped depsolver non-admin org-member richer conflict detail is now also pinned for transitive conflict, complex dependency, and multi-root conflict shaping on both named-environment and `_default` paths
   - org-scoped depsolver non-admin org-member graph selection is now also pinned for the upstream first graph, pinned-root-no-solution graph, and second graph on both named-environment and `_default` paths
   - org-scoped depsolver non-admin org-member solver mechanics are now also pinned for pessimistic constraints, repeated-root pinned selection and first-label attribution, and circular dependency handling on both named-environment and `_default` paths
+  - org-scoped depsolver non-admin org-member named-environment datestamp-version support is now also pinned
 - the first core object slice for nodes:
   - list
   - get
