@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -402,6 +403,342 @@ func TestCookbookDownloadReturns503WhenS3BlobGetterUnavailable(t *testing.T) {
 		t.Fatalf("cookbook download status = %d, want %d, body = %s", downloadRec.Code, http.StatusServiceUnavailable, downloadRec.Body.String())
 	}
 	assertCookbookAPIError(t, downloadRec.Body.Bytes(), "blob_unavailable", "blob download backend is not available")
+}
+
+func TestOrganizationCookbookArtifactBlobLinkedParity(t *testing.T) {
+	orgArtifactPath := func(name string, extra ...string) string {
+		path := "/organizations/ponyville/cookbook_artifacts/" + name
+		for _, segment := range extra {
+			path += "/" + segment
+		}
+		return path
+	}
+
+	t.Run("missing_uploaded_checksum", func(t *testing.T) {
+		router := newTestRouter(t)
+
+		body := mustMarshalSandboxJSON(t, cookbookArtifactPayload("demo", "1111111111111111111111111111111111111111", "1.2.3", "8288b67da0793b5abec709d6226e6b73", nil))
+		req := newSignedJSONRequest(t, http.MethodPut, orgArtifactPath("demo", "1111111111111111111111111111111111111111"), body)
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("org-scoped missing checksum status = %d, want %d, body = %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+		}
+
+		var payload map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+			t.Fatalf("json.Unmarshal(org-scoped missing checksum) error = %v", err)
+		}
+		errors := payload["error"].([]any)
+		if len(errors) != 1 || errors[0] != "Manifest has a checksum that hasn't been uploaded." {
+			t.Fatalf("errors = %v, want missing checksum validation", errors)
+		}
+	})
+
+	t.Run("normal_user_read_and_signed_recipe_download", func(t *testing.T) {
+		router := newTestRouter(t)
+
+		checksum := uploadCookbookChecksum(t, router, []byte("puts 'hello org artifact normal user'"))
+		createOrgCookbookArtifact(t, router, "ponyville", "demo", "1111111111111111111111111111111111111111", "1.2.3", checksum, nil)
+
+		getReq := newSignedJSONRequestAs(t, "normal-user", http.MethodGet, orgArtifactPath("demo", "1111111111111111111111111111111111111111"), nil)
+		getRec := httptest.NewRecorder()
+		router.ServeHTTP(getRec, getReq)
+		if getRec.Code != http.StatusOK {
+			t.Fatalf("org-scoped normal user get status = %d, want %d, body = %s", getRec.Code, http.StatusOK, getRec.Body.String())
+		}
+
+		var payload map[string]any
+		if err := json.Unmarshal(getRec.Body.Bytes(), &payload); err != nil {
+			t.Fatalf("json.Unmarshal(org-scoped normal user artifact get) error = %v", err)
+		}
+		rawRecipes, ok := payload["recipes"].([]any)
+		if !ok || len(rawRecipes) != 1 {
+			t.Fatalf("recipes = %T/%v, want single recipe entry", payload["recipes"], payload["recipes"])
+		}
+		recipe, ok := rawRecipes[0].(map[string]any)
+		if !ok {
+			t.Fatalf("recipe entry = %T, want map[string]any", rawRecipes[0])
+		}
+		downloadURL, ok := recipe["url"].(string)
+		if !ok || downloadURL == "" {
+			t.Fatalf("recipe url = %T/%v, want non-empty string", recipe["url"], recipe["url"])
+		}
+
+		downloadReq := httptest.NewRequest(http.MethodGet, downloadURL, nil)
+		downloadRec := httptest.NewRecorder()
+		router.ServeHTTP(downloadRec, downloadReq)
+		if downloadRec.Code != http.StatusOK {
+			t.Fatalf("org-scoped recipe download status = %d, want %d, body = %s", downloadRec.Code, http.StatusOK, downloadRec.Body.String())
+		}
+		if downloadRec.Body.String() != "puts 'hello org artifact normal user'" {
+			t.Fatalf("org-scoped recipe download body = %q, want recipe contents", downloadRec.Body.String())
+		}
+	})
+
+	t.Run("s3_blob_checker_unavailable", func(t *testing.T) {
+		store, control := newCookbookRouteTestS3BlobStore(t)
+		router := newTestRouterWithBlob(t, config.Config{
+			ServiceName: "opencook",
+			Environment: "test",
+			AuthSkew:    15 * time.Minute,
+		}, store)
+
+		t.Run("create", func(t *testing.T) {
+			checksum := uploadCookbookChecksum(t, router, []byte("puts 'org artifact create unavailable'"))
+			control.setExistsUnavailable(true)
+			defer control.setExistsUnavailable(false)
+
+			req := newSignedJSONRequest(t, http.MethodPut, orgArtifactPath("unavailable-create", "1111111111111111111111111111111111111111"),
+				mustMarshalSandboxJSON(t, cookbookArtifactPayload("unavailable-create", "1111111111111111111111111111111111111111", "1.2.3", checksum, nil)))
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusServiceUnavailable {
+				t.Fatalf("org-scoped artifact create status = %d, want %d, body = %s", rec.Code, http.StatusServiceUnavailable, rec.Body.String())
+			}
+			assertCookbookAPIError(t, rec.Body.Bytes(), "blob_unavailable", "blob existence backend is not available")
+		})
+
+		t.Run("repeated_put", func(t *testing.T) {
+			checksum := uploadCookbookChecksum(t, router, []byte("puts 'org artifact update unavailable'"))
+			createOrgCookbookArtifact(t, router, "ponyville", "unavailable-update", "2222222222222222222222222222222222222222", "1.2.3", checksum, nil)
+
+			control.setExistsUnavailable(true)
+			defer control.setExistsUnavailable(false)
+
+			req := newSignedJSONRequest(t, http.MethodPut, orgArtifactPath("unavailable-update", "2222222222222222222222222222222222222222"),
+				mustMarshalSandboxJSON(t, cookbookArtifactPayload("unavailable-update", "2222222222222222222222222222222222222222", "1.2.3", checksum, nil)))
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusServiceUnavailable {
+				t.Fatalf("org-scoped artifact repeated put status = %d, want %d, body = %s", rec.Code, http.StatusServiceUnavailable, rec.Body.String())
+			}
+			assertCookbookAPIError(t, rec.Body.Bytes(), "blob_unavailable", "blob existence backend is not available")
+		})
+	})
+
+	t.Run("s3_blob_getter_unavailable", func(t *testing.T) {
+		store, control := newCookbookRouteTestS3BlobStore(t)
+		router := newTestRouterWithBlob(t, config.Config{
+			ServiceName: "opencook",
+			Environment: "test",
+			AuthSkew:    15 * time.Minute,
+		}, store)
+
+		checksum := uploadCookbookChecksum(t, router, []byte("puts 'org artifact download unavailable'"))
+		createOrgCookbookArtifact(t, router, "ponyville", "artifact-download-unavailable", "3333333333333333333333333333333333333333", "1.2.3", checksum, nil)
+		downloadURL := cookbookArtifactFileURL(t, router, orgArtifactPath("artifact-download-unavailable", "3333333333333333333333333333333333333333"))
+
+		control.setGetUnavailable(true)
+		defer control.setGetUnavailable(false)
+
+		downloadReq := httptest.NewRequest(http.MethodGet, downloadURL, nil)
+		downloadRec := httptest.NewRecorder()
+		router.ServeHTTP(downloadRec, downloadReq)
+
+		if downloadRec.Code != http.StatusServiceUnavailable {
+			t.Fatalf("org-scoped artifact download status = %d, want %d, body = %s", downloadRec.Code, http.StatusServiceUnavailable, downloadRec.Body.String())
+		}
+		assertCookbookAPIError(t, downloadRec.Body.Bytes(), "blob_unavailable", "blob download backend is not available")
+	})
+
+	t.Run("delete_cleanup_preserves_shared_checksums", func(t *testing.T) {
+		router := newTestRouter(t)
+		orgCookbookPath := func(name string, extra ...string) string {
+			path := "/organizations/ponyville/cookbooks/" + name
+			for _, segment := range extra {
+				path += "/" + segment
+			}
+			return path
+		}
+
+		sharedChecksum := uploadCookbookChecksum(t, router, []byte("puts 'shared body'"))
+		uniqueChecksum := uploadCookbookChecksum(t, router, []byte("puts 'unique body'"))
+
+		createOrgCookbookVersion(t, router, "ponyville", "shared-demo", "1.0.0", sharedChecksum, nil)
+		createOrgCookbookArtifact(t, router, "ponyville", "shared-artifact", "1111111111111111111111111111111111111111", "1.0.0", sharedChecksum, nil)
+		createOrgCookbookArtifact(t, router, "ponyville", "unique-artifact", "2222222222222222222222222222222222222222", "1.0.0", uniqueChecksum, nil)
+
+		sharedURL := cookbookFileURL(t, router, orgCookbookPath("shared-demo", "1.0.0"))
+		uniqueURL := cookbookArtifactFileURL(t, router, orgArtifactPath("unique-artifact", "2222222222222222222222222222222222222222"))
+
+		deleteUniqueReq := newSignedJSONRequest(t, http.MethodDelete, orgArtifactPath("unique-artifact", "2222222222222222222222222222222222222222"), nil)
+		deleteUniqueRec := httptest.NewRecorder()
+		router.ServeHTTP(deleteUniqueRec, deleteUniqueReq)
+		if deleteUniqueRec.Code != http.StatusOK {
+			t.Fatalf("org-scoped delete unique artifact status = %d, want %d, body = %s", deleteUniqueRec.Code, http.StatusOK, deleteUniqueRec.Body.String())
+		}
+		assertBlobDownloadStatus(t, router, uniqueURL, http.StatusNotFound)
+
+		deleteSharedArtifactReq := newSignedJSONRequest(t, http.MethodDelete, orgArtifactPath("shared-artifact", "1111111111111111111111111111111111111111"), nil)
+		deleteSharedArtifactRec := httptest.NewRecorder()
+		router.ServeHTTP(deleteSharedArtifactRec, deleteSharedArtifactReq)
+		if deleteSharedArtifactRec.Code != http.StatusOK {
+			t.Fatalf("org-scoped delete shared artifact status = %d, want %d, body = %s", deleteSharedArtifactRec.Code, http.StatusOK, deleteSharedArtifactRec.Body.String())
+		}
+		assertBlobDownloadStatus(t, router, sharedURL, http.StatusOK)
+
+		deleteCookbookReq := newSignedJSONRequest(t, http.MethodDelete, orgCookbookPath("shared-demo", "1.0.0"), nil)
+		deleteCookbookRec := httptest.NewRecorder()
+		router.ServeHTTP(deleteCookbookRec, deleteCookbookReq)
+		if deleteCookbookRec.Code != http.StatusOK {
+			t.Fatalf("org-scoped delete shared cookbook status = %d, want %d, body = %s", deleteCookbookRec.Code, http.StatusOK, deleteCookbookRec.Body.String())
+		}
+		assertBlobDownloadStatus(t, router, sharedURL, http.StatusNotFound)
+	})
+}
+
+func TestOrganizationCookbookVersionBlobLinkedParity(t *testing.T) {
+	orgCookbookPath := func(name string, extra ...string) string {
+		path := "/organizations/ponyville/cookbooks/" + name
+		for _, segment := range extra {
+			path += "/" + segment
+		}
+		return path
+	}
+
+	t.Run("normal_user_read_and_signed_recipe_download", func(t *testing.T) {
+		router := newTestRouter(t)
+		checksum := uploadCookbookChecksum(t, router, []byte("puts 'hello org normal user'"))
+		createOrgCookbookVersion(t, router, "ponyville", "demo", "1.2.3", checksum, nil)
+
+		getReq := newSignedJSONRequestAs(t, "normal-user", http.MethodGet, orgCookbookPath("demo", "1.2.3"), nil)
+		getRec := httptest.NewRecorder()
+		router.ServeHTTP(getRec, getReq)
+		if getRec.Code != http.StatusOK {
+			t.Fatalf("org-scoped normal user get status = %d, want %d, body = %s", getRec.Code, http.StatusOK, getRec.Body.String())
+		}
+
+		var payload map[string]any
+		if err := json.Unmarshal(getRec.Body.Bytes(), &payload); err != nil {
+			t.Fatalf("json.Unmarshal(org-scoped normal user cookbook get) error = %v", err)
+		}
+		rawRecipes, ok := payload["recipes"].([]any)
+		if !ok || len(rawRecipes) != 1 {
+			t.Fatalf("recipes = %T/%v, want single recipe entry", payload["recipes"], payload["recipes"])
+		}
+		recipe, ok := rawRecipes[0].(map[string]any)
+		if !ok {
+			t.Fatalf("recipe entry = %T, want map[string]any", rawRecipes[0])
+		}
+		downloadURL, ok := recipe["url"].(string)
+		if !ok || downloadURL == "" {
+			t.Fatalf("recipe url = %T/%v, want non-empty string", recipe["url"], recipe["url"])
+		}
+
+		downloadReq := httptest.NewRequest(http.MethodGet, downloadURL, nil)
+		downloadRec := httptest.NewRecorder()
+		router.ServeHTTP(downloadRec, downloadReq)
+		if downloadRec.Code != http.StatusOK {
+			t.Fatalf("org-scoped recipe download status = %d, want %d, body = %s", downloadRec.Code, http.StatusOK, downloadRec.Body.String())
+		}
+		if downloadRec.Body.String() != "puts 'hello org normal user'" {
+			t.Fatalf("org-scoped recipe download body = %q, want recipe contents", downloadRec.Body.String())
+		}
+	})
+
+	t.Run("s3_blob_checker_unavailable", func(t *testing.T) {
+		store, control := newCookbookRouteTestS3BlobStore(t)
+		router := newTestRouterWithBlob(t, config.Config{
+			ServiceName: "opencook",
+			Environment: "test",
+			AuthSkew:    15 * time.Minute,
+		}, store)
+
+		t.Run("create", func(t *testing.T) {
+			checksum := uploadCookbookChecksum(t, router, []byte("puts 'org cookbook create unavailable'"))
+			control.setExistsUnavailable(true)
+			defer control.setExistsUnavailable(false)
+
+			req := newSignedJSONRequest(t, http.MethodPut, orgCookbookPath("unavailable-create", "1.2.3"),
+				mustMarshalSandboxJSON(t, cookbookVersionPayload("unavailable-create", "1.2.3", checksum, nil)))
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusServiceUnavailable {
+				t.Fatalf("org-scoped cookbook create status = %d, want %d, body = %s", rec.Code, http.StatusServiceUnavailable, rec.Body.String())
+			}
+			assertCookbookAPIError(t, rec.Body.Bytes(), "blob_unavailable", "blob existence backend is not available")
+		})
+
+		t.Run("update", func(t *testing.T) {
+			originalChecksum := uploadCookbookChecksum(t, router, []byte("puts 'org cookbook existing body'"))
+			replacementChecksum := uploadCookbookChecksum(t, router, []byte("puts 'org cookbook replacement body'"))
+			createOrgCookbookVersion(t, router, "ponyville", "unavailable-update", "1.2.3", originalChecksum, nil)
+
+			control.setExistsUnavailable(true)
+			defer control.setExistsUnavailable(false)
+
+			req := newSignedJSONRequest(t, http.MethodPut, orgCookbookPath("unavailable-update", "1.2.3"),
+				mustMarshalSandboxJSON(t, cookbookVersionPayload("unavailable-update", "1.2.3", replacementChecksum, nil)))
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusServiceUnavailable {
+				t.Fatalf("org-scoped cookbook update status = %d, want %d, body = %s", rec.Code, http.StatusServiceUnavailable, rec.Body.String())
+			}
+			assertCookbookAPIError(t, rec.Body.Bytes(), "blob_unavailable", "blob existence backend is not available")
+		})
+	})
+
+	t.Run("s3_blob_getter_unavailable", func(t *testing.T) {
+		store, control := newCookbookRouteTestS3BlobStore(t)
+		router := newTestRouterWithBlob(t, config.Config{
+			ServiceName: "opencook",
+			Environment: "test",
+			AuthSkew:    15 * time.Minute,
+		}, store)
+
+		checksum := uploadCookbookChecksum(t, router, []byte("puts 'org cookbook download unavailable'"))
+		createOrgCookbookVersion(t, router, "ponyville", "download-unavailable", "1.2.3", checksum, nil)
+		downloadURL := cookbookFileURL(t, router, orgCookbookPath("download-unavailable", "1.2.3"))
+
+		control.setGetUnavailable(true)
+		defer control.setGetUnavailable(false)
+
+		downloadReq := httptest.NewRequest(http.MethodGet, downloadURL, nil)
+		downloadRec := httptest.NewRecorder()
+		router.ServeHTTP(downloadRec, downloadReq)
+
+		if downloadRec.Code != http.StatusServiceUnavailable {
+			t.Fatalf("org-scoped cookbook download status = %d, want %d, body = %s", downloadRec.Code, http.StatusServiceUnavailable, downloadRec.Body.String())
+		}
+		assertCookbookAPIError(t, downloadRec.Body.Bytes(), "blob_unavailable", "blob download backend is not available")
+	})
+
+	t.Run("released_checksums_cleanup", func(t *testing.T) {
+		router := newTestRouter(t)
+		oldChecksum := uploadCookbookChecksum(t, router, []byte("puts 'old org body'"))
+		newChecksum := uploadCookbookChecksum(t, router, []byte("puts 'new org body'"))
+
+		createOrgCookbookVersion(t, router, "ponyville", "cleanup-demo", "1.2.3", oldChecksum, nil)
+
+		oldURL := cookbookFileURL(t, router, orgCookbookPath("cleanup-demo", "1.2.3"))
+
+		updateReq := newSignedJSONRequest(t, http.MethodPut, orgCookbookPath("cleanup-demo", "1.2.3"), mustMarshalSandboxJSON(t, cookbookVersionPayload("cleanup-demo", "1.2.3", newChecksum, nil)))
+		updateRec := httptest.NewRecorder()
+		router.ServeHTTP(updateRec, updateReq)
+		if updateRec.Code != http.StatusOK {
+			t.Fatalf("org-scoped update cookbook status = %d, want %d, body = %s", updateRec.Code, http.StatusOK, updateRec.Body.String())
+		}
+
+		assertBlobDownloadStatus(t, router, oldURL, http.StatusNotFound)
+
+		newURL := cookbookFileURL(t, router, orgCookbookPath("cleanup-demo", "1.2.3"))
+		assertBlobDownloadStatus(t, router, newURL, http.StatusOK)
+
+		deleteReq := newSignedJSONRequest(t, http.MethodDelete, orgCookbookPath("cleanup-demo", "1.2.3"), nil)
+		deleteRec := httptest.NewRecorder()
+		router.ServeHTTP(deleteRec, deleteReq)
+		if deleteRec.Code != http.StatusOK {
+			t.Fatalf("org-scoped delete cookbook status = %d, want %d, body = %s", deleteRec.Code, http.StatusOK, deleteRec.Body.String())
+		}
+
+		assertBlobDownloadStatus(t, router, newURL, http.StatusNotFound)
+	})
 }
 
 func TestCookbookArtifactCreateValidationAndVersionParity(t *testing.T) {
@@ -915,6 +1252,750 @@ func TestCookbookArtifactEndpointAllowsNormalUserDeleteAndRejectsUnauthorizedDel
 	}
 }
 
+func TestCookbookArtifactRoutesAcceptTrailingSlashes(t *testing.T) {
+	router := newTestRouter(t)
+
+	createCookbookArtifact(t, router, "demo", "1111111111111111111111111111111111111111", "1.2.3", "", nil)
+	createOrgCookbookArtifact(t, router, "ponyville", "demo", "2222222222222222222222222222222222222222", "1.2.3", "", nil)
+
+	routes := []struct {
+		name string
+		path string
+	}{
+		{name: "default-org collection", path: "/cookbook_artifacts/"},
+		{name: "default-org named collection", path: "/cookbook_artifacts/demo/"},
+		{name: "default-org named artifact", path: "/cookbook_artifacts/demo/1111111111111111111111111111111111111111/"},
+		{name: "org-scoped collection", path: "/organizations/ponyville/cookbook_artifacts/"},
+		{name: "org-scoped named collection", path: "/organizations/ponyville/cookbook_artifacts/demo/"},
+		{name: "org-scoped named artifact", path: "/organizations/ponyville/cookbook_artifacts/demo/2222222222222222222222222222222222222222/"},
+	}
+
+	for _, route := range routes {
+		t.Run(route.name, func(t *testing.T) {
+			req := newSignedJSONRequest(t, http.MethodGet, route.path, nil)
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("%s status = %d, want %d, body = %s", route.path, rec.Code, http.StatusOK, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestCookbookArtifactRoutesReturnMethodNotAllowedWithAllowHeader(t *testing.T) {
+	router := newTestRouter(t)
+
+	routes := []struct {
+		name        string
+		path        string
+		wantAllow   string
+		wantMessage string
+	}{
+		{
+			name:        "default-org collection",
+			path:        "/cookbook_artifacts",
+			wantAllow:   http.MethodGet,
+			wantMessage: "method not allowed for cookbook artifacts route",
+		},
+		{
+			name:        "default-org named collection",
+			path:        "/cookbook_artifacts/demo",
+			wantAllow:   http.MethodGet,
+			wantMessage: "method not allowed for cookbook artifact route",
+		},
+		{
+			name:        "default-org named artifact",
+			path:        "/cookbook_artifacts/demo/1111111111111111111111111111111111111111",
+			wantAllow:   strings.Join([]string{http.MethodGet, http.MethodPut, http.MethodDelete}, ", "),
+			wantMessage: "method not allowed for cookbook artifact version route",
+		},
+		{
+			name:        "org-scoped collection",
+			path:        "/organizations/ponyville/cookbook_artifacts",
+			wantAllow:   http.MethodGet,
+			wantMessage: "method not allowed for cookbook artifacts route",
+		},
+		{
+			name:        "org-scoped named collection",
+			path:        "/organizations/ponyville/cookbook_artifacts/demo",
+			wantAllow:   http.MethodGet,
+			wantMessage: "method not allowed for cookbook artifact route",
+		},
+		{
+			name:        "org-scoped named artifact",
+			path:        "/organizations/ponyville/cookbook_artifacts/demo/1111111111111111111111111111111111111111",
+			wantAllow:   strings.Join([]string{http.MethodGet, http.MethodPut, http.MethodDelete}, ", "),
+			wantMessage: "method not allowed for cookbook artifact version route",
+		},
+	}
+
+	for _, route := range routes {
+		t.Run(route.name, func(t *testing.T) {
+			req := newSignedJSONRequest(t, http.MethodPost, route.path, nil)
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusMethodNotAllowed {
+				t.Fatalf("%s status = %d, want %d, body = %s", route.path, rec.Code, http.StatusMethodNotAllowed, rec.Body.String())
+			}
+			if rec.Header().Get("Allow") != route.wantAllow {
+				t.Fatalf("%s Allow = %q, want %q", route.path, rec.Header().Get("Allow"), route.wantAllow)
+			}
+
+			payload := decodeJSONMap(t, rec.Body.Bytes())
+			if payload["error"] != "method_not_allowed" {
+				t.Fatalf("%s error = %v, want %q", route.path, payload["error"], "method_not_allowed")
+			}
+			if payload["message"] != route.wantMessage {
+				t.Fatalf("%s message = %v, want %q", route.path, payload["message"], route.wantMessage)
+			}
+		})
+	}
+}
+
+func TestCookbookArtifactRoutesReturnNotFoundForExtraPathSegments(t *testing.T) {
+	router := newTestRouter(t)
+
+	routes := []string{
+		"/cookbook_artifacts/demo/1111111111111111111111111111111111111111/extra",
+		"/organizations/ponyville/cookbook_artifacts/demo/1111111111111111111111111111111111111111/extra",
+	}
+
+	for _, path := range routes {
+		t.Run(path, func(t *testing.T) {
+			req := newSignedJSONRequest(t, http.MethodGet, path, nil)
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusNotFound {
+				t.Fatalf("%s status = %d, want %d, body = %s", path, rec.Code, http.StatusNotFound, rec.Body.String())
+			}
+			assertCookbookErrorList(t, rec.Body.Bytes(), []string{"not_found"})
+		})
+	}
+}
+
+func TestOrganizationCookbookArtifactCollectionAndNamedCollectionParity(t *testing.T) {
+	router := newTestRouter(t)
+
+	createOrgCookbookArtifact(t, router, "ponyville", "cookbook_name", "1111111111111111111111111111111111111111", "1.0.0", "", nil)
+	createOrgCookbookArtifact(t, router, "ponyville", "cookbook_name", "2222222222222222222222222222222222222222", "1.0.0", "", nil)
+	createOrgCookbookArtifact(t, router, "ponyville", "cookbook_name2", "3333333333333333333333333333333333333333", "1.0.0", "", nil)
+
+	listReq := newSignedJSONRequest(t, http.MethodGet, "/organizations/ponyville/cookbook_artifacts", nil)
+	listRec := httptest.NewRecorder()
+	router.ServeHTTP(listRec, listReq)
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("org-scoped list collection status = %d, want %d, body = %s", listRec.Code, http.StatusOK, listRec.Body.String())
+	}
+
+	var listPayload map[string]any
+	if err := json.Unmarshal(listRec.Body.Bytes(), &listPayload); err != nil {
+		t.Fatalf("json.Unmarshal(org collection) error = %v", err)
+	}
+
+	cookbookNameEntry, ok := listPayload["cookbook_name"].(map[string]any)
+	if !ok {
+		t.Fatalf("org collection cookbook_name entry = %T, want map[string]any (%v)", listPayload["cookbook_name"], listPayload)
+	}
+	if cookbookNameEntry["url"] != "/organizations/ponyville/cookbook_artifacts/cookbook_name" {
+		t.Fatalf("org collection cookbook_name url = %v, want %q", cookbookNameEntry["url"], "/organizations/ponyville/cookbook_artifacts/cookbook_name")
+	}
+	cookbookNameVersions := cookbookVersionListForName(t, listPayload, "cookbook_name")
+	if len(cookbookNameVersions) != 2 {
+		t.Fatalf("org collection cookbook_name versions len = %d, want 2 (%v)", len(cookbookNameVersions), cookbookNameVersions)
+	}
+	firstVersion := cookbookNameVersions[0].(map[string]any)
+	secondVersion := cookbookNameVersions[1].(map[string]any)
+	if firstVersion["url"] != "/organizations/ponyville/cookbook_artifacts/cookbook_name/1111111111111111111111111111111111111111" {
+		t.Fatalf("org collection first artifact url = %v, want %q", firstVersion["url"], "/organizations/ponyville/cookbook_artifacts/cookbook_name/1111111111111111111111111111111111111111")
+	}
+	if secondVersion["url"] != "/organizations/ponyville/cookbook_artifacts/cookbook_name/2222222222222222222222222222222222222222" {
+		t.Fatalf("org collection second artifact url = %v, want %q", secondVersion["url"], "/organizations/ponyville/cookbook_artifacts/cookbook_name/2222222222222222222222222222222222222222")
+	}
+
+	namedReq := newSignedJSONRequest(t, http.MethodGet, "/organizations/ponyville/cookbook_artifacts/cookbook_name", nil)
+	namedRec := httptest.NewRecorder()
+	router.ServeHTTP(namedRec, namedReq)
+	if namedRec.Code != http.StatusOK {
+		t.Fatalf("org-scoped named collection status = %d, want %d, body = %s", namedRec.Code, http.StatusOK, namedRec.Body.String())
+	}
+
+	var namedPayload map[string]any
+	if err := json.Unmarshal(namedRec.Body.Bytes(), &namedPayload); err != nil {
+		t.Fatalf("json.Unmarshal(org named collection) error = %v", err)
+	}
+	if len(namedPayload) != 1 {
+		t.Fatalf("org named payload len = %d, want 1 (%v)", len(namedPayload), namedPayload)
+	}
+	namedVersions := cookbookVersionListForName(t, namedPayload, "cookbook_name")
+	if len(namedVersions) != 2 {
+		t.Fatalf("org named cookbook_name versions len = %d, want 2 (%v)", len(namedVersions), namedVersions)
+	}
+}
+
+func TestOrganizationCookbookArtifactValidationAndNoMutationParity(t *testing.T) {
+	router := newTestRouter(t)
+
+	orgArtifactPath := func(name string, extra ...string) string {
+		path := "/organizations/ponyville/cookbook_artifacts/" + name
+		for _, segment := range extra {
+			path += "/" + segment
+		}
+		return path
+	}
+
+	t.Run("create_validation_and_version_parity", func(t *testing.T) {
+		createCases := []struct {
+			name       string
+			path       string
+			payload    map[string]any
+			wantStatus int
+			wantErrors []string
+			verifyPath string
+		}{
+			{
+				name: "create accepts version larger than four bytes",
+				path: orgArtifactPath("large-version", "1111111111111111111111111111111111111111"),
+				payload: cookbookArtifactPayload(
+					"large-version",
+					"1111111111111111111111111111111111111111",
+					"1.2.2147483669",
+					"",
+					nil,
+				),
+				wantStatus: http.StatusCreated,
+				verifyPath: orgArtifactPath("large-version", "1111111111111111111111111111111111111111"),
+			},
+			{
+				name: "create accepts prerelease version",
+				path: orgArtifactPath("prerelease", "2222222222222222222222222222222222222222"),
+				payload: cookbookArtifactPayload(
+					"prerelease",
+					"2222222222222222222222222222222222222222",
+					"1.2.3.beta.5",
+					"",
+					nil,
+				),
+				wantStatus: http.StatusCreated,
+				verifyPath: orgArtifactPath("prerelease", "2222222222222222222222222222222222222222"),
+			},
+			{
+				name: "create rejects invalid identifier in url",
+				path: orgArtifactPath("cookbook_name", "foo@bar"),
+				payload: cookbookArtifactPayload(
+					"cookbook_name",
+					"foo@bar",
+					"1.2.3",
+					"",
+					nil,
+				),
+				wantStatus: http.StatusBadRequest,
+				wantErrors: []string{"Field 'identifier' invalid"},
+				verifyPath: orgArtifactPath("cookbook_name", "foo@bar"),
+			},
+			{
+				name: "create rejects invalid cookbook name in url",
+				path: orgArtifactPath("first@second", "1111111111111111111111111111111111111111"),
+				payload: cookbookArtifactPayload(
+					"first@second",
+					"1111111111111111111111111111111111111111",
+					"1.2.3",
+					"",
+					nil,
+				),
+				wantStatus: http.StatusBadRequest,
+				wantErrors: []string{"Field 'name' invalid"},
+				verifyPath: orgArtifactPath("first@second", "1111111111111111111111111111111111111111"),
+			},
+			{
+				name: "create rejects identifier mismatch",
+				path: orgArtifactPath("cookbook_name", "1111111111111111111111111111111111111111"),
+				payload: cookbookArtifactPayload(
+					"cookbook_name",
+					"ffffffffffffffffffffffffffffffffffffffff",
+					"1.2.3",
+					"",
+					nil,
+				),
+				wantStatus: http.StatusBadRequest,
+				wantErrors: []string{"Field 'identifier' invalid : 1111111111111111111111111111111111111111 does not match ffffffffffffffffffffffffffffffffffffffff"},
+				verifyPath: orgArtifactPath("cookbook_name", "1111111111111111111111111111111111111111"),
+			},
+			{
+				name: "create rejects cookbook name mismatch",
+				path: orgArtifactPath("cookbook_name", "1111111111111111111111111111111111111111"),
+				payload: cookbookArtifactPayload(
+					"foobar",
+					"1111111111111111111111111111111111111111",
+					"1.2.3",
+					"",
+					nil,
+				),
+				wantStatus: http.StatusBadRequest,
+				wantErrors: []string{"Field 'name' invalid : cookbook_name does not match foobar"},
+				verifyPath: orgArtifactPath("cookbook_name", "1111111111111111111111111111111111111111"),
+			},
+		}
+
+		for _, tc := range createCases {
+			t.Run(tc.name, func(t *testing.T) {
+				req := newSignedJSONRequest(t, http.MethodPut, tc.path, mustMarshalSandboxJSON(t, tc.payload))
+				rec := httptest.NewRecorder()
+				router.ServeHTTP(rec, req)
+				if rec.Code != tc.wantStatus {
+					t.Fatalf("%s status = %d, want %d, body = %s", tc.path, rec.Code, tc.wantStatus, rec.Body.String())
+				}
+
+				if tc.wantStatus == http.StatusCreated {
+					req := newSignedJSONRequest(t, http.MethodGet, tc.verifyPath, nil)
+					rec := httptest.NewRecorder()
+					router.ServeHTTP(rec, req)
+					if rec.Code != http.StatusOK {
+						t.Fatalf("GET %s status = %d, want %d, body = %s", tc.verifyPath, rec.Code, http.StatusOK, rec.Body.String())
+					}
+
+					var payload map[string]any
+					if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+						t.Fatalf("json.Unmarshal(%s) error = %v", tc.verifyPath, err)
+					}
+					if payload["version"] != tc.payload["version"] {
+						t.Fatalf("%s version = %v, want %v", tc.verifyPath, payload["version"], tc.payload["version"])
+					}
+					return
+				}
+
+				assertCookbookErrorList(t, rec.Body.Bytes(), tc.wantErrors)
+				assertCookbookArtifactMissing(t, router, tc.verifyPath)
+			})
+		}
+	})
+
+	t.Run("repeated_put_conflict_and_unauthorized_updates_do_not_mutate_existing_artifact", func(t *testing.T) {
+		createOrgCookbookArtifact(t, router, "ponyville", "cookbook-to-be-modified", "1111111111111111111111111111111111111111", "1.2.3", "", nil)
+
+		updatedPayload := cookbookArtifactPayload("cookbook-to-be-modified", "1111111111111111111111111111111111111111", "1.2.3", "", nil)
+		updatedPayload["metadata"].(map[string]any)["description"] = "hi there"
+
+		adminReq := newSignedJSONRequest(t, http.MethodPut, orgArtifactPath("cookbook-to-be-modified", "1111111111111111111111111111111111111111"), mustMarshalSandboxJSON(t, updatedPayload))
+		adminRec := httptest.NewRecorder()
+		router.ServeHTTP(adminRec, adminReq)
+		if adminRec.Code != http.StatusConflict {
+			t.Fatalf("org-scoped repeated put status = %d, want %d, body = %s", adminRec.Code, http.StatusConflict, adminRec.Body.String())
+		}
+		assertCookbookArtifactStringError(t, adminRec.Body.Bytes(), "Cookbook artifact already exists")
+		assertCookbookArtifactDescription(t, router, orgArtifactPath("cookbook-to-be-modified", "1111111111111111111111111111111111111111"), "compatibility cookbook")
+
+		outsideReq := newSignedJSONRequestAs(t, "outside-user", http.MethodPut, orgArtifactPath("cookbook-to-be-modified", "1111111111111111111111111111111111111111"), mustMarshalSandboxJSON(t, updatedPayload))
+		outsideRec := httptest.NewRecorder()
+		router.ServeHTTP(outsideRec, outsideReq)
+		if outsideRec.Code != http.StatusForbidden {
+			t.Fatalf("org-scoped outside user update status = %d, want %d, body = %s", outsideRec.Code, http.StatusForbidden, outsideRec.Body.String())
+		}
+		assertCookbookArtifactDescription(t, router, orgArtifactPath("cookbook-to-be-modified", "1111111111111111111111111111111111111111"), "compatibility cookbook")
+
+		invalidReq := newSignedJSONRequestAs(t, "invalid-user", http.MethodPut, orgArtifactPath("cookbook-to-be-modified", "1111111111111111111111111111111111111111"), mustMarshalSandboxJSON(t, updatedPayload))
+		invalidRec := httptest.NewRecorder()
+		router.ServeHTTP(invalidRec, invalidReq)
+		if invalidRec.Code != http.StatusUnauthorized {
+			t.Fatalf("org-scoped invalid user update status = %d, want %d, body = %s", invalidRec.Code, http.StatusUnauthorized, invalidRec.Body.String())
+		}
+		assertCookbookArtifactDescription(t, router, orgArtifactPath("cookbook-to-be-modified", "1111111111111111111111111111111111111111"), "compatibility cookbook")
+	})
+
+	t.Run("validation_http_parity", func(t *testing.T) {
+		tests := []struct {
+			name       string
+			path       string
+			payload    map[string]any
+			wantErrors []string
+			verifyPath string
+		}{
+			{
+				name: "empty metadata",
+				path: orgArtifactPath("invalid-meta", "1111111111111111111111111111111111111111"),
+				payload: func() map[string]any {
+					payload := cookbookArtifactPayload("invalid-meta", "1111111111111111111111111111111111111111", "1.2.3", "", nil)
+					payload["metadata"] = map[string]any{}
+					return payload
+				}(),
+				wantErrors: []string{"Field 'metadata.version' missing"},
+				verifyPath: orgArtifactPath("invalid-meta", "1111111111111111111111111111111111111111"),
+			},
+			{
+				name: "recipes as string",
+				path: orgArtifactPath("segment-string", "1111111111111111111111111111111111111111"),
+				payload: func() map[string]any {
+					payload := cookbookArtifactPayload("segment-string", "1111111111111111111111111111111111111111", "1.2.3", "", nil)
+					delete(payload, "all_files")
+					payload["recipes"] = "foo"
+					return payload
+				}(),
+				wantErrors: []string{"Field 'recipes' invalid"},
+				verifyPath: orgArtifactPath("segment-string", "1111111111111111111111111111111111111111"),
+			},
+			{
+				name: "recipes element missing required fields",
+				path: orgArtifactPath("segment-empty", "1111111111111111111111111111111111111111"),
+				payload: func() map[string]any {
+					payload := cookbookArtifactPayload("segment-empty", "1111111111111111111111111111111111111111", "1.2.3", "", nil)
+					delete(payload, "all_files")
+					payload["recipes"] = []any{map[string]any{}}
+					return payload
+				}(),
+				wantErrors: []string{"Field 'recipes' invalid"},
+				verifyPath: orgArtifactPath("segment-empty", "1111111111111111111111111111111111111111"),
+			},
+			{
+				name: "dependencies as string",
+				path: orgArtifactPath("dependency-string", "1111111111111111111111111111111111111111"),
+				payload: func() map[string]any {
+					payload := cookbookArtifactPayload("dependency-string", "1111111111111111111111111111111111111111", "1.2.3", "", nil)
+					payload["metadata"].(map[string]any)["dependencies"] = "foo"
+					return payload
+				}(),
+				wantErrors: []string{"Field 'metadata.dependencies' invalid"},
+				verifyPath: orgArtifactPath("dependency-string", "1111111111111111111111111111111111111111"),
+			},
+			{
+				name: "dependencies malformed constraint",
+				path: orgArtifactPath("dependency-constraint", "1111111111111111111111111111111111111111"),
+				payload: func() map[string]any {
+					payload := cookbookArtifactPayload("dependency-constraint", "1111111111111111111111111111111111111111", "1.2.3", "", nil)
+					payload["metadata"].(map[string]any)["dependencies"] = map[string]any{"apt": "s395dss@#"}
+					return payload
+				}(),
+				wantErrors: []string{"Invalid value 's395dss@#' for metadata.dependencies"},
+				verifyPath: orgArtifactPath("dependency-constraint", "1111111111111111111111111111111111111111"),
+			},
+			{
+				name: "platforms nested object",
+				path: orgArtifactPath("platforms-object", "1111111111111111111111111111111111111111"),
+				payload: func() map[string]any {
+					payload := cookbookArtifactPayload("platforms-object", "1111111111111111111111111111111111111111", "1.2.3", "", nil)
+					payload["metadata"].(map[string]any)["platforms"] = map[string]any{"ubuntu": map[string]any{}}
+					return payload
+				}(),
+				wantErrors: []string{"Invalid value '{[]}' for metadata.platforms"},
+				verifyPath: orgArtifactPath("platforms-object", "1111111111111111111111111111111111111111"),
+			},
+		}
+
+		for _, tc := range tests {
+			t.Run(tc.name, func(t *testing.T) {
+				req := newSignedJSONRequest(t, http.MethodPut, tc.path, mustMarshalSandboxJSON(t, tc.payload))
+				rec := httptest.NewRecorder()
+				router.ServeHTTP(rec, req)
+				if rec.Code != http.StatusBadRequest {
+					t.Fatalf("%s status = %d, want %d, body = %s", tc.path, rec.Code, http.StatusBadRequest, rec.Body.String())
+				}
+
+				assertCookbookErrorList(t, rec.Body.Bytes(), tc.wantErrors)
+				assertCookbookArtifactMissing(t, router, tc.verifyPath)
+			})
+		}
+	})
+}
+
+func TestOrganizationCookbookArtifactAuthParity(t *testing.T) {
+	router := newTestRouter(t)
+
+	orgArtifactPath := func(name string, extra ...string) string {
+		path := "/organizations/ponyville/cookbook_artifacts/" + name
+		for _, segment := range extra {
+			path += "/" + segment
+		}
+		return path
+	}
+
+	t.Run("create_and_read_auth", func(t *testing.T) {
+		const normalIdentifier = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+		const outsideIdentifier = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+		const invalidIdentifier = "cccccccccccccccccccccccccccccccccccccccc"
+
+		normalPayload := cookbookArtifactPayload("created-by-user", normalIdentifier, "1.2.3", "", nil)
+		normalPayload["metadata"].(map[string]any)["description"] = "created by normal-user"
+		normalReq := newSignedJSONRequestAs(t, "normal-user", http.MethodPut, orgArtifactPath("created-by-user", normalIdentifier), mustMarshalSandboxJSON(t, normalPayload))
+		normalRec := httptest.NewRecorder()
+		router.ServeHTTP(normalRec, normalReq)
+		if normalRec.Code != http.StatusCreated {
+			t.Fatalf("org-scoped normal user create status = %d, want %d, body = %s", normalRec.Code, http.StatusCreated, normalRec.Body.String())
+		}
+		assertCookbookArtifactDescription(t, router, orgArtifactPath("created-by-user", normalIdentifier), "created by normal-user")
+
+		outsidePayload := cookbookArtifactPayload("blocked-by-outside", outsideIdentifier, "1.2.3", "", nil)
+		outsideReq := newSignedJSONRequestAs(t, "outside-user", http.MethodPut, orgArtifactPath("blocked-by-outside", outsideIdentifier), mustMarshalSandboxJSON(t, outsidePayload))
+		outsideRec := httptest.NewRecorder()
+		router.ServeHTTP(outsideRec, outsideReq)
+		if outsideRec.Code != http.StatusForbidden {
+			t.Fatalf("org-scoped outside user create status = %d, want %d, body = %s", outsideRec.Code, http.StatusForbidden, outsideRec.Body.String())
+		}
+		assertCookbookArtifactMissing(t, router, orgArtifactPath("blocked-by-outside", outsideIdentifier))
+
+		invalidPayload := cookbookArtifactPayload("blocked-by-invalid", invalidIdentifier, "1.2.3", "", nil)
+		invalidReq := newSignedJSONRequestAs(t, "invalid-user", http.MethodPut, orgArtifactPath("blocked-by-invalid", invalidIdentifier), mustMarshalSandboxJSON(t, invalidPayload))
+		invalidRec := httptest.NewRecorder()
+		router.ServeHTTP(invalidRec, invalidReq)
+		if invalidRec.Code != http.StatusUnauthorized {
+			t.Fatalf("org-scoped invalid user create status = %d, want %d, body = %s", invalidRec.Code, http.StatusUnauthorized, invalidRec.Body.String())
+		}
+		assertCookbookArtifactMissing(t, router, orgArtifactPath("blocked-by-invalid", invalidIdentifier))
+
+		outsideGetReq := newSignedJSONRequestAs(t, "outside-user", http.MethodGet, orgArtifactPath("created-by-user", normalIdentifier), nil)
+		outsideGetRec := httptest.NewRecorder()
+		router.ServeHTTP(outsideGetRec, outsideGetReq)
+		if outsideGetRec.Code != http.StatusForbidden {
+			t.Fatalf("org-scoped outside user get status = %d, want %d, body = %s", outsideGetRec.Code, http.StatusForbidden, outsideGetRec.Body.String())
+		}
+
+		getReq := newSignedJSONRequestAs(t, "normal-user", http.MethodGet, orgArtifactPath("created-by-user", normalIdentifier), nil)
+		getRec := httptest.NewRecorder()
+		router.ServeHTTP(getRec, getReq)
+		if getRec.Code != http.StatusOK {
+			t.Fatalf("org-scoped normal user get status = %d, want %d, body = %s", getRec.Code, http.StatusOK, getRec.Body.String())
+		}
+	})
+
+	t.Run("wrong_delete_and_delete_auth", func(t *testing.T) {
+		createOrgCookbookArtifact(t, router, "ponyville", "demo", "1111111111111111111111111111111111111111", "1.2.3", "", nil)
+
+		deleteReq := newSignedJSONRequest(t, http.MethodDelete, orgArtifactPath("demo", "ffffffffffffffffffffffffffffffffffffffff"), nil)
+		deleteRec := httptest.NewRecorder()
+		router.ServeHTTP(deleteRec, deleteReq)
+		if deleteRec.Code != http.StatusNotFound {
+			t.Fatalf("org-scoped delete wrong identifier status = %d, want %d, body = %s", deleteRec.Code, http.StatusNotFound, deleteRec.Body.String())
+		}
+		assertCookbookErrorList(t, deleteRec.Body.Bytes(), []string{"not_found"})
+		assertCookbookArtifactDescription(t, router, orgArtifactPath("demo", "1111111111111111111111111111111111111111"), "compatibility cookbook")
+
+		invalidDeleteReq := newSignedJSONRequestAs(t, "invalid-user", http.MethodDelete, orgArtifactPath("demo", "1111111111111111111111111111111111111111"), nil)
+		invalidDeleteRec := httptest.NewRecorder()
+		router.ServeHTTP(invalidDeleteRec, invalidDeleteReq)
+		if invalidDeleteRec.Code != http.StatusUnauthorized {
+			t.Fatalf("org-scoped invalid user delete status = %d, want %d, body = %s", invalidDeleteRec.Code, http.StatusUnauthorized, invalidDeleteRec.Body.String())
+		}
+		assertCookbookArtifactDescription(t, router, orgArtifactPath("demo", "1111111111111111111111111111111111111111"), "compatibility cookbook")
+
+		createOrgCookbookArtifact(t, router, "ponyville", "normal-delete", "2222222222222222222222222222222222222222", "1.2.3", "", nil)
+		normalDeleteReq := newSignedJSONRequestAs(t, "normal-user", http.MethodDelete, orgArtifactPath("normal-delete", "2222222222222222222222222222222222222222"), nil)
+		normalDeleteRec := httptest.NewRecorder()
+		router.ServeHTTP(normalDeleteRec, normalDeleteReq)
+		if normalDeleteRec.Code != http.StatusOK {
+			t.Fatalf("org-scoped normal user delete status = %d, want %d, body = %s", normalDeleteRec.Code, http.StatusOK, normalDeleteRec.Body.String())
+		}
+		assertCookbookArtifactMissing(t, router, orgArtifactPath("normal-delete", "2222222222222222222222222222222222222222"))
+
+		createOrgCookbookArtifact(t, router, "ponyville", "blocked-delete", "3333333333333333333333333333333333333333", "1.2.3", "", nil)
+		outsideDeleteReq := newSignedJSONRequestAs(t, "outside-user", http.MethodDelete, orgArtifactPath("blocked-delete", "3333333333333333333333333333333333333333"), nil)
+		outsideDeleteRec := httptest.NewRecorder()
+		router.ServeHTTP(outsideDeleteRec, outsideDeleteReq)
+		if outsideDeleteRec.Code != http.StatusForbidden {
+			t.Fatalf("org-scoped outside user delete status = %d, want %d, body = %s", outsideDeleteRec.Code, http.StatusForbidden, outsideDeleteRec.Body.String())
+		}
+		assertCookbookArtifactDescription(t, router, orgArtifactPath("blocked-delete", "3333333333333333333333333333333333333333"), "compatibility cookbook")
+	})
+}
+
+func TestCookbookCollectionAndNamedFilterAuthorizationParity(t *testing.T) {
+	router := newTestRouter(t)
+
+	checksum := uploadCookbookChecksum(t, router, []byte("puts 'collection auth parity'"))
+	createCookbookVersion(t, router, "demo", "1.2.3", checksum, nil)
+	createCookbookArtifact(t, router, "demo", "1111111111111111111111111111111111111111", "1.2.3", checksum, nil)
+
+	routes := []string{
+		"/cookbooks",
+		"/cookbooks/_latest",
+		"/cookbooks/_recipes",
+		"/cookbooks/demo",
+		"/cookbooks/demo/_latest",
+		"/cookbook_artifacts",
+		"/cookbook_artifacts/demo",
+		"/organizations/ponyville/cookbooks",
+		"/organizations/ponyville/cookbooks/_latest",
+		"/organizations/ponyville/cookbooks/_recipes",
+		"/organizations/ponyville/cookbooks/demo",
+		"/organizations/ponyville/cookbooks/demo/_latest",
+		"/organizations/ponyville/cookbook_artifacts",
+		"/organizations/ponyville/cookbook_artifacts/demo",
+	}
+
+	for _, path := range routes {
+		t.Run(path, func(t *testing.T) {
+			normalReq := newSignedJSONRequestAs(t, "normal-user", http.MethodGet, path, nil)
+			normalRec := httptest.NewRecorder()
+			router.ServeHTTP(normalRec, normalReq)
+			if normalRec.Code != http.StatusOK {
+				t.Fatalf("normal user GET %s status = %d, want %d, body = %s", path, normalRec.Code, http.StatusOK, normalRec.Body.String())
+			}
+
+			outsideReq := newSignedJSONRequestAs(t, "outside-user", http.MethodGet, path, nil)
+			outsideRec := httptest.NewRecorder()
+			router.ServeHTTP(outsideRec, outsideReq)
+			if outsideRec.Code != http.StatusForbidden {
+				t.Fatalf("outside user GET %s status = %d, want %d, body = %s", path, outsideRec.Code, http.StatusForbidden, outsideRec.Body.String())
+			}
+
+			invalidReq := newSignedJSONRequestAs(t, "invalid-user", http.MethodGet, path, nil)
+			invalidRec := httptest.NewRecorder()
+			router.ServeHTTP(invalidRec, invalidReq)
+			if invalidRec.Code != http.StatusUnauthorized {
+				t.Fatalf("invalid user GET %s status = %d, want %d, body = %s", path, invalidRec.Code, http.StatusUnauthorized, invalidRec.Body.String())
+			}
+		})
+	}
+}
+
+func TestOrganizationCookbookVersionMutationAuthorizationParity(t *testing.T) {
+	router := newTestRouter(t)
+
+	orgCookbookPath := func(name string, extra ...string) string {
+		path := "/organizations/ponyville/cookbooks/" + name
+		for _, segment := range extra {
+			path += "/" + segment
+		}
+		return path
+	}
+
+	t.Run("create", func(t *testing.T) {
+		normalPayload := cookbookVersionPayload("created-by-user", "1.2.3", "", nil)
+		normalPayload["metadata"].(map[string]any)["description"] = "created by normal-user"
+		normalReq := newSignedJSONRequestAs(t, "normal-user", http.MethodPut, orgCookbookPath("created-by-user", "1.2.3"), mustMarshalSandboxJSON(t, normalPayload))
+		normalRec := httptest.NewRecorder()
+		router.ServeHTTP(normalRec, normalReq)
+		if normalRec.Code != http.StatusCreated {
+			t.Fatalf("org-scoped normal user create status = %d, want %d, body = %s", normalRec.Code, http.StatusCreated, normalRec.Body.String())
+		}
+		assertCookbookDescription(t, router, orgCookbookPath("created-by-user", "1.2.3"), "created by normal-user")
+
+		outsidePayload := cookbookVersionPayload("blocked-by-outside", "1.2.3", "", nil)
+		outsidePayload["metadata"].(map[string]any)["description"] = "outside user attempted create"
+		outsideReq := newSignedJSONRequestAs(t, "outside-user", http.MethodPut, orgCookbookPath("blocked-by-outside", "1.2.3"), mustMarshalSandboxJSON(t, outsidePayload))
+		outsideRec := httptest.NewRecorder()
+		router.ServeHTTP(outsideRec, outsideReq)
+		if outsideRec.Code != http.StatusForbidden {
+			t.Fatalf("org-scoped outside user create status = %d, want %d, body = %s", outsideRec.Code, http.StatusForbidden, outsideRec.Body.String())
+		}
+		assertCookbookMissing(t, router, orgCookbookPath("blocked-by-outside", "1.2.3"))
+
+		invalidPayload := cookbookVersionPayload("blocked-by-invalid", "1.2.3", "", nil)
+		invalidPayload["metadata"].(map[string]any)["description"] = "invalid user attempted create"
+		invalidReq := newSignedJSONRequestAs(t, "invalid-user", http.MethodPut, orgCookbookPath("blocked-by-invalid", "1.2.3"), mustMarshalSandboxJSON(t, invalidPayload))
+		invalidRec := httptest.NewRecorder()
+		router.ServeHTTP(invalidRec, invalidReq)
+		if invalidRec.Code != http.StatusUnauthorized {
+			t.Fatalf("org-scoped invalid user create status = %d, want %d, body = %s", invalidRec.Code, http.StatusUnauthorized, invalidRec.Body.String())
+		}
+		assertCookbookMissing(t, router, orgCookbookPath("blocked-by-invalid", "1.2.3"))
+	})
+
+	t.Run("update", func(t *testing.T) {
+		createOrgCookbookVersion(t, router, "ponyville", "demo", "1.2.3", "", nil)
+
+		normalPayload := cookbookVersionPayload("demo", "1.2.3", "", nil)
+		normalPayload["metadata"].(map[string]any)["description"] = "updated by normal-user"
+		normalReq := newSignedJSONRequestAs(t, "normal-user", http.MethodPut, orgCookbookPath("demo", "1.2.3"), mustMarshalSandboxJSON(t, normalPayload))
+		normalRec := httptest.NewRecorder()
+		router.ServeHTTP(normalRec, normalReq)
+		if normalRec.Code != http.StatusOK {
+			t.Fatalf("org-scoped normal user update status = %d, want %d, body = %s", normalRec.Code, http.StatusOK, normalRec.Body.String())
+		}
+		assertCookbookDescription(t, router, orgCookbookPath("demo", "1.2.3"), "updated by normal-user")
+
+		outsidePayload := cookbookVersionPayload("demo", "1.2.3", "", nil)
+		outsidePayload["metadata"].(map[string]any)["description"] = "outside user update"
+		outsideReq := newSignedJSONRequestAs(t, "outside-user", http.MethodPut, orgCookbookPath("demo", "1.2.3"), mustMarshalSandboxJSON(t, outsidePayload))
+		outsideRec := httptest.NewRecorder()
+		router.ServeHTTP(outsideRec, outsideReq)
+		if outsideRec.Code != http.StatusForbidden {
+			t.Fatalf("org-scoped outside user update status = %d, want %d, body = %s", outsideRec.Code, http.StatusForbidden, outsideRec.Body.String())
+		}
+		assertCookbookDescription(t, router, orgCookbookPath("demo", "1.2.3"), "updated by normal-user")
+
+		invalidPayload := cookbookVersionPayload("demo", "1.2.3", "", nil)
+		invalidPayload["metadata"].(map[string]any)["description"] = "invalid user update"
+		invalidReq := newSignedJSONRequestAs(t, "invalid-user", http.MethodPut, orgCookbookPath("demo", "1.2.3"), mustMarshalSandboxJSON(t, invalidPayload))
+		invalidRec := httptest.NewRecorder()
+		router.ServeHTTP(invalidRec, invalidReq)
+		if invalidRec.Code != http.StatusUnauthorized {
+			t.Fatalf("org-scoped invalid user update status = %d, want %d, body = %s", invalidRec.Code, http.StatusUnauthorized, invalidRec.Body.String())
+		}
+		assertCookbookDescription(t, router, orgCookbookPath("demo", "1.2.3"), "updated by normal-user")
+	})
+
+	t.Run("delete", func(t *testing.T) {
+		createOrgCookbookVersion(t, router, "ponyville", "normal-delete", "1.2.3", "", nil)
+		normalDeleteReq := newSignedJSONRequestAs(t, "normal-user", http.MethodDelete, orgCookbookPath("normal-delete", "1.2.3"), nil)
+		normalDeleteRec := httptest.NewRecorder()
+		router.ServeHTTP(normalDeleteRec, normalDeleteReq)
+		if normalDeleteRec.Code != http.StatusOK {
+			t.Fatalf("org-scoped normal user delete status = %d, want %d, body = %s", normalDeleteRec.Code, http.StatusOK, normalDeleteRec.Body.String())
+		}
+		assertCookbookMissing(t, router, orgCookbookPath("normal-delete", "1.2.3"))
+
+		createOrgCookbookVersion(t, router, "ponyville", "blocked-delete", "1.2.3", "", nil)
+		outsideDeleteReq := newSignedJSONRequestAs(t, "outside-user", http.MethodDelete, orgCookbookPath("blocked-delete", "1.2.3"), nil)
+		outsideDeleteRec := httptest.NewRecorder()
+		router.ServeHTTP(outsideDeleteRec, outsideDeleteReq)
+		if outsideDeleteRec.Code != http.StatusForbidden {
+			t.Fatalf("org-scoped outside user delete status = %d, want %d, body = %s", outsideDeleteRec.Code, http.StatusForbidden, outsideDeleteRec.Body.String())
+		}
+		assertCookbookDescription(t, router, orgCookbookPath("blocked-delete", "1.2.3"), "compatibility cookbook")
+
+		invalidDeleteReq := newSignedJSONRequestAs(t, "invalid-user", http.MethodDelete, orgCookbookPath("blocked-delete", "1.2.3"), nil)
+		invalidDeleteRec := httptest.NewRecorder()
+		router.ServeHTTP(invalidDeleteRec, invalidDeleteReq)
+		if invalidDeleteRec.Code != http.StatusUnauthorized {
+			t.Fatalf("org-scoped invalid user delete status = %d, want %d, body = %s", invalidDeleteRec.Code, http.StatusUnauthorized, invalidDeleteRec.Body.String())
+		}
+		assertCookbookDescription(t, router, orgCookbookPath("blocked-delete", "1.2.3"), "compatibility cookbook")
+	})
+}
+
+func TestOrganizationCookbookArtifactSupportsAPIV2AllFilesReadShape(t *testing.T) {
+	router := newTestRouter(t)
+
+	checksum := uploadCookbookChecksum(t, router, []byte("puts 'org artifact v2'"))
+	createOrgCookbookArtifact(t, router, "ponyville", "demo", "1111111111111111111111111111111111111111", "1.2.3", checksum, nil)
+
+	getReq := newSignedJSONRequest(t, http.MethodGet, "/organizations/ponyville/cookbook_artifacts/demo/1111111111111111111111111111111111111111", nil)
+	getReq.Header.Set("X-Ops-Server-API-Version", "2")
+	getRec := httptest.NewRecorder()
+	router.ServeHTTP(getRec, getReq)
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("org-scoped artifact v2 get status = %d, want %d, body = %s", getRec.Code, http.StatusOK, getRec.Body.String())
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(getRec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal(org v2 artifact get) error = %v", err)
+	}
+	if _, ok := payload["recipes"]; ok {
+		t.Fatalf("org-scoped v2 artifact response unexpectedly included recipes: %v", payload)
+	}
+	allFiles, ok := payload["all_files"].([]any)
+	if !ok || len(allFiles) != 1 {
+		t.Fatalf("org-scoped v2 all_files = %T/%v, want single entry", payload["all_files"], payload["all_files"])
+	}
+	file, ok := allFiles[0].(map[string]any)
+	if !ok {
+		t.Fatalf("org-scoped v2 all_files entry = %T, want map[string]any", allFiles[0])
+	}
+	if file["name"] != "recipes/default.rb" || file["path"] != "recipes/default.rb" {
+		t.Fatalf("org-scoped v2 file entry = %v, want recipes/default.rb path and name", file)
+	}
+	if file["checksum"] != checksum {
+		t.Fatalf("org-scoped v2 file checksum = %v, want %q", file["checksum"], checksum)
+	}
+	if file["specificity"] != "default" {
+		t.Fatalf("org-scoped v2 file specificity = %v, want %q", file["specificity"], "default")
+	}
+	if _, ok := file["url"].(string); !ok {
+		t.Fatalf("org-scoped v2 file url = %T, want string (%v)", file["url"], file)
+	}
+}
+
 func TestCookbookEndpointsListLatestRecipesUniverseAndV2VersionView(t *testing.T) {
 	router := newTestRouter(t)
 
@@ -1053,6 +2134,187 @@ func TestCookbookEndpointsListLatestRecipesUniverseAndV2VersionView(t *testing.T
 	deps := v12["dependencies"].(map[string]any)
 	if deps["apt"] != ">= 2.0.0" {
 		t.Fatalf("dependencies.apt = %v, want %q", deps["apt"], ">= 2.0.0")
+	}
+}
+
+func TestCookbookRoutesAcceptTrailingSlashes(t *testing.T) {
+	router := newTestRouter(t)
+
+	checksumV1 := uploadCookbookChecksum(t, router, []byte("puts 'route semantics v1'"))
+	checksumV2 := uploadCookbookChecksum(t, router, []byte("puts 'route semantics v2'"))
+
+	createCookbookVersion(t, router, "demo", "1.0.0", checksumV1, nil)
+	createCookbookVersion(t, router, "demo", "1.2.0", checksumV2, nil)
+
+	routes := []struct {
+		name string
+		path string
+	}{
+		{name: "default-org collection", path: "/cookbooks/"},
+		{name: "default-org latest collection", path: "/cookbooks/_latest/"},
+		{name: "default-org recipes collection", path: "/cookbooks/_recipes/"},
+		{name: "default-org named cookbook", path: "/cookbooks/demo/"},
+		{name: "default-org named version", path: "/cookbooks/demo/1.2.0/"},
+		{name: "default-org named latest version", path: "/cookbooks/demo/_latest/"},
+		{name: "default-org universe", path: "/universe/"},
+		{name: "org-scoped collection", path: "/organizations/ponyville/cookbooks/"},
+		{name: "org-scoped latest collection", path: "/organizations/ponyville/cookbooks/_latest/"},
+		{name: "org-scoped recipes collection", path: "/organizations/ponyville/cookbooks/_recipes/"},
+		{name: "org-scoped named cookbook", path: "/organizations/ponyville/cookbooks/demo/"},
+		{name: "org-scoped named version", path: "/organizations/ponyville/cookbooks/demo/1.2.0/"},
+		{name: "org-scoped named latest version", path: "/organizations/ponyville/cookbooks/demo/_latest/"},
+		{name: "org-scoped universe", path: "/organizations/ponyville/universe/"},
+	}
+
+	for _, route := range routes {
+		t.Run(route.name, func(t *testing.T) {
+			req := newSignedJSONRequest(t, http.MethodGet, route.path, nil)
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("%s status = %d, want %d, body = %s", route.path, rec.Code, http.StatusOK, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestCookbookRoutesReturnMethodNotAllowedWithAllowHeader(t *testing.T) {
+	router := newTestRouter(t)
+
+	routes := []struct {
+		name        string
+		path        string
+		wantAllow   string
+		wantMessage string
+	}{
+		{
+			name:        "default-org collection",
+			path:        "/cookbooks",
+			wantAllow:   http.MethodGet,
+			wantMessage: "method not allowed for cookbooks route",
+		},
+		{
+			name:        "default-org latest collection",
+			path:        "/cookbooks/_latest",
+			wantAllow:   http.MethodGet,
+			wantMessage: "method not allowed for cookbooks route",
+		},
+		{
+			name:        "default-org recipes collection",
+			path:        "/cookbooks/_recipes",
+			wantAllow:   http.MethodGet,
+			wantMessage: "method not allowed for cookbooks route",
+		},
+		{
+			name:        "default-org named cookbook",
+			path:        "/cookbooks/demo",
+			wantAllow:   http.MethodGet,
+			wantMessage: "method not allowed for cookbook route",
+		},
+		{
+			name:        "default-org named version",
+			path:        "/cookbooks/demo/1.2.3",
+			wantAllow:   strings.Join([]string{http.MethodGet, http.MethodPut, http.MethodDelete}, ", "),
+			wantMessage: "method not allowed for cookbook version route",
+		},
+		{
+			name:        "default-org universe",
+			path:        "/universe",
+			wantAllow:   http.MethodGet,
+			wantMessage: "method not allowed for universe route",
+		},
+		{
+			name:        "org-scoped collection",
+			path:        "/organizations/ponyville/cookbooks",
+			wantAllow:   http.MethodGet,
+			wantMessage: "method not allowed for cookbooks route",
+		},
+		{
+			name:        "org-scoped latest collection",
+			path:        "/organizations/ponyville/cookbooks/_latest",
+			wantAllow:   http.MethodGet,
+			wantMessage: "method not allowed for cookbooks route",
+		},
+		{
+			name:        "org-scoped recipes collection",
+			path:        "/organizations/ponyville/cookbooks/_recipes",
+			wantAllow:   http.MethodGet,
+			wantMessage: "method not allowed for cookbooks route",
+		},
+		{
+			name:        "org-scoped named cookbook",
+			path:        "/organizations/ponyville/cookbooks/demo",
+			wantAllow:   http.MethodGet,
+			wantMessage: "method not allowed for cookbook route",
+		},
+		{
+			name:        "org-scoped named version",
+			path:        "/organizations/ponyville/cookbooks/demo/1.2.3",
+			wantAllow:   strings.Join([]string{http.MethodGet, http.MethodPut, http.MethodDelete}, ", "),
+			wantMessage: "method not allowed for cookbook version route",
+		},
+		{
+			name:        "org-scoped universe",
+			path:        "/organizations/ponyville/universe",
+			wantAllow:   http.MethodGet,
+			wantMessage: "method not allowed for universe route",
+		},
+	}
+
+	for _, route := range routes {
+		t.Run(route.name, func(t *testing.T) {
+			req := newSignedJSONRequest(t, http.MethodPost, route.path, nil)
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusMethodNotAllowed {
+				t.Fatalf("%s status = %d, want %d, body = %s", route.path, rec.Code, http.StatusMethodNotAllowed, rec.Body.String())
+			}
+			if rec.Header().Get("Allow") != route.wantAllow {
+				t.Fatalf("%s Allow = %q, want %q", route.path, rec.Header().Get("Allow"), route.wantAllow)
+			}
+
+			payload := decodeJSONMap(t, rec.Body.Bytes())
+			if payload["error"] != "method_not_allowed" {
+				t.Fatalf("%s error = %v, want %q", route.path, payload["error"], "method_not_allowed")
+			}
+			if payload["message"] != route.wantMessage {
+				t.Fatalf("%s message = %v, want %q", route.path, payload["message"], route.wantMessage)
+			}
+		})
+	}
+}
+
+func TestCookbookRoutesReturnNotFoundForExtraPath(t *testing.T) {
+	router := newTestRouter(t)
+
+	routes := []struct {
+		name string
+		path string
+	}{
+		{name: "default-org latest collection extra path", path: "/cookbooks/_latest/extra"},
+		{name: "default-org recipes collection extra path", path: "/cookbooks/_recipes/extra"},
+		{name: "default-org named version extra path", path: "/cookbooks/demo/1.2.3/extra"},
+		{name: "default-org named latest version extra path", path: "/cookbooks/demo/_latest/extra"},
+		{name: "default-org universe extra path", path: "/universe/extra"},
+		{name: "org-scoped latest collection extra path", path: "/organizations/ponyville/cookbooks/_latest/extra"},
+		{name: "org-scoped recipes collection extra path", path: "/organizations/ponyville/cookbooks/_recipes/extra"},
+		{name: "org-scoped named version extra path", path: "/organizations/ponyville/cookbooks/demo/1.2.3/extra"},
+		{name: "org-scoped named latest version extra path", path: "/organizations/ponyville/cookbooks/demo/_latest/extra"},
+		{name: "org-scoped universe extra path", path: "/organizations/ponyville/universe/extra"},
+	}
+
+	for _, route := range routes {
+		t.Run(route.name, func(t *testing.T) {
+			req := newSignedJSONRequest(t, http.MethodGet, route.path, nil)
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusNotFound {
+				t.Fatalf("%s status = %d, want %d, body = %s", route.path, rec.Code, http.StatusNotFound, rec.Body.String())
+			}
+		})
 	}
 }
 
@@ -1506,6 +2768,383 @@ func TestCookbookVersionRouteValidationHandlesLargeVersionComponents(t *testing.
 	assertCookbookErrorList(t, overflowRec.Body.Bytes(), []string{"Invalid cookbook version '1.2.9223372036854775849'."})
 
 	assertCookbookMissing(t, router, "/cookbooks/overflow-demo")
+}
+
+func TestOrganizationCookbookVersionValidationAndNoMutationParity(t *testing.T) {
+	router := newTestRouter(t)
+
+	orgCookbookPath := func(name string, extra ...string) string {
+		path := "/organizations/ponyville/cookbooks/" + name
+		for _, segment := range extra {
+			path += "/" + segment
+		}
+		return path
+	}
+
+	createOrgCookbookVersion := func(t *testing.T, name, version, checksum string, dependencies map[string]string) {
+		t.Helper()
+
+		req := newSignedJSONRequest(t, http.MethodPut, orgCookbookPath(name, version), mustMarshalSandboxJSON(t, cookbookVersionPayload(name, version, checksum, dependencies)))
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("create org-scoped cookbook %s/%s status = %d, want %d, body = %s", name, version, rec.Code, http.StatusCreated, rec.Body.String())
+		}
+	}
+
+	t.Run("route_and_payload_mismatches", func(t *testing.T) {
+		createVersionMismatchReq := newSignedJSONRequest(t, http.MethodPut, orgCookbookPath("demo", "1.2.3"), mustMarshalSandboxJSON(t, cookbookVersionPayload("demo", "0.0.1", "", nil)))
+		createVersionMismatchRec := httptest.NewRecorder()
+		router.ServeHTTP(createVersionMismatchRec, createVersionMismatchReq)
+		if createVersionMismatchRec.Code != http.StatusBadRequest {
+			t.Fatalf("org-scoped create version mismatch status = %d, want %d, body = %s", createVersionMismatchRec.Code, http.StatusBadRequest, createVersionMismatchRec.Body.String())
+		}
+		assertCookbookErrorList(t, createVersionMismatchRec.Body.Bytes(), []string{"Field 'name' invalid"})
+		assertCookbookMissing(t, router, orgCookbookPath("demo", "1.2.3"))
+
+		createNameMismatchReq := newSignedJSONRequest(t, http.MethodPut, orgCookbookPath("demo", "1.2.3"), mustMarshalSandboxJSON(t, cookbookVersionPayload("other", "1.2.3", "", nil)))
+		createNameMismatchRec := httptest.NewRecorder()
+		router.ServeHTTP(createNameMismatchRec, createNameMismatchReq)
+		if createNameMismatchRec.Code != http.StatusBadRequest {
+			t.Fatalf("org-scoped create cookbook_name mismatch status = %d, want %d, body = %s", createNameMismatchRec.Code, http.StatusBadRequest, createNameMismatchRec.Body.String())
+		}
+		assertCookbookErrorList(t, createNameMismatchRec.Body.Bytes(), []string{"Field 'name' invalid"})
+		assertCookbookMissing(t, router, orgCookbookPath("demo", "1.2.3"))
+
+		createOrgCookbookVersion(t, "demo", "1.2.3", "", nil)
+		updatePayload := cookbookVersionPayload("demo", "1.2.3", "", nil)
+		updatePayload["cookbook_name"] = "other"
+		updateReq := newSignedJSONRequest(t, http.MethodPut, orgCookbookPath("demo", "1.2.3"), mustMarshalSandboxJSON(t, updatePayload))
+		updateRec := httptest.NewRecorder()
+		router.ServeHTTP(updateRec, updateReq)
+		if updateRec.Code != http.StatusBadRequest {
+			t.Fatalf("org-scoped update cookbook_name mismatch status = %d, want %d, body = %s", updateRec.Code, http.StatusBadRequest, updateRec.Body.String())
+		}
+		assertCookbookErrorList(t, updateRec.Body.Bytes(), []string{"Field 'cookbook_name' invalid"})
+		assertCookbookDescription(t, router, orgCookbookPath("demo", "1.2.3"), "compatibility cookbook")
+	})
+
+	t.Run("top_level_field_validation", func(t *testing.T) {
+		createOrgCookbookVersion(t, "top-level-demo", "1.2.3", "", nil)
+
+		tests := []struct {
+			name         string
+			path         string
+			payload      map[string]any
+			wantErrors   []string
+			verifyPath   string
+			verifyExists bool
+			wantDesc     string
+		}{
+			{
+				name: "create rejects invalid json_class",
+				path: orgCookbookPath("create-json-class", "1.2.3"),
+				payload: func() map[string]any {
+					payload := cookbookVersionPayload("create-json-class", "1.2.3", "", nil)
+					payload["json_class"] = "Chef::Role"
+					return payload
+				}(),
+				wantErrors:   []string{"Field 'json_class' invalid"},
+				verifyPath:   orgCookbookPath("create-json-class", "1.2.3"),
+				verifyExists: false,
+			},
+			{
+				name: "create rejects invalid chef_type",
+				path: orgCookbookPath("create-chef-type", "1.2.3"),
+				payload: func() map[string]any {
+					payload := cookbookVersionPayload("create-chef-type", "1.2.3", "", nil)
+					payload["chef_type"] = "not_a_cookbook_version"
+					return payload
+				}(),
+				wantErrors:   []string{"Field 'chef_type' invalid"},
+				verifyPath:   orgCookbookPath("create-chef-type", "1.2.3"),
+				verifyExists: false,
+			},
+			{
+				name: "create rejects invalid version",
+				path: orgCookbookPath("create-version", "1.2.3"),
+				payload: func() map[string]any {
+					payload := cookbookVersionPayload("create-version", "1.2.3", "", nil)
+					payload["version"] = "0.0"
+					return payload
+				}(),
+				wantErrors:   []string{"Field 'version' invalid"},
+				verifyPath:   orgCookbookPath("create-version", "1.2.3"),
+				verifyExists: false,
+			},
+			{
+				name: "create rejects invalid request key",
+				path: orgCookbookPath("create-invalid-key", "1.2.3"),
+				payload: func() map[string]any {
+					payload := cookbookVersionPayload("create-invalid-key", "1.2.3", "", nil)
+					payload["bogus"] = "nope"
+					return payload
+				}(),
+				wantErrors:   []string{"Invalid key bogus in request body"},
+				verifyPath:   orgCookbookPath("create-invalid-key", "1.2.3"),
+				verifyExists: false,
+			},
+			{
+				name: "update rejects invalid json_class",
+				path: orgCookbookPath("top-level-demo", "1.2.3"),
+				payload: func() map[string]any {
+					payload := cookbookVersionPayload("top-level-demo", "1.2.3", "", nil)
+					payload["json_class"] = "Chef::NonCookbook"
+					payload["metadata"].(map[string]any)["description"] = "bad json_class"
+					return payload
+				}(),
+				wantErrors:   []string{"Field 'json_class' invalid"},
+				verifyPath:   orgCookbookPath("top-level-demo", "1.2.3"),
+				verifyExists: true,
+				wantDesc:     "compatibility cookbook",
+			},
+			{
+				name: "update rejects invalid chef_type",
+				path: orgCookbookPath("top-level-demo", "1.2.3"),
+				payload: func() map[string]any {
+					payload := cookbookVersionPayload("top-level-demo", "1.2.3", "", nil)
+					payload["chef_type"] = "not_cookbook"
+					payload["metadata"].(map[string]any)["description"] = "bad chef_type"
+					return payload
+				}(),
+				wantErrors:   []string{"Field 'chef_type' invalid"},
+				verifyPath:   orgCookbookPath("top-level-demo", "1.2.3"),
+				verifyExists: true,
+				wantDesc:     "compatibility cookbook",
+			},
+			{
+				name: "update rejects invalid version",
+				path: orgCookbookPath("top-level-demo", "1.2.3"),
+				payload: func() map[string]any {
+					payload := cookbookVersionPayload("top-level-demo", "1.2.3", "", nil)
+					payload["version"] = "0.0"
+					payload["metadata"].(map[string]any)["description"] = "bad version"
+					return payload
+				}(),
+				wantErrors:   []string{"Field 'version' invalid"},
+				verifyPath:   orgCookbookPath("top-level-demo", "1.2.3"),
+				verifyExists: true,
+				wantDesc:     "compatibility cookbook",
+			},
+			{
+				name: "update rejects invalid request key",
+				path: orgCookbookPath("top-level-demo", "1.2.3"),
+				payload: func() map[string]any {
+					payload := cookbookVersionPayload("top-level-demo", "1.2.3", "", nil)
+					payload["bogus"] = []string{"still bad"}
+					payload["metadata"].(map[string]any)["description"] = "bad bogus key"
+					return payload
+				}(),
+				wantErrors:   []string{"Invalid key bogus in request body"},
+				verifyPath:   orgCookbookPath("top-level-demo", "1.2.3"),
+				verifyExists: true,
+				wantDesc:     "compatibility cookbook",
+			},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				req := newSignedJSONRequest(t, http.MethodPut, tt.path, mustMarshalSandboxJSON(t, tt.payload))
+				rec := httptest.NewRecorder()
+				router.ServeHTTP(rec, req)
+				if rec.Code != http.StatusBadRequest {
+					t.Fatalf("%s status = %d, want %d, body = %s", tt.path, rec.Code, http.StatusBadRequest, rec.Body.String())
+				}
+				assertCookbookErrorList(t, rec.Body.Bytes(), tt.wantErrors)
+
+				if !tt.verifyExists {
+					assertCookbookMissing(t, router, tt.verifyPath)
+					return
+				}
+				assertCookbookDescription(t, router, tt.verifyPath, tt.wantDesc)
+			})
+		}
+	})
+
+	t.Run("malformed_name_and_version_routes", func(t *testing.T) {
+		tests := []struct {
+			name       string
+			method     string
+			path       string
+			body       []byte
+			wantErrors []string
+			verifyPath string
+		}{
+			{
+				name:       "invalid cookbook name on create",
+				method:     http.MethodPut,
+				path:       orgCookbookPath("first@second", "1.2.3"),
+				body:       mustMarshalSandboxJSON(t, cookbookVersionPayload("first@second", "1.2.3", "", nil)),
+				wantErrors: []string{"Invalid cookbook name 'first@second' using regex: 'Malformed cookbook name. Must only contain A-Z, a-z, 0-9, _, . or -'."},
+			},
+			{
+				name:       "negative cookbook version on create",
+				method:     http.MethodPut,
+				path:       orgCookbookPath("invalid-demo", "1.2.-42"),
+				body:       mustMarshalSandboxJSON(t, cookbookVersionPayload("invalid-demo", "1.2.-42", "", nil)),
+				wantErrors: []string{"Invalid cookbook version '1.2.-42'."},
+				verifyPath: orgCookbookPath("invalid-demo"),
+			},
+			{
+				name:       "alphabetic cookbook version on create",
+				method:     http.MethodPut,
+				path:       orgCookbookPath("invalid-demo", "abc"),
+				body:       mustMarshalSandboxJSON(t, cookbookVersionPayload("invalid-demo", "abc", "", nil)),
+				wantErrors: []string{"Invalid cookbook version 'abc'."},
+				verifyPath: orgCookbookPath("invalid-demo"),
+			},
+			{
+				name:       "negative cookbook version on read",
+				method:     http.MethodGet,
+				path:       orgCookbookPath("demo", "1.2.-42"),
+				wantErrors: []string{"Invalid cookbook version '1.2.-42'."},
+			},
+			{
+				name:       "negative cookbook version on delete",
+				method:     http.MethodDelete,
+				path:       orgCookbookPath("demo", "1.2.-42"),
+				wantErrors: []string{"Invalid cookbook version '1.2.-42'."},
+			},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				req := newSignedJSONRequest(t, tt.method, tt.path, tt.body)
+				rec := httptest.NewRecorder()
+				router.ServeHTTP(rec, req)
+				if rec.Code != http.StatusBadRequest {
+					t.Fatalf("%s status = %d, want %d, body = %s", tt.path, rec.Code, http.StatusBadRequest, rec.Body.String())
+				}
+				assertCookbookErrorList(t, rec.Body.Bytes(), tt.wantErrors)
+				if tt.verifyPath != "" {
+					assertCookbookMissing(t, router, tt.verifyPath)
+				}
+			})
+		}
+	})
+
+	t.Run("invalid_metadata_shapes_keep_existing_version_intact", func(t *testing.T) {
+		checksum := uploadCookbookChecksum(t, router, []byte("puts 'org metadata exactness'"))
+		createOrgCookbookVersion(t, "meta-demo", "1.2.3", checksum, map[string]string{
+			"apt": ">= 1.0.0",
+		})
+
+		cases := []struct {
+			name    string
+			mutate  func(map[string]any)
+			message string
+		}{
+			{
+				name: "platforms_nested_object",
+				mutate: func(payload map[string]any) {
+					payload["metadata"].(map[string]any)["platforms"] = map[string]any{"ubuntu": map[string]any{}}
+				},
+				message: "Invalid value '{[]}' for metadata.platforms",
+			},
+			{
+				name: "dependencies_array",
+				mutate: func(payload map[string]any) {
+					payload["metadata"].(map[string]any)["dependencies"] = []any{"foo"}
+				},
+				message: "Field 'metadata.dependencies' invalid",
+			},
+		}
+
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				payload := cookbookVersionPayload("meta-demo", "1.2.3", checksum, map[string]string{
+					"apt": ">= 2.0.0",
+				})
+				payload["metadata"].(map[string]any)["description"] = "this should not persist"
+				tc.mutate(payload)
+
+				req := newSignedJSONRequest(t, http.MethodPut, orgCookbookPath("meta-demo", "1.2.3"), mustMarshalSandboxJSON(t, payload))
+				rec := httptest.NewRecorder()
+				router.ServeHTTP(rec, req)
+				if rec.Code != http.StatusBadRequest {
+					t.Fatalf("update status = %d, want %d, body = %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+				}
+				assertCookbookErrorList(t, rec.Body.Bytes(), []string{tc.message})
+				assertCookbookDescription(t, router, orgCookbookPath("meta-demo", "1.2.3"), "compatibility cookbook")
+			})
+		}
+	})
+
+	t.Run("checksum_failures_do_not_mutate_existing_version", func(t *testing.T) {
+		checksum := uploadCookbookChecksum(t, router, []byte("puts 'hello v1'"))
+		createOrgCookbookVersion(t, "checksum-demo", "1.2.3", checksum, map[string]string{
+			"apt": ">= 1.0.0",
+		})
+
+		updatePayload := cookbookVersionPayload("checksum-demo", "1.2.3", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", map[string]string{
+			"apt": ">= 2.0.0",
+		})
+		updateReq := newSignedJSONRequest(t, http.MethodPut, orgCookbookPath("checksum-demo", "1.2.3"), mustMarshalSandboxJSON(t, updatePayload))
+		updateRec := httptest.NewRecorder()
+		router.ServeHTTP(updateRec, updateReq)
+		if updateRec.Code != http.StatusBadRequest {
+			t.Fatalf("update checksum status = %d, want %d, body = %s", updateRec.Code, http.StatusBadRequest, updateRec.Body.String())
+		}
+
+		var updateErrorPayload map[string]any
+		if err := json.Unmarshal(updateRec.Body.Bytes(), &updateErrorPayload); err != nil {
+			t.Fatalf("json.Unmarshal(update error) error = %v", err)
+		}
+		updateErrors := updateErrorPayload["error"].([]any)
+		if len(updateErrors) != 1 || updateErrors[0] != "Manifest has checksum aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa but it hasn't yet been uploaded" {
+			t.Fatalf("update errors = %v, want checksum-specific message", updateErrors)
+		}
+		getReq := newSignedJSONRequest(t, http.MethodGet, orgCookbookPath("checksum-demo", "1.2.3"), nil)
+		getReq.Header.Set("X-Ops-Server-API-Version", "2")
+		getRec := httptest.NewRecorder()
+		router.ServeHTTP(getRec, getReq)
+		if getRec.Code != http.StatusOK {
+			t.Fatalf("get cookbook status = %d, want %d, body = %s", getRec.Code, http.StatusOK, getRec.Body.String())
+		}
+		var getPayload map[string]any
+		if err := json.Unmarshal(getRec.Body.Bytes(), &getPayload); err != nil {
+			t.Fatalf("json.Unmarshal(get after checksum failure) error = %v", err)
+		}
+		if got := getPayload["metadata"].(map[string]any)["dependencies"].(map[string]any)["apt"]; got != ">= 1.0.0" {
+			t.Fatalf("dependencies.apt = %v, want original value after failed update", got)
+		}
+
+		firstChecksum := uploadCookbookChecksum(t, router, []byte("puts 'first body'"))
+		secondChecksum := uploadCookbookChecksum(t, router, []byte("puts 'second body'"))
+		thirdChecksum := uploadCookbookChecksum(t, router, []byte("puts 'third body'"))
+		createPayload := cookbookVersionPayload("invalid-checksum-demo", "1.2.3", "", nil)
+		createPayload["all_files"] = []any{
+			cookbookFilePayload("files/default/first", "files/default/first", firstChecksum),
+			cookbookFilePayload("files/default/second", "files/default/second", secondChecksum),
+			cookbookFilePayload("files/default/third", "files/default/third", thirdChecksum),
+		}
+		createReq := newSignedJSONRequest(t, http.MethodPut, orgCookbookPath("invalid-checksum-demo", "1.2.3"), mustMarshalSandboxJSON(t, createPayload))
+		createReq.Header.Set("X-Ops-Server-API-Version", "2")
+		createRec := httptest.NewRecorder()
+		router.ServeHTTP(createRec, createReq)
+		if createRec.Code != http.StatusCreated {
+			t.Fatalf("create invalid-checksum-demo status = %d, want %d, body = %s", createRec.Code, http.StatusCreated, createRec.Body.String())
+		}
+
+		updateFilesPayload := cookbookVersionPayload("invalid-checksum-demo", "1.2.3", "", nil)
+		updateFilesPayload["all_files"] = []any{
+			cookbookFilePayload("files/default/first", "files/default/first", firstChecksum),
+			cookbookFilePayload("files/default/missing", "files/default/missing", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+		}
+		updateFilesReq := newSignedJSONRequest(t, http.MethodPut, orgCookbookPath("invalid-checksum-demo", "1.2.3"), mustMarshalSandboxJSON(t, updateFilesPayload))
+		updateFilesReq.Header.Set("X-Ops-Server-API-Version", "2")
+		updateFilesRec := httptest.NewRecorder()
+		router.ServeHTTP(updateFilesRec, updateFilesReq)
+		if updateFilesRec.Code != http.StatusBadRequest {
+			t.Fatalf("invalid checksum file update status = %d, want %d, body = %s", updateFilesRec.Code, http.StatusBadRequest, updateFilesRec.Body.String())
+		}
+		assertCookbookErrorList(t, updateFilesRec.Body.Bytes(), []string{"Manifest has checksum aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa but it hasn't yet been uploaded"})
+		assertCookbookAllFilePaths(t, router, orgCookbookPath("invalid-checksum-demo", "1.2.3"), []string{
+			"files/default/first",
+			"files/default/second",
+			"files/default/third",
+		})
+	})
 }
 
 func TestCookbookCollectionNumVersionsEdgeCases(t *testing.T) {
@@ -3474,6 +5113,28 @@ func createCookbookArtifact(t *testing.T, router http.Handler, name, identifier,
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("create cookbook artifact %s/%s status = %d, want %d, body = %s", name, version, rec.Code, http.StatusCreated, rec.Body.String())
+	}
+}
+
+func createOrgCookbookArtifact(t *testing.T, router http.Handler, org, name, identifier, version, checksum string, dependencies map[string]string) {
+	t.Helper()
+
+	req := newSignedJSONRequest(t, http.MethodPut, "/organizations/"+org+"/cookbook_artifacts/"+name+"/"+identifier, mustMarshalSandboxJSON(t, cookbookArtifactPayload(name, identifier, version, checksum, dependencies)))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create org-scoped cookbook artifact %s/%s status = %d, want %d, body = %s", name, version, rec.Code, http.StatusCreated, rec.Body.String())
+	}
+}
+
+func createOrgCookbookVersion(t *testing.T, router http.Handler, org, name, version, checksum string, dependencies map[string]string) {
+	t.Helper()
+
+	req := newSignedJSONRequest(t, http.MethodPut, "/organizations/"+org+"/cookbooks/"+name+"/"+version, mustMarshalSandboxJSON(t, cookbookVersionPayload(name, version, checksum, dependencies)))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create org-scoped cookbook %s/%s status = %d, want %d, body = %s", name, version, rec.Code, http.StatusCreated, rec.Body.String())
 	}
 }
 
