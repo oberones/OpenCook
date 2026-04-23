@@ -176,6 +176,7 @@ Status: in progress
 - org-scoped depsolver non-admin org-member role-expanded missing-role, recursive-role, environment-specific success, explicit-empty environment override, and equivalent-root deduplication are now also pinned on both named-environment and `_default` paths
 - org-scoped depsolver non-admin org-member environment-read auth is now also pinned on both named-environment and `_default` paths, including role-expanded short-circuiting before role-container auth
 - org-scoped depsolver non-admin org-member cookbook-container read auth is now also pinned on both named-environment and `_default` paths
+- org-scoped depsolver non-admin org-member roles-container read auth is now also pinned for role-expanded requests on both named-environment and `_default` paths
 - PostgreSQL-backed cookbook persistence, broader cookbook pedant coverage beyond the current environment-filtered/named-filter/latest/version read-write contract, broader upstream run-list/depsolver semantics, and deeper operational hardening around provider-backed blob behavior are still pending
 - S3-compatible blob storage remains the target production mode after the compatibility contract settles
 

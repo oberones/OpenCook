@@ -11029,6 +11029,84 @@ func TestEnvironmentCookbookVersionsUseConfiguredDefaultOrganizationForOrgMember
 	}
 }
 
+func TestOrganizationEnvironmentCookbookVersionsForOrgMemberRolesContainerReadAuthz(t *testing.T) {
+	routes := []struct {
+		name    string
+		path    string
+		envName string
+	}{
+		{name: "named_environment", path: "/organizations/canterlot/environments/production/cookbook_versions", envName: "production"},
+		{name: "default_environment", path: "/organizations/canterlot/environments/_default/cookbook_versions", envName: "_default"},
+	}
+
+	for _, route := range routes {
+		t.Run(route.name, func(t *testing.T) {
+			var authorizer *recordingDepsolverAuthorizer
+			router, state := newSearchTestRouterWithAuthorizer(t, func(state *bootstrap.Service) authz.Authorizer {
+				authorizer = &recordingDepsolverAuthorizer{
+					base: authz.NewACLAuthorizer(state),
+					deny: map[string]struct{}{
+						"read:container:roles": {},
+					},
+				}
+				return authorizer
+			})
+			createOrgForTest(t, router, "canterlot")
+			if err := state.AddUserToGroup("canterlot", "users", "silent-bob"); err != nil {
+				t.Fatalf("AddUserToGroup(silent-bob) error = %v", err)
+			}
+			if route.envName != "_default" {
+				if _, err := state.CreateEnvironment("canterlot", bootstrap.CreateEnvironmentInput{
+					Payload: map[string]any{
+						"name": route.envName,
+					},
+					Creator: authn.Principal{Type: "user", Name: "pivotal"},
+				}); err != nil {
+					t.Fatalf("CreateEnvironment(%s) error = %v", route.envName, err)
+				}
+			}
+			if _, err := state.CreateRole("canterlot", bootstrap.CreateRoleInput{
+				Payload: map[string]any{
+					"name":                "web",
+					"description":         "",
+					"json_class":          "Chef::Role",
+					"chef_type":           "role",
+					"default_attributes":  map[string]any{},
+					"override_attributes": map[string]any{},
+					"run_list":            []any{"recipe[apache2]"},
+					"env_run_lists":       map[string]any{},
+				},
+			}); err != nil {
+				t.Fatalf("CreateRole(web) error = %v", err)
+			}
+			authorizer.calls = nil
+
+			req := newSignedJSONRequestAs(t, "silent-bob", http.MethodPost, route.path, mustMarshalSandboxJSON(t, map[string]any{
+				"run_list": []any{"role[web]"},
+			}))
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("%s org-scoped org-member roles container authz status = %d, want %d, body = %s", route.name, rec.Code, http.StatusForbidden, rec.Body.String())
+			}
+
+			wantCalls := []string{
+				"read:environment:" + route.envName,
+				"read:container:cookbooks",
+				"read:container:roles",
+			}
+			if len(authorizer.calls) != len(wantCalls) {
+				t.Fatalf("%s depsolver authz calls = %v, want %v", route.name, authorizer.calls, wantCalls)
+			}
+			for idx := range wantCalls {
+				if authorizer.calls[idx] != wantCalls[idx] {
+					t.Fatalf("%s depsolver authz calls[%d] = %q, want %q (%v)", route.name, idx, authorizer.calls[idx], wantCalls[idx], authorizer.calls)
+				}
+			}
+		})
+	}
+}
+
 func TestEnvironmentCookbookVersionsUseConfiguredDefaultOrganizationForMissingRoleRunListItem(t *testing.T) {
 	routes := []struct {
 		name    string

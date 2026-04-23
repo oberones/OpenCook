@@ -118,6 +118,7 @@ As of 2026-04-09, OpenCook has moved past pure scaffolding and into the first co
 - org-scoped depsolver routes now also have explicit non-admin org-member role-expansion parity for missing-role, recursive-role, environment-specific success, explicit-empty environment override, and equivalent-root deduplication on both named-environment and `_default` paths
 - org-scoped depsolver routes now also have explicit non-admin org-member environment-read auth parity on both named-environment and `_default` paths, including role-expanded short-circuiting before role-container auth
 - org-scoped depsolver routes now also have explicit non-admin org-member cookbook-container read auth parity on both named-environment and `_default` paths
+- org-scoped depsolver routes now also have explicit non-admin org-member roles-container read auth parity for role-expanded requests on both named-environment and `_default` paths
 - default-org and explicit-org node routes now resolve against the same org-scoped compatibility state
 - default-org and explicit-org environment routes now resolve against the same org-scoped compatibility state
 - the first role slice is now live with in-memory list/get/head/create/update/delete behavior plus Chef-style run-list and env-run-list normalization/deduplication
