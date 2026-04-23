@@ -5102,6 +5102,176 @@ func TestOrganizationEnvironmentCookbookVersionsForOrgMemberRicherConflictDetail
 	})
 }
 
+func TestOrganizationEnvironmentCookbookVersionsForOrgMemberGraphSelection(t *testing.T) {
+	newOrgMemberRouter := func(t *testing.T) http.Handler {
+		t.Helper()
+
+		router, state := newSearchTestRouterWithAuthorizer(t, nil)
+		createOrgForTest(t, router, "canterlot")
+		if err := state.AddUserToGroup("canterlot", "users", "silent-bob"); err != nil {
+			t.Fatalf("AddUserToGroup(silent-bob) error = %v", err)
+		}
+		if _, err := state.CreateEnvironment("canterlot", bootstrap.CreateEnvironmentInput{
+			Payload: map[string]any{
+				"name": "production",
+			},
+			Creator: authn.Principal{Type: "user", Name: "pivotal"},
+		}); err != nil {
+			t.Fatalf("CreateEnvironment(production) error = %v", err)
+		}
+		return router
+	}
+
+	createCookbookInOrganization := func(t *testing.T, router http.Handler, name, version string, dependencies map[string]string) {
+		t.Helper()
+
+		body := mustMarshalSandboxJSON(t, cookbookVersionPayload(name, version, "", dependencies))
+		req := newSignedJSONRequestAs(t, "pivotal", http.MethodPut, "/organizations/canterlot/cookbooks/"+name+"/"+version, body)
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("create cookbook %s-%s status = %d, want %d, body = %s", name, version, rec.Code, http.StatusCreated, rec.Body.String())
+		}
+	}
+
+	routes := []struct {
+		name string
+		path string
+	}{
+		{name: "named_environment", path: "/organizations/canterlot/environments/production/cookbook_versions"},
+		{name: "default_environment", path: "/organizations/canterlot/environments/_default/cookbook_versions"},
+	}
+
+	t.Run("upstream_first_graph", func(t *testing.T) {
+		router := newOrgMemberRouter(t)
+		createCookbookInOrganization(t, router, "app1", "0.1.0", map[string]string{
+			"app2": "0.2.33",
+			"app3": ">= 0.2.0",
+		})
+		createCookbookInOrganization(t, router, "app2", "0.1.0", nil)
+		createCookbookInOrganization(t, router, "app2", "0.2.33", map[string]string{
+			"app3": "0.3.0",
+		})
+		createCookbookInOrganization(t, router, "app2", "0.3.0", nil)
+		createCookbookInOrganization(t, router, "app3", "0.1.0", nil)
+		createCookbookInOrganization(t, router, "app3", "0.2.0", nil)
+		createCookbookInOrganization(t, router, "app3", "0.3.0", nil)
+
+		for _, route := range routes {
+			t.Run(route.name, func(t *testing.T) {
+				req := newSignedJSONRequestAs(t, "silent-bob", http.MethodPost, route.path, mustMarshalSandboxJSON(t, map[string]any{
+					"run_list": []any{"app1@0.1.0"},
+				}))
+				rec := httptest.NewRecorder()
+				router.ServeHTTP(rec, req)
+				if rec.Code != http.StatusOK {
+					t.Fatalf("%s org-scoped org-member first graph status = %d, want %d, body = %s", route.name, rec.Code, http.StatusOK, rec.Body.String())
+				}
+
+				payload := decodeJSONMap(t, rec.Body.Bytes())
+				if len(payload) != 3 {
+					t.Fatalf("%s len(payload) = %d, want 3 (%v)", route.name, len(payload), payload)
+				}
+				assertCookbookVersionBody(t, payload, "app1", "0.1.0")
+				assertCookbookVersionBody(t, payload, "app2", "0.2.33")
+				assertCookbookVersionBody(t, payload, "app3", "0.3.0")
+			})
+		}
+	})
+
+	t.Run("upstream_pinned_root_no_solution_graph", func(t *testing.T) {
+		router := newOrgMemberRouter(t)
+		createCookbookInOrganization(t, router, "app1", "0.1.0", map[string]string{
+			"app2": "0.2.0",
+			"app3": ">= 0.2.0",
+		})
+		createCookbookInOrganization(t, router, "app1", "0.2.0", nil)
+		createCookbookInOrganization(t, router, "app1", "0.3.0", nil)
+		createCookbookInOrganization(t, router, "app2", "0.1.0", nil)
+		createCookbookInOrganization(t, router, "app2", "0.2.0", map[string]string{
+			"app3": "0.1.0",
+		})
+		createCookbookInOrganization(t, router, "app2", "0.3.0", nil)
+		createCookbookInOrganization(t, router, "app3", "0.1.0", nil)
+		createCookbookInOrganization(t, router, "app3", "0.2.0", nil)
+		createCookbookInOrganization(t, router, "app3", "0.3.0", nil)
+
+		for _, route := range routes {
+			t.Run(route.name, func(t *testing.T) {
+				req := newSignedJSONRequestAs(t, "silent-bob", http.MethodPost, route.path, mustMarshalSandboxJSON(t, map[string]any{
+					"run_list": []any{"app1@0.1.0"},
+				}))
+				rec := httptest.NewRecorder()
+				router.ServeHTTP(rec, req)
+				if rec.Code != http.StatusPreconditionFailed {
+					t.Fatalf("%s org-scoped org-member pinned-root no-solution status = %d, want %d, body = %s", route.name, rec.Code, http.StatusPreconditionFailed, rec.Body.String())
+				}
+
+				payload := decodeJSONMap(t, rec.Body.Bytes())
+				assertUnsatisfiedDepsolverDetail(t, payload, map[string]any{
+					"message":                     "Unable to satisfy constraints on package app3 due to solution constraint (app1 = 0.1.0). Solution constraints that may result in a constraint on app3: [(app1 = 0.1.0) -> (app3 >= 0.2.0), (app1 = 0.1.0) -> (app2 0.2.0) -> (app3 0.1.0)]",
+					"unsatisfiable_run_list_item": "(app1 = 0.1.0)",
+					"non_existent_cookbooks":      []string{},
+					"most_constrained_cookbooks":  []string{"app3 = 0.3.0 -> []"},
+				})
+			})
+		}
+	})
+
+	t.Run("upstream_second_graph", func(t *testing.T) {
+		router := newOrgMemberRouter(t)
+		createCookbookInOrganization(t, router, "app1", "0.1.0", map[string]string{
+			"app2": ">= 0.1.0",
+			"app4": "0.2.0",
+			"app3": ">= 0.2.0",
+		})
+		createCookbookInOrganization(t, router, "app2", "0.1.0", map[string]string{
+			"app3": ">= 0.2.0",
+		})
+		createCookbookInOrganization(t, router, "app2", "0.2.0", map[string]string{
+			"app3": ">= 0.2.0",
+		})
+		createCookbookInOrganization(t, router, "app2", "0.3.0", map[string]string{
+			"app3": ">= 0.2.0",
+		})
+		createCookbookInOrganization(t, router, "app3", "0.1.0", map[string]string{
+			"app4": ">= 0.2.0",
+		})
+		createCookbookInOrganization(t, router, "app3", "0.2.0", map[string]string{
+			"app4": "0.2.0",
+		})
+		createCookbookInOrganization(t, router, "app3", "0.3.0", nil)
+		createCookbookInOrganization(t, router, "app4", "0.1.0", nil)
+		createCookbookInOrganization(t, router, "app4", "0.2.0", map[string]string{
+			"app2": ">= 0.2.0",
+			"app3": "0.3.0",
+		})
+		createCookbookInOrganization(t, router, "app4", "0.3.0", nil)
+
+		for _, route := range routes {
+			t.Run(route.name, func(t *testing.T) {
+				req := newSignedJSONRequestAs(t, "silent-bob", http.MethodPost, route.path, mustMarshalSandboxJSON(t, map[string]any{
+					"run_list": []any{"app1@0.1.0", "app2@0.3.0"},
+				}))
+				rec := httptest.NewRecorder()
+				router.ServeHTTP(rec, req)
+				if rec.Code != http.StatusOK {
+					t.Fatalf("%s org-scoped org-member second graph status = %d, want %d, body = %s", route.name, rec.Code, http.StatusOK, rec.Body.String())
+				}
+
+				payload := decodeJSONMap(t, rec.Body.Bytes())
+				if len(payload) != 4 {
+					t.Fatalf("%s len(payload) = %d, want 4 (%v)", route.name, len(payload), payload)
+				}
+				assertCookbookVersionBody(t, payload, "app1", "0.1.0")
+				assertCookbookVersionBody(t, payload, "app2", "0.3.0")
+				assertCookbookVersionBody(t, payload, "app3", "0.3.0")
+				assertCookbookVersionBody(t, payload, "app4", "0.2.0")
+			})
+		}
+	})
+}
+
 func TestEnvironmentCookbookVersionsUseConfiguredDefaultOrganizationForOrgMemberRootFormSuccess(t *testing.T) {
 	newOrgMemberRouter := func(t *testing.T) http.Handler {
 		t.Helper()

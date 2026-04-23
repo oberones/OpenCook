@@ -135,6 +135,7 @@ Implemented so far:
   - org-scoped depsolver non-admin org-member plural-root detail is now also pinned for plural missing-root and plural no-version-root shaping on both named-environment and `_default` paths
   - org-scoped depsolver non-admin org-member dependency detail is now also pinned for missing-dependency, later-root attribution, unsatisfied-dependency, and impossible-dependency shaping on both named-environment and `_default` paths
   - org-scoped depsolver non-admin org-member richer conflict detail is now also pinned for transitive conflict, complex dependency, and multi-root conflict shaping on both named-environment and `_default` paths
+  - org-scoped depsolver non-admin org-member graph selection is now also pinned for the upstream first graph, pinned-root-no-solution graph, and second graph on both named-environment and `_default` paths
 - the first core object slice for nodes:
   - list
   - get
