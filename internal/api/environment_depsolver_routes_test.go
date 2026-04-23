@@ -4707,6 +4707,97 @@ func TestOrganizationEnvironmentCookbookVersionsForOrgMemberRootFailureDetail(t 
 	})
 }
 
+func TestOrganizationEnvironmentCookbookVersionsForOrgMemberPluralRootDetail(t *testing.T) {
+	newOrgMemberRouter := func(t *testing.T) http.Handler {
+		t.Helper()
+
+		router, state := newSearchTestRouterWithAuthorizer(t, nil)
+		createOrgForTest(t, router, "canterlot")
+		if err := state.AddUserToGroup("canterlot", "users", "silent-bob"); err != nil {
+			t.Fatalf("AddUserToGroup(silent-bob) error = %v", err)
+		}
+		if _, err := state.CreateEnvironment("canterlot", bootstrap.CreateEnvironmentInput{
+			Payload: map[string]any{
+				"name": "production",
+			},
+			Creator: authn.Principal{Type: "user", Name: "pivotal"},
+		}); err != nil {
+			t.Fatalf("CreateEnvironment(production) error = %v", err)
+		}
+		return router
+	}
+
+	createCookbookInOrganization := func(t *testing.T, router http.Handler, name, version string, dependencies map[string]string) {
+		t.Helper()
+
+		body := mustMarshalSandboxJSON(t, cookbookVersionPayload(name, version, "", dependencies))
+		req := newSignedJSONRequestAs(t, "pivotal", http.MethodPut, "/organizations/canterlot/cookbooks/"+name+"/"+version, body)
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("create cookbook %s-%s status = %d, want %d, body = %s", name, version, rec.Code, http.StatusCreated, rec.Body.String())
+		}
+	}
+
+	routes := []struct {
+		name string
+		path string
+	}{
+		{name: "named_environment", path: "/organizations/canterlot/environments/production/cookbook_versions"},
+		{name: "default_environment", path: "/organizations/canterlot/environments/_default/cookbook_versions"},
+	}
+
+	t.Run("plural_missing_roots", func(t *testing.T) {
+		router := newOrgMemberRouter(t)
+
+		for _, route := range routes {
+			t.Run(route.name, func(t *testing.T) {
+				req := newSignedJSONRequestAs(t, "silent-bob", http.MethodPost, route.path, mustMarshalSandboxJSON(t, map[string]any{
+					"run_list": []any{"z_missing", "a_missing"},
+				}))
+				rec := httptest.NewRecorder()
+				router.ServeHTTP(rec, req)
+				if rec.Code != http.StatusPreconditionFailed {
+					t.Fatalf("%s org-scoped org-member plural missing roots status = %d, want %d, body = %s", route.name, rec.Code, http.StatusPreconditionFailed, rec.Body.String())
+				}
+
+				payload := decodeJSONMap(t, rec.Body.Bytes())
+				assertDepsolverErrorDetail(t, payload, map[string]any{
+					"message":                    "Run list contains invalid items: no such cookbooks a_missing, z_missing.",
+					"non_existent_cookbooks":     []string{"a_missing", "z_missing"},
+					"cookbooks_with_no_versions": []string{},
+				})
+			})
+		}
+	})
+
+	t.Run("plural_no_version_roots", func(t *testing.T) {
+		router := newOrgMemberRouter(t)
+		createCookbookInOrganization(t, router, "bar", "2.0.0", nil)
+		createCookbookInOrganization(t, router, "foo", "1.2.3", nil)
+
+		for _, route := range routes {
+			t.Run(route.name, func(t *testing.T) {
+				req := newSignedJSONRequestAs(t, "silent-bob", http.MethodPost, route.path, mustMarshalSandboxJSON(t, map[string]any{
+					"run_list": []any{"bar@9.0.0", "foo@4.0.0"},
+				}))
+				rec := httptest.NewRecorder()
+				router.ServeHTTP(rec, req)
+				if rec.Code != http.StatusPreconditionFailed {
+					t.Fatalf("%s org-scoped org-member plural no-version roots status = %d, want %d, body = %s", route.name, rec.Code, http.StatusPreconditionFailed, rec.Body.String())
+				}
+
+				payload := decodeJSONMap(t, rec.Body.Bytes())
+				assertDepsolverErrorDetail(t, payload, map[string]any{
+					"message":                    "Run list contains invalid items: no versions match the constraints on cookbooks (bar = 9.0.0), (foo = 4.0.0).",
+					"non_existent_cookbooks":     []string{},
+					"cookbooks_with_no_versions": []string{"(bar = 9.0.0)", "(foo = 4.0.0)"},
+				})
+			})
+		}
+	})
+}
+
 func TestEnvironmentCookbookVersionsUseConfiguredDefaultOrganizationForOrgMemberRootFormSuccess(t *testing.T) {
 	newOrgMemberRouter := func(t *testing.T) http.Handler {
 		t.Helper()
