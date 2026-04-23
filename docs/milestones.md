@@ -26,7 +26,8 @@ Status: in progress
 
 - users, organizations, clients, groups, containers, and default ACLs are implemented in memory
 - Bifrost-style ACL permission checks are implemented in the bootstrap layer
-- org bootstrap and validator client creation flows are working
+- org bootstrap and validator client creation flows are working, including returned validator key material
+- classic validator-authenticated client registration is still a follow-on compatibility slice
 - organization membership and broader association workflows still need follow-on slices
 
 ## Milestone 4: Core Object APIs
@@ -187,8 +188,20 @@ Status: in progress
 - PostgreSQL-backed cookbook persistence and the broader post-compatibility cookbook/provider follow-on work are still pending
 - S3-compatible blob storage remains the target production mode after the compatibility contract settles
 
-## Milestone 7: Operations and Migration
+## Milestone 7: Validator Bootstrap Compatibility
 
+Status: pending
+
+- org bootstrap already returns validator client key material
+- classic validator-authenticated client registration still needs a dedicated compatibility slice
+- validator-backed client registration must become compatible with stock Chef and Cinc bootstrap flows
+- the remaining gap is in registration and ACL semantics, not validator key generation itself
+
+## Milestone 8: Operations and Migration
+
+Status: pending
+
+- add a first-class admin/ctl path for managing orgs, users, groups, containers, and ACLs without relying only on raw API calls
 - add health, metrics, repair, backup, and reindex commands
 - define migration path from existing Chef Infra Server installs
 - rehearse shadow traffic and cutover workflows
