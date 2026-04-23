@@ -36,6 +36,7 @@ type Dependencies struct {
 	BlobUploadSecret []byte
 	Search           search.Index
 	Postgres         *pg.Store
+	CookbookBackend  string
 }
 
 type server struct {
@@ -194,7 +195,7 @@ func (s *server) handleRoot(w http.ResponseWriter, r *http.Request) {
 		"phase":         "compatibility-foundation",
 		"version":       s.deps.Version,
 		"compat_routes": s.deps.Compat.RouteCount(),
-		"next":          "move stabilized cookbook behavior into postgres-backed persistence, then continue broader post-compatibility storage and opensearch-backed provider work",
+		"next":          "harden the now-live postgres-backed cookbook path and continue broader post-compatibility storage/provider and opensearch-backed work",
 	})
 }
 
@@ -557,6 +558,11 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, payload any) bool {
 }
 
 func (s *server) statusPayload(mode string) map[string]any {
+	cookbookBackend := s.deps.CookbookBackend
+	if strings.TrimSpace(cookbookBackend) == "" {
+		cookbookBackend = "memory-bootstrap"
+	}
+
 	return map[string]any{
 		"mode":        mode,
 		"service":     s.deps.Config.ServiceName,
@@ -569,6 +575,9 @@ func (s *server) statusPayload(mode string) map[string]any {
 			"surfaces": s.deps.Compat.Surfaces(),
 		},
 		"dependencies": map[string]any{
+			"cookbooks": map[string]string{
+				"backend": cookbookBackend,
+			},
 			"authn": map[string]string{
 				"backend": s.deps.Authn.Name(),
 			},

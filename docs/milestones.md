@@ -44,6 +44,7 @@ Status: in progress
 - `/roles/{name}/environments` and `/roles/{name}/environments/{environment}` now also pin ambiguous/configured default-org handling, missing-organization and missing-role `404`s, missing-role-over-missing-environment precedence, trailing-slash acceptance, method-not-allowed with `Allow: GET`, extra-path `404`s, and role-read-only auth parity on both default-org and org-scoped routes
 - in-memory data bag list/get/create/delete behavior is implemented for both default-org and explicit-org routes
 - in-memory data bag item get/create/update/delete behavior is implemented with Chef-style response shapes and error messages
+- encrypted data bag compatibility is not yet an explicit tested slice and still needs dedicated coverage
 - default-org and explicit-org client read/create/delete routes are now available too
 - default-org and explicit-org node routes are both available for the first object slice
 - default-org and explicit-org environment routes are now available too
@@ -185,7 +186,8 @@ Status: in progress
 - org-scoped depsolver non-admin org-member empty- and omitted-`run_list` success plus route semantics are now also pinned on both named-environment and `_default` paths
 - org-scoped depsolver non-admin org-member missing-environment `404` is now also pinned on the named-environment path
 - org-scoped depsolver non-admin org-member malformed-request precedence is now also pinned before environment-read auth on both named-environment and `_default` paths, and before named-environment missing-environment lookup
-- PostgreSQL-backed cookbook persistence and the broader post-compatibility cookbook/provider follow-on work are still pending
+- PostgreSQL-backed cookbook persistence is now live for cookbook versions and cookbook artifacts
+- the broader post-compatibility cookbook/provider follow-on work is still pending
 - S3-compatible blob storage remains the target production mode after the compatibility contract settles
 
 ## Milestone 7: Validator Bootstrap Compatibility
@@ -202,6 +204,7 @@ Status: pending
 Status: pending
 
 - add a first-class admin/ctl path for managing orgs, users, groups, containers, and ACLs without relying only on raw API calls
+- add full Chef-style documentation for admin and operational workflows, even if the final implementation lands as CLI, API, or a mixed path
 - add health, metrics, repair, backup, and reindex commands
 - define migration path from existing Chef Infra Server installs
 - rehearse shadow traffic and cutover workflows

@@ -50,6 +50,7 @@ func (s *Service) SolveEnvironmentCookbookVersions(orgName, environmentName stri
 	if !ok {
 		return nil, false, false, nil
 	}
+	store := s.cookbookStore
 	env, ok := org.envs[environmentName]
 	if !ok {
 		return nil, true, false, nil
@@ -76,13 +77,13 @@ func (s *Service) SolveEnvironmentCookbookVersions(orgName, environmentName stri
 			return nil, true, true, &ValidationError{Messages: []string{"Field 'run_list' is not a valid run list"}}
 		}
 
-		versions, exists := org.cookbooks[item.Cookbook]
+		versions, _, exists := store.ListCookbookVersionModelsByName(orgName, item.Cookbook)
 		if !exists {
 			nonExistent[item.Cookbook] = struct{}{}
 			continue
 		}
 
-		refs := cookbookVersionRefs(versions)
+		refs := cookbookVersionRefsFromSlice(versions)
 		refs = filterEnvironmentCookbookRefs(refs, env.CookbookVersions[item.Cookbook])
 		refs = filterDepsolverCookbookRefs(refs, []string{item.Constraint})
 		if len(refs) == 0 {
@@ -115,11 +116,11 @@ func (s *Service) SolveEnvironmentCookbookVersions(orgName, environmentName stri
 		if _, exists := solution.RootMessages[item.Cookbook]; !exists {
 			solution.RootMessages[item.Cookbook] = item.Label
 		}
-		next, err := solveDepsolverCookbook(org, env, solution, item.Cookbook, item.Cookbook, depsolverConstraintSource{
+		next, err := solveDepsolverCookbook(store, orgName, env, solution, item.Cookbook, item.Cookbook, depsolverConstraintSource{
 			Constraint: item.Constraint,
 		})
 		if err != nil {
-			return nil, true, true, enrichDepsolverErrorWithRemainingRoots(org, env, items[idx+1:], err)
+			return nil, true, true, enrichDepsolverErrorWithRemainingRoots(store, orgName, env, items[idx+1:], err)
 		}
 		solution = next
 	}
@@ -277,21 +278,22 @@ func parseDepsolverRunListItem(value string) (depsolverRunListItem, error) {
 	}, nil
 }
 
-func solveDepsolverCookbook(org *organizationState, env Environment, current depsolverSolution, cookbook, rootCookbook string, incoming depsolverConstraintSource) (depsolverSolution, error) {
+func solveDepsolverCookbook(store CookbookStore, orgName string, env Environment, current depsolverSolution, cookbook, rootCookbook string, incoming depsolverConstraintSource) (depsolverSolution, error) {
 	next := cloneDepsolverSolution(current)
 	next.Constraints[cookbook] = append(next.Constraints[cookbook], incoming)
-	return solveDepsolverCookbookWithExistingConstraints(org, env, next, cookbook, rootCookbook)
+	return solveDepsolverCookbookWithExistingConstraints(store, orgName, env, next, cookbook, rootCookbook)
 }
 
-func solveDepsolverCookbookWithExistingConstraints(org *organizationState, env Environment, current depsolverSolution, cookbook, rootCookbook string) (depsolverSolution, error) {
+func solveDepsolverCookbookWithExistingConstraints(store CookbookStore, orgName string, env Environment, current depsolverSolution, cookbook, rootCookbook string) (depsolverSolution, error) {
 	next := current
 
-	versions, exists := org.cookbooks[cookbook]
+	versions, _, exists := store.ListCookbookVersionModelsByName(orgName, cookbook)
 	if !exists {
 		return next, missingDependencyCookbookError(cookbook, next.RootMessages[rootCookbook], depsolverConstraintSources(next.Constraints[cookbook]))
 	}
+	versionMap := cookbookVersionMapFromSlice(versions)
 
-	refs := cookbookVersionRefs(versions)
+	refs := cookbookVersionRefsFromSlice(versions)
 	refs = filterEnvironmentCookbookRefs(refs, env.CookbookVersions[cookbook])
 	refs = filterDepsolverCookbookRefs(refs, depsolverConstraintValues(next.Constraints[cookbook]))
 
@@ -301,7 +303,7 @@ func solveDepsolverCookbookWithExistingConstraints(org *organizationState, env E
 
 	var lastErr error
 	for _, ref := range refs {
-		candidate := versions[ref.Version]
+		candidate := versionMap[ref.Version]
 		trial := cloneDepsolverSolution(next)
 		trial.Versions[cookbook] = copyCookbookVersion(candidate)
 
@@ -332,7 +334,7 @@ func solveDepsolverCookbookWithExistingConstraints(org *organizationState, env E
 
 		for _, depName := range depNames {
 			var err error
-			trial, err = solveDepsolverCookbookWithExistingConstraints(org, env, trial, depName, rootCookbook)
+			trial, err = solveDepsolverCookbookWithExistingConstraints(store, orgName, env, trial, depName, rootCookbook)
 			if err != nil {
 				lastErr = err
 				dependencyFailed = true
@@ -349,7 +351,7 @@ func solveDepsolverCookbookWithExistingConstraints(org *organizationState, env E
 	if lastErr != nil {
 		return next, lastErr
 	}
-	return next, unsatisfiedDependencyCookbookError(cookbook, versions, env.CookbookVersions[cookbook], next.RootMessages[rootCookbook], depsolverConstraintSources(next.Constraints[cookbook]), next.Versions[cookbook])
+	return next, unsatisfiedDependencyCookbookError(cookbook, versionMap, env.CookbookVersions[cookbook], next.RootMessages[rootCookbook], depsolverConstraintSources(next.Constraints[cookbook]), next.Versions[cookbook])
 }
 
 func cloneDepsolverSolution(in depsolverSolution) depsolverSolution {
@@ -436,7 +438,7 @@ func depsolverConstraintSources(constraints []depsolverConstraintSource) []strin
 	return out
 }
 
-func enrichDepsolverErrorWithRemainingRoots(org *organizationState, env Environment, remaining []depsolverRunListItem, err error) error {
+func enrichDepsolverErrorWithRemainingRoots(store CookbookStore, orgName string, env Environment, remaining []depsolverRunListItem, err error) error {
 	if len(remaining) == 0 {
 		return err
 	}
@@ -457,7 +459,7 @@ func enrichDepsolverErrorWithRemainingRoots(org *organizationState, env Environm
 
 	changed := false
 	for _, item := range remaining {
-		for _, source := range depsolverDiagnosticSourcesForRoot(org, env, item, depsolverErr.cookbook) {
+		for _, source := range depsolverDiagnosticSourcesForRoot(store, orgName, env, item, depsolverErr.cookbook) {
 			if _, ok := seen[source]; ok {
 				continue
 			}
@@ -475,13 +477,14 @@ func enrichDepsolverErrorWithRemainingRoots(org *organizationState, env Environm
 	return depsolverErr
 }
 
-func depsolverDiagnosticSourcesForRoot(org *organizationState, env Environment, item depsolverRunListItem, target string) []string {
-	versions, ok := org.cookbooks[item.Cookbook]
+func depsolverDiagnosticSourcesForRoot(store CookbookStore, orgName string, env Environment, item depsolverRunListItem, target string) []string {
+	versions, _, ok := store.ListCookbookVersionModelsByName(orgName, item.Cookbook)
 	if !ok {
 		return nil
 	}
+	versionMap := cookbookVersionMapFromSlice(versions)
 
-	refs := cookbookVersionRefs(versions)
+	refs := cookbookVersionRefsFromSlice(versions)
 	refs = filterEnvironmentCookbookRefs(refs, env.CookbookVersions[item.Cookbook])
 	refs = filterDepsolverCookbookRefs(refs, []string{item.Constraint})
 	refs = ascendingCookbookVersionRefs(refs)
@@ -489,10 +492,10 @@ func depsolverDiagnosticSourcesForRoot(org *organizationState, env Environment, 
 	out := make([]string, 0)
 	seen := make(map[string]struct{})
 	for _, ref := range refs {
-		version := versions[ref.Version]
+		version := versionMap[ref.Version]
 		stack := map[string]struct{}{item.Cookbook: {}}
 		prefix := fmt.Sprintf("(%s = %s)", version.CookbookName, version.Version)
-		for _, source := range depsolverDiagnosticSourcesFromVersion(org, env, version, target, prefix, stack) {
+		for _, source := range depsolverDiagnosticSourcesFromVersion(store, orgName, env, version, target, prefix, stack) {
 			if _, ok := seen[source]; ok {
 				continue
 			}
@@ -503,7 +506,7 @@ func depsolverDiagnosticSourcesForRoot(org *organizationState, env Environment, 
 	return out
 }
 
-func depsolverDiagnosticSourcesFromVersion(org *organizationState, env Environment, version CookbookVersion, target, prefix string, stack map[string]struct{}) []string {
+func depsolverDiagnosticSourcesFromVersion(store CookbookStore, orgName string, env Environment, version CookbookVersion, target, prefix string, stack map[string]struct{}) []string {
 	dependencies := cookbookMetadataDependencies(version.Metadata)
 	if len(dependencies) == 0 {
 		return nil
@@ -530,12 +533,13 @@ func depsolverDiagnosticSourcesFromVersion(org *organizationState, env Environme
 			continue
 		}
 
-		depVersions, ok := org.cookbooks[depName]
+		depVersions, _, ok := store.ListCookbookVersionModelsByName(orgName, depName)
 		if !ok {
 			continue
 		}
+		depVersionMap := cookbookVersionMapFromSlice(depVersions)
 
-		refs := cookbookVersionRefs(depVersions)
+		refs := cookbookVersionRefsFromSlice(depVersions)
 		refs = filterEnvironmentCookbookRefs(refs, env.CookbookVersions[depName])
 		refs = filterDepsolverCookbookRefs(refs, []string{depConstraint})
 		refs = ascendingCookbookVersionRefs(refs)
@@ -547,7 +551,7 @@ func depsolverDiagnosticSourcesFromVersion(org *organizationState, env Environme
 		nextStack[depName] = struct{}{}
 
 		for _, ref := range refs {
-			out = append(out, depsolverDiagnosticSourcesFromVersion(org, env, depVersions[ref.Version], target, source, nextStack)...)
+			out = append(out, depsolverDiagnosticSourcesFromVersion(store, orgName, env, depVersionMap[ref.Version], target, source, nextStack)...)
 		}
 	}
 	return out

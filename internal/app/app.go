@@ -31,14 +31,18 @@ type Application struct {
 func New(cfg config.Config, logger *log.Logger, build version.Info) (*Application, error) {
 	compatRegistry := compat.NewDefaultRegistry()
 	postgresStore := pg.New(cfg.PostgresDSN)
+	if err := postgresStore.ActivateCookbookPersistence(context.Background()); err != nil {
+		return nil, fmt.Errorf("activate postgres cookbook persistence: %w", err)
+	}
 	blobStore, err := blob.NewStore(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("configure blob storage: %w", err)
 	}
 	keyStore := authn.NewMemoryKeyStore()
-	bootstrapState := bootstrap.NewService(keyStore, bootstrap.Options{
-		SuperuserName: resolveSuperuserName(cfg),
-	})
+	bootstrapState := bootstrap.NewService(keyStore, bootstrapOptions(cfg, postgresStore))
+	if err := seedCookbookOrganizationsFromPostgres(bootstrapState, postgresStore); err != nil {
+		return nil, err
+	}
 	searchIndex := search.NewMemoryIndex(bootstrapState, cfg.OpenSearchURL)
 	if err := seedBootstrapRequestor(keyStore, cfg); err != nil {
 		return nil, err
@@ -72,6 +76,7 @@ func New(cfg config.Config, logger *log.Logger, build version.Info) (*Applicatio
 		BlobUploadSecret: blobUploadSecret,
 		Search:           searchIndex,
 		Postgres:         postgresStore,
+		CookbookBackend:  resolveCookbookBackend(postgresStore),
 	})
 
 	server := &http.Server{
@@ -86,6 +91,51 @@ func New(cfg config.Config, logger *log.Logger, build version.Info) (*Applicatio
 		logger: logger,
 		server: server,
 	}, nil
+}
+
+func bootstrapOptions(cfg config.Config, postgresStore *pg.Store) bootstrap.Options {
+	opts := bootstrap.Options{
+		SuperuserName: resolveSuperuserName(cfg),
+	}
+	if postgresStore != nil && postgresStore.Configured() {
+		opts.CookbookStoreFactory = func(*bootstrap.Service) bootstrap.CookbookStore {
+			return postgresStore.CookbookStore()
+		}
+	}
+	return opts
+}
+
+func resolveCookbookBackend(postgresStore *pg.Store) string {
+	if postgresStore != nil && postgresStore.CookbookPersistenceActive() {
+		return "postgres"
+	}
+	if postgresStore != nil && postgresStore.Configured() {
+		return "postgres-scaffold"
+	}
+	return "memory-bootstrap"
+}
+
+func seedCookbookOrganizationsFromPostgres(state *bootstrap.Service, postgresStore *pg.Store) error {
+	if state == nil || postgresStore == nil || !postgresStore.CookbookPersistenceActive() {
+		return nil
+	}
+
+	for _, org := range postgresStore.Cookbooks().OrganizationRecords() {
+		if _, exists := state.GetOrganization(org.Name); exists {
+			continue
+		}
+		fullName := org.FullName
+		if fullName == "" {
+			fullName = org.Name
+		}
+		if _, _, _, err := state.CreateOrganization(bootstrap.CreateOrganizationInput{
+			Name:     org.Name,
+			FullName: fullName,
+		}); err != nil && !errors.Is(err, bootstrap.ErrConflict) {
+			return fmt.Errorf("seed cookbook organization %s from postgres: %w", org.Name, err)
+		}
+	}
+	return nil
 }
 
 func seedBootstrapRequestor(store *authn.MemoryKeyStore, cfg config.Config) error {
