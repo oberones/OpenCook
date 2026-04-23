@@ -98,6 +98,9 @@ Status: in progress
 - cookbook artifact create coverage now also exercises metadata default overrides and multi-identifier create behavior for the same cookbook name
 - cookbook artifact validation HTTP coverage now also exercises missing metadata versions, invalid legacy segment shapes, and invalid metadata dependency/platform payloads
 - cookbook artifact create auth coverage now also exercises normal-user create success plus 401/403 no-mutation behavior for invalid and outside users
+- cookbook artifact route semantics now also exercise trailing-slash acceptance, method-not-allowed plus exact `Allow` headers, and extra-path `404`s, and explicit-org artifact coverage now also exercises org-scoped collection URL shaping, create/update validation and no-mutation behavior, wrong-identifier delete no-mutation, normal-user/outside/invalid auth outcomes, and API v2 `all_files` read shaping on `/organizations/{org}/cookbook_artifacts...`
+- explicit-org cookbook/blob coverage now also exercises org-scoped signed cookbook and artifact download usability, missing-uploaded-checksum artifact parity, provider-backed `blob_unavailable` create/update/download behavior, and visible checksum cleanup/retention on `/organizations/{org}/cookbooks...` and `/organizations/{org}/cookbook_artifacts...`
+- cookbook auth coverage now also exercises normal-user/outside-user/invalid-user outcomes on cookbook and cookbook-artifact collection, named-filter, and named-collection read routes on both default-org and explicit-org aliases, and explicit-org cookbook mutation coverage now also exercises normal-user create/update/delete success plus outside/invalid no-mutation behavior on `/organizations/{org}/cookbooks/{name}/{version}`
 - blob backend selection now supports the existing in-memory compatibility mode, a provider-backed filesystem adapter for local dev/test persistence, and a real S3-compatible adapter for request-path `PUT`/`GET`/`HEAD`/`DELETE` blob operations when endpoint and credentials are configured
 - provider-backed blob hardening now also includes pinned S3 status/transport classification, exact retry exhaustion plus `Retry-After` and cancellation behavior, request-construction parity for path-style, virtual-hosted, session-token, and TLS-disabled cases, and clearer malformed-endpoint plus missing-credential diagnostics
 - sandbox and cookbook routes now also pin S3-backed `blob_unavailable` degradation for provider-backed upload, download, and checksum-existence failures where that compatibility contract already exists
@@ -181,7 +184,7 @@ Status: in progress
 - org-scoped depsolver non-admin org-member empty- and omitted-`run_list` success plus route semantics are now also pinned on both named-environment and `_default` paths
 - org-scoped depsolver non-admin org-member missing-environment `404` is now also pinned on the named-environment path
 - org-scoped depsolver non-admin org-member malformed-request precedence is now also pinned before environment-read auth on both named-environment and `_default` paths, and before named-environment missing-environment lookup
-- PostgreSQL-backed cookbook persistence and broader cookbook pedant coverage beyond the current environment-filtered/named-filter/latest/version read-write contract are still pending
+- PostgreSQL-backed cookbook persistence and the broader post-compatibility cookbook/provider follow-on work are still pending
 - S3-compatible blob storage remains the target production mode after the compatibility contract settles
 
 ## Milestone 7: Operations and Migration
