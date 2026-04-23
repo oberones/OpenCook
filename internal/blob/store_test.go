@@ -3,6 +3,7 @@ package blob
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -55,6 +56,35 @@ func TestNewStoreRejectsMalformedBlobStorageURL(t *testing.T) {
 	}
 }
 
+func TestNewStoreRejectsS3StorageURLWithoutBucket(t *testing.T) {
+	_, err := NewStore(config.Config{
+		BlobBackend:    BackendS3,
+		BlobStorageURL: "s3:///checksums",
+	})
+	if err == nil {
+		t.Fatal("NewStore() error = nil, want missing bucket error")
+	}
+	if !strings.Contains(err.Error(), "requires a bucket") {
+		t.Fatalf("NewStore() error = %v, want missing bucket error", err)
+	}
+}
+
+func TestNewStoreRejectsMalformedS3Endpoint(t *testing.T) {
+	_, err := NewStore(config.Config{
+		BlobBackend:       BackendS3,
+		BlobStorageURL:    "s3://chef-bucket/checksums",
+		BlobS3Endpoint:    "http://",
+		BlobS3AccessKeyID: "access-key",
+		BlobS3SecretKey:   "secret-key",
+	})
+	if err == nil {
+		t.Fatal("NewStore() error = nil, want malformed endpoint error")
+	}
+	if !strings.Contains(err.Error(), "parse s3 endpoint") {
+		t.Fatalf("NewStore() error = %v, want parse s3 endpoint error", err)
+	}
+}
+
 func TestNewStoreSelectsS3CompatibleScaffold(t *testing.T) {
 	store, err := NewStore(config.Config{
 		BlobBackend:    BackendS3,
@@ -72,6 +102,9 @@ func TestNewStoreSelectsS3CompatibleScaffold(t *testing.T) {
 	}
 	if status.Configured {
 		t.Fatal("Status().Configured = true, want false without credentials")
+	}
+	if !strings.Contains(status.Message, "OPENCOOK_BLOB_S3_ACCESS_KEY_ID") || !strings.Contains(status.Message, "OPENCOOK_BLOB_S3_SECRET_ACCESS_KEY") {
+		t.Fatalf("Status().Message = %q, want both missing credential vars", status.Message)
 	}
 
 	getter, ok := store.(Getter)
@@ -100,6 +133,48 @@ func TestNewStoreReportsConfiguredS3CompatibleBackendWithCredentials(t *testing.
 	status := store.Status()
 	if !status.Configured {
 		t.Fatal("Status().Configured = false, want true")
+	}
+}
+
+func TestNewStoreReportsMissingAccessKeyStatus(t *testing.T) {
+	store, err := NewStore(config.Config{
+		BlobBackend:     BackendS3,
+		BlobStorageURL:  "s3://chef-bucket/checksums",
+		BlobS3Endpoint:  "http://minio.local:9000",
+		BlobS3Region:    "us-east-1",
+		BlobS3SecretKey: "secret-key",
+	})
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+
+	status := store.Status()
+	if status.Configured {
+		t.Fatal("Status().Configured = true, want false")
+	}
+	if status.Message != "set OPENCOOK_BLOB_S3_ACCESS_KEY_ID to enable S3-compatible blob request operations" {
+		t.Fatalf("Status().Message = %q, want missing access key message", status.Message)
+	}
+}
+
+func TestNewStoreReportsMissingSecretKeyStatus(t *testing.T) {
+	store, err := NewStore(config.Config{
+		BlobBackend:       BackendS3,
+		BlobStorageURL:    "s3://chef-bucket/checksums",
+		BlobS3Endpoint:    "http://minio.local:9000",
+		BlobS3Region:      "us-east-1",
+		BlobS3AccessKeyID: "access-key",
+	})
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+
+	status := store.Status()
+	if status.Configured {
+		t.Fatal("Status().Configured = true, want false")
+	}
+	if status.Message != "set OPENCOOK_BLOB_S3_SECRET_ACCESS_KEY to enable S3-compatible blob request operations" {
+		t.Fatalf("Status().Message = %q, want missing secret key message", status.Message)
 	}
 }
 

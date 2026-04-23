@@ -74,6 +74,9 @@ func NewS3CompatibleStore(cfg S3CompatibleConfig) (*S3CompatibleStore, error) {
 	if store.region == "" {
 		store.region = "us-east-1"
 	}
+	if err := validateS3Endpoint(store.endpoint); err != nil {
+		return nil, err
+	}
 	if store.requestTimeout <= 0 {
 		store.requestTimeout = defaultS3CompatibleRequestTimeout
 	}
@@ -128,10 +131,12 @@ func (s *S3CompatibleStore) Status() Status {
 		}
 	}
 	if !s.isReady() {
+		missing := s.missingCredentialEnvVars()
+		message := "set " + strings.Join(missing, " and ") + " to enable S3-compatible blob request operations"
 		return Status{
 			Backend:    "s3-compatible",
 			Configured: false,
-			Message:    "set OPENCOOK_BLOB_S3_ACCESS_KEY_ID and OPENCOOK_BLOB_S3_SECRET_ACCESS_KEY to enable S3-compatible blob request operations",
+			Message:    message,
 		}
 	}
 
@@ -492,6 +497,17 @@ func (s *S3CompatibleStore) isReady() bool {
 	return strings.TrimSpace(s.bucket) != "" && strings.TrimSpace(s.accessKeyID) != "" && strings.TrimSpace(s.secretKey) != ""
 }
 
+func (s *S3CompatibleStore) missingCredentialEnvVars() []string {
+	var missing []string
+	if strings.TrimSpace(s.accessKeyID) == "" {
+		missing = append(missing, "OPENCOOK_BLOB_S3_ACCESS_KEY_ID")
+	}
+	if strings.TrimSpace(s.secretKey) == "" {
+		missing = append(missing, "OPENCOOK_BLOB_S3_SECRET_ACCESS_KEY")
+	}
+	return missing
+}
+
 func (s *S3CompatibleStore) httpClient() *http.Client {
 	if s.client != nil {
 		return s.client
@@ -627,6 +643,22 @@ func sleepWithContext(ctx context.Context, delay time.Duration) error {
 	case <-timer.C:
 		return nil
 	}
+}
+
+func validateS3Endpoint(raw string) error {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("parse s3 endpoint: %w", err)
+	}
+	if strings.TrimSpace(parsed.Scheme) == "" || strings.TrimSpace(parsed.Host) == "" {
+		return fmt.Errorf("parse s3 endpoint: endpoint must include scheme and host")
+	}
+	return nil
 }
 
 func awsPercentEncode(value string) string {
