@@ -131,6 +131,7 @@ As of 2026-04-22, OpenCook has moved past pure scaffolding and into the first co
 - default-org client routes are now live for `/clients`, `/clients/{name}`, and `/clients/{name}/keys`
 - the first data bag slice is now live with `/data`, `/data/{bag}`, and `/data/{bag}/{item}` on both default-org and explicit-org routes
 - data bag item create, update, and delete flows now reproduce Chef-style response wrapping and not-found/conflict messages
+- encrypted data bag compatibility is not yet an explicit tracked/tested slice, even though the current data bag item implementation mostly treats payloads as opaque JSON
 - the first search-facing slice is now live with `/search` and `/search/{client,environment,node,role}` over the in-memory compatibility state
 - `/search` now also advertises live per-data-bag indexes, and `/search/{bag}` now supports Chef-style data bag search results
 - partial search is now implemented for clients, environments, nodes, roles, and data bags
@@ -180,8 +181,8 @@ Current focus:
 
 - preserve API-version-sensitive actor key behavior without carrying forward Chef licensing concerns
 - deepen search query translation beyond the current simple compatibility subset and widen object/index coverage further
-- move stabilized cookbook and cookbook-artifact behavior toward PostgreSQL-backed persistence now that the current pedant compatibility bucket is pinned
-- replace the in-memory bootstrap layer with PostgreSQL-backed persistence after the contracts stabilize
+- harden the now-live PostgreSQL-backed cookbook path through the broader post-compatibility cookbook/provider follow-on work
+- replace the remaining in-memory bootstrap layer with PostgreSQL-backed persistence after the cookbook cutover
 
 ## What Exists Upstream
 
@@ -543,6 +544,7 @@ Deliverables:
 - roles
 - environments
 - data bags
+- encrypted data bag payload compatibility and coverage
 - clients
 - cookbooks and cookbook artifacts
 - sandboxes
@@ -574,6 +576,7 @@ Deliverables:
 
 - admin commands/APIs
 - chef-server-ctl-style admin flows for orgs, users, groups, containers, and ACLs
+- full Chef-style documentation for admin and operational workflows, with the final CLI/API packaging left open for now
 - backup/restore guidance
 - observability package
 - rolling upgrade docs

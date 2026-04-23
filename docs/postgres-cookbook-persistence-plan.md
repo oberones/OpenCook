@@ -1,6 +1,6 @@
 # PostgreSQL-Backed Cookbook Persistence Plan
 
-Status: planned on 2026-04-22
+Status: completed on 2026-04-22
 
 ## Purpose
 
@@ -139,6 +139,10 @@ Goal:
 
 - turn the PostgreSQL cookbook bucket into a concrete seam map before we start extracting storage logic
 
+Status:
+
+- completed on 2026-04-22
+
 Changes:
 
 - inventory the cookbook reads and writes currently implemented in:
@@ -165,6 +169,10 @@ Goal:
 
 - decouple the current cookbook contract from the bootstrap maps before introducing PostgreSQL
 
+Status:
+
+- completed on 2026-04-22
+
 Changes:
 
 - introduce a cookbook persistence interface and shared read/write models in the storage layer
@@ -181,6 +189,10 @@ Exit condition:
 Goal:
 
 - define a reviewable persistent model for cookbook versions and artifacts without widening the public contract
+
+Status:
+
+- completed on 2026-04-22
 
 Changes:
 
@@ -206,6 +218,10 @@ Goal:
 
 - move the visible mutation paths onto the extracted repository while keeping validation and blob behavior unchanged
 
+Status:
+
+- completed on 2026-04-22
+
 Changes:
 
 - route cookbook version create/update/delete through the new cookbook repository seam
@@ -224,6 +240,10 @@ Goal:
 
 - eliminate split-brain cookbook reads by making every cookbook-derived surface use the same storage source
 
+Status:
+
+- completed on 2026-04-22
+
 Changes:
 
 - move cookbook collection, `_latest`, `_recipes`, named, version, universe, and artifact reads to the new seam
@@ -241,6 +261,11 @@ Goal:
 
 - activate the new persistence path without forcing the rest of the bootstrap object model to move in the same slice
 
+Status:
+
+- completed on 2026-04-22
+- app startup now activates the PostgreSQL cookbook backend, applies the cookbook migration, loads cookbook/artifact state from SQL into the repository cache, persists subsequent cookbook writes and deletes through SQL, and rehydrates cookbook organizations back into bootstrap at startup
+
 Changes:
 
 - update [internal/app/app.go](/Users/oberon/Projects/coding/go/OpenCook/internal/app/app.go) and the API dependencies so cookbook persistence can come from PostgreSQL while the rest of the bootstrap service remains in memory
@@ -257,6 +282,11 @@ Goal:
 
 - mark the PostgreSQL cookbook persistence slice complete and make the next roadmap bucket unambiguous
 
+Status:
+
+- completed on 2026-04-22
+- roadmap, milestone, compatibility, AGENTS, and status-endpoint text now treat PostgreSQL-backed cookbook persistence as live and point at the broader cookbook/provider follow-on work as the next bucket
+
 Changes:
 
 - sync:
@@ -270,6 +300,14 @@ Changes:
 Exit condition:
 
 - the roadmap no longer describes PostgreSQL-backed cookbook persistence as an open bucket
+
+## Completion Summary
+
+This slice is complete.
+
+It extracted a shared cookbook persistence seam, moved cookbook routes, environment cookbook views, and depsolver reads onto that seam, added a PostgreSQL schema and repository, and activated the PostgreSQL-backed cookbook path at application startup without changing the pinned HTTP, blob, or depsolver contract.
+
+The next roadmap bucket is no longer PostgreSQL-backed cookbook persistence. It is the broader post-compatibility cookbook/provider follow-on work around the now-live PostgreSQL cookbook path.
 
 ## Suggested Commit Sequence
 

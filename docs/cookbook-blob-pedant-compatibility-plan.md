@@ -272,7 +272,7 @@ It closed the remaining cookbook and cookbook-artifact compatibility gaps on the
 - explicit-org blob-linked cookbook and artifact parity for signed downloads, checksum preconditions, provider-backed `blob_unavailable`, and visible checksum cleanup/retention
 - remaining cookbook and cookbook-artifact auth parity on collection, named-filter, named-collection, and explicit-org mutation paths
 
-The next roadmap bucket is no longer “remaining cookbook pedant coverage.” It is the post-compatibility follow-on work around PostgreSQL-backed cookbook persistence and the broader storage/provider path.
+The next roadmap bucket is no longer “remaining cookbook pedant coverage.” It is the broader post-compatibility cookbook/provider follow-on work around the now-live PostgreSQL cookbook path.
 
 ## Suggested Commit Sequence
 

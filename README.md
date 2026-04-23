@@ -21,6 +21,7 @@ Today, it should be viewed as an early server implementation rather than a produ
 
 Org bootstrap can already mint and return validator key material, but classic validator-authenticated client bootstrap registration is still a follow-on compatibility slice.
 Administrative object management is also still API-first today; a first-class `chef-server-ctl`-style replacement for orgs, users, groups, and ACLs remains future work.
+Data bag CRUD is live, but encrypted data bag compatibility is not yet an explicitly tracked/tested compatibility slice.
 
 ## Current Capabilities
 

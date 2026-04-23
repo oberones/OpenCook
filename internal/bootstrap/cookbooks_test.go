@@ -2,6 +2,7 @@ package bootstrap
 
 import (
 	"errors"
+	"reflect"
 	"testing"
 
 	"github.com/oberones/OpenCook/internal/authn"
@@ -680,6 +681,208 @@ func TestUpsertCookbookVersionValidatesPedantMetadataShapes(t *testing.T) {
 	}
 }
 
+func TestCreateCookbookArtifactDelegatesNormalizedArtifactToCookbookStore(t *testing.T) {
+	var gotOrg string
+	var gotArtifact CookbookArtifact
+
+	service := newTestBootstrapServiceWithOptions(t, Options{
+		SuperuserName: "pivotal",
+		CookbookStoreFactory: func(*Service) CookbookStore {
+			return &delegatingCookbookStore{
+				createCookbookArtifact: func(orgName string, artifact CookbookArtifact) (CookbookArtifact, error) {
+					gotOrg = orgName
+					gotArtifact = artifact
+					return artifact, nil
+				},
+			}
+		},
+	})
+	createTestCookbookOrg(t, service)
+
+	artifact, err := service.CreateCookbookArtifact("ponyville", CreateCookbookArtifactInput{
+		Name:       "app",
+		Identifier: "1111111111111111111111111111111111111111",
+		Payload: map[string]any{
+			"name":       "app",
+			"identifier": "1111111111111111111111111111111111111111",
+			"version":    "1.2.3",
+			"chef_type":  "cookbook_version",
+			"metadata": map[string]any{
+				"version":      "1.2.3",
+				"name":         "app",
+				"dependencies": map[string]any{},
+				"recipes":      map[string]any{},
+			},
+			"recipes": []any{
+				map[string]any{
+					"name":        "default.rb",
+					"path":        "default.rb",
+					"checksum":    "8288b67da0793b5abec709d6226e6b73",
+					"specificity": "default",
+				},
+			},
+		},
+		ChecksumExists: func(string) (bool, error) {
+			return true, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateCookbookArtifact() error = %v", err)
+	}
+
+	if gotOrg != "ponyville" {
+		t.Fatalf("delegated org = %q, want %q", gotOrg, "ponyville")
+	}
+	if gotArtifact.Name != "app" || gotArtifact.Version != "1.2.3" {
+		t.Fatalf("delegated artifact = %#v, want normalized app 1.2.3 artifact", gotArtifact)
+	}
+	if len(gotArtifact.AllFiles) != 1 || gotArtifact.AllFiles[0].Path != "recipes/default.rb" {
+		t.Fatalf("delegated all_files = %#v, want normalized recipes/default.rb path", gotArtifact.AllFiles)
+	}
+	if !reflect.DeepEqual(artifact, gotArtifact) {
+		t.Fatalf("CreateCookbookArtifact() = %#v, want delegated artifact %#v", artifact, gotArtifact)
+	}
+}
+
+func TestUpsertCookbookVersionDelegatesNormalizedVersionAndReleasedChecksumsToCookbookStore(t *testing.T) {
+	var gotOrg string
+	var gotVersion CookbookVersion
+	var gotForce bool
+
+	service := newTestBootstrapServiceWithOptions(t, Options{
+		SuperuserName: "pivotal",
+		CookbookStoreFactory: func(*Service) CookbookStore {
+			return &delegatingCookbookStore{
+				hasCookbookVersion: func(string, string, string) (bool, bool) {
+					return false, true
+				},
+				upsertCookbookVersionWithReleasedChecksums: func(orgName string, version CookbookVersion, force bool) (CookbookVersion, []string, bool, error) {
+					gotOrg = orgName
+					gotVersion = version
+					gotForce = force
+					return version, []string{"released-a"}, true, nil
+				},
+			}
+		},
+	})
+	createTestCookbookOrg(t, service)
+
+	version, released, created, err := service.UpsertCookbookVersionWithReleasedChecksums("ponyville", UpsertCookbookVersionInput{
+		Name:    "app",
+		Version: "1.2.3",
+		Payload: cookbookVersionTestPayload("app", "1.2.3", nil, []any{
+			map[string]any{
+				"name":        "default.rb",
+				"path":        "default.rb",
+				"checksum":    "8288b67da0793b5abec709d6226e6b73",
+				"specificity": "default",
+			},
+		}),
+		Force: true,
+		ChecksumExists: func(string) (bool, error) {
+			return true, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("UpsertCookbookVersionWithReleasedChecksums() error = %v", err)
+	}
+
+	if gotOrg != "ponyville" {
+		t.Fatalf("delegated org = %q, want %q", gotOrg, "ponyville")
+	}
+	if !gotForce {
+		t.Fatal("delegated force = false, want true")
+	}
+	if gotVersion.CookbookName != "app" || gotVersion.Version != "1.2.3" {
+		t.Fatalf("delegated version = %#v, want normalized app 1.2.3 cookbook version", gotVersion)
+	}
+	if len(gotVersion.AllFiles) != 1 || gotVersion.AllFiles[0].Path != "default.rb" {
+		t.Fatalf("delegated all_files = %#v, want normalized all_files payload path to stay default.rb", gotVersion.AllFiles)
+	}
+	if !created {
+		t.Fatal("created = false, want true")
+	}
+	if !reflect.DeepEqual(released, []string{"released-a"}) {
+		t.Fatalf("released = %v, want delegated released checksums", released)
+	}
+	if !reflect.DeepEqual(version, gotVersion) {
+		t.Fatalf("version = %#v, want delegated version %#v", version, gotVersion)
+	}
+}
+
+func TestDeleteCookbookVersionDelegatesToCookbookStore(t *testing.T) {
+	want := CookbookVersion{
+		Name:         "app-1.2.3",
+		CookbookName: "app",
+		Version:      "1.2.3",
+		JSONClass:    "Chef::CookbookVersion",
+		ChefType:     "cookbook_version",
+		Metadata:     map[string]any{"version": "1.2.3"},
+	}
+
+	service := newTestBootstrapServiceWithOptions(t, Options{
+		SuperuserName: "pivotal",
+		CookbookStoreFactory: func(*Service) CookbookStore {
+			return &delegatingCookbookStore{
+				deleteCookbookVersionWithReleasedChecksums: func(orgName, name, version string) (CookbookVersion, []string, error) {
+					if orgName != "ponyville" || name != "app" || version != "1.2.3" {
+						t.Fatalf("DeleteCookbookVersionWithReleasedChecksums() delegated (%q, %q, %q), want ponyville/app/1.2.3", orgName, name, version)
+					}
+					return want, []string{"released-b"}, nil
+				},
+			}
+		},
+	})
+	createTestCookbookOrg(t, service)
+
+	got, released, err := service.DeleteCookbookVersionWithReleasedChecksums("ponyville", "app", "1.2.3")
+	if err != nil {
+		t.Fatalf("DeleteCookbookVersionWithReleasedChecksums() error = %v", err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("DeleteCookbookVersionWithReleasedChecksums() = %#v, want %#v", got, want)
+	}
+	if !reflect.DeepEqual(released, []string{"released-b"}) {
+		t.Fatalf("released = %v, want delegated released checksums", released)
+	}
+}
+
+func TestDeleteCookbookArtifactDelegatesToCookbookStore(t *testing.T) {
+	want := CookbookArtifact{
+		Name:       "app",
+		Identifier: "1111111111111111111111111111111111111111",
+		Version:    "1.2.3",
+		ChefType:   "cookbook_version",
+		Metadata:   map[string]any{"version": "1.2.3"},
+	}
+
+	service := newTestBootstrapServiceWithOptions(t, Options{
+		SuperuserName: "pivotal",
+		CookbookStoreFactory: func(*Service) CookbookStore {
+			return &delegatingCookbookStore{
+				deleteCookbookArtifactWithReleasedChecksums: func(orgName, name, identifier string) (CookbookArtifact, []string, error) {
+					if orgName != "ponyville" || name != "app" || identifier != "1111111111111111111111111111111111111111" {
+						t.Fatalf("DeleteCookbookArtifactWithReleasedChecksums() delegated (%q, %q, %q), want ponyville/app/identifier", orgName, name, identifier)
+					}
+					return want, []string{"released-c"}, nil
+				},
+			}
+		},
+	})
+	createTestCookbookOrg(t, service)
+
+	got, released, err := service.DeleteCookbookArtifactWithReleasedChecksums("ponyville", "app", "1111111111111111111111111111111111111111")
+	if err != nil {
+		t.Fatalf("DeleteCookbookArtifactWithReleasedChecksums() error = %v", err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("DeleteCookbookArtifactWithReleasedChecksums() = %#v, want %#v", got, want)
+	}
+	if !reflect.DeepEqual(released, []string{"released-c"}) {
+		t.Fatalf("released = %v, want delegated released checksums", released)
+	}
+}
+
 func createTestCookbookOrg(t *testing.T, service *Service) {
 	t.Helper()
 
@@ -765,12 +968,130 @@ func cookbookVersionTestPayload(name, version string, metadataOverrides map[stri
 }
 
 func newTestBootstrapService(t *testing.T) *Service {
+	return newTestBootstrapServiceWithOptions(t, Options{SuperuserName: "pivotal"})
+}
+
+func newTestBootstrapServiceWithOptions(t *testing.T, opts Options) *Service {
 	t.Helper()
 
-	service := NewService(authn.NewMemoryKeyStore(), Options{SuperuserName: "pivotal"})
+	service := NewService(authn.NewMemoryKeyStore(), opts)
 	service.SeedPrincipal(authn.Principal{Type: "user", Name: "pivotal"})
 	if err := service.SeedPublicKey(authn.Principal{Type: "user", Name: "pivotal"}, "default", mustGeneratePublicKeyPEM(t)); err != nil {
 		t.Fatalf("SeedPublicKey(pivotal) error = %v", err)
 	}
 	return service
+}
+
+type delegatingCookbookStore struct {
+	hasCookbookVersion                            func(orgName, name, version string) (bool, bool)
+	listCookbookArtifacts                         func(orgName string) (map[string][]CookbookArtifact, bool)
+	listCookbookArtifactsByName                   func(orgName, name string) ([]CookbookArtifact, bool, bool)
+	getCookbookArtifact                           func(orgName, name, identifier string) (CookbookArtifact, bool, bool)
+	createCookbookArtifact                        func(orgName string, artifact CookbookArtifact) (CookbookArtifact, error)
+	deleteCookbookArtifactWithReleasedChecksums   func(orgName, name, identifier string) (CookbookArtifact, []string, error)
+	listCookbookVersions                          func(orgName string) (map[string][]CookbookVersionRef, bool)
+	listCookbookVersionsByName                    func(orgName, name string) ([]CookbookVersionRef, bool, bool)
+	listCookbookVersionModelsByName               func(orgName, name string) ([]CookbookVersion, bool, bool)
+	getCookbookVersion                            func(orgName, name, version string) (CookbookVersion, bool, bool)
+	upsertCookbookVersionWithReleasedChecksums    func(orgName string, version CookbookVersion, force bool) (CookbookVersion, []string, bool, error)
+	deleteCookbookVersionWithReleasedChecksums    func(orgName, name, version string) (CookbookVersion, []string, error)
+	deleteCookbookChecksumReferencesFromRemaining func(remaining map[string]struct{})
+	cookbookChecksumReferenced                    func(checksum string) bool
+}
+
+func (s *delegatingCookbookStore) HasCookbookVersion(orgName, name, version string) (bool, bool) {
+	if s.hasCookbookVersion != nil {
+		return s.hasCookbookVersion(orgName, name, version)
+	}
+	return false, true
+}
+
+func (s *delegatingCookbookStore) ListCookbookArtifacts(orgName string) (map[string][]CookbookArtifact, bool) {
+	if s.listCookbookArtifacts != nil {
+		return s.listCookbookArtifacts(orgName)
+	}
+	return map[string][]CookbookArtifact{}, true
+}
+
+func (s *delegatingCookbookStore) ListCookbookArtifactsByName(orgName, name string) ([]CookbookArtifact, bool, bool) {
+	if s.listCookbookArtifactsByName != nil {
+		return s.listCookbookArtifactsByName(orgName, name)
+	}
+	return nil, true, false
+}
+
+func (s *delegatingCookbookStore) GetCookbookArtifact(orgName, name, identifier string) (CookbookArtifact, bool, bool) {
+	if s.getCookbookArtifact != nil {
+		return s.getCookbookArtifact(orgName, name, identifier)
+	}
+	return CookbookArtifact{}, true, false
+}
+
+func (s *delegatingCookbookStore) CreateCookbookArtifact(orgName string, artifact CookbookArtifact) (CookbookArtifact, error) {
+	if s.createCookbookArtifact != nil {
+		return s.createCookbookArtifact(orgName, artifact)
+	}
+	return artifact, nil
+}
+
+func (s *delegatingCookbookStore) DeleteCookbookArtifactWithReleasedChecksums(orgName, name, identifier string) (CookbookArtifact, []string, error) {
+	if s.deleteCookbookArtifactWithReleasedChecksums != nil {
+		return s.deleteCookbookArtifactWithReleasedChecksums(orgName, name, identifier)
+	}
+	return CookbookArtifact{}, nil, nil
+}
+
+func (s *delegatingCookbookStore) ListCookbookVersions(orgName string) (map[string][]CookbookVersionRef, bool) {
+	if s.listCookbookVersions != nil {
+		return s.listCookbookVersions(orgName)
+	}
+	return map[string][]CookbookVersionRef{}, true
+}
+
+func (s *delegatingCookbookStore) ListCookbookVersionsByName(orgName, name string) ([]CookbookVersionRef, bool, bool) {
+	if s.listCookbookVersionsByName != nil {
+		return s.listCookbookVersionsByName(orgName, name)
+	}
+	return nil, true, false
+}
+
+func (s *delegatingCookbookStore) ListCookbookVersionModelsByName(orgName, name string) ([]CookbookVersion, bool, bool) {
+	if s.listCookbookVersionModelsByName != nil {
+		return s.listCookbookVersionModelsByName(orgName, name)
+	}
+	return nil, true, false
+}
+
+func (s *delegatingCookbookStore) GetCookbookVersion(orgName, name, version string) (CookbookVersion, bool, bool) {
+	if s.getCookbookVersion != nil {
+		return s.getCookbookVersion(orgName, name, version)
+	}
+	return CookbookVersion{}, true, false
+}
+
+func (s *delegatingCookbookStore) UpsertCookbookVersionWithReleasedChecksums(orgName string, version CookbookVersion, force bool) (CookbookVersion, []string, bool, error) {
+	if s.upsertCookbookVersionWithReleasedChecksums != nil {
+		return s.upsertCookbookVersionWithReleasedChecksums(orgName, version, force)
+	}
+	return version, nil, true, nil
+}
+
+func (s *delegatingCookbookStore) DeleteCookbookVersionWithReleasedChecksums(orgName, name, version string) (CookbookVersion, []string, error) {
+	if s.deleteCookbookVersionWithReleasedChecksums != nil {
+		return s.deleteCookbookVersionWithReleasedChecksums(orgName, name, version)
+	}
+	return CookbookVersion{}, nil, nil
+}
+
+func (s *delegatingCookbookStore) DeleteCookbookChecksumReferencesFromRemaining(remaining map[string]struct{}) {
+	if s.deleteCookbookChecksumReferencesFromRemaining != nil {
+		s.deleteCookbookChecksumReferencesFromRemaining(remaining)
+	}
+}
+
+func (s *delegatingCookbookStore) CookbookChecksumReferenced(checksum string) bool {
+	if s.cookbookChecksumReferenced != nil {
+		return s.cookbookChecksumReferenced(checksum)
+	}
+	return false
 }
