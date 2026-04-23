@@ -278,6 +278,9 @@ Current architectural reality:
 
 - the API surface is partly real and partly scaffolded
 - bootstrap and key lifecycle state are in-memory compatibility implementations
+- org bootstrap can already return validator key material, but classic validator-authenticated client registration is still not fully compatible
+- administrative object management is currently API-first; a first-class `chef-server-ctl`-style replacement for orgs, users, groups, containers, and ACLs is still future work
+- data bag CRUD is live, but encrypted data bag compatibility is not yet explicitly pinned as a tested slice
 - PostgreSQL and OpenSearch are still placeholders or early scaffolding
 - the blob layer now has in-memory, filesystem-backed, and S3-compatible compatibility implementations for sandbox checksum uploads/downloads and cookbook file URLs, and the S3-compatible path now includes request-construction parity, configurable timeout/retry plus `Retry-After` behavior, transport/status classification, malformed-endpoint and missing-credential diagnostics, and provider-backed `blob_unavailable` degradation on the current sandbox/cookbook flows
 
@@ -443,7 +446,7 @@ These areas are still intentionally incomplete:
 - deeper node and environment compatibility such as cookbook constraint edge cases and linked object behavior
 - deeper role compatibility beyond the current normalization and linked-environment read behavior
 - broader search semantics beyond the current in-memory compatibility layer, especially richer Lucene-style query translation and wider object coverage
-- PostgreSQL-backed cookbook persistence and the broader post-compatibility cookbook/provider follow-on work
+- broader post-compatibility cookbook/provider follow-on work around the new PostgreSQL-backed cookbook path
 - operational parity and migration tooling
 
-The next likely major slice is PostgreSQL-backed cookbook persistence now that the current cookbook/blob pedant compatibility bucket is pinned.
+The next likely major slice is the broader post-compatibility cookbook/provider follow-on work now that PostgreSQL-backed cookbook persistence is live.

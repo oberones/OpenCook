@@ -19,6 +19,10 @@ OpenCook is in active development and already provides a meaningful compatibilit
 
 Today, it should be viewed as an early server implementation rather than a production-ready drop-in replacement. Some subsystems still rely on in-memory state, and deeper persistence, indexing, and broader compatibility hardening are still in progress.
 
+Org bootstrap can already mint and return validator key material, but classic validator-authenticated client bootstrap registration is still a follow-on compatibility slice.
+Administrative object management is also still API-first today; a first-class `chef-server-ctl`-style replacement for orgs, users, groups, and ACLs remains future work.
+Data bag CRUD is live, but encrypted data bag compatibility is not yet an explicitly tracked/tested compatibility slice.
+
 ## Current Capabilities
 
 - Authentication and bootstrap: Chef request-signing verification, bootstrap users, organizations, clients, groups, containers, ACLs, and actor key lifecycle.
