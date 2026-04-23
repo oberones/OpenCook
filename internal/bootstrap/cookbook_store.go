@@ -20,7 +20,7 @@ type CookbookStore interface {
 }
 
 type cookbookStoreOrganizationRegistrar interface {
-	EnsureOrganization(orgName string)
+	EnsureOrganization(org Organization)
 }
 
 type memoryCookbookStore struct {

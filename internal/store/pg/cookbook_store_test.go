@@ -31,10 +31,13 @@ func TestCookbookStoreRequiresRegisteredOrganization(t *testing.T) {
 func TestCookbookStoreRoundTripsCookbooksAndArtifacts(t *testing.T) {
 	store := New("postgres://example")
 	backend := store.CookbookStore()
-	backend.(interface{ EnsureOrganization(string) }).EnsureOrganization("ponyville")
+	backend.(interface{ EnsureOrganization(bootstrap.Organization) }).EnsureOrganization(bootstrap.Organization{
+		Name:     "ponyville",
+		FullName: "Ponyville",
+	})
 	orgs := store.Cookbooks().OrganizationRecords()
-	if len(orgs) != 1 || orgs[0].Name != "ponyville" {
-		t.Fatalf("OrganizationRecords() = %v, want ponyville registration", orgs)
+	if len(orgs) != 1 || orgs[0].Name != "ponyville" || orgs[0].FullName != "Ponyville" {
+		t.Fatalf("OrganizationRecords() = %v, want ponyville registration with preserved full name", orgs)
 	}
 
 	version := bootstrap.CookbookVersion{
@@ -110,5 +113,26 @@ func TestCookbookStoreRoundTripsCookbooksAndArtifacts(t *testing.T) {
 	}
 	if len(releasedChecksums) != 1 || releasedChecksums[0] != "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" {
 		t.Fatalf("releasedChecksums = %v, want version checksum", releasedChecksums)
+	}
+
+	orgs = store.Cookbooks().OrganizationRecords()
+	if len(orgs) != 1 || orgs[0].FullName != "Ponyville" {
+		t.Fatalf("OrganizationRecords() after writes = %v, want preserved full name", orgs)
+	}
+}
+
+func TestCookbookRepositoryEnsureOrganizationPreservesDisplayName(t *testing.T) {
+	repo := newCookbookRepository(nil)
+
+	repo.ensureOrganization("ponyville", "ponyville")
+	repo.ensureOrganization("ponyville", "Ponyville")
+	repo.ensureOrganization("ponyville", "ponyville")
+
+	orgs := repo.OrganizationRecords()
+	if len(orgs) != 1 {
+		t.Fatalf("OrganizationRecords() length = %d, want 1", len(orgs))
+	}
+	if orgs[0].Name != "ponyville" || orgs[0].FullName != "Ponyville" {
+		t.Fatalf("OrganizationRecords() = %v, want preserved display name", orgs)
 	}
 }
