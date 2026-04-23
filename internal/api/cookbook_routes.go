@@ -114,8 +114,16 @@ func (s *server) handleCookbooks(w http.ResponseWriter, r *http.Request) {
 			s.handleNamedCookbookCollection(w, r, state, org, basePath, segments[0])
 		}
 	case 2:
+		if segments[0] == "_latest" || segments[0] == "_recipes" {
+			writeJSON(w, http.StatusNotFound, map[string]any{"error": []string{"not_found"}})
+			return
+		}
 		s.handleNamedCookbookVersion(w, r, state, org, segments[0], segments[1])
 	default:
+		if len(segments) > 0 && (segments[0] == "_latest" || segments[0] == "_recipes") {
+			writeJSON(w, http.StatusNotFound, map[string]any{"error": []string{"not_found"}})
+			return
+		}
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": cookbookVersionNotFound(segments[0], "")})
 	}
 }
