@@ -278,6 +278,8 @@ Current architectural reality:
 
 - the API surface is partly real and partly scaffolded
 - bootstrap and key lifecycle state are in-memory compatibility implementations
+- org bootstrap can already return validator key material, but classic validator-authenticated client registration is still not fully compatible
+- administrative object management is currently API-first; a first-class `chef-server-ctl`-style replacement for orgs, users, groups, containers, and ACLs is still future work
 - PostgreSQL and OpenSearch are still placeholders or early scaffolding
 - the blob layer now has in-memory, filesystem-backed, and S3-compatible compatibility implementations for sandbox checksum uploads/downloads and cookbook file URLs, and the S3-compatible path now includes request-construction parity, configurable timeout/retry plus `Retry-After` behavior, transport/status classification, malformed-endpoint and missing-credential diagnostics, and provider-backed `blob_unavailable` degradation on the current sandbox/cookbook flows
 

@@ -38,6 +38,7 @@ As of 2026-04-22, OpenCook has moved past pure scaffolding and into the first co
 - Chef request signing verification is implemented in Go and enforced on the first authenticated routes
 - initial user, organization, client, group, container, and ACL bootstrap flows are working in an in-memory compatibility layer
 - org bootstrap creates validator clients with default key material
+- classic validator-authenticated client registration is still pending, so the returned validator key is not yet enough for stock bootstrap flows
 - actor key lifecycle now supports list, create, update, delete, and expiration-aware authentication behavior
 - the first core object slice is live with in-memory node list/get/head/create/update/delete behavior
 - the adjacent environment slice is now live with `_default`, list/get/head/create/update/delete, and rename-capable `PUT`
@@ -375,7 +376,7 @@ These should become regression tests for OpenCook.
 - Health/readiness endpoints for API, PostgreSQL, OpenSearch, and object storage
 - Metrics compatible with Prometheus/OpenTelemetry
 - Structured logs with request IDs
-- Admin tooling for reindex, consistency checks, and data repair
+- Admin tooling for org/user/group/container/ACL management plus reindex, consistency checks, and data repair
 
 ## PostgreSQL Modernization Workstream
 
@@ -528,10 +529,11 @@ Deliverables:
 - key management endpoints
 - users/clients/orgs/groups/ACL core flows
 - org bootstrap default ACL behavior
+- validator-based client bootstrap registration compatibility
 
 Exit criteria:
 
-- bootstrap flows and core authz tests pass
+- bootstrap flows, validator bootstrap registration compatibility, and core authz tests pass
 
 ## Phase 4: Core Chef object APIs
 
@@ -571,6 +573,7 @@ Exit criteria:
 Deliverables:
 
 - admin commands/APIs
+- chef-server-ctl-style admin flows for orgs, users, groups, containers, and ACLs
 - backup/restore guidance
 - observability package
 - rolling upgrade docs
