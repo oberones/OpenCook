@@ -205,7 +205,12 @@ func (s *Service) ListEnvironmentCookbookVersions(orgName, environmentName strin
 		return nil, true, false
 	}
 
-	return environmentCookbookVersions(org.cookbooks, env, numVersions, allVersions), true, true
+	versions, orgExists := s.cookbookStore.ListCookbookVersions(orgName)
+	if !orgExists {
+		return nil, false, false
+	}
+
+	return environmentCookbookVersionsFromRefs(versions, env, numVersions, allVersions), true, true
 }
 
 func (s *Service) GetEnvironmentCookbookVersions(orgName, environmentName, cookbookName string, numVersions int, allVersions bool) ([]CookbookVersionRef, bool, bool, bool) {
@@ -223,16 +228,16 @@ func (s *Service) GetEnvironmentCookbookVersions(orgName, environmentName, cookb
 	}
 
 	cookbookName = strings.TrimSpace(cookbookName)
-	versions, ok := org.cookbooks[cookbookName]
-	if !ok {
+	refs, _, cookbookExists := s.cookbookStore.ListCookbookVersionsByName(orgName, cookbookName)
+	if !cookbookExists {
 		return nil, true, true, false
 	}
 
-	refs := filterEnvironmentCookbookRefs(cookbookVersionRefs(versions), env.CookbookVersions[cookbookName])
+	refs = filterEnvironmentCookbookRefs(refs, env.CookbookVersions[cookbookName])
 	return limitEnvironmentCookbookRefs(refs, numVersions, allVersions), true, true, true
 }
 
-func environmentCookbookVersions(cookbooks map[string]map[string]CookbookVersion, env Environment, numVersions int, allVersions bool) map[string][]CookbookVersionRef {
+func environmentCookbookVersionsFromRefs(cookbooks map[string][]CookbookVersionRef, env Environment, numVersions int, allVersions bool) map[string][]CookbookVersionRef {
 	if len(cookbooks) == 0 {
 		return map[string][]CookbookVersionRef{}
 	}
@@ -247,8 +252,8 @@ func environmentCookbookVersions(cookbooks map[string]map[string]CookbookVersion
 
 	out := make(map[string][]CookbookVersionRef, len(cookbooks))
 	anyAllowed := false
-	for name, versions := range cookbooks {
-		refs := filterEnvironmentCookbookRefs(cookbookVersionRefs(versions), env.CookbookVersions[name])
+	for name, refs := range cookbooks {
+		refs = filterEnvironmentCookbookRefs(refs, env.CookbookVersions[name])
 		refs = limitEnvironmentCookbookRefs(refs, numVersions, allVersions)
 		if len(refs) == 0 {
 			continue
@@ -266,6 +271,18 @@ func environmentCookbookVersions(cookbooks map[string]map[string]CookbookVersion
 		out[name] = []CookbookVersionRef{}
 	}
 	return out
+}
+
+func environmentCookbookVersions(cookbooks map[string]map[string]CookbookVersion, env Environment, numVersions int, allVersions bool) map[string][]CookbookVersionRef {
+	if len(cookbooks) == 0 {
+		return map[string][]CookbookVersionRef{}
+	}
+
+	refs := make(map[string][]CookbookVersionRef, len(cookbooks))
+	for name, versions := range cookbooks {
+		refs[name] = cookbookVersionRefs(versions)
+	}
+	return environmentCookbookVersionsFromRefs(refs, env, numVersions, allVersions)
 }
 
 func filterEnvironmentCookbookRefs(refs []CookbookVersionRef, constraint string) []CookbookVersionRef {

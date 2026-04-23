@@ -3526,7 +3526,15 @@ func newTestRouterWithOverrides(t *testing.T, cfg config.Config, logger *log.Log
 	return newTestRouterWithOverridesAndBlob(t, cfg, logger, verifier, blob.NewMemoryStore(""))
 }
 
+func newTestRouterWithBootstrapOptions(t *testing.T, cfg config.Config, opts bootstrap.Options) http.Handler {
+	return newTestRouterWithBootstrapOptionsAndBlob(t, cfg, opts, nil, nil, blob.NewMemoryStore(""))
+}
+
 func newTestRouterWithOverridesAndBlob(t *testing.T, cfg config.Config, logger *log.Logger, verifier authn.Verifier, blobStore blob.Store) http.Handler {
+	return newTestRouterWithBootstrapOptionsAndBlob(t, cfg, bootstrap.Options{SuperuserName: "pivotal"}, logger, verifier, blobStore)
+}
+
+func newTestRouterWithBootstrapOptionsAndBlob(t *testing.T, cfg config.Config, opts bootstrap.Options, logger *log.Logger, verifier authn.Verifier, blobStore blob.Store) http.Handler {
 	t.Helper()
 
 	privateKey := mustParsePrivateKey(t)
@@ -3563,7 +3571,10 @@ func newTestRouterWithOverridesAndBlob(t *testing.T, cfg config.Config, logger *
 		},
 		PublicKey: &privateKey.PublicKey,
 	})
-	state := bootstrap.NewService(store, bootstrap.Options{SuperuserName: "pivotal"})
+	if opts.SuperuserName == "" {
+		opts.SuperuserName = "pivotal"
+	}
+	state := bootstrap.NewService(store, opts)
 	publicKeyPEM := mustMarshalPublicKeyPEM(t, &privateKey.PublicKey)
 	state.SeedPrincipal(authn.Principal{Type: "user", Name: "silent-bob"})
 	if err := state.SeedPublicKey(authn.Principal{Type: "user", Name: "silent-bob"}, "default", publicKeyPEM); err != nil {

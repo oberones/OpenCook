@@ -45,13 +45,15 @@ var defaultContainers = []string{
 }
 
 type Options struct {
-	SuperuserName string
+	SuperuserName        string
+	CookbookStoreFactory func(*Service) CookbookStore
 }
 
 type Service struct {
 	mu            sync.RWMutex
 	keyStore      *authn.MemoryKeyStore
 	superuserName string
+	cookbookStore CookbookStore
 	users         map[string]User
 	userACLs      map[string]authz.ACL
 	userKeys      map[string]map[string]KeyRecord
@@ -194,6 +196,12 @@ func NewService(keyStore *authn.MemoryKeyStore, opts Options) *Service {
 		userACLs:      make(map[string]authz.ACL),
 		userKeys:      make(map[string]map[string]KeyRecord),
 		orgs:          make(map[string]*organizationState),
+	}
+	if opts.CookbookStoreFactory != nil {
+		s.cookbookStore = opts.CookbookStoreFactory(s)
+	}
+	if s.cookbookStore == nil {
+		s.cookbookStore = newMemoryCookbookStore(s)
 	}
 	s.ensureUserLocked(superuser)
 	return s
@@ -513,6 +521,9 @@ func (s *Service) CreateOrganization(input CreateOrganizationInput) (Organizatio
 	clientsGroup.Clients = uniqueSorted(append(clientsGroup.Clients, validatorName))
 	clientsGroup.Actors = uniqueSorted(append(clientsGroup.Users, clientsGroup.Clients...))
 	state.groups["clients"] = clientsGroup
+	if registrar, ok := s.cookbookStore.(cookbookStoreOrganizationRegistrar); ok {
+		registrar.EnsureOrganization(org)
+	}
 
 	return org, validator, keyMaterial, nil
 }
