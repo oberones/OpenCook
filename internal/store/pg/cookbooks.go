@@ -350,21 +350,57 @@ func validateCookbookArtifactFileParent(artifact CookbookArtifactRecord, file Co
 	return nil
 }
 
-func (r *CookbookRepository) ensureOrganization(orgName string) {
+func normalizedOrganizationRecord(orgName, fullName string) CookbookOrganizationRecord {
+	orgName = strings.TrimSpace(orgName)
+	fullName = strings.TrimSpace(fullName)
+	if fullName == "" {
+		fullName = orgName
+	}
+	return CookbookOrganizationRecord{
+		Name:     orgName,
+		FullName: fullName,
+	}
+}
+
+func mergeOrganizationRecord(existing, incoming CookbookOrganizationRecord) CookbookOrganizationRecord {
+	if strings.TrimSpace(existing.Name) == "" {
+		return incoming
+	}
+
+	// Preserve a non-placeholder display name when a later write only knows the org slug.
+	if strings.TrimSpace(existing.FullName) != "" &&
+		existing.FullName != existing.Name &&
+		incoming.FullName == incoming.Name {
+		return CookbookOrganizationRecord{
+			Name:     incoming.Name,
+			FullName: existing.FullName,
+		}
+	}
+
+	return incoming
+}
+
+func (r *CookbookRepository) ensureOrganization(orgName, fullName string) {
 	if r == nil {
 		return
 	}
 
-	orgName = strings.TrimSpace(orgName)
-	if orgName == "" {
+	record := normalizedOrganizationRecord(orgName, fullName)
+	if record.Name == "" {
 		return
 	}
 
 	if r.db != nil {
 		if _, err := r.db.ExecContext(context.Background(),
-			`INSERT INTO oc_cookbook_orgs (org_name, full_name) VALUES ($1, $2) ON CONFLICT (org_name) DO UPDATE SET full_name = EXCLUDED.full_name`,
-			orgName,
-			orgName,
+			`INSERT INTO oc_cookbook_orgs (org_name, full_name) VALUES ($1, $2)
+			 ON CONFLICT (org_name) DO UPDATE
+			 SET full_name = CASE
+			 	WHEN oc_cookbook_orgs.full_name = oc_cookbook_orgs.org_name THEN EXCLUDED.full_name
+			 	ELSE oc_cookbook_orgs.full_name
+			 END,
+			 updated_at = NOW()`,
+			record.Name,
+			record.FullName,
 		); err != nil {
 			// Keep the in-process state usable; write-path errors are surfaced by the CRUD methods.
 		}
@@ -372,7 +408,7 @@ func (r *CookbookRepository) ensureOrganization(orgName string) {
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.orgs[orgName] = CookbookOrganizationRecord{Name: orgName, FullName: orgName}
+	r.orgs[record.Name] = mergeOrganizationRecord(r.orgs[record.Name], record)
 }
 
 func (r *CookbookRepository) organizationExists(orgName string) bool {
@@ -538,7 +574,7 @@ func (r *CookbookRepository) putCookbookVersion(orgName string, version bootstra
 
 		if _, err := tx.ExecContext(context.Background(),
 			`INSERT INTO oc_cookbook_orgs (org_name, full_name) VALUES ($1, $2)
-			 ON CONFLICT (org_name) DO UPDATE SET full_name = EXCLUDED.full_name, updated_at = NOW()`,
+			 ON CONFLICT (org_name) DO NOTHING`,
 			orgName,
 			orgName,
 		); err != nil {
@@ -553,7 +589,7 @@ func (r *CookbookRepository) putCookbookVersion(orgName string, version bootstra
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	r.orgs[orgName] = CookbookOrganizationRecord{Name: orgName, FullName: orgName}
+	r.orgs[orgName] = mergeOrganizationRecord(r.orgs[orgName], normalizedOrganizationRecord(orgName, ""))
 	if r.versions[orgName] == nil {
 		r.versions[orgName] = make(map[string]map[string]CookbookVersionBundle)
 	}
@@ -751,7 +787,7 @@ func (r *CookbookRepository) putCookbookArtifact(orgName string, artifact bootst
 
 		if _, err := tx.ExecContext(context.Background(),
 			`INSERT INTO oc_cookbook_orgs (org_name, full_name) VALUES ($1, $2)
-			 ON CONFLICT (org_name) DO UPDATE SET full_name = EXCLUDED.full_name, updated_at = NOW()`,
+			 ON CONFLICT (org_name) DO NOTHING`,
 			orgName,
 			orgName,
 		); err != nil {
@@ -766,7 +802,7 @@ func (r *CookbookRepository) putCookbookArtifact(orgName string, artifact bootst
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	r.orgs[orgName] = CookbookOrganizationRecord{Name: orgName, FullName: orgName}
+	r.orgs[orgName] = mergeOrganizationRecord(r.orgs[orgName], normalizedOrganizationRecord(orgName, ""))
 	if r.artifacts[orgName] == nil {
 		r.artifacts[orgName] = make(map[string]map[string]CookbookArtifactBundle)
 	}

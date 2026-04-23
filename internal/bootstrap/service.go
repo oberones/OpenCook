@@ -522,7 +522,7 @@ func (s *Service) CreateOrganization(input CreateOrganizationInput) (Organizatio
 	clientsGroup.Actors = uniqueSorted(append(clientsGroup.Users, clientsGroup.Clients...))
 	state.groups["clients"] = clientsGroup
 	if registrar, ok := s.cookbookStore.(cookbookStoreOrganizationRegistrar); ok {
-		registrar.EnsureOrganization(org.Name)
+		registrar.EnsureOrganization(org)
 	}
 
 	return org, validator, keyMaterial, nil

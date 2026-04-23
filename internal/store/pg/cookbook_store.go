@@ -19,11 +19,11 @@ func (s *Store) CookbookStore() bootstrap.CookbookStore {
 	return &cookbookStore{repo: s.Cookbooks()}
 }
 
-func (s *cookbookStore) EnsureOrganization(orgName string) {
+func (s *cookbookStore) EnsureOrganization(org bootstrap.Organization) {
 	if s == nil || s.repo == nil {
 		return
 	}
-	s.repo.ensureOrganization(orgName)
+	s.repo.ensureOrganization(org.Name, org.FullName)
 }
 
 func (s *cookbookStore) HasCookbookVersion(orgName, name, version string) (bool, bool) {
