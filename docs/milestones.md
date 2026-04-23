@@ -173,6 +173,8 @@ Status: in progress
 - org-scoped depsolver non-admin org-member graph selection is now also pinned for the upstream first graph, pinned-root-no-solution graph, and second graph on both named-environment and `_default` paths
 - org-scoped depsolver non-admin org-member solver mechanics are now also pinned for pessimistic constraints, repeated-root pinned selection and first-label attribution, and circular dependency handling on both named-environment and `_default` paths
 - org-scoped depsolver non-admin org-member named-environment datestamp-version support is now also pinned
+- org-scoped depsolver non-admin org-member role-expanded missing-role, recursive-role, environment-specific success, explicit-empty environment override, and equivalent-root deduplication are now also pinned on both named-environment and `_default` paths
+- org-scoped depsolver non-admin org-member environment-read auth is now also pinned on both named-environment and `_default` paths, including role-expanded short-circuiting before role-container auth
 - PostgreSQL-backed cookbook persistence, broader cookbook pedant coverage beyond the current environment-filtered/named-filter/latest/version read-write contract, broader upstream run-list/depsolver semantics, and deeper operational hardening around provider-backed blob behavior are still pending
 - S3-compatible blob storage remains the target production mode after the compatibility contract settles
 
