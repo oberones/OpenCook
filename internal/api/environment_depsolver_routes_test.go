@@ -1220,6 +1220,66 @@ func TestEnvironmentCookbookVersionsReturnsEmptyObjectForOrgMemberMissingRunList
 	}
 }
 
+func TestOrganizationEnvironmentCookbookVersionsReturnsEmptyObjectForOrgMemberEmptyRunList(t *testing.T) {
+	router, state := newOrganizationOrgMemberDepsolverRouterWithAuthorizer(t, nil)
+	createCanterlotEnvironmentForDepsolverTests(t, state, "production")
+
+	routes := []struct {
+		name string
+		path string
+	}{
+		{name: "named_environment", path: "/organizations/canterlot/environments/production/cookbook_versions"},
+		{name: "default_environment", path: "/organizations/canterlot/environments/_default/cookbook_versions"},
+	}
+
+	for _, route := range routes {
+		t.Run(route.name, func(t *testing.T) {
+			req := newSignedJSONRequestAs(t, "silent-bob", http.MethodPost, route.path, mustMarshalSandboxJSON(t, map[string]any{
+				"run_list": []any{},
+			}))
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("%s org-scoped org-member empty run_list status = %d, want %d, body = %s", route.name, rec.Code, http.StatusOK, rec.Body.String())
+			}
+
+			payload := decodeJSONMap(t, rec.Body.Bytes())
+			if len(payload) != 0 {
+				t.Fatalf("%s payload = %v, want empty object", route.name, payload)
+			}
+		})
+	}
+}
+
+func TestOrganizationEnvironmentCookbookVersionsReturnsEmptyObjectForOrgMemberMissingRunList(t *testing.T) {
+	router, state := newOrganizationOrgMemberDepsolverRouterWithAuthorizer(t, nil)
+	createCanterlotEnvironmentForDepsolverTests(t, state, "production")
+
+	routes := []struct {
+		name string
+		path string
+	}{
+		{name: "named_environment", path: "/organizations/canterlot/environments/production/cookbook_versions"},
+		{name: "default_environment", path: "/organizations/canterlot/environments/_default/cookbook_versions"},
+	}
+
+	for _, route := range routes {
+		t.Run(route.name, func(t *testing.T) {
+			req := newSignedJSONRequestAs(t, "silent-bob", http.MethodPost, route.path, mustMarshalSandboxJSON(t, map[string]any{}))
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("%s org-scoped org-member missing run_list status = %d, want %d, body = %s", route.name, rec.Code, http.StatusOK, rec.Body.String())
+			}
+
+			payload := decodeJSONMap(t, rec.Body.Bytes())
+			if len(payload) != 0 {
+				t.Fatalf("%s payload = %v, want empty object", route.name, payload)
+			}
+		})
+	}
+}
+
 func TestOrganizationEnvironmentCookbookVersionsReturnsEmptyObjectForMissingRunList(t *testing.T) {
 	router := newTestRouter(t)
 	createEnvironmentForCookbookTests(t, router, "production")
@@ -1392,6 +1452,21 @@ func TestEnvironmentCookbookVersionsReturnsNotFoundForOrgMemberMissingEnvironmen
 	assertEnvironmentErrorMessages(t, rec.Body.Bytes(), "Cannot load environment not@environment")
 }
 
+func TestOrganizationEnvironmentCookbookVersionsReturnsNotFoundForOrgMemberMissingEnvironment(t *testing.T) {
+	router, _ := newOrganizationOrgMemberDepsolverRouterWithAuthorizer(t, nil)
+
+	req := newSignedJSONRequestAs(t, "silent-bob", http.MethodPost, "/organizations/canterlot/environments/not@environment/cookbook_versions", mustMarshalSandboxJSON(t, map[string]any{
+		"run_list": []any{},
+	}))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("org-scoped org-member missing environment status = %d, want %d, body = %s", rec.Code, http.StatusNotFound, rec.Body.String())
+	}
+
+	assertEnvironmentErrorMessages(t, rec.Body.Bytes(), "Cannot load environment not@environment")
+}
+
 func TestOrganizationDefaultEnvironmentCookbookVersionsReturnsNotFoundForMissingOrganization(t *testing.T) {
 	router := newTestRouter(t)
 
@@ -1558,6 +1633,32 @@ func TestEnvironmentCookbookVersionsUseConfiguredDefaultOrganizationForOrgMember
 		t,
 		"/environments/missing-env/cookbook_versions",
 		"configured default-org org-member missing environment precedence",
+	)
+}
+
+func TestOrganizationEnvironmentCookbookVersionsForOrgMemberBeforeMalformedRequest(t *testing.T) {
+	assertOrganizationDepsolverRejectsMalformedRequestBeforeEnvironmentReadAuthzForOrgMember(
+		t,
+		"/organizations/canterlot/environments/production/cookbook_versions",
+		"production",
+		"org-scoped org-member named environment precedence",
+	)
+}
+
+func TestOrganizationDefaultEnvironmentCookbookVersionsForOrgMemberBeforeMalformedRequest(t *testing.T) {
+	assertOrganizationDepsolverRejectsMalformedRequestBeforeEnvironmentReadAuthzForOrgMember(
+		t,
+		"/organizations/canterlot/environments/_default/cookbook_versions",
+		"_default",
+		"org-scoped org-member _default precedence",
+	)
+}
+
+func TestOrganizationEnvironmentCookbookVersionsForOrgMemberBeforeMissingEnvironmentForMalformedRequest(t *testing.T) {
+	assertOrganizationDepsolverRejectsMalformedRequestBeforeMissingEnvironmentForOrgMember(
+		t,
+		"/organizations/canterlot/environments/missing-env/cookbook_versions",
+		"org-scoped org-member missing environment precedence",
 	)
 }
 
@@ -1733,6 +1834,70 @@ func assertConfiguredDefaultOrgDepsolverRejectsMalformedRequestBeforeMissingEnvi
 	}
 }
 
+func assertOrganizationDepsolverRejectsMalformedRequestBeforeEnvironmentReadAuthzForOrgMember(t *testing.T, path, envName, statusLabel string) {
+	t.Helper()
+
+	for _, tt := range depsolverMalformedRequestCases(t) {
+		t.Run(tt.name, func(t *testing.T) {
+			var authorizer *recordingDepsolverAuthorizer
+			router, state := newOrganizationOrgMemberDepsolverRouterWithAuthorizer(t, func(state *bootstrap.Service) authz.Authorizer {
+				authorizer = &recordingDepsolverAuthorizer{
+					base: authz.NewACLAuthorizer(state),
+					deny: map[string]struct{}{
+						"read:environment:" + envName: {},
+					},
+				}
+				return authorizer
+			})
+			if envName != "_default" {
+				createCanterlotEnvironmentForDepsolverTests(t, state, envName)
+			}
+			authorizer.calls = nil
+
+			req := newSignedJSONRequestAs(t, "silent-bob", http.MethodPost, path, tt.body)
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("%s %s status = %d, want %d, body = %s", tt.name, statusLabel, rec.Code, http.StatusBadRequest, rec.Body.String())
+			}
+
+			assertEnvironmentErrorMessages(t, rec.Body.Bytes(), tt.messages...)
+			if len(authorizer.calls) != 0 {
+				t.Fatalf("%s authz calls = %v, want none", tt.name, authorizer.calls)
+			}
+		})
+	}
+}
+
+func assertOrganizationDepsolverRejectsMalformedRequestBeforeMissingEnvironmentForOrgMember(t *testing.T, path, statusLabel string) {
+	t.Helper()
+
+	for _, tt := range depsolverMalformedRequestCases(t) {
+		t.Run(tt.name, func(t *testing.T) {
+			var authorizer *recordingDepsolverAuthorizer
+			router, _ := newOrganizationOrgMemberDepsolverRouterWithAuthorizer(t, func(state *bootstrap.Service) authz.Authorizer {
+				authorizer = &recordingDepsolverAuthorizer{
+					base: authz.NewACLAuthorizer(state),
+				}
+				return authorizer
+			})
+			authorizer.calls = nil
+
+			req := newSignedJSONRequestAs(t, "silent-bob", http.MethodPost, path, tt.body)
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("%s %s status = %d, want %d, body = %s", tt.name, statusLabel, rec.Code, http.StatusBadRequest, rec.Body.String())
+			}
+
+			assertEnvironmentErrorMessages(t, rec.Body.Bytes(), tt.messages...)
+			if len(authorizer.calls) != 0 {
+				t.Fatalf("%s authz calls = %v, want none", tt.name, authorizer.calls)
+			}
+		})
+	}
+}
+
 func TestEnvironmentCookbookVersionsUsesConfiguredDefaultOrganizationWhenAmbiguous(t *testing.T) {
 	router := newTestRouterWithConfig(t, config.Config{
 		ServiceName:         "opencook",
@@ -1847,6 +2012,22 @@ func TestDefaultEnvironmentCookbookVersionsUseConfiguredDefaultOrganizationForOr
 	assertConfiguredDefaultOrgDepsolverRouteSemanticsForOrgMember(
 		t,
 		"/environments/_default/cookbook_versions",
+		"_default",
+	)
+}
+
+func TestOrganizationEnvironmentCookbookVersionsForOrgMemberRouteSemantics(t *testing.T) {
+	assertOrganizationDepsolverRouteSemanticsForOrgMember(
+		t,
+		"/organizations/canterlot/environments/production/cookbook_versions",
+		"production",
+	)
+}
+
+func TestOrganizationDefaultEnvironmentCookbookVersionsForOrgMemberRouteSemantics(t *testing.T) {
+	assertOrganizationDepsolverRouteSemanticsForOrgMember(
+		t,
+		"/organizations/canterlot/environments/_default/cookbook_versions",
 		"_default",
 	)
 }
@@ -2006,6 +2187,94 @@ func assertConfiguredDefaultOrgDepsolverRouteSemanticsForOrgMember(t *testing.T,
 			t.Fatalf("message = %v, want %q", payload["message"], "route not found in scaffold router")
 		}
 	})
+}
+
+func assertOrganizationDepsolverRouteSemanticsForOrgMember(t *testing.T, path, envName string) {
+	t.Helper()
+
+	router, state := newOrganizationOrgMemberDepsolverRouterWithAuthorizer(t, nil)
+	if envName != "_default" {
+		createCanterlotEnvironmentForDepsolverTests(t, state, envName)
+	}
+
+	t.Run("trailing_slash", func(t *testing.T) {
+		req := newSignedJSONRequestAs(t, "silent-bob", http.MethodPost, path+"/", mustMarshalSandboxJSON(t, map[string]any{
+			"run_list": []any{},
+		}))
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("org-scoped org-member trailing slash status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+		}
+
+		payload := decodeJSONMap(t, rec.Body.Bytes())
+		if len(payload) != 0 {
+			t.Fatalf("payload = %v, want empty object", payload)
+		}
+	})
+
+	t.Run("method_not_allowed", func(t *testing.T) {
+		req := newSignedJSONRequestAs(t, "silent-bob", http.MethodGet, path, nil)
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("org-scoped org-member method status = %d, want %d, body = %s", rec.Code, http.StatusMethodNotAllowed, rec.Body.String())
+		}
+		if rec.Header().Get("Allow") != http.MethodPost {
+			t.Fatalf("Allow = %q, want %q", rec.Header().Get("Allow"), http.MethodPost)
+		}
+
+		payload := decodeJSONMap(t, rec.Body.Bytes())
+		if payload["error"] != "method_not_allowed" {
+			t.Fatalf("error = %v, want %q", payload["error"], "method_not_allowed")
+		}
+		if payload["message"] != "method not allowed for environment cookbook_versions route" {
+			t.Fatalf("message = %v, want %q", payload["message"], "method not allowed for environment cookbook_versions route")
+		}
+	})
+
+	t.Run("extra_path", func(t *testing.T) {
+		req := newSignedJSONRequestAs(t, "silent-bob", http.MethodPost, path+"/extra", mustMarshalSandboxJSON(t, map[string]any{
+			"run_list": []any{},
+		}))
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("org-scoped org-member extra path status = %d, want %d, body = %s", rec.Code, http.StatusNotFound, rec.Body.String())
+		}
+
+		payload := decodeJSONMap(t, rec.Body.Bytes())
+		if payload["error"] != "not_found" {
+			t.Fatalf("error = %v, want %q", payload["error"], "not_found")
+		}
+		if payload["message"] != "route not found in scaffold router" {
+			t.Fatalf("message = %v, want %q", payload["message"], "route not found in scaffold router")
+		}
+	})
+}
+
+func newOrganizationOrgMemberDepsolverRouterWithAuthorizer(t *testing.T, authorizerFactory func(*bootstrap.Service) authz.Authorizer) (http.Handler, *bootstrap.Service) {
+	t.Helper()
+
+	router, state := newSearchTestRouterWithAuthorizer(t, authorizerFactory)
+	createOrgForTest(t, router, "canterlot")
+	if err := state.AddUserToGroup("canterlot", "users", "silent-bob"); err != nil {
+		t.Fatalf("AddUserToGroup(silent-bob) error = %v", err)
+	}
+	return router, state
+}
+
+func createCanterlotEnvironmentForDepsolverTests(t *testing.T, state *bootstrap.Service, name string) {
+	t.Helper()
+
+	if _, err := state.CreateEnvironment("canterlot", bootstrap.CreateEnvironmentInput{
+		Payload: map[string]any{
+			"name": name,
+		},
+		Creator: authn.Principal{Type: "user", Name: "pivotal"},
+	}); err != nil {
+		t.Fatalf("CreateEnvironment(%s) error = %v", name, err)
+	}
 }
 
 func newConfiguredDefaultOrgDepsolverRouter(t *testing.T) http.Handler {
