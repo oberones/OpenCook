@@ -55,11 +55,26 @@ func (s *Store) ActivateCookbookPersistence(ctx context.Context) error {
 		return fmt.Errorf("ping postgres: %w", err)
 	}
 
-	if err := s.cookbooks.activate(ctx, db); err != nil {
+	if err := s.ActivateCookbookPersistenceWithDB(ctx, db); err != nil {
 		_ = db.Close()
 		return err
 	}
+	return nil
+}
 
+func (s *Store) ActivateCookbookPersistenceWithDB(ctx context.Context, db *sql.DB) error {
+	if s == nil {
+		return fmt.Errorf("postgres store is required")
+	}
+	if s.CookbookPersistenceActive() {
+		return nil
+	}
+	if db == nil {
+		return fmt.Errorf("postgres connection is required")
+	}
+	if err := s.cookbooks.activate(ctx, db); err != nil {
+		return err
+	}
 	s.db = db
 	return nil
 }
@@ -93,6 +108,6 @@ func (s *Store) Status() Status {
 	return Status{
 		Driver:     "postgres",
 		Configured: true,
-		Message:    "PostgreSQL cookbook schema scaffolded; activate cookbook persistence in app wiring",
+		Message:    "PostgreSQL configured for cookbook persistence; waiting for app activation",
 	}
 }

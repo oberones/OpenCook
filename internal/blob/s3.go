@@ -127,7 +127,7 @@ func (s *S3CompatibleStore) Status() Status {
 		return Status{
 			Backend:    "s3-compatible",
 			Configured: false,
-			Message:    "set OPENCOOK_BLOB_STORAGE_URL to s3://bucket/prefix to configure the S3-compatible blob adapter scaffold",
+			Message:    "set OPENCOOK_BLOB_STORAGE_URL to s3://bucket/prefix to configure S3-compatible blob request operations",
 		}
 	}
 	if !s.isReady() {

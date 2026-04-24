@@ -187,7 +187,7 @@ Status: in progress
 - org-scoped depsolver non-admin org-member missing-environment `404` is now also pinned on the named-environment path
 - org-scoped depsolver non-admin org-member malformed-request precedence is now also pinned before environment-read auth on both named-environment and `_default` paths, and before named-environment missing-environment lookup
 - PostgreSQL-backed cookbook persistence is now live for cookbook versions and cookbook artifacts
-- the broader post-compatibility cookbook/provider follow-on work is still pending
+- mixed PostgreSQL-backed cookbook metadata plus provider-backed blob lifecycle hardening is now also complete
 - S3-compatible blob storage remains the target production mode after the compatibility contract settles
 
 ## Milestone 7: Validator Bootstrap Compatibility

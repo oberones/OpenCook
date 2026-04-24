@@ -29,7 +29,7 @@ func (s *MemoryStore) Name() string {
 }
 
 func (s *MemoryStore) Status() Status {
-	message := "blob compatibility routes are backed by in-memory content-addressed storage; provider-backed filesystem and S3-compatible modes are separate follow-on adapters"
+	message := "blob compatibility routes are backed by in-memory content-addressed storage; filesystem and S3-compatible modes are available for provider-backed paths"
 	if s.target != "" {
 		message = "blob storage is explicitly pinned to the in-memory compatibility adapter for this phase"
 	}

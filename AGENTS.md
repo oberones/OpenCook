@@ -446,7 +446,7 @@ These areas are still intentionally incomplete:
 - deeper node and environment compatibility such as cookbook constraint edge cases and linked object behavior
 - deeper role compatibility beyond the current normalization and linked-environment read behavior
 - broader search semantics beyond the current in-memory compatibility layer, especially richer Lucene-style query translation and wider object coverage
-- broader post-compatibility cookbook/provider follow-on work around the new PostgreSQL-backed cookbook path
+- mixed PostgreSQL-backed cookbook metadata plus provider-backed blob lifecycle hardening on the live cookbook path
 - operational parity and migration tooling
 
-The next likely major slice is the broader post-compatibility cookbook/provider follow-on work now that PostgreSQL-backed cookbook persistence is live.
+The next likely major slice is the broader bootstrap/PostgreSQL replacement after the cookbook cutover, with validator bootstrap compatibility still pending in Milestone 7.

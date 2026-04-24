@@ -3519,22 +3519,30 @@ func newTestRouterWithConfig(t *testing.T, cfg config.Config) http.Handler {
 }
 
 func newTestRouterWithBlob(t *testing.T, cfg config.Config, blobStore blob.Store) http.Handler {
-	return newTestRouterWithOverridesAndBlob(t, cfg, nil, nil, blobStore)
+	return newTestRouterWithOverridesAndBlobAndPostgres(t, cfg, nil, nil, blobStore, nil)
 }
 
 func newTestRouterWithOverrides(t *testing.T, cfg config.Config, logger *log.Logger, verifier authn.Verifier) http.Handler {
-	return newTestRouterWithOverridesAndBlob(t, cfg, logger, verifier, blob.NewMemoryStore(""))
+	return newTestRouterWithOverridesAndBlobAndPostgres(t, cfg, logger, verifier, blob.NewMemoryStore(""), nil)
 }
 
 func newTestRouterWithBootstrapOptions(t *testing.T, cfg config.Config, opts bootstrap.Options) http.Handler {
-	return newTestRouterWithBootstrapOptionsAndBlob(t, cfg, opts, nil, nil, blob.NewMemoryStore(""))
+	return newTestRouterWithBootstrapOptionsAndBlobAndPostgres(t, cfg, opts, nil, nil, blob.NewMemoryStore(""), nil)
 }
 
 func newTestRouterWithOverridesAndBlob(t *testing.T, cfg config.Config, logger *log.Logger, verifier authn.Verifier, blobStore blob.Store) http.Handler {
-	return newTestRouterWithBootstrapOptionsAndBlob(t, cfg, bootstrap.Options{SuperuserName: "pivotal"}, logger, verifier, blobStore)
+	return newTestRouterWithOverridesAndBlobAndPostgres(t, cfg, logger, verifier, blobStore, nil)
+}
+
+func newTestRouterWithOverridesAndBlobAndPostgres(t *testing.T, cfg config.Config, logger *log.Logger, verifier authn.Verifier, blobStore blob.Store, postgresStore *pg.Store) http.Handler {
+	return newTestRouterWithBootstrapOptionsAndBlobAndPostgres(t, cfg, bootstrap.Options{SuperuserName: "pivotal"}, logger, verifier, blobStore, postgresStore)
 }
 
 func newTestRouterWithBootstrapOptionsAndBlob(t *testing.T, cfg config.Config, opts bootstrap.Options, logger *log.Logger, verifier authn.Verifier, blobStore blob.Store) http.Handler {
+	return newTestRouterWithBootstrapOptionsAndBlobAndPostgres(t, cfg, opts, logger, verifier, blobStore, nil)
+}
+
+func newTestRouterWithBootstrapOptionsAndBlobAndPostgres(t *testing.T, cfg config.Config, opts bootstrap.Options, logger *log.Logger, verifier authn.Verifier, blobStore blob.Store, postgresStore *pg.Store) http.Handler {
 	t.Helper()
 
 	privateKey := mustParsePrivateKey(t)
@@ -3632,6 +3640,17 @@ func newTestRouterWithBootstrapOptionsAndBlob(t *testing.T, cfg config.Config, o
 	if blobStore == nil {
 		blobStore = blob.NewMemoryStore("")
 	}
+	if postgresStore == nil {
+		postgresStore = pg.New("")
+	}
+
+	cookbookBackend := "memory-bootstrap"
+	switch {
+	case postgresStore.CookbookPersistenceActive():
+		cookbookBackend = "postgres"
+	case postgresStore.Configured():
+		cookbookBackend = "postgres-configured"
+	}
 
 	return NewRouter(Dependencies{
 		Logger:           logger,
@@ -3645,7 +3664,8 @@ func newTestRouterWithBootstrapOptionsAndBlob(t *testing.T, cfg config.Config, o
 		Blob:             blobStore,
 		BlobUploadSecret: []byte("test-blob-upload-secret"),
 		Search:           search.NewMemoryIndex(state, ""),
-		Postgres:         pg.New(""),
+		Postgres:         postgresStore,
+		CookbookBackend:  cookbookBackend,
 	})
 }
 
