@@ -195,7 +195,7 @@ func (s *server) handleRoot(w http.ResponseWriter, r *http.Request) {
 		"phase":         "compatibility-foundation",
 		"version":       s.deps.Version,
 		"compat_routes": s.deps.Compat.RouteCount(),
-		"next":          "replace more of the remaining bootstrap state with PostgreSQL-backed persistence, finish validator bootstrap compatibility, and continue broader OpenSearch-backed follow-on work",
+		"next":          "persist the remaining core object APIs, finish validator bootstrap compatibility, and continue broader OpenSearch-backed follow-on work",
 	})
 }
 

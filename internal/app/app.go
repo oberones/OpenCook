@@ -44,6 +44,9 @@ func New(cfg config.Config, logger *log.Logger, build version.Info) (*Applicatio
 	}
 	keyStore := authn.NewMemoryKeyStore()
 	bootstrapState := bootstrap.NewService(keyStore, bootstrapOptions(cfg, postgresStore))
+	if err := bootstrapState.RehydrateKeyStore(); err != nil {
+		return nil, fmt.Errorf("hydrate bootstrap verifier keys: %w", err)
+	}
 	if err := seedCookbookOrganizationsFromPostgres(bootstrapState, postgresStore); err != nil {
 		return nil, err
 	}
@@ -104,6 +107,15 @@ func bootstrapOptions(cfg config.Config, postgresStore *pg.Store) bootstrap.Opti
 	if postgresStore != nil && postgresStore.Configured() {
 		opts.CookbookStoreFactory = func(*bootstrap.Service) bootstrap.CookbookStore {
 			return postgresStore.CookbookStore()
+		}
+		opts.BootstrapCoreStoreFactory = func(*bootstrap.Service) bootstrap.BootstrapCoreStore {
+			return postgresStore.BootstrapCore()
+		}
+		if postgresStore.BootstrapCorePersistenceActive() {
+			state, err := postgresStore.BootstrapCore().LoadBootstrapCore()
+			if err == nil {
+				opts.InitialBootstrapCoreState = &state
+			}
 		}
 	}
 	return opts

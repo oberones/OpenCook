@@ -24,9 +24,10 @@ Status: in progress
 
 Status: in progress
 
-- users, organizations, clients, groups, containers, and default ACLs are implemented in memory
+- users, organizations, clients, groups, containers, user/client keys, and ACL documents are now persisted through the PostgreSQL bootstrap core store when PostgreSQL is configured, with the in-memory adapter preserving default behavior otherwise
 - Bifrost-style ACL permission checks are implemented in the bootstrap layer
 - org bootstrap and validator client creation flows are working, including returned validator key material
+- startup rehydration now restores bootstrap core state and request-verifier keys from PostgreSQL
 - classic validator-authenticated client registration is still a follow-on compatibility slice
 - organization membership and broader association workflows still need follow-on slices
 
@@ -52,7 +53,7 @@ Status: in progress
 - default-org and explicit-org data bag routes are now available too
 - creator-aware node ACLs now allow clients to manage their own node objects
 - the rest of the object surface still needs follow-on slices
-- PostgreSQL-backed persistence for object APIs is still pending
+- PostgreSQL-backed persistence for nodes, environments, roles, data bags, policies, and sandboxes is still pending now that bootstrap core persistence is in place
 
 ## Milestone 5: Search Compatibility
 
@@ -188,6 +189,7 @@ Status: in progress
 - org-scoped depsolver non-admin org-member malformed-request precedence is now also pinned before environment-read auth on both named-environment and `_default` paths, and before named-environment missing-environment lookup
 - PostgreSQL-backed cookbook persistence is now live for cookbook versions and cookbook artifacts
 - mixed PostgreSQL-backed cookbook metadata plus provider-backed blob lifecycle hardening is now also complete
+- PostgreSQL-backed bootstrap core persistence is now live for identity and authorization root state
 - S3-compatible blob storage remains the target production mode after the compatibility contract settles
 
 ## Milestone 7: Validator Bootstrap Compatibility
