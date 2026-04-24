@@ -95,8 +95,12 @@ func (s *Service) CreateEnvironment(orgName string, input CreateEnvironmentInput
 		return Environment{}, ErrConflict
 	}
 
+	previous := s.snapshotCoreObjectsLocked()
 	org.envs[env.Name] = env
 	org.acls[environmentACLKey(env.Name)] = defaultEnvironmentACL(s.superuserName, input.Creator)
+	if err := s.finishCoreObjectMutationLocked(previous); err != nil {
+		return Environment{}, err
+	}
 	return copyEnvironment(env), nil
 }
 
@@ -126,6 +130,7 @@ func (s *Service) UpdateEnvironment(orgName, currentName string, input UpdateEnv
 		}
 	}
 
+	previous := s.snapshotCoreObjectsLocked()
 	delete(org.envs, currentName)
 	org.envs[env.Name] = env
 	if env.Name != currentName {
@@ -139,6 +144,9 @@ func (s *Service) UpdateEnvironment(orgName, currentName string, input UpdateEnv
 			Type: "user",
 			Name: s.superuserName,
 		})
+	}
+	if err := s.finishCoreObjectMutationLocked(previous); err != nil {
+		return UpdateEnvironmentResult{}, err
 	}
 
 	return UpdateEnvironmentResult{
@@ -164,8 +172,12 @@ func (s *Service) DeleteEnvironment(orgName, name string) (Environment, error) {
 		return Environment{}, ErrNotFound
 	}
 
+	previous := s.snapshotCoreObjectsLocked()
 	delete(org.envs, name)
 	delete(org.acls, environmentACLKey(name))
+	if err := s.finishCoreObjectMutationLocked(previous); err != nil {
+		return Environment{}, err
+	}
 	return copyEnvironment(env), nil
 }
 

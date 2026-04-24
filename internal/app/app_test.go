@@ -20,9 +20,18 @@ import (
 )
 
 func TestBootstrapOptionsUseMemoryCookbookStoreWithoutConfiguredPostgres(t *testing.T) {
-	opts := bootstrapOptions(config.Config{}, pg.New(""))
+	opts, err := bootstrapOptions(config.Config{}, pg.New(""))
+	if err != nil {
+		t.Fatalf("bootstrapOptions() error = %v", err)
+	}
 	if opts.CookbookStoreFactory != nil {
 		t.Fatal("CookbookStoreFactory = non-nil, want nil when postgres is not configured")
+	}
+	if opts.BootstrapCoreStoreFactory != nil {
+		t.Fatal("BootstrapCoreStoreFactory = non-nil, want nil when postgres is not configured")
+	}
+	if opts.CoreObjectStoreFactory != nil {
+		t.Fatal("CoreObjectStoreFactory = non-nil, want nil when postgres is not configured")
 	}
 	if got := resolveCookbookBackend(pg.New("")); got != "memory-bootstrap" {
 		t.Fatalf("resolveCookbookBackend(unconfigured) = %q, want %q", got, "memory-bootstrap")
@@ -32,12 +41,84 @@ func TestBootstrapOptionsUseMemoryCookbookStoreWithoutConfiguredPostgres(t *test
 func TestBootstrapOptionsUsePostgresCookbookStoreWhenConfigured(t *testing.T) {
 	store := pg.New("postgres://example")
 
-	opts := bootstrapOptions(config.Config{}, store)
+	opts, err := bootstrapOptions(config.Config{}, store)
+	if err != nil {
+		t.Fatalf("bootstrapOptions() error = %v", err)
+	}
 	if opts.CookbookStoreFactory == nil {
 		t.Fatal("CookbookStoreFactory = nil, want postgres-backed cookbook store factory")
 	}
+	if opts.BootstrapCoreStoreFactory == nil {
+		t.Fatal("BootstrapCoreStoreFactory = nil, want postgres-backed bootstrap core store factory")
+	}
+	if opts.CoreObjectStoreFactory == nil {
+		t.Fatal("CoreObjectStoreFactory = nil, want postgres-backed core object store factory")
+	}
 	if got := resolveCookbookBackend(store); got != "postgres-configured" {
 		t.Fatalf("resolveCookbookBackend(configured) = %q, want %q", got, "postgres-configured")
+	}
+}
+
+func TestBootstrapOptionsLoadActivePostgresState(t *testing.T) {
+	state := pgtest.NewState(pgtest.Seed{
+		BootstrapCore: bootstrap.BootstrapCoreState{
+			Orgs: map[string]bootstrap.BootstrapCoreOrganizationState{
+				"ponyville": {
+					Organization: bootstrap.Organization{
+						Name:     "ponyville",
+						FullName: "Ponyville",
+						OrgType:  "Business",
+						GUID:     "ponyville",
+					},
+				},
+			},
+		},
+		CoreObjects: bootstrap.CoreObjectState{
+			Orgs: map[string]bootstrap.CoreObjectOrganizationState{
+				"ponyville": {
+					Nodes: map[string]bootstrap.Node{
+						"twilight": {
+							Name:            "twilight",
+							JSONClass:       "Chef::Node",
+							ChefType:        "node",
+							ChefEnvironment: "_default",
+						},
+					},
+				},
+			},
+		},
+	})
+	db, cleanup, err := state.OpenDB()
+	if err != nil {
+		t.Fatalf("OpenDB() error = %v", err)
+	}
+	defer func() {
+		if err := cleanup(); err != nil {
+			t.Fatalf("cleanup() error = %v", err)
+		}
+	}()
+
+	store := pg.New("postgres://active-state-test")
+	if err := store.ActivateCookbookPersistenceWithDB(context.Background(), db); err != nil {
+		t.Fatalf("ActivateCookbookPersistenceWithDB() error = %v", err)
+	}
+
+	opts, err := bootstrapOptions(config.Config{}, store)
+	if err != nil {
+		t.Fatalf("bootstrapOptions() error = %v", err)
+	}
+	if opts.InitialBootstrapCoreState == nil {
+		t.Fatal("InitialBootstrapCoreState = nil, want active postgres bootstrap state")
+	}
+	if org := opts.InitialBootstrapCoreState.Orgs["ponyville"].Organization; org.FullName != "Ponyville" {
+		t.Fatalf("InitialBootstrapCoreState org = %#v, want Ponyville", org)
+	}
+	if opts.InitialCoreObjectState == nil {
+		t.Fatal("InitialCoreObjectState = nil, want active postgres core object state")
+	}
+	node := opts.InitialCoreObjectState.Orgs["ponyville"].Nodes["twilight"]
+	if node.Name != "twilight" || node.ChefEnvironment != "_default" {
+		t.Fatalf("InitialCoreObjectState node = %#v, want rehydrated twilight node", node)
 	}
 }
 
@@ -178,7 +259,7 @@ func TestNewStatusReportsActivePostgresAndFilesystemBlob(t *testing.T) {
 	if !ok {
 		t.Fatalf("dependencies.postgres = %T, want map[string]any (%v)", dependencies["postgres"], dependencies)
 	}
-	if postgresStatus["message"] != "PostgreSQL cookbook and bootstrap core persistence active" {
+	if postgresStatus["message"] != "PostgreSQL cookbook, bootstrap core, and core object persistence active" {
 		t.Fatalf("dependencies.postgres.message = %v, want active status", postgresStatus["message"])
 	}
 
@@ -188,5 +269,113 @@ func TestNewStatusReportsActivePostgresAndFilesystemBlob(t *testing.T) {
 	}
 	if blobStatus["backend"] != "filesystem" {
 		t.Fatalf("dependencies.blob.backend = %v, want %q", blobStatus["backend"], "filesystem")
+	}
+}
+
+func TestNewCanConstructRepeatedlyAgainstSameActivePostgresState(t *testing.T) {
+	state := pgtest.NewState(pgtest.Seed{
+		BootstrapCore: bootstrap.BootstrapCoreState{
+			Orgs: map[string]bootstrap.BootstrapCoreOrganizationState{
+				"ponyville": {
+					Organization: bootstrap.Organization{
+						Name:     "ponyville",
+						FullName: "Ponyville",
+						OrgType:  "Business",
+						GUID:     "ponyville",
+					},
+				},
+			},
+		},
+		CoreObjects: bootstrap.CoreObjectState{
+			Orgs: map[string]bootstrap.CoreObjectOrganizationState{
+				"ponyville": {
+					Environments: map[string]bootstrap.Environment{
+						"production": {
+							Name:               "production",
+							Description:        "Production",
+							CookbookVersions:   map[string]string{},
+							JSONClass:          "Chef::Environment",
+							ChefType:           "environment",
+							DefaultAttributes:  map[string]any{},
+							OverrideAttributes: map[string]any{},
+						},
+					},
+				},
+			},
+		},
+	})
+	db, cleanup, err := state.OpenDB()
+	if err != nil {
+		t.Fatalf("OpenDB() error = %v", err)
+	}
+	defer func() {
+		if err := cleanup(); err != nil {
+			t.Fatalf("cleanup() error = %v", err)
+		}
+	}()
+
+	previous := activatePostgresCookbookPersistence
+	activatePostgresCookbookPersistence = func(ctx context.Context, store *pg.Store) error {
+		return store.ActivateCookbookPersistenceWithDB(ctx, db)
+	}
+	defer func() {
+		activatePostgresCookbookPersistence = previous
+	}()
+
+	cfg := config.Config{
+		ServiceName:   "opencook",
+		Environment:   "test",
+		ListenAddress: ":4000",
+		AuthSkew:      15 * time.Minute,
+		ReadTimeout:   5 * time.Second,
+		WriteTimeout:  5 * time.Second,
+		PostgresDSN:   "postgres://repeat-test",
+	}
+	for i := 0; i < 2; i++ {
+		app, err := New(cfg, log.New(io.Discard, "", 0), version.Info{Version: "test"})
+		if err != nil {
+			t.Fatalf("New() #%d error = %v", i+1, err)
+		}
+		req := httptest.NewRequest(http.MethodGet, "/_status", nil)
+		rec := httptest.NewRecorder()
+		app.server.Handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("/_status #%d status = %d, want %d, body = %s", i+1, rec.Code, http.StatusOK, rec.Body.String())
+		}
+	}
+}
+
+func TestNewStatusReportsDefaultInMemoryModeWithoutPostgres(t *testing.T) {
+	app, err := New(config.Config{
+		ServiceName:   "opencook",
+		Environment:   "test",
+		ListenAddress: ":4000",
+		AuthSkew:      15 * time.Minute,
+		ReadTimeout:   5 * time.Second,
+		WriteTimeout:  5 * time.Second,
+	}, log.New(io.Discard, "", 0), version.Info{Version: "test"})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/_status", nil)
+	rec := httptest.NewRecorder()
+	app.server.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("/_status status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal(/_status) error = %v", err)
+	}
+	dependencies := payload["dependencies"].(map[string]any)
+	cookbooks := dependencies["cookbooks"].(map[string]any)
+	if cookbooks["backend"] != "memory-bootstrap" {
+		t.Fatalf("dependencies.cookbooks.backend = %v, want memory-bootstrap", cookbooks["backend"])
+	}
+	postgresStatus := dependencies["postgres"].(map[string]any)
+	if postgresStatus["configured"] != false {
+		t.Fatalf("dependencies.postgres.configured = %v, want false", postgresStatus["configured"])
 	}
 }

@@ -44,7 +44,11 @@ func (s *Service) CreateSandbox(orgName string, input CreateSandboxInput) (Sandb
 		Checksums:    checksums,
 		CreatedAt:    time.Now().UTC(),
 	}
+	previous := s.snapshotCoreObjectsLocked()
 	org.sandboxes[sandbox.ID] = sandbox
+	if err := s.finishCoreObjectMutationLocked(previous); err != nil {
+		return Sandbox{}, err
+	}
 	return copySandbox(sandbox), nil
 }
 
@@ -79,7 +83,11 @@ func (s *Service) DeleteSandbox(orgName, sandboxID string) (Sandbox, error) {
 		return Sandbox{}, ErrNotFound
 	}
 
+	previous := s.snapshotCoreObjectsLocked()
 	delete(org.sandboxes, sandbox.ID)
+	if err := s.finishCoreObjectMutationLocked(previous); err != nil {
+		return Sandbox{}, err
+	}
 	return copySandbox(sandbox), nil
 }
 
