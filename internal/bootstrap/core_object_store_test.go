@@ -260,6 +260,52 @@ func TestInitialCoreObjectStateRehydratesObjectMapsAndACLs(t *testing.T) {
 	}
 }
 
+func TestInitialCoreObjectStatePreservesDefaultEnvironmentACLForOrgWithoutCoreObjects(t *testing.T) {
+	defaultEnvACL := defaultEnvironmentACL("pivotal", authn.Principal{Type: "user", Name: "silent-bob"})
+	service := newTestBootstrapServiceWithOptions(t, Options{
+		SuperuserName: "pivotal",
+		InitialBootstrapCoreState: &BootstrapCoreState{
+			Users:    map[string]User{},
+			UserACLs: map[string]authz.ACL{},
+			UserKeys: map[string]map[string]KeyRecord{},
+			Orgs: map[string]BootstrapCoreOrganizationState{
+				"ponyville": {
+					Organization: Organization{
+						Name:     "ponyville",
+						FullName: "Ponyville",
+						OrgType:  "Business",
+						GUID:     "guid",
+					},
+					Clients:    map[string]Client{},
+					ClientKeys: map[string]map[string]KeyRecord{},
+					Groups:     map[string]Group{},
+					Containers: map[string]Container{},
+					ACLs: map[string]authz.ACL{
+						organizationACLKey():                      defaultOrganizationACL("pivotal"),
+						environmentACLKey(defaultEnvironmentName): defaultEnvACL,
+					},
+				},
+			},
+		},
+		InitialCoreObjectState: &CoreObjectState{Orgs: map[string]CoreObjectOrganizationState{}},
+	})
+
+	if _, orgExists, found := service.GetEnvironment("ponyville", defaultEnvironmentName); !orgExists || !found {
+		t.Fatalf("GetEnvironment(_default) existence = %t/%t, want true/true", orgExists, found)
+	}
+	acl, ok, err := service.ResolveACL(context.Background(), authz.Resource{
+		Type:         "environment",
+		Name:         defaultEnvironmentName,
+		Organization: "ponyville",
+	})
+	if err != nil || !ok {
+		t.Fatalf("ResolveACL(_default environment) ok/error = %t/%v, want true/nil", ok, err)
+	}
+	if !reflect.DeepEqual(acl, defaultEnvACL) {
+		t.Fatalf("ResolveACL(_default environment) = %#v, want preserved bootstrap ACL %#v", acl, defaultEnvACL)
+	}
+}
+
 func TestCoreObjectStoreCreateFailuresRollBackEveryObjectFamily(t *testing.T) {
 	creator := authn.Principal{Type: "user", Name: "silent-bob"}
 
