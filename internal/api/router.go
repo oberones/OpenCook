@@ -195,7 +195,7 @@ func (s *server) handleRoot(w http.ResponseWriter, r *http.Request) {
 		"phase":         "compatibility-foundation",
 		"version":       s.deps.Version,
 		"compat_routes": s.deps.Compat.RouteCount(),
-		"next":          "harden the now-live postgres-backed cookbook path and continue broader post-compatibility storage/provider and opensearch-backed work",
+		"next":          "replace more of the remaining bootstrap state with PostgreSQL-backed persistence, finish validator bootstrap compatibility, and continue broader OpenSearch-backed follow-on work",
 	})
 }
 

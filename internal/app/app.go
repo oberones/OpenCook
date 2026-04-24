@@ -28,10 +28,14 @@ type Application struct {
 	server *http.Server
 }
 
+var activatePostgresCookbookPersistence = func(ctx context.Context, store *pg.Store) error {
+	return store.ActivateCookbookPersistence(ctx)
+}
+
 func New(cfg config.Config, logger *log.Logger, build version.Info) (*Application, error) {
 	compatRegistry := compat.NewDefaultRegistry()
 	postgresStore := pg.New(cfg.PostgresDSN)
-	if err := postgresStore.ActivateCookbookPersistence(context.Background()); err != nil {
+	if err := activatePostgresCookbookPersistence(context.Background(), postgresStore); err != nil {
 		return nil, fmt.Errorf("activate postgres cookbook persistence: %w", err)
 	}
 	blobStore, err := blob.NewStore(cfg)
@@ -110,7 +114,7 @@ func resolveCookbookBackend(postgresStore *pg.Store) string {
 		return "postgres"
 	}
 	if postgresStore != nil && postgresStore.Configured() {
-		return "postgres-scaffold"
+		return "postgres-configured"
 	}
 	return "memory-bootstrap"
 }
@@ -212,7 +216,7 @@ func (a *Application) Run(ctx context.Context) error {
 	errCh := make(chan error, 1)
 
 	go func() {
-		a.logger.Printf("opencook scaffold listening on %s", a.server.Addr)
+		a.logger.Printf("opencook listening on %s", a.server.Addr)
 		err := a.server.ListenAndServe()
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
