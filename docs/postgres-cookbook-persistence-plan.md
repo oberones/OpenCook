@@ -307,7 +307,7 @@ This slice is complete.
 
 It extracted a shared cookbook persistence seam, moved cookbook routes, environment cookbook views, and depsolver reads onto that seam, added a PostgreSQL schema and repository, and activated the PostgreSQL-backed cookbook path at application startup without changing the pinned HTTP, blob, or depsolver contract.
 
-The next roadmap bucket is no longer PostgreSQL-backed cookbook persistence. It is the broader post-compatibility cookbook/provider follow-on work around the now-live PostgreSQL cookbook path.
+The next roadmap bucket is no longer PostgreSQL-backed cookbook persistence. The mixed PostgreSQL plus provider-backed cookbook lifecycle hardening slice is also complete, and the next focus has shifted to the broader bootstrap/PostgreSQL replacement with validator bootstrap compatibility still pending.
 
 ## Suggested Commit Sequence
 
