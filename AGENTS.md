@@ -54,6 +54,7 @@ Implemented so far:
 - Chef request-signing verification
 - initial authenticated routing
 - PostgreSQL-backed bootstrap core persistence for users, organizations, clients, user/client keys, groups, containers, and ACL documents, with in-memory fallback behavior when PostgreSQL is not configured
+- PostgreSQL-backed core object API persistence for nodes, environments, roles, data bags/items, policy revisions/groups/assignments, sandbox metadata/checksum references, and object ACLs, with in-memory fallback behavior when PostgreSQL is not configured
 - the first environment slice:
   - `_default` environment bootstrap
   - list
@@ -278,13 +279,14 @@ Current architectural reality:
 
 - the API surface is partly real and partly scaffolded
 - bootstrap core identity/authz state can now be persisted in PostgreSQL and rehydrated into the existing bootstrap service and verifier key cache
+- implemented core object API state can now be persisted in PostgreSQL and rehydrated into the existing bootstrap service, search-facing state, depsolver-visible state, sandbox checksum references, and object ACLs
 - org bootstrap can already return validator key material, but classic validator-authenticated client registration is still not fully compatible
 - administrative object management is currently API-first; a first-class `chef-server-ctl`-style replacement for orgs, users, groups, containers, and ACLs is still future work
 - data bag CRUD is live, but encrypted data bag compatibility is not yet explicitly pinned as a tested slice
-- PostgreSQL is active for cookbook metadata and bootstrap core state; OpenSearch is still placeholder or early scaffolding
+- PostgreSQL is active for cookbook metadata, bootstrap core state, and implemented core object API state; OpenSearch is still placeholder or early scaffolding
 - the blob layer now has in-memory, filesystem-backed, and S3-compatible compatibility implementations for sandbox checksum uploads/downloads and cookbook file URLs, and the S3-compatible path now includes request-construction parity, configurable timeout/retry plus `Retry-After` behavior, transport/status classification, malformed-endpoint and missing-credential diagnostics, and provider-backed `blob_unavailable` degradation on the current sandbox/cookbook flows
 
-Do not mistake the remaining in-memory object/search implementations for the final persistence architecture.
+Do not mistake the remaining in-memory search implementation or future unimplemented surfaces for the final persistence architecture.
 
 ## Architecture Map
 
@@ -301,13 +303,13 @@ High-level package roles:
 - `internal/authz`
   - Bifrost-style authorization decisions
 - `internal/bootstrap`
-  - bootstrap compatibility state, including PostgreSQL-backed core identity/authz persistence and in-memory object state that still needs follow-on persistence
+  - bootstrap compatibility state, including PostgreSQL-backed core identity/authz persistence and PostgreSQL-backed persistence for implemented core object API state
 - `internal/compat`
   - compatibility surface inventory and future shims
 - `internal/config`
   - env-driven configuration
 - `internal/store/pg`
-  - active PostgreSQL-backed cookbook and bootstrap core persistence plus future object repositories
+  - active PostgreSQL-backed cookbook, bootstrap core, and implemented core object API persistence
 - `internal/search`
   - future OpenSearch-backed compatibility layer
 - `internal/blob`
@@ -440,12 +442,12 @@ When you start a new compatibility slice:
 These areas are still intentionally incomplete:
 
 - deeper API-version-specific semantics beyond the current actor-key surface
-- PostgreSQL-backed persistence for remaining core object APIs
+- validator-authenticated client registration compatibility for stock Chef and Cinc bootstrap flows
 - OpenSearch-backed indexing and provider capability behavior
-- remaining core Chef object CRUD beyond nodes, environments, roles, and data bags
+- remaining core Chef object compatibility beyond the currently pinned nodes, environments, roles, data bags, policies, and sandbox flows
 - deeper node and environment compatibility such as cookbook constraint edge cases and linked object behavior
 - deeper role compatibility beyond the current normalization and linked-environment read behavior
 - broader search semantics beyond the current in-memory compatibility layer, especially richer Lucene-style query translation and wider object coverage
 - operational parity and migration tooling
 
-The next likely major slice is PostgreSQL-backed persistence for the remaining core object APIs or validator bootstrap compatibility in Milestone 7.
+The next likely major slice is validator bootstrap compatibility in Milestone 7, with OpenSearch-backed indexing and operational tooling queued behind it.
