@@ -38,7 +38,7 @@ func TestStoreActivateCookbookPersistenceLoadsRepositoryState(t *testing.T) {
 	}
 
 	status := store.Status()
-	if status.Message != "PostgreSQL cookbook persistence active" {
+	if status.Message != "PostgreSQL cookbook and bootstrap core persistence active" {
 		t.Fatalf("Status().Message = %q, want active persistence message", status.Message)
 	}
 

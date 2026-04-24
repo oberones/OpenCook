@@ -45,19 +45,22 @@ var defaultContainers = []string{
 }
 
 type Options struct {
-	SuperuserName        string
-	CookbookStoreFactory func(*Service) CookbookStore
+	SuperuserName             string
+	CookbookStoreFactory      func(*Service) CookbookStore
+	BootstrapCoreStoreFactory func(*Service) BootstrapCoreStore
+	InitialBootstrapCoreState *BootstrapCoreState
 }
 
 type Service struct {
-	mu            sync.RWMutex
-	keyStore      *authn.MemoryKeyStore
-	superuserName string
-	cookbookStore CookbookStore
-	users         map[string]User
-	userACLs      map[string]authz.ACL
-	userKeys      map[string]map[string]KeyRecord
-	orgs          map[string]*organizationState
+	mu                 sync.RWMutex
+	keyStore           *authn.MemoryKeyStore
+	superuserName      string
+	cookbookStore      CookbookStore
+	bootstrapCoreStore BootstrapCoreStore
+	users              map[string]User
+	userACLs           map[string]authz.ACL
+	userKeys           map[string]map[string]KeyRecord
+	orgs               map[string]*organizationState
 }
 
 type User struct {
@@ -203,6 +206,15 @@ func NewService(keyStore *authn.MemoryKeyStore, opts Options) *Service {
 	if s.cookbookStore == nil {
 		s.cookbookStore = newMemoryCookbookStore(s)
 	}
+	if opts.BootstrapCoreStoreFactory != nil {
+		s.bootstrapCoreStore = opts.BootstrapCoreStoreFactory(s)
+	}
+	if s.bootstrapCoreStore == nil {
+		s.bootstrapCoreStore = NewMemoryBootstrapCoreStore(BootstrapCoreState{})
+	}
+	if opts.InitialBootstrapCoreState != nil {
+		s.restoreBootstrapCoreLocked(*opts.InitialBootstrapCoreState)
+	}
 	s.ensureUserLocked(superuser)
 	return s
 }
@@ -219,7 +231,11 @@ func (s *Service) SeedPrincipal(principal authn.Principal) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	previous := s.snapshotBootstrapCoreLocked()
 	s.ensureUserLocked(principal.Name)
+	if err := s.finishBootstrapCoreMutationLocked(previous); err != nil {
+		return
+	}
 }
 
 func (s *Service) SeedPublicKey(principal authn.Principal, name, publicKeyPEM string) error {
@@ -236,10 +252,15 @@ func (s *Service) SeedPublicKey(principal authn.Principal, name, publicKeyPEM st
 	if publicKeyPEM == "" {
 		return fmt.Errorf("%w: public key is required", ErrInvalidInput)
 	}
+	publicKey, err := authn.ParseRSAPublicKeyPEM([]byte(publicKeyPEM))
+	if err != nil {
+		return fmt.Errorf("%w: parse public key: %v", ErrInvalidInput, err)
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	previous := s.snapshotBootstrapCoreLocked()
 	if principal.Type == "user" {
 		s.ensureUserLocked(principal.Name)
 	} else {
@@ -255,6 +276,15 @@ func (s *Service) SeedPublicKey(principal authn.Principal, name, publicKeyPEM st
 		org.clients[principal.Name] = client
 	}
 
+	if err := s.keyStore.Put(authn.Key{
+		ID:        name,
+		Principal: principal,
+		PublicKey: publicKey,
+	}); err != nil {
+		s.restoreBootstrapCoreLocked(previous)
+		_ = s.rehydrateKeyStoreLocked()
+		return err
+	}
 	s.recordKeyLocked(principal, KeyRecord{
 		Name:           name,
 		URI:            keyURI(principal, name),
@@ -263,7 +293,7 @@ func (s *Service) SeedPublicKey(principal authn.Principal, name, publicKeyPEM st
 		Expired:        false,
 		ExpiresAt:      nil,
 	})
-	return nil
+	return s.finishBootstrapCoreMutationLocked(previous)
 }
 
 func (s *Service) ListUsers() map[string]string {
@@ -316,10 +346,18 @@ func (s *Service) CreateUserKey(name string, input CreateKeyInput) (*KeyMaterial
 		return nil, ErrNotFound
 	}
 
-	return s.createNamedKeyLocked(authn.Principal{
+	previous := s.snapshotBootstrapCoreLocked()
+	keyMaterial, err := s.createNamedKeyLocked(authn.Principal{
 		Type: "user",
 		Name: name,
 	}, s.userKeys[name], input)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.finishBootstrapCoreMutationLocked(previous); err != nil {
+		return nil, err
+	}
+	return keyMaterial, nil
 }
 
 func (s *Service) DeleteUserKey(name, keyName string) error {
@@ -333,15 +371,21 @@ func (s *Service) DeleteUserKey(name, keyName string) error {
 		return ErrNotFound
 	}
 
+	previous := s.snapshotBootstrapCoreLocked()
 	delete(s.userKeys[name], keyName)
 	if len(s.userKeys[name]) == 0 {
 		delete(s.userKeys, name)
 	}
 
-	return s.keyStore.Delete(authn.Principal{
+	if err := s.keyStore.Delete(authn.Principal{
 		Type: "user",
 		Name: name,
-	}, keyName)
+	}, keyName); err != nil {
+		s.restoreBootstrapCoreLocked(previous)
+		_ = s.rehydrateKeyStoreLocked()
+		return err
+	}
+	return s.finishBootstrapCoreMutationLocked(previous)
 }
 
 func (s *Service) UpdateUserKey(name, keyName string, input UpdateKeyInput) (UpdateKeyResult, error) {
@@ -352,10 +396,18 @@ func (s *Service) UpdateUserKey(name, keyName string, input UpdateKeyInput) (Upd
 		return UpdateKeyResult{}, ErrNotFound
 	}
 
-	return s.updateNamedKeyLocked(authn.Principal{
+	previous := s.snapshotBootstrapCoreLocked()
+	result, err := s.updateNamedKeyLocked(authn.Principal{
 		Type: "user",
 		Name: name,
 	}, keyName, s.userKeys[name], input)
+	if err != nil {
+		return UpdateKeyResult{}, err
+	}
+	if err := s.finishBootstrapCoreMutationLocked(previous); err != nil {
+		return UpdateKeyResult{}, err
+	}
+	return result, nil
 }
 
 func (s *Service) CreateUser(input CreateUserInput) (User, *KeyMaterial, error) {
@@ -374,6 +426,7 @@ func (s *Service) CreateUser(input CreateUserInput) (User, *KeyMaterial, error) 
 		return User{}, nil, ErrConflict
 	}
 
+	previous := s.snapshotBootstrapCoreLocked()
 	keyMaterial, err := s.keyMaterialForPrincipalLocked(authn.Principal{
 		Type: "user",
 		Name: username,
@@ -392,6 +445,9 @@ func (s *Service) CreateUser(input CreateUserInput) (User, *KeyMaterial, error) 
 	s.users[username] = user
 	s.userACLs[username] = defaultUserACL(s.superuserName, username)
 
+	if err := s.finishBootstrapCoreMutationLocked(previous); err != nil {
+		return User{}, nil, err
+	}
 	return user, keyMaterial, nil
 }
 
@@ -442,6 +498,7 @@ func (s *Service) CreateOrganization(input CreateOrganizationInput) (Organizatio
 		return Organization{}, Client{}, nil, ErrConflict
 	}
 
+	previous := s.snapshotBootstrapCoreLocked()
 	s.ensureUserLocked(ownerName)
 	s.ensureUserLocked(s.superuserName)
 
@@ -452,25 +509,7 @@ func (s *Service) CreateOrganization(input CreateOrganizationInput) (Organizatio
 		GUID:     newGUID(),
 	}
 
-	state := &organizationState{
-		org:               org,
-		clients:           make(map[string]Client),
-		clientKeys:        make(map[string]map[string]KeyRecord),
-		cookbooks:         make(map[string]map[string]CookbookVersion),
-		cookbookArtifacts: make(map[string]map[string]CookbookArtifact),
-		dataBags:          make(map[string]DataBag),
-		dataBagItems:      make(map[string]map[string]DataBagItem),
-		envs:              make(map[string]Environment),
-		nodes:             make(map[string]Node),
-		roles:             make(map[string]Role),
-		sandboxes:         make(map[string]Sandbox),
-		policies:          make(map[string]map[string]PolicyRevision),
-		policyGroups:      make(map[string]PolicyGroup),
-		groups:            make(map[string]Group),
-		containers:        make(map[string]Container),
-		acls:              make(map[string]authz.ACL),
-	}
-
+	state := newOrganizationState(org)
 	s.orgs[org.Name] = state
 
 	for _, container := range defaultContainers {
@@ -501,7 +540,8 @@ func (s *Service) CreateOrganization(input CreateOrganizationInput) (Organizatio
 		Organization: org.Name,
 	}, "")
 	if err != nil {
-		delete(s.orgs, org.Name)
+		s.restoreBootstrapCoreLocked(previous)
+		_ = s.rehydrateKeyStoreLocked()
 		return Organization{}, Client{}, nil, err
 	}
 
@@ -521,10 +561,13 @@ func (s *Service) CreateOrganization(input CreateOrganizationInput) (Organizatio
 	clientsGroup.Clients = uniqueSorted(append(clientsGroup.Clients, validatorName))
 	clientsGroup.Actors = uniqueSorted(append(clientsGroup.Users, clientsGroup.Clients...))
 	state.groups["clients"] = clientsGroup
+
+	if err := s.finishBootstrapCoreMutationLocked(previous); err != nil {
+		return Organization{}, Client{}, nil, err
+	}
 	if registrar, ok := s.cookbookStore.(cookbookStoreOrganizationRegistrar); ok {
 		registrar.EnsureOrganization(org)
 	}
-
 	return org, validator, keyMaterial, nil
 }
 
@@ -600,6 +643,7 @@ func (s *Service) CreateClientKey(orgName, clientName string, input CreateKeyInp
 		return nil, ErrNotFound
 	}
 
+	previous := s.snapshotBootstrapCoreLocked()
 	keyMaterial, err := s.createNamedKeyLocked(authn.Principal{
 		Type:         "client",
 		Name:         clientName,
@@ -615,6 +659,9 @@ func (s *Service) CreateClientKey(orgName, clientName string, input CreateKeyInp
 		org.clients[clientName] = client
 	}
 
+	if err := s.finishBootstrapCoreMutationLocked(previous); err != nil {
+		return nil, err
+	}
 	return keyMaterial, nil
 }
 
@@ -633,6 +680,7 @@ func (s *Service) DeleteClientKey(orgName, clientName, keyName string) error {
 		return ErrNotFound
 	}
 
+	previous := s.snapshotBootstrapCoreLocked()
 	delete(org.clientKeys[clientName], keyName)
 	if len(org.clientKeys[clientName]) == 0 {
 		delete(org.clientKeys, clientName)
@@ -644,11 +692,16 @@ func (s *Service) DeleteClientKey(orgName, clientName, keyName string) error {
 		org.clients[clientName] = client
 	}
 
-	return s.keyStore.Delete(authn.Principal{
+	if err := s.keyStore.Delete(authn.Principal{
 		Type:         "client",
 		Name:         clientName,
 		Organization: orgName,
-	}, keyName)
+	}, keyName); err != nil {
+		s.restoreBootstrapCoreLocked(previous)
+		_ = s.rehydrateKeyStoreLocked()
+		return err
+	}
+	return s.finishBootstrapCoreMutationLocked(previous)
 }
 
 func (s *Service) UpdateClientKey(orgName, clientName, keyName string, input UpdateKeyInput) (UpdateKeyResult, error) {
@@ -663,6 +716,7 @@ func (s *Service) UpdateClientKey(orgName, clientName, keyName string, input Upd
 		return UpdateKeyResult{}, ErrNotFound
 	}
 
+	previous := s.snapshotBootstrapCoreLocked()
 	result, err := s.updateNamedKeyLocked(authn.Principal{
 		Type:         "client",
 		Name:         clientName,
@@ -681,6 +735,9 @@ func (s *Service) UpdateClientKey(orgName, clientName, keyName string, input Upd
 	}
 	org.clients[clientName] = client
 
+	if err := s.finishBootstrapCoreMutationLocked(previous); err != nil {
+		return UpdateKeyResult{}, err
+	}
 	return result, nil
 }
 
@@ -704,6 +761,7 @@ func (s *Service) CreateClient(orgName string, input CreateClientInput) (Client,
 		return Client{}, nil, ErrConflict
 	}
 
+	previous := s.snapshotBootstrapCoreLocked()
 	keyMaterial, err := s.keyMaterialForPrincipalLocked(authn.Principal{
 		Type:         "client",
 		Name:         name,
@@ -730,6 +788,9 @@ func (s *Service) CreateClient(orgName string, input CreateClientInput) (Client,
 	group.Actors = uniqueSorted(append(group.Users, group.Clients...))
 	org.groups["clients"] = group
 
+	if err := s.finishBootstrapCoreMutationLocked(previous); err != nil {
+		return Client{}, nil, err
+	}
 	return client, keyMaterial, nil
 }
 
@@ -747,6 +808,7 @@ func (s *Service) DeleteClient(orgName, clientName string) (Client, error) {
 		return Client{}, ErrNotFound
 	}
 
+	previous := s.snapshotBootstrapCoreLocked()
 	if keys, ok := org.clientKeys[clientName]; ok {
 		principal := authn.Principal{
 			Type:         "client",
@@ -755,6 +817,8 @@ func (s *Service) DeleteClient(orgName, clientName string) (Client, error) {
 		}
 		for keyName := range keys {
 			if err := s.keyStore.Delete(principal, keyName); err != nil {
+				s.restoreBootstrapCoreLocked(previous)
+				_ = s.rehydrateKeyStoreLocked()
 				return Client{}, fmt.Errorf("delete client key %q: %w", keyName, err)
 			}
 		}
@@ -769,6 +833,9 @@ func (s *Service) DeleteClient(orgName, clientName string) (Client, error) {
 	group.Actors = uniqueSorted(append(group.Users, group.Clients...))
 	org.groups["clients"] = group
 
+	if err := s.finishBootstrapCoreMutationLocked(previous); err != nil {
+		return Client{}, err
+	}
 	return client, nil
 }
 
@@ -827,10 +894,11 @@ func (s *Service) AddUserToGroup(orgName, groupName, username string) error {
 		return ErrNotFound
 	}
 
+	previous := s.snapshotBootstrapCoreLocked()
 	group.Users = uniqueSorted(append(group.Users, username))
 	group.Actors = uniqueSorted(append(group.Users, group.Clients...))
 	org.groups[groupName] = group
-	return nil
+	return s.finishBootstrapCoreMutationLocked(previous)
 }
 
 func (s *Service) ListContainers(orgName string) (map[string]string, bool) {

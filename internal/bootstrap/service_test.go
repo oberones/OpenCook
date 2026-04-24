@@ -9,6 +9,18 @@ import (
 	"github.com/oberones/OpenCook/internal/authz"
 )
 
+var errBootstrapCoreStoreFailed = errors.New("bootstrap core store failed")
+
+type failingBootstrapCoreStore struct{}
+
+func (failingBootstrapCoreStore) LoadBootstrapCore() (BootstrapCoreState, error) {
+	return BootstrapCoreState{}, nil
+}
+
+func (failingBootstrapCoreStore) SaveBootstrapCore(BootstrapCoreState) error {
+	return errBootstrapCoreStoreFailed
+}
+
 func TestSeedPublicKeyRejectsUnsupportedPrincipalType(t *testing.T) {
 	service := NewService(authn.NewMemoryKeyStore(), Options{SuperuserName: "pivotal"})
 	publicKeyPEM := mustGeneratePublicKeyPEM(t)
@@ -76,6 +88,84 @@ func TestSeedPublicKeyRejectsEmptyPublicKey(t *testing.T) {
 	}, "default", "   ")
 	if !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("SeedPublicKey() error = %v, want %v", err, ErrInvalidInput)
+	}
+}
+
+func TestBootstrapCoreStoreCapturesNormalizedCoreState(t *testing.T) {
+	coreStore := NewMemoryBootstrapCoreStore(BootstrapCoreState{})
+	service := NewService(authn.NewMemoryKeyStore(), Options{
+		SuperuserName: "pivotal",
+		BootstrapCoreStoreFactory: func(*Service) BootstrapCoreStore {
+			return coreStore
+		},
+	})
+	publicKeyPEM := mustGeneratePublicKeyPEM(t)
+
+	if _, _, err := service.CreateUser(CreateUserInput{
+		Username:  "rainbow",
+		PublicKey: publicKeyPEM,
+	}); err != nil {
+		t.Fatalf("CreateUser() error = %v", err)
+	}
+	if _, _, _, err := service.CreateOrganization(CreateOrganizationInput{
+		Name:      "ponyville",
+		FullName:  "Ponyville",
+		OwnerName: "rainbow",
+	}); err != nil {
+		t.Fatalf("CreateOrganization() error = %v", err)
+	}
+
+	state, err := coreStore.LoadBootstrapCore()
+	if err != nil {
+		t.Fatalf("LoadBootstrapCore() error = %v", err)
+	}
+	if state.Users["rainbow"].DisplayName != "rainbow" {
+		t.Fatalf("persisted user display name = %q, want normalized fallback", state.Users["rainbow"].DisplayName)
+	}
+	if _, ok := state.UserKeys["rainbow"]["default"]; !ok {
+		t.Fatalf("persisted user default key missing")
+	}
+	org := state.Orgs["ponyville"]
+	if org.Organization.FullName != "Ponyville" {
+		t.Fatalf("persisted org full name = %q, want Ponyville", org.Organization.FullName)
+	}
+	if _, ok := org.Clients["ponyville-validator"]; !ok {
+		t.Fatalf("persisted validator client missing")
+	}
+	if _, ok := org.Groups["admins"]; !ok {
+		t.Fatalf("persisted default admins group missing")
+	}
+	if _, ok := org.Containers["clients"]; !ok {
+		t.Fatalf("persisted default clients container missing")
+	}
+}
+
+func TestBootstrapCoreStoreFailureRollsBackServiceStateAndVerifierCache(t *testing.T) {
+	keyStore := authn.NewMemoryKeyStore()
+	service := NewService(keyStore, Options{
+		SuperuserName: "pivotal",
+		BootstrapCoreStoreFactory: func(*Service) BootstrapCoreStore {
+			return failingBootstrapCoreStore{}
+		},
+	})
+	publicKeyPEM := mustGeneratePublicKeyPEM(t)
+
+	_, _, err := service.CreateUser(CreateUserInput{
+		Username:  "rainbow",
+		PublicKey: publicKeyPEM,
+	})
+	if !errors.Is(err, errBootstrapCoreStoreFailed) {
+		t.Fatalf("CreateUser() error = %v, want store failure", err)
+	}
+	if _, ok := service.GetUser("rainbow"); ok {
+		t.Fatalf("GetUser(rainbow) ok = true after failed persistence")
+	}
+	keys, err := keyStore.Lookup(context.Background(), "rainbow", "")
+	if err != nil {
+		t.Fatalf("Lookup(rainbow) error = %v", err)
+	}
+	if len(keys) != 0 {
+		t.Fatalf("Lookup(rainbow) = %d keys, want verifier cache rollback", len(keys))
 	}
 }
 
