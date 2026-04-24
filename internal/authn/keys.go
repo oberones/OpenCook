@@ -50,6 +50,26 @@ func (s *MemoryKeyStore) Put(key Key) error {
 	return nil
 }
 
+func (s *MemoryKeyStore) Replace(keys []Key) error {
+	next := make(map[string][]Key)
+	for _, key := range keys {
+		if key.Principal.Name == "" {
+			return fmt.Errorf("principal name is required")
+		}
+		if key.PublicKey == nil {
+			return fmt.Errorf("public key is required")
+		}
+		index := lookupKey(key.Principal.Organization, key.Principal.Name)
+		next[index] = append(next[index], key)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.keys = next
+	return nil
+}
+
 func (s *MemoryKeyStore) Lookup(_ context.Context, userID, organization string) ([]Key, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

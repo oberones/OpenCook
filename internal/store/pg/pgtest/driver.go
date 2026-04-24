@@ -4,13 +4,17 @@ import (
 	"context"
 	"database/sql"
 	"database/sql/driver"
+	"encoding/json"
 	"fmt"
 	"io"
 	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
+	"github.com/oberones/OpenCook/internal/authz"
+	"github.com/oberones/OpenCook/internal/bootstrap"
 	"github.com/oberones/OpenCook/internal/store/pg"
 )
 
@@ -26,6 +30,7 @@ type Seed struct {
 	Organizations []pg.CookbookOrganizationRecord
 	Versions      []pg.CookbookVersionBundle
 	Artifacts     []pg.CookbookArtifactBundle
+	BootstrapCore bootstrap.BootstrapCoreState
 }
 
 type State struct {
@@ -33,6 +38,7 @@ type State struct {
 	orgs      map[string]pg.CookbookOrganizationRecord
 	versions  map[versionKey]pg.CookbookVersionBundle
 	artifacts map[artifactKey]pg.CookbookArtifactBundle
+	bootstrap bootstrap.BootstrapCoreState
 }
 
 type versionKey struct {
@@ -52,6 +58,7 @@ func NewState(seed Seed) *State {
 		orgs:      make(map[string]pg.CookbookOrganizationRecord),
 		versions:  make(map[versionKey]pg.CookbookVersionBundle),
 		artifacts: make(map[artifactKey]pg.CookbookArtifactBundle),
+		bootstrap: bootstrap.CloneBootstrapCoreState(seed.BootstrapCore),
 	}
 
 	for _, org := range seed.Organizations {
@@ -172,6 +179,145 @@ func (s *State) exec(query string, args []driver.NamedValue) (driver.Result, err
 	defer s.mu.Unlock()
 
 	switch {
+	case strings.Contains(query, "CREATE TABLE IF NOT EXISTS oc_bootstrap_"):
+		return driver.RowsAffected(0), nil
+	case strings.Contains(query, "DELETE FROM oc_bootstrap_"):
+		s.bootstrap = bootstrap.BootstrapCoreState{
+			Users:    make(map[string]bootstrap.User),
+			UserACLs: make(map[string]authz.ACL),
+			UserKeys: make(map[string]map[string]bootstrap.KeyRecord),
+			Orgs:     make(map[string]bootstrap.BootstrapCoreOrganizationState),
+		}
+		return driver.RowsAffected(1), nil
+	case strings.Contains(query, "INSERT INTO oc_bootstrap_users"):
+		username := namedString(args, 0)
+		s.bootstrap.Users[username] = bootstrap.User{
+			Username:    username,
+			DisplayName: namedString(args, 1),
+			Email:       namedString(args, 2),
+			FirstName:   namedString(args, 3),
+			LastName:    namedString(args, 4),
+		}
+		return driver.RowsAffected(1), nil
+	case strings.Contains(query, "INSERT INTO oc_bootstrap_user_acls"):
+		username := namedString(args, 0)
+		var acl authz.ACL
+		_ = json.Unmarshal(namedBytes(args, 1), &acl)
+		s.bootstrap.UserACLs[username] = acl
+		return driver.RowsAffected(1), nil
+	case strings.Contains(query, "INSERT INTO oc_bootstrap_user_keys"):
+		username := namedString(args, 0)
+		if _, ok := s.bootstrap.UserKeys[username]; !ok {
+			s.bootstrap.UserKeys[username] = make(map[string]bootstrap.KeyRecord)
+		}
+		record := bootstrap.KeyRecord{
+			Name:           namedString(args, 1),
+			URI:            namedString(args, 2),
+			PublicKeyPEM:   namedString(args, 3),
+			ExpirationDate: namedString(args, 4),
+			ExpiresAt:      namedTime(args, 5),
+		}
+		s.bootstrap.UserKeys[username][record.Name] = record
+		return driver.RowsAffected(1), nil
+	case strings.Contains(query, "INSERT INTO oc_bootstrap_orgs"):
+		orgName := namedString(args, 0)
+		s.bootstrap.Orgs[orgName] = bootstrap.BootstrapCoreOrganizationState{
+			Organization: bootstrap.Organization{
+				Name:     orgName,
+				FullName: namedString(args, 1),
+				OrgType:  namedString(args, 2),
+				GUID:     namedString(args, 3),
+			},
+			Clients:    make(map[string]bootstrap.Client),
+			ClientKeys: make(map[string]map[string]bootstrap.KeyRecord),
+			Groups:     make(map[string]bootstrap.Group),
+			Containers: make(map[string]bootstrap.Container),
+			ACLs:       make(map[string]authz.ACL),
+		}
+		return driver.RowsAffected(1), nil
+	case strings.Contains(query, "INSERT INTO oc_bootstrap_clients"):
+		orgName := namedString(args, 0)
+		clientName := namedString(args, 1)
+		org := s.bootstrap.Orgs[orgName]
+		org.Clients[clientName] = bootstrap.Client{
+			Name:         namedString(args, 2),
+			ClientName:   clientName,
+			Organization: orgName,
+			Validator:    namedBool(args, 3),
+			Admin:        namedBool(args, 4),
+			PublicKey:    namedString(args, 5),
+			URI:          namedString(args, 6),
+		}
+		s.bootstrap.Orgs[orgName] = org
+		return driver.RowsAffected(1), nil
+	case strings.Contains(query, "INSERT INTO oc_bootstrap_client_keys"):
+		orgName := namedString(args, 0)
+		clientName := namedString(args, 1)
+		org := s.bootstrap.Orgs[orgName]
+		if _, ok := org.ClientKeys[clientName]; !ok {
+			org.ClientKeys[clientName] = make(map[string]bootstrap.KeyRecord)
+		}
+		record := bootstrap.KeyRecord{
+			Name:           namedString(args, 2),
+			URI:            namedString(args, 3),
+			PublicKeyPEM:   namedString(args, 4),
+			ExpirationDate: namedString(args, 5),
+			ExpiresAt:      namedTime(args, 6),
+		}
+		org.ClientKeys[clientName][record.Name] = record
+		s.bootstrap.Orgs[orgName] = org
+		return driver.RowsAffected(1), nil
+	case strings.Contains(query, "INSERT INTO oc_bootstrap_groups"):
+		orgName := namedString(args, 0)
+		groupName := namedString(args, 1)
+		org := s.bootstrap.Orgs[orgName]
+		org.Groups[groupName] = bootstrap.Group{
+			Name:         namedString(args, 2),
+			GroupName:    groupName,
+			Organization: orgName,
+		}
+		s.bootstrap.Orgs[orgName] = org
+		return driver.RowsAffected(1), nil
+	case strings.Contains(query, "INSERT INTO oc_bootstrap_group_memberships"):
+		orgName := namedString(args, 0)
+		groupName := namedString(args, 1)
+		memberType := namedString(args, 2)
+		memberName := namedString(args, 4)
+		org := s.bootstrap.Orgs[orgName]
+		group := org.Groups[groupName]
+		switch memberType {
+		case "actor":
+			group.Actors = append(group.Actors, memberName)
+		case "user":
+			group.Users = append(group.Users, memberName)
+		case "client":
+			group.Clients = append(group.Clients, memberName)
+		case "group":
+			group.Groups = append(group.Groups, memberName)
+		}
+		org.Groups[groupName] = group
+		s.bootstrap.Orgs[orgName] = org
+		return driver.RowsAffected(1), nil
+	case strings.Contains(query, "INSERT INTO oc_bootstrap_containers"):
+		orgName := namedString(args, 0)
+		containerName := namedString(args, 1)
+		org := s.bootstrap.Orgs[orgName]
+		org.Containers[containerName] = bootstrap.Container{
+			ContainerName: containerName,
+			Name:          namedString(args, 2),
+			ContainerPath: namedString(args, 3),
+		}
+		s.bootstrap.Orgs[orgName] = org
+		return driver.RowsAffected(1), nil
+	case strings.Contains(query, "INSERT INTO oc_bootstrap_org_acls"):
+		orgName := namedString(args, 0)
+		aclKey := namedString(args, 1)
+		var acl authz.ACL
+		_ = json.Unmarshal(namedBytes(args, 2), &acl)
+		org := s.bootstrap.Orgs[orgName]
+		org.ACLs[aclKey] = acl
+		s.bootstrap.Orgs[orgName] = org
+		return driver.RowsAffected(1), nil
 	case strings.Contains(query, "CREATE TABLE IF NOT EXISTS oc_cookbook_orgs"):
 		return driver.RowsAffected(0), nil
 	case strings.Contains(query, "INSERT INTO oc_cookbook_orgs"):
@@ -304,6 +450,119 @@ func (s *State) query(query string, _ []driver.NamedValue) (driver.Rows, error) 
 	defer s.mu.Unlock()
 
 	switch {
+	case strings.Contains(query, "FROM oc_bootstrap_users"):
+		keys := sortedBootstrapKeys(s.bootstrap.Users)
+		values := make([][]driver.Value, 0, len(keys))
+		for _, username := range keys {
+			user := s.bootstrap.Users[username]
+			values = append(values, []driver.Value{user.Username, user.DisplayName, user.Email, user.FirstName, user.LastName})
+		}
+		return &fakeRows{columns: []string{"username", "display_name", "email", "first_name", "last_name"}, values: values}, nil
+	case strings.Contains(query, "FROM oc_bootstrap_user_acls"):
+		keys := sortedBootstrapKeys(s.bootstrap.UserACLs)
+		values := make([][]driver.Value, 0, len(keys))
+		for _, username := range keys {
+			raw, _ := json.Marshal(s.bootstrap.UserACLs[username])
+			values = append(values, []driver.Value{username, raw})
+		}
+		return &fakeRows{columns: []string{"username", "acl_json"}, values: values}, nil
+	case strings.Contains(query, "FROM oc_bootstrap_user_keys"):
+		users := sortedBootstrapKeys(s.bootstrap.UserKeys)
+		values := make([][]driver.Value, 0)
+		for _, username := range users {
+			keyNames := sortedBootstrapKeys(s.bootstrap.UserKeys[username])
+			for _, keyName := range keyNames {
+				record := s.bootstrap.UserKeys[username][keyName]
+				values = append(values, []driver.Value{username, record.Name, record.URI, record.PublicKeyPEM, record.ExpirationDate, nullableDriverTime(record.ExpiresAt)})
+			}
+		}
+		return &fakeRows{columns: []string{"username", "key_name", "uri", "public_key_pem", "expiration_date", "expires_at"}, values: values}, nil
+	case strings.Contains(query, "FROM oc_bootstrap_orgs"):
+		keys := sortedBootstrapKeys(s.bootstrap.Orgs)
+		values := make([][]driver.Value, 0, len(keys))
+		for _, orgName := range keys {
+			org := s.bootstrap.Orgs[orgName].Organization
+			values = append(values, []driver.Value{org.Name, org.FullName, org.OrgType, org.GUID})
+		}
+		return &fakeRows{columns: []string{"org_name", "full_name", "org_type", "guid"}, values: values}, nil
+	case strings.Contains(query, "FROM oc_bootstrap_clients"):
+		orgNames := sortedBootstrapKeys(s.bootstrap.Orgs)
+		values := make([][]driver.Value, 0)
+		for _, orgName := range orgNames {
+			org := s.bootstrap.Orgs[orgName]
+			clientNames := sortedBootstrapKeys(org.Clients)
+			for _, clientName := range clientNames {
+				client := org.Clients[clientName]
+				values = append(values, []driver.Value{orgName, client.ClientName, client.Name, client.Validator, client.Admin, client.PublicKey, client.URI})
+			}
+		}
+		return &fakeRows{columns: []string{"org_name", "client_name", "name", "validator", "admin", "public_key_pem", "uri"}, values: values}, nil
+	case strings.Contains(query, "FROM oc_bootstrap_client_keys"):
+		orgNames := sortedBootstrapKeys(s.bootstrap.Orgs)
+		values := make([][]driver.Value, 0)
+		for _, orgName := range orgNames {
+			org := s.bootstrap.Orgs[orgName]
+			clientNames := sortedBootstrapKeys(org.ClientKeys)
+			for _, clientName := range clientNames {
+				keyNames := sortedBootstrapKeys(org.ClientKeys[clientName])
+				for _, keyName := range keyNames {
+					record := org.ClientKeys[clientName][keyName]
+					values = append(values, []driver.Value{orgName, clientName, record.Name, record.URI, record.PublicKeyPEM, record.ExpirationDate, nullableDriverTime(record.ExpiresAt)})
+				}
+			}
+		}
+		return &fakeRows{columns: []string{"org_name", "client_name", "key_name", "uri", "public_key_pem", "expiration_date", "expires_at"}, values: values}, nil
+	case strings.Contains(query, "FROM oc_bootstrap_groups"):
+		orgNames := sortedBootstrapKeys(s.bootstrap.Orgs)
+		values := make([][]driver.Value, 0)
+		for _, orgName := range orgNames {
+			org := s.bootstrap.Orgs[orgName]
+			groupNames := sortedBootstrapKeys(org.Groups)
+			for _, groupName := range groupNames {
+				group := org.Groups[groupName]
+				values = append(values, []driver.Value{orgName, group.GroupName, group.Name})
+			}
+		}
+		return &fakeRows{columns: []string{"org_name", "group_name", "name"}, values: values}, nil
+	case strings.Contains(query, "FROM oc_bootstrap_group_memberships"):
+		orgNames := sortedBootstrapKeys(s.bootstrap.Orgs)
+		values := make([][]driver.Value, 0)
+		for _, orgName := range orgNames {
+			org := s.bootstrap.Orgs[orgName]
+			groupNames := sortedBootstrapKeys(org.Groups)
+			for _, groupName := range groupNames {
+				group := org.Groups[groupName]
+				values = appendBootstrapMembershipValues(values, orgName, group.GroupName, "actor", group.Actors)
+				values = appendBootstrapMembershipValues(values, orgName, group.GroupName, "user", group.Users)
+				values = appendBootstrapMembershipValues(values, orgName, group.GroupName, "client", group.Clients)
+				values = appendBootstrapMembershipValues(values, orgName, group.GroupName, "group", group.Groups)
+			}
+		}
+		return &fakeRows{columns: []string{"org_name", "group_name", "member_type", "member_name"}, values: values}, nil
+	case strings.Contains(query, "FROM oc_bootstrap_containers"):
+		orgNames := sortedBootstrapKeys(s.bootstrap.Orgs)
+		values := make([][]driver.Value, 0)
+		for _, orgName := range orgNames {
+			org := s.bootstrap.Orgs[orgName]
+			containerNames := sortedBootstrapKeys(org.Containers)
+			for _, containerName := range containerNames {
+				container := org.Containers[containerName]
+				values = append(values, []driver.Value{orgName, container.ContainerName, container.Name, container.ContainerPath})
+			}
+		}
+		return &fakeRows{columns: []string{"org_name", "container_name", "name", "container_path"}, values: values}, nil
+	case strings.Contains(query, "FROM oc_bootstrap_org_acls"):
+		orgNames := sortedBootstrapKeys(s.bootstrap.Orgs)
+		values := make([][]driver.Value, 0)
+		for _, orgName := range orgNames {
+			org := s.bootstrap.Orgs[orgName]
+			aclKeys := sortedBootstrapKeys(org.ACLs)
+			for _, aclKey := range aclKeys {
+				raw, _ := json.Marshal(org.ACLs[aclKey])
+				values = append(values, []driver.Value{orgName, aclKey, raw})
+			}
+		}
+		return &fakeRows{columns: []string{"org_name", "acl_key", "acl_json"}, values: values}, nil
 	case strings.Contains(query, "FROM oc_cookbook_orgs"):
 		keys := make([]string, 0, len(s.orgs))
 		for name := range s.orgs {
@@ -519,6 +778,41 @@ func namedBytes(args []driver.NamedValue, idx int) []byte {
 	}
 	value, _ := args[idx].Value.([]byte)
 	return value
+}
+
+func namedTime(args []driver.NamedValue, idx int) *time.Time {
+	if idx >= len(args) || args[idx].Value == nil {
+		return nil
+	}
+	value, ok := args[idx].Value.(time.Time)
+	if !ok {
+		return nil
+	}
+	value = value.UTC()
+	return &value
+}
+
+func nullableDriverTime(value *time.Time) driver.Value {
+	if value == nil {
+		return nil
+	}
+	return value.UTC()
+}
+
+func sortedBootstrapKeys[T any](m map[string]T) []string {
+	keys := make([]string, 0, len(m))
+	for key := range m {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func appendBootstrapMembershipValues(values [][]driver.Value, orgName, groupName, memberType string, members []string) [][]driver.Value {
+	for _, member := range members {
+		values = append(values, []driver.Value{orgName, groupName, memberType, member})
+	}
+	return values
 }
 
 type fakeRows struct {

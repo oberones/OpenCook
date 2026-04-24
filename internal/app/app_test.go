@@ -178,7 +178,7 @@ func TestNewStatusReportsActivePostgresAndFilesystemBlob(t *testing.T) {
 	if !ok {
 		t.Fatalf("dependencies.postgres = %T, want map[string]any (%v)", dependencies["postgres"], dependencies)
 	}
-	if postgresStatus["message"] != "PostgreSQL cookbook persistence active" {
+	if postgresStatus["message"] != "PostgreSQL cookbook and bootstrap core persistence active" {
 		t.Fatalf("dependencies.postgres.message = %v, want active status", postgresStatus["message"])
 	}
 
