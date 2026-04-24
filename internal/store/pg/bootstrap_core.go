@@ -436,7 +436,12 @@ ORDER BY org_name, group_name`)
 
 	for rows.Next() {
 		var orgName string
-		var group bootstrap.Group
+		group := bootstrap.Group{
+			Actors:  []string{},
+			Users:   []string{},
+			Clients: []string{},
+			Groups:  []string{},
+		}
 		if err := rows.Scan(&orgName, &group.GroupName, &group.Name); err != nil {
 			return fmt.Errorf("scan bootstrap group: %w", err)
 		}
