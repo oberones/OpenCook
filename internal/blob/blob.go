@@ -70,6 +70,6 @@ func (s NoopStore) Status() Status {
 	return Status{
 		Backend:    "placeholder",
 		Configured: true,
-		Message:    "blob storage adapter scaffold only",
+		Message:    "blob storage backend configured but not activated",
 	}
 }
