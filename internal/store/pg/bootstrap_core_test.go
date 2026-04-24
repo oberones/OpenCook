@@ -103,7 +103,9 @@ func TestBootstrapCoreRepositoryRoundTripsInactiveState(t *testing.T) {
 						GroupName:    "clients",
 						Organization: "ponyville",
 						Actors:       []string{"ponyville-validator"},
+						Users:        []string{},
 						Clients:      []string{"ponyville-validator"},
+						Groups:       []string{},
 					},
 				},
 				Containers: map[string]bootstrap.Container{

@@ -106,6 +106,25 @@ func TestActivePostgresBootstrapOrganizationArtifactsRehydrate(t *testing.T) {
 			t.Fatalf("%s status = %d, want %d, body = %s", tc.path, rec.Code, tc.want, rec.Body.String())
 		}
 	}
+
+	groupReq := httptest.NewRequest(http.MethodGet, "/organizations/canterlot/groups/admins", nil)
+	applySignedHeaders(t, groupReq, "pivotal", "", http.MethodGet, "/organizations/canterlot/groups/admins", nil, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	groupRec := httptest.NewRecorder()
+	restarted.router.ServeHTTP(groupRec, groupReq)
+	if groupRec.Code != http.StatusOK {
+		t.Fatalf("group read status = %d, want %d, body = %s", groupRec.Code, http.StatusOK, groupRec.Body.String())
+	}
+
+	var groupPayload map[string]any
+	if err := json.Unmarshal(groupRec.Body.Bytes(), &groupPayload); err != nil {
+		t.Fatalf("json.Unmarshal(group) error = %v", err)
+	}
+	if values, ok := groupPayload["clients"].([]any); !ok || len(values) != 0 {
+		t.Fatalf("group clients = %#v, want empty JSON array after restart", groupPayload["clients"])
+	}
 }
 
 func newActivePostgresBootstrapFixture(t *testing.T, pgState *pgtest.State) *activePostgresBootstrapFixture {

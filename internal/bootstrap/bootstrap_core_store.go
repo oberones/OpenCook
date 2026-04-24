@@ -329,10 +329,10 @@ func cloneGroups(in map[string]Group) map[string]Group {
 			Name:         group.Name,
 			GroupName:    group.GroupName,
 			Organization: group.Organization,
-			Actors:       append([]string(nil), group.Actors...),
-			Users:        append([]string(nil), group.Users...),
-			Clients:      append([]string(nil), group.Clients...),
-			Groups:       append([]string(nil), group.Groups...),
+			Actors:       append([]string{}, group.Actors...),
+			Users:        append([]string{}, group.Users...),
+			Clients:      append([]string{}, group.Clients...),
+			Groups:       append([]string{}, group.Groups...),
 		}
 	}
 	return out
