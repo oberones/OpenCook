@@ -19,13 +19,13 @@ OpenCook is in active development and already provides a meaningful compatibilit
 
 Today, it should be viewed as an early server implementation rather than a production-ready drop-in replacement. Some subsystems still rely on in-memory state, and deeper persistence, indexing, and broader compatibility hardening are still in progress.
 
-Org bootstrap can already mint and return validator key material, but classic validator-authenticated client bootstrap registration is still a follow-on compatibility slice.
+Org bootstrap can mint validator key material, and generated `<org>-validator` clients can now register normal clients through the stock client bootstrap routes.
 Administrative object management is also still API-first today; a first-class `chef-server-ctl`-style replacement for orgs, users, groups, and ACLs remains future work.
 Data bag CRUD is live, but encrypted data bag compatibility is not yet an explicitly tracked/tested compatibility slice.
 
 ## Current Capabilities
 
-- Authentication and bootstrap: Chef request-signing verification, bootstrap users, organizations, clients, groups, containers, ACLs, and actor key lifecycle.
+- Authentication and bootstrap: Chef request-signing verification, bootstrap users, organizations, clients, groups, containers, ACLs, actor key lifecycle, and validator-authenticated client registration.
 - Core objects: nodes, environments, roles, and data bags, with default-org and explicit-org routing where implemented.
 - Cookbook flows: sandboxes, signed checksum upload/download flows, cookbook artifacts, cookbook versions, cookbook read views, `universe`, and environment depsolver behavior.
 - Search and policy: built-in Chef search indexes, partial search support, and policy/policy-group compatibility routes.
@@ -93,6 +93,14 @@ make verify
 ```
 
 `make verify` runs formatting, `go vet`, and the test suite.
+
+To exercise OpenCook with PostgreSQL, OpenSearch, and filesystem-backed blob storage on a shared Docker network:
+
+```bash
+scripts/functional-compose.sh
+```
+
+See [Functional Docker Stack](docs/functional-testing.md) for phase-by-phase and remote Docker usage.
 
 ## Contributing
 

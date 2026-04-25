@@ -38,7 +38,7 @@ As of 2026-04-24, OpenCook has moved past pure scaffolding and into the first co
 - Chef request signing verification is implemented in Go and enforced on the first authenticated routes
 - user, organization, client, group, container, key, and ACL bootstrap core flows are working and can now persist through PostgreSQL when configured
 - org bootstrap creates validator clients with default key material
-- classic validator-authenticated client registration is still pending, so the returned validator key is not yet enough for stock bootstrap flows
+- generated `<org>-validator` clients can now register normal clients through the stock default-org and explicit-org client bootstrap routes
 - actor key lifecycle now supports list, create, update, delete, and expiration-aware authentication behavior
 - the core object API persistence slice is now live with PostgreSQL-backed durability for nodes, environments, roles, data bags/items, policy revisions/groups/assignments, sandbox metadata/checksum references, and object ACLs when PostgreSQL is configured, while preserving the existing in-memory fallback
 - the adjacent environment slice is now live with `_default`, list/get/head/create/update/delete, and rename-capable `PUT`
@@ -183,9 +183,9 @@ As of 2026-04-24, OpenCook has moved past pure scaffolding and into the first co
 Current focus:
 
 - preserve API-version-sensitive actor key behavior without carrying forward Chef licensing concerns
-- deepen search query translation beyond the current simple compatibility subset and widen object/index coverage further
-- finish validator bootstrap registration compatibility for stock Chef and Cinc bootstrap flows
-- plan the next compatibility bucket around Milestone 7 validator-authenticated client registration, now that the durable identity, cookbook, and core object foundations are in place
+- plan and implement OpenSearch-backed indexing and query parity beyond the current in-memory compatibility subset
+- widen search object/index coverage while preserving ACL-filtered Chef response shapes
+- keep operational admin tooling queued behind the search/indexing bucket unless deployment needs make it more urgent
 
 ## What Exists Upstream
 
@@ -678,11 +678,11 @@ Exit criteria:
 
 ## Recommended Next Step
 
-Plan and implement Milestone 7 validator bootstrap compatibility now that the durable foundation is in place:
+Plan and implement the OpenSearch-backed indexing and query parity bucket now that validator bootstrap registration is pinned:
 
-1. Inventory upstream validator-authenticated client registration behavior from `routes.lua`, `oc-chef-pedant`, and bootstrap-related Chef/Cinc flows.
-2. Preserve the existing generated validator client/key material and wire it into stock client registration semantics without changing Chef-facing route shapes.
-3. Add compatibility tests for successful bootstrap registration, ACL/membership behavior, failure shapes, and restart behavior on the PostgreSQL-backed bootstrap/core-object foundation.
-4. Keep OpenSearch-backed indexing and operational admin tooling queued as the next larger buckets after validator registration is pinned.
+1. Inventory upstream search/indexing behavior from `SEARCH_AND_INDEXING.md`, the Chef indexing code, and `oc-chef-pedant` search coverage.
+2. Preserve the current Chef-facing `/search` and `/organizations/{org}/search` routes while swapping the durable indexing path behind the existing compatibility surface.
+3. Add compatibility tests for indexing, restart/rehydration, ACL-filtered results, data bag search rows, partial search, and deeper query translation against PostgreSQL-backed object state.
+4. Keep operational admin tooling, reindex/repair commands, and migration workflows as the next larger operational bucket after OpenSearch behavior is pinned.
 
-That sequence closes the biggest remaining stock-bootstrap gap without destabilizing the persistence work that now gives the API durable state.
+That sequence tackles the biggest remaining external dependency gap without reopening the completed identity, cookbook/blob, core object, and validator bootstrap contracts.
