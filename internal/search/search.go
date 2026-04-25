@@ -12,6 +12,8 @@ var (
 	ErrIndexNotFound        = errors.New("search index not found")
 	ErrNotFound             = ErrOrganizationNotFound
 	ErrUnavailable          = errors.New("search backend unavailable")
+	ErrInvalidConfiguration = errors.New("search backend invalid configuration")
+	ErrRejected             = errors.New("search backend rejected request")
 )
 
 type Status struct {

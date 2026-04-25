@@ -26,6 +26,7 @@ type activePostgresBootstrapFixture struct {
 	t       *testing.T
 	pgState *pgtest.State
 	router  http.Handler
+	state   *bootstrap.Service
 }
 
 func (f *activePostgresBootstrapFixture) restart() *activePostgresBootstrapFixture {
@@ -148,6 +149,36 @@ func newActivePostgresBootstrapFixture(t *testing.T, pgState *pgtest.State) *act
 func newActivePostgresBootstrapFixtureWithBlob(t *testing.T, pgState *pgtest.State, blobStore blob.Store) *activePostgresBootstrapFixture {
 	t.Helper()
 
+	return newActivePostgresBootstrapFixtureWithBlobSearchAndAuthorizer(t, pgState, blobStore, nil, nil)
+}
+
+func newActivePostgresBootstrapFixtureWithSearch(t *testing.T, pgState *pgtest.State, searchFactory func(*bootstrap.Service) search.Index) *activePostgresBootstrapFixture {
+	t.Helper()
+
+	return newActivePostgresBootstrapFixtureWithBlobSearchAndAuthorizer(t, pgState, blob.NewMemoryStore(""), searchFactory, nil)
+}
+
+func newActivePostgresBootstrapFixtureWithSearchAndAuthorizer(t *testing.T, pgState *pgtest.State, searchFactory func(*bootstrap.Service) search.Index, authorizerFactory func(*bootstrap.Service) authz.Authorizer) *activePostgresBootstrapFixture {
+	t.Helper()
+
+	return newActivePostgresBootstrapFixtureWithBlobSearchAndAuthorizer(t, pgState, blob.NewMemoryStore(""), searchFactory, authorizerFactory)
+}
+
+func newActivePostgresBootstrapFixtureWithBlobSearchAndAuthorizer(t *testing.T, pgState *pgtest.State, blobStore blob.Store, searchFactory func(*bootstrap.Service) search.Index, authorizerFactory func(*bootstrap.Service) authz.Authorizer) *activePostgresBootstrapFixture {
+	t.Helper()
+
+	return newActivePostgresBootstrapFixtureWithBlobSearchIndexerAndAuthorizer(t, pgState, blobStore, searchFactory, nil, authorizerFactory)
+}
+
+func newActivePostgresBootstrapFixtureWithSearchIndexerAndAuthorizer(t *testing.T, pgState *pgtest.State, searchFactory func(*bootstrap.Service) search.Index, indexer search.DocumentIndexer, authorizerFactory func(*bootstrap.Service) authz.Authorizer) *activePostgresBootstrapFixture {
+	t.Helper()
+
+	return newActivePostgresBootstrapFixtureWithBlobSearchIndexerAndAuthorizer(t, pgState, blob.NewMemoryStore(""), searchFactory, indexer, authorizerFactory)
+}
+
+func newActivePostgresBootstrapFixtureWithBlobSearchIndexerAndAuthorizer(t *testing.T, pgState *pgtest.State, blobStore blob.Store, searchFactory func(*bootstrap.Service) search.Index, indexer search.DocumentIndexer, authorizerFactory func(*bootstrap.Service) authz.Authorizer) *activePostgresBootstrapFixture {
+	t.Helper()
+
 	db, cleanup, err := pgState.OpenDB()
 	if err != nil {
 		t.Fatalf("OpenDB() error = %v", err)
@@ -164,11 +195,17 @@ func newActivePostgresBootstrapFixtureWithBlob(t *testing.T, pgState *pgtest.Sta
 	}
 
 	keyStore := authn.NewMemoryKeyStore()
-	initial, err := postgresStore.BootstrapCore().LoadBootstrapCore()
+	bootstrapCoreStore := bootstrap.BootstrapCoreStore(postgresStore.BootstrapCore())
+	coreObjectStore := bootstrap.CoreObjectStore(postgresStore.CoreObjects())
+	if indexer != nil {
+		bootstrapCoreStore = search.NewIndexingBootstrapCoreStore(bootstrapCoreStore, indexer)
+		coreObjectStore = search.NewIndexingCoreObjectStore(coreObjectStore, indexer)
+	}
+	initial, err := bootstrapCoreStore.LoadBootstrapCore()
 	if err != nil {
 		t.Fatalf("LoadBootstrapCore() error = %v", err)
 	}
-	initialObjects, err := postgresStore.CoreObjects().LoadCoreObjects()
+	initialObjects, err := coreObjectStore.LoadCoreObjects()
 	if err != nil {
 		t.Fatalf("LoadCoreObjects() error = %v", err)
 	}
@@ -180,10 +217,10 @@ func newActivePostgresBootstrapFixtureWithBlob(t *testing.T, pgState *pgtest.Sta
 			return postgresStore.CookbookStore()
 		},
 		BootstrapCoreStoreFactory: func(*bootstrap.Service) bootstrap.BootstrapCoreStore {
-			return postgresStore.BootstrapCore()
+			return bootstrapCoreStore
 		},
 		CoreObjectStoreFactory: func(*bootstrap.Service) bootstrap.CoreObjectStore {
-			return postgresStore.CoreObjects()
+			return coreObjectStore
 		},
 	})
 	if err := state.RehydrateKeyStore(); err != nil {
@@ -216,6 +253,14 @@ func newActivePostgresBootstrapFixtureWithBlob(t *testing.T, pgState *pgtest.Sta
 	now := func() time.Time {
 		return mustParseTime(t, "2026-04-02T15:04:35Z")
 	}
+	searchIndex := search.Index(search.NewMemoryIndex(state, ""))
+	if searchFactory != nil {
+		searchIndex = searchFactory(state)
+	}
+	authorizer := authz.Authorizer(authz.NewACLAuthorizer(state))
+	if authorizerFactory != nil {
+		authorizer = authorizerFactory(state)
+	}
 	router := NewRouter(Dependencies{
 		Logger:           log.New(ioDiscard{}, "", 0),
 		Config:           config.Config{ServiceName: "opencook", Environment: "test", MaxAuthBodyBytes: config.DefaultMaxAuthBodyBytes},
@@ -223,11 +268,11 @@ func newActivePostgresBootstrapFixtureWithBlob(t *testing.T, pgState *pgtest.Sta
 		Compat:           compat.NewDefaultRegistry(),
 		Now:              now,
 		Authn:            authn.NewChefVerifier(keyStore, authn.Options{AllowedClockSkew: &skew, Now: now}),
-		Authz:            authz.NewACLAuthorizer(state),
+		Authz:            authorizer,
 		Bootstrap:        state,
 		Blob:             blobStore,
 		BlobUploadSecret: []byte("test-blob-upload-secret"),
-		Search:           search.NewMemoryIndex(state, ""),
+		Search:           searchIndex,
 		Postgres:         postgresStore,
 		CookbookBackend:  "postgres",
 	})
@@ -235,6 +280,7 @@ func newActivePostgresBootstrapFixtureWithBlob(t *testing.T, pgState *pgtest.Sta
 		t:       t,
 		pgState: pgState,
 		router:  router,
+		state:   state,
 	}
 }
 

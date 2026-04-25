@@ -314,6 +314,11 @@ func (s *server) writeSearchError(w http.ResponseWriter, err error, operation, i
 	switch {
 	case errors.Is(err, search.ErrIndexNotFound):
 		writeSearchIndexNotFound(w, indexName)
+	case errors.Is(err, search.ErrUnavailable):
+		writeJSON(w, http.StatusServiceUnavailable, apiError{
+			Error:   "search_unavailable",
+			Message: "search backend unavailable",
+		})
 	case errors.Is(err, search.ErrOrganizationNotFound), errors.Is(err, search.ErrNotFound):
 		writeJSON(w, http.StatusNotFound, apiError{
 			Error:   "not_found",
