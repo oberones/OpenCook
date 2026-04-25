@@ -28,7 +28,7 @@ Status: in progress
 - Bifrost-style ACL permission checks are implemented in the bootstrap layer
 - org bootstrap and validator client creation flows are working, including returned validator key material
 - startup rehydration now restores bootstrap core state and request-verifier keys from PostgreSQL
-- classic validator-authenticated client registration is still a follow-on compatibility slice
+- generated `<org>-validator` clients can now register normal clients through the stock default-org and explicit-org client bootstrap routes, with PostgreSQL restart coverage and functional Docker smoke coverage
 - organization membership and broader association workflows still need follow-on slices
 
 ## Milestone 4: Core Object APIs
@@ -71,7 +71,7 @@ Status: in progress
 - policyfile routes are now live for both default-org and explicit-org `/policies` and `/policy_groups`
 - policy revision storage, revision lookup, policy-group listing, policy-group assignment, and richer canonical payload round-tripping are implemented and now persist through PostgreSQL when configured
 - policy payload validation now covers more cookbook-lock and solution-dependency structure, while node policy refs remain compatibility-safe searchable fields instead of enforced foreign keys
-- OpenSearch-backed indexing, deeper query translation, provider capability handling, and reindex tooling are still pending
+- OpenSearch-backed indexing, deeper query translation, provider capability handling, and reindex tooling are still pending and are the next recommended compatibility bucket
 
 ## Milestone 6: Cookbook and Blob Workflows
 
@@ -196,12 +196,12 @@ Status: in progress
 
 ## Milestone 7: Validator Bootstrap Compatibility
 
-Status: pending
+Status: complete
 
-- org bootstrap already returns validator client key material
-- classic validator-authenticated client registration still needs a dedicated compatibility slice
-- validator-backed client registration must become compatible with stock Chef and Cinc bootstrap flows
-- the remaining gap is in registration and ACL semantics, not validator key generation itself
+- org bootstrap returns generated `<org>-validator` key material
+- same-org generated validator clients can register normal clients through default-org and explicit-org client create routes
+- generated-key and explicit-public-key registration flows, no-mutation failures, ACL/group side effects, and PostgreSQL restart/rehydration behavior are covered
+- the functional Docker flow now exercises validator-authenticated client registration and follow-up signed client requests against the PostgreSQL-backed stack
 
 ## Milestone 8: Operations and Migration
 

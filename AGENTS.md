@@ -280,7 +280,7 @@ Current architectural reality:
 - the API surface is partly real and partly scaffolded
 - bootstrap core identity/authz state can now be persisted in PostgreSQL and rehydrated into the existing bootstrap service and verifier key cache
 - implemented core object API state can now be persisted in PostgreSQL and rehydrated into the existing bootstrap service, search-facing state, depsolver-visible state, sandbox checksum references, and object ACLs
-- org bootstrap can already return validator key material, but classic validator-authenticated client registration is still not fully compatible
+- org bootstrap returns validator key material, and generated `<org>-validator` clients can now register normal clients through the stock bootstrap routes
 - administrative object management is currently API-first; a first-class `chef-server-ctl`-style replacement for orgs, users, groups, containers, and ACLs is still future work
 - data bag CRUD is live, but encrypted data bag compatibility is not yet explicitly pinned as a tested slice
 - PostgreSQL is active for cookbook metadata, bootstrap core state, and implemented core object API state; OpenSearch is still placeholder or early scaffolding
@@ -442,7 +442,6 @@ When you start a new compatibility slice:
 These areas are still intentionally incomplete:
 
 - deeper API-version-specific semantics beyond the current actor-key surface
-- validator-authenticated client registration compatibility for stock Chef and Cinc bootstrap flows
 - OpenSearch-backed indexing and provider capability behavior
 - remaining core Chef object compatibility beyond the currently pinned nodes, environments, roles, data bags, policies, and sandbox flows
 - deeper node and environment compatibility such as cookbook constraint edge cases and linked object behavior
@@ -450,4 +449,4 @@ These areas are still intentionally incomplete:
 - broader search semantics beyond the current in-memory compatibility layer, especially richer Lucene-style query translation and wider object coverage
 - operational parity and migration tooling
 
-The next likely major slice is validator bootstrap compatibility in Milestone 7, with OpenSearch-backed indexing and operational tooling queued behind it.
+The next likely major slice is OpenSearch-backed indexing and query parity, with operational admin tooling queued behind it unless deployment needs make that work more urgent.
