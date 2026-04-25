@@ -246,6 +246,7 @@ func (c *command) runAdminACLRepairOffline(ctx context.Context, args []string) i
 	if !*dryRun && !opts.yes {
 		return c.adminUsageError("admin acls repair-defaults requires --dry-run or --yes\n\n")
 	}
+	orgFilter := strings.TrimSpace(*orgName)
 
 	store, closeStore, code, ok := c.openOfflineStore(ctx, opts.postgresDSN)
 	if !ok {
@@ -257,13 +258,18 @@ func (c *command) runAdminACLRepairOffline(ctx context.Context, args []string) i
 	if err != nil {
 		return c.offlineError("load bootstrap core", err)
 	}
+	if orgFilter != "" {
+		if _, ok := core.Orgs[orgFilter]; !ok {
+			return c.offlineError("repair ACL defaults", fmt.Errorf("%w: organization %s not found", bootstrap.ErrNotFound, orgFilter))
+		}
+	}
 	objects, err := store.LoadCoreObjects()
 	if err != nil {
 		return c.offlineError("load core objects", err)
 	}
 
-	nextCore, coreRepair := bootstrap.RepairBootstrapCoreDefaultACLs(core, *orgName, *superuser)
-	nextObjects, objectRepair := bootstrap.RepairCoreObjectDefaultACLs(objects, *orgName, *superuser)
+	nextCore, coreRepair := bootstrap.RepairBootstrapCoreDefaultACLs(core, orgFilter, *superuser)
+	nextObjects, objectRepair := bootstrap.RepairCoreObjectDefaultACLs(objects, orgFilter, *superuser)
 	if !*dryRun {
 		if err := store.SaveBootstrapCore(nextCore); err != nil {
 			return c.offlineError("save bootstrap core", err)

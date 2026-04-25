@@ -426,6 +426,40 @@ func TestAdminOfflineACLRepairDryRunDoesNotSave(t *testing.T) {
 	}
 }
 
+func TestAdminOfflineACLRepairRejectsMissingOrgFilter(t *testing.T) {
+	cmd, _, stderr := newTestCommand(t)
+	store := &fakeOfflineStore{
+		bootstrap: adminOfflineTestStateWithoutACLs(),
+		objects: bootstrap.CoreObjectState{
+			Orgs: map[string]bootstrap.CoreObjectOrganizationState{
+				"ponyville": {
+					Nodes: map[string]bootstrap.Node{
+						"node1": {Name: "node1"},
+					},
+					ACLs: map[string]authz.ACL{},
+				},
+			},
+		},
+	}
+	cmd.loadOffline = func() (config.Config, error) {
+		return config.Config{PostgresDSN: "postgres://offline-test"}, nil
+	}
+	cmd.newOfflineStore = func(context.Context, string) (adminOfflineStore, func() error, error) {
+		return store, nil, nil
+	}
+
+	code := cmd.Run(context.Background(), []string{"admin", "acls", "repair-defaults", "--offline", "--dry-run", "--org", "ponvyille"})
+	if code != exitNotFound {
+		t.Fatalf("Run(acls repair missing org) exit = %d, want %d; stderr = %s", code, exitNotFound, stderr.String())
+	}
+	if store.bootstrapSaves != 0 || store.objectSaves != 0 {
+		t.Fatalf("saves = %d/%d, want 0/0", store.bootstrapSaves, store.objectSaves)
+	}
+	if !strings.Contains(stderr.String(), "organization ponvyille not found") {
+		t.Fatalf("stderr = %q, want missing org detail", stderr.String())
+	}
+}
+
 func TestAdminOfflineACLRepairNoMutationOnLoadFailure(t *testing.T) {
 	cmd, _, stderr := newTestCommand(t)
 	store := &fakeOfflineStore{loadErr: errOfflineTest}
