@@ -16,7 +16,7 @@ if [[ "$phase" == "wait" ]]; then
 fi
 
 case "$phase" in
-  create|verify|invalid|delete|verify-deleted|all)
+  create|verify|invalid|search-update|verify-search-updated|delete|verify-deleted|all)
     ;;
   *)
     echo "unknown functional test phase: $phase" >&2

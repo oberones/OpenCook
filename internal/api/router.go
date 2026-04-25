@@ -195,7 +195,7 @@ func (s *server) handleRoot(w http.ResponseWriter, r *http.Request) {
 		"phase":         "compatibility-foundation",
 		"version":       s.deps.Version,
 		"compat_routes": s.deps.Compat.RouteCount(),
-		"next":          "continue OpenSearch-backed indexing and query parity, then broaden operational admin tooling and remaining compatibility hardening",
+		"next":          "plan operational admin plus OpenSearch reindex/repair tooling, with encrypted data bag compatibility as the main possible compatibility detour",
 	})
 }
 

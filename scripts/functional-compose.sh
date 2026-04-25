@@ -80,6 +80,10 @@ run_phase verify
 run_phase invalid
 restart_opencook
 run_phase verify
+run_phase search-update
+run_phase verify-search-updated
+restart_opencook
+run_phase verify-search-updated
 run_phase delete
 restart_opencook
 run_phase verify-deleted
