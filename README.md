@@ -17,7 +17,7 @@ OpenCook is free and open source software released under the MIT License. Licens
 
 OpenCook is in active development and already provides a meaningful compatibility foundation for local development, experimentation, and integration work.
 
-Today, it should be viewed as an early server implementation rather than a production-ready drop-in replacement. Some subsystems still rely on in-memory state, and deeper persistence, indexing, and broader compatibility hardening are still in progress.
+Today, it should be viewed as an early server implementation rather than a production-ready drop-in replacement. Some subsystems still rely on in-memory state, and deeper operational tooling, search edge-case coverage, and broader compatibility hardening are still in progress.
 
 Org bootstrap can mint validator key material, and generated `<org>-validator` clients can now register normal clients through the stock client bootstrap routes.
 Administrative object management is also still API-first today; a first-class `chef-server-ctl`-style replacement for orgs, users, groups, and ACLs remains future work.
@@ -28,7 +28,7 @@ Data bag CRUD is live, but encrypted data bag compatibility is not yet an explic
 - Authentication and bootstrap: Chef request-signing verification, bootstrap users, organizations, clients, groups, containers, ACLs, actor key lifecycle, and validator-authenticated client registration.
 - Core objects: nodes, environments, roles, and data bags, with default-org and explicit-org routing where implemented.
 - Cookbook flows: sandboxes, signed checksum upload/download flows, cookbook artifacts, cookbook versions, cookbook read views, `universe`, and environment depsolver behavior.
-- Search and policy: built-in Chef search indexes, partial search support, and policy/policy-group compatibility routes.
+- Search and policy: built-in Chef search indexes with an in-memory fallback and active OpenSearch-backed mode when PostgreSQL plus OpenSearch are configured, partial search support, and policy/policy-group compatibility routes.
 - Blob backends: in-memory, filesystem-backed, and S3-compatible storage for sandbox and cookbook content.
 
 ## Installation
@@ -38,6 +38,7 @@ Data bag CRUD is live, but encrypted data bag compatibility is not yet an explic
 - Go 1.22 or newer
 - A public key for the bootstrap requestor used in local development
 - Optional: local filesystem or S3-compatible object storage for blob content
+- Optional: PostgreSQL and OpenSearch for durable state plus provider-backed search
 
 ### Build From Source
 

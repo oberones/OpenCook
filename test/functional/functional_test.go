@@ -27,6 +27,14 @@ const (
 	policyName                           = "appserver"
 	policyGroupName                      = "dev"
 	policyRevisionID                     = "1111111111111111111111111111111111111111"
+	functionalSearchClientName           = "functional-search-client"
+	functionalSearchEnvironmentName      = "searchenv"
+	functionalSearchNodeName             = "searchnode"
+	functionalSearchRoleName             = "searchrole"
+	functionalSearchBagName              = "searchbag"
+	functionalSearchItemID               = "searchitem"
+	functionalSearchAlpha                = "functionalsearchalpha"
+	functionalSearchBeta                 = "functionalsearchbeta"
 	validatorBootstrapClientName         = "functional-bootstrap-client"
 	validatorDefaultBootstrapClientName  = "functional-default-bootstrap-client"
 	validatorBootstrapClientKeyStateFile = "validator_bootstrap_client_private.pem"
@@ -65,7 +73,7 @@ func TestFunctional(t *testing.T) {
 
 	phases := []string{cfg.phase}
 	if cfg.phase == "all" {
-		phases = []string{"create", "verify", "invalid", "delete", "verify-deleted"}
+		phases = []string{"create", "verify", "invalid", "search-update", "verify-search-updated", "delete", "verify-deleted"}
 	}
 
 	for _, phase := range phases {
@@ -79,6 +87,10 @@ func TestFunctional(t *testing.T) {
 				runVerifyPhase(t, client, cfg)
 			case "invalid":
 				runInvalidPhase(t, client, cfg)
+			case "search-update":
+				runSearchUpdatePhase(t, client, cfg)
+			case "verify-search-updated":
+				runVerifySearchUpdatedPhase(t, client, cfg)
 			case "delete":
 				runDeletePhase(t, client, cfg)
 			case "verify-deleted":
@@ -177,6 +189,8 @@ func runCreatePhase(t *testing.T, client *functionalClient, cfg functionalConfig
 		},
 	}, http.StatusCreated, http.StatusConflict)
 
+	ensureFunctionalSearchFixtures(t, client, functionalSearchAlpha)
+
 	client.expectJSON(t, http.MethodPut, "/policy_groups/"+policyGroupName+"/policies/"+policyName, policyPayload(policyName, policyRevisionID), http.StatusCreated, http.StatusOK)
 	createPendingSandbox(t, client, cfg)
 }
@@ -225,6 +239,7 @@ func runVerifyPhase(t *testing.T, client *functionalClient, cfg functionalConfig
 	requireRows(t, searchNode, 1)
 	searchBag := asMap(t, client.expectJSON(t, http.MethodGet, "/organizations/"+cfg.org+"/search/ponies?q=id:twilight", nil, http.StatusOK).JSON)
 	requireRows(t, searchBag, 1)
+	requireFunctionalSearchFixtures(t, client, cfg, functionalSearchAlpha)
 
 	assignmentPayload := asMap(t, client.expectJSON(t, http.MethodGet, "/policy_groups/"+policyGroupName+"/policies/"+policyName, nil, http.StatusOK).JSON)
 	if assignmentPayload["revision_id"] != policyRevisionID {
@@ -269,6 +284,20 @@ func runInvalidPhase(t *testing.T, client *functionalClient, cfg functionalConfi
 	if afterData["id"] != beforeData["id"] || afterData["kind"] != beforeData["kind"] {
 		t.Fatalf("data bag item changed after invalid writes: before=%v after=%v", beforeData, afterData)
 	}
+	requireFunctionalSearchFixtures(t, client, cfg, functionalSearchAlpha)
+}
+
+func runSearchUpdatePhase(t *testing.T, client *functionalClient, cfg functionalConfig) {
+	requireOperationalStatus(t, client)
+	updateFunctionalSearchFixtures(t, client, functionalSearchBeta)
+	requireFunctionalSearchFixtures(t, client, cfg, functionalSearchBeta)
+	requireFunctionalSearchOldTermsAbsent(t, client, cfg, functionalSearchAlpha)
+}
+
+func runVerifySearchUpdatedPhase(t *testing.T, client *functionalClient, cfg functionalConfig) {
+	requireOperationalStatus(t, client)
+	requireFunctionalSearchFixtures(t, client, cfg, functionalSearchBeta)
+	requireFunctionalSearchOldTermsAbsent(t, client, cfg, functionalSearchAlpha)
 }
 
 func runDeletePhase(t *testing.T, client *functionalClient, cfg functionalConfig) {
@@ -276,11 +305,16 @@ func runDeletePhase(t *testing.T, client *functionalClient, cfg functionalConfig
 	_ = os.Remove(filepath.Join(cfg.stateDir, validatorBootstrapClientKeyStateFile))
 	client.expectJSON(t, http.MethodDelete, "/organizations/"+cfg.org+"/clients/"+validatorDefaultBootstrapClientName, nil, http.StatusOK, http.StatusNotFound)
 	_ = os.Remove(filepath.Join(cfg.stateDir, validatorDefaultClientKeyStateFile))
+	client.expectJSON(t, http.MethodDelete, "/clients/"+functionalSearchClientName, nil, http.StatusOK, http.StatusNotFound)
 
 	client.expectJSON(t, http.MethodDelete, "/policy_groups/"+policyGroupName+"/policies/"+policyName, nil, http.StatusOK, http.StatusNotFound)
 	client.expectJSON(t, http.MethodDelete, "/policy_groups/"+policyGroupName, nil, http.StatusOK, http.StatusNotFound)
 	client.expectJSON(t, http.MethodDelete, "/policies/"+policyName+"/revisions/"+policyRevisionID, nil, http.StatusOK, http.StatusNotFound)
 
+	client.expectJSON(t, http.MethodDelete, "/data/"+functionalSearchBagName+"/"+functionalSearchItemID, nil, http.StatusOK, http.StatusNotFound)
+	client.expectJSON(t, http.MethodDelete, "/nodes/"+functionalSearchNodeName, nil, http.StatusOK, http.StatusNotFound)
+	client.expectJSON(t, http.MethodDelete, "/roles/"+functionalSearchRoleName, nil, http.StatusOK, http.StatusNotFound)
+	client.expectJSON(t, http.MethodDelete, "/environments/"+functionalSearchEnvironmentName, nil, http.StatusOK, http.StatusNotFound)
 	client.expectJSON(t, http.MethodDelete, "/data/ponies/twilight", nil, http.StatusOK, http.StatusNotFound)
 	client.expectJSON(t, http.MethodDelete, "/data/ponies", nil, http.StatusOK, http.StatusNotFound)
 	client.expectJSON(t, http.MethodDelete, "/nodes/twilight", nil, http.StatusOK, http.StatusNotFound)
@@ -299,6 +333,7 @@ func runVerifyDeletedPhase(t *testing.T, client *functionalClient, cfg functiona
 	client.expectJSON(t, http.MethodGet, "/policy_groups/"+policyGroupName, nil, http.StatusNotFound)
 	client.expectJSON(t, http.MethodGet, "/policies/"+policyName+"/revisions/"+policyRevisionID, nil, http.StatusNotFound)
 	client.expectJSON(t, http.MethodGet, "/organizations/"+cfg.org, nil, http.StatusOK)
+	requireFunctionalSearchFixturesDeleted(t, client, cfg)
 }
 
 func requireOperationalStatus(t *testing.T, client *functionalClient) {
@@ -315,8 +350,77 @@ func requireOperationalStatus(t *testing.T, client *functionalClient) {
 		t.Fatalf("blob status = %v, want filesystem configured", blob)
 	}
 	search := asMap(t, deps["opensearch"])
-	if search["configured"] != true {
-		t.Fatalf("opensearch status = %v, want configured search adapter", search)
+	if search["backend"] != "opensearch" || search["configured"] != true || !strings.Contains(strings.ToLower(fmt.Sprint(search["message"])), "active") {
+		t.Fatalf("opensearch status = %v, want active OpenSearch-backed search provider", search)
+	}
+}
+
+func ensureFunctionalSearchFixtures(t *testing.T, client *functionalClient, marker string) {
+	t.Helper()
+
+	client.expectJSON(t, http.MethodPost, "/clients", map[string]any{
+		"name": functionalSearchClientName,
+	}, http.StatusCreated, http.StatusConflict)
+	client.expectJSON(t, http.MethodPost, "/environments", searchEnvironmentPayload(functionalSearchEnvironmentName, marker), http.StatusCreated, http.StatusConflict)
+	client.expectJSON(t, http.MethodPost, "/roles", searchRolePayload(functionalSearchRoleName, marker), http.StatusCreated, http.StatusConflict)
+	client.expectJSON(t, http.MethodPost, "/nodes", searchNodePayload(functionalSearchNodeName, functionalSearchEnvironmentName, marker), http.StatusCreated, http.StatusConflict)
+	client.expectJSON(t, http.MethodPost, "/data", map[string]any{"name": functionalSearchBagName}, http.StatusCreated, http.StatusConflict)
+	client.expectJSON(t, http.MethodPost, "/data/"+functionalSearchBagName, searchDataBagItemPayload(functionalSearchItemID, marker), http.StatusCreated, http.StatusConflict)
+	updateFunctionalSearchFixtures(t, client, marker)
+}
+
+func updateFunctionalSearchFixtures(t *testing.T, client *functionalClient, marker string) {
+	t.Helper()
+
+	client.expectJSON(t, http.MethodPut, "/environments/"+functionalSearchEnvironmentName, searchEnvironmentPayload(functionalSearchEnvironmentName, marker), http.StatusOK)
+	client.expectJSON(t, http.MethodPut, "/roles/"+functionalSearchRoleName, searchRolePayload(functionalSearchRoleName, marker), http.StatusOK)
+	client.expectJSON(t, http.MethodPut, "/nodes/"+functionalSearchNodeName, searchNodePayload(functionalSearchNodeName, functionalSearchEnvironmentName, marker), http.StatusOK)
+	client.expectJSON(t, http.MethodPut, "/data/"+functionalSearchBagName+"/"+functionalSearchItemID, searchDataBagItemPayload(functionalSearchItemID, marker), http.StatusOK)
+}
+
+func requireFunctionalSearchFixtures(t *testing.T, client *functionalClient, cfg functionalConfig, marker string) {
+	t.Helper()
+
+	indexes := asMap(t, client.expectJSON(t, http.MethodGet, "/search", nil, http.StatusOK).JSON)
+	for _, index := range []string{"client", "environment", "node", "role", functionalSearchBagName} {
+		if _, ok := indexes[index]; !ok {
+			t.Fatalf("search indexes = %v, want %q index", indexes, index)
+		}
+	}
+
+	requireSearchRows(t, client, "/search/client?q=name:"+functionalSearchClientName, 1)
+	requireSearchRows(t, client, "/search/environment?q=functional_search_marker:"+marker, 1)
+	requireSearchRows(t, client, "/organizations/"+cfg.org+"/search/node?q=functional_search_marker:"+marker, 1)
+	requireSearchRows(t, client, "/search/role?q=functional_search_marker:"+marker, 1)
+	requireSearchRows(t, client, "/organizations/"+cfg.org+"/search/"+functionalSearchBagName+"?q=kind:"+marker, 1)
+}
+
+func requireFunctionalSearchOldTermsAbsent(t *testing.T, client *functionalClient, cfg functionalConfig, marker string) {
+	t.Helper()
+
+	requireSearchRows(t, client, "/search/environment?q=functional_search_marker:"+marker, 0)
+	requireSearchRows(t, client, "/organizations/"+cfg.org+"/search/node?q=functional_search_marker:"+marker, 0)
+	requireSearchRows(t, client, "/search/role?q=functional_search_marker:"+marker, 0)
+	requireSearchRows(t, client, "/organizations/"+cfg.org+"/search/"+functionalSearchBagName+"?q=kind:"+marker, 0)
+}
+
+func requireFunctionalSearchFixturesDeleted(t *testing.T, client *functionalClient, cfg functionalConfig) {
+	t.Helper()
+
+	client.expectJSON(t, http.MethodGet, "/clients/"+functionalSearchClientName, nil, http.StatusNotFound)
+	client.expectJSON(t, http.MethodGet, "/environments/"+functionalSearchEnvironmentName, nil, http.StatusNotFound)
+	client.expectJSON(t, http.MethodGet, "/nodes/"+functionalSearchNodeName, nil, http.StatusNotFound)
+	client.expectJSON(t, http.MethodGet, "/roles/"+functionalSearchRoleName, nil, http.StatusNotFound)
+
+	requireSearchRows(t, client, "/search/client?q=name:"+functionalSearchClientName, 0)
+	requireSearchRows(t, client, "/search/environment?q=name:"+functionalSearchEnvironmentName, 0)
+	requireSearchRows(t, client, "/search/node?q=name:"+functionalSearchNodeName, 0)
+	requireSearchRows(t, client, "/search/role?q=name:"+functionalSearchRoleName, 0)
+
+	resp := client.expectJSON(t, http.MethodGet, "/data/"+functionalSearchBagName, nil, http.StatusOK, http.StatusNotFound)
+	if resp.Status == http.StatusOK {
+		requireSearchRows(t, client, "/organizations/"+cfg.org+"/search/"+functionalSearchBagName+"?q=id:"+functionalSearchItemID, 0)
+		client.expectJSON(t, http.MethodDelete, "/data/"+functionalSearchBagName, nil, http.StatusOK, http.StatusNotFound)
 	}
 }
 
@@ -708,6 +812,46 @@ func rolePayload(name string) map[string]any {
 	}
 }
 
+func searchEnvironmentPayload(name, marker string) map[string]any {
+	payload := environmentPayload(name)
+	payload["description"] = "functional OpenSearch environment " + marker
+	payload["default_attributes"] = map[string]any{
+		"functional_search_marker": marker,
+	}
+	return payload
+}
+
+func searchNodePayload(name, environment, marker string) map[string]any {
+	payload := nodePayload(name, environment)
+	payload["normal"] = map[string]any{
+		"functional_search_marker": marker,
+	}
+	payload["run_list"] = []string{"role[" + functionalSearchRoleName + "]"}
+	return payload
+}
+
+func searchRolePayload(name, marker string) map[string]any {
+	payload := rolePayload(name)
+	payload["description"] = "functional OpenSearch role " + marker
+	payload["default_attributes"] = map[string]any{
+		"functional_search_marker": marker,
+	}
+	payload["env_run_lists"] = map[string][]string{
+		functionalSearchEnvironmentName: []string{"recipe[search_demo]"},
+	}
+	return payload
+}
+
+func searchDataBagItemPayload(id, marker string) map[string]any {
+	return map[string]any{
+		"id":   id,
+		"kind": marker,
+		"nested": map[string]any{
+			"functional_search_marker": marker,
+		},
+	}
+}
+
 func policyPayload(name, revisionID string) map[string]any {
 	return map[string]any{
 		"name":        name,
@@ -949,10 +1093,36 @@ func containsString(values []string, want string) bool {
 func requireRows(t *testing.T, payload map[string]any, want int) {
 	t.Helper()
 
-	rows, ok := payload["rows"].([]any)
-	if !ok || len(rows) != want {
-		t.Fatalf("rows = %T %v, want %d rows", payload["rows"], payload["rows"], want)
+	rows := searchRows(t, payload)
+	if len(rows) != want {
+		t.Fatalf("rows = %v, want %d rows", payload["rows"], want)
 	}
+}
+
+func requireSearchRows(t *testing.T, client *functionalClient, path string, want int) map[string]any {
+	t.Helper()
+
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		payload := asMap(t, client.expectJSON(t, http.MethodGet, path, nil, http.StatusOK).JSON)
+		if len(searchRows(t, payload)) == want {
+			return payload
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s rows = %v, want %d rows", path, payload["rows"], want)
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+}
+
+func searchRows(t *testing.T, payload map[string]any) []any {
+	t.Helper()
+
+	rows, ok := payload["rows"].([]any)
+	if !ok {
+		t.Fatalf("rows = %T %v, want JSON array", payload["rows"], payload["rows"])
+	}
+	return rows
 }
 
 func parsePrivateKeyFile(t *testing.T, path string) *rsa.PrivateKey {

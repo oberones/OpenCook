@@ -33,7 +33,7 @@ This roadmap is based on a review of the upstream Chef Infra Server repository a
 
 ## Current Progress Snapshot
 
-As of 2026-04-24, OpenCook has moved past pure scaffolding and into the first compatibility slices:
+As of 2026-04-25, OpenCook has moved past pure scaffolding and into the first compatibility slices:
 
 - Chef request signing verification is implemented in Go and enforced on the first authenticated routes
 - user, organization, client, group, container, key, and ACL bootstrap core flows are working and can now persist through PostgreSQL when configured
@@ -132,12 +132,12 @@ As of 2026-04-24, OpenCook has moved past pure scaffolding and into the first co
 - the first data bag slice is now live with `/data`, `/data/{bag}`, and `/data/{bag}/{item}` on both default-org and explicit-org routes
 - data bag item create, update, and delete flows now reproduce Chef-style response wrapping and not-found/conflict messages
 - encrypted data bag compatibility is not yet an explicit tracked/tested slice, even though the current data bag item implementation mostly treats payloads as opaque JSON
-- the first search-facing slice is now live with `/search` and `/search/{client,environment,node,role}` over the in-memory compatibility state
-- `/search` now also advertises live per-data-bag indexes, and `/search/{bag}` now supports Chef-style data bag search results
-- partial search is now implemented for clients, environments, nodes, roles, and data bags
-- search responses are now filtered through the current read ACL model
-- default-org search results for clients now point at live `/clients/...` URLs
-- the in-memory search layer now covers simple `AND`/`NOT` matching and escaped-slash prefix queries for the current compatibility slice
+- the first search-facing slice is now live with `/search` and `/search/{client,environment,node,role}` plus per-data-bag indexes on both default-org and explicit-org routes
+- the default no-OpenSearch path keeps the in-memory compatibility adapter, while configured PostgreSQL plus `OPENCOOK_OPENSEARCH_URL` activates OpenSearch-backed search for clients, environments, nodes, roles, and data bag items
+- active OpenSearch mode rebuilds the `chef` index from PostgreSQL-backed state at startup, updates and deletes derived search documents after successful object mutations, ignores stale provider IDs after hydration, and keeps PostgreSQL as the source of truth
+- partial search, ACL-filtered responses, default-org client URLs, data bag wrapper rows, pagination, and the pinned query subset now have parity coverage across memory and active OpenSearch-backed paths
+- OpenSearch provider failures now degrade through stable `503 search_unavailable` route responses where applicable, and status reporting distinguishes memory fallback, active OpenSearch, and configured-but-unavailable OpenSearch
+- the functional Docker stack now proves active OpenSearch search lifecycle behavior across create, restart, update, stale-term removal, delete, and post-restart absence
 - the policyfile slice is now live on both default-org and explicit-org routes with `/policies`, `/policies/{name}`, `/policies/{name}/revisions`, `/policies/{name}/revisions/{revision}`, `/policy_groups`, and `/policy_groups/{group}/policies/{name}`
 - policy revision create/get/delete, policy-group listing, policy-group get/delete, and policy-group assignment flows are now working in the in-memory compatibility layer
 - policy payload normalization now preserves richer canonical structures like `named_run_lists`, nested cookbook-lock metadata, and `solution_dependencies`, with deeper validation around cookbook lock versions and shapes
@@ -183,9 +183,9 @@ As of 2026-04-24, OpenCook has moved past pure scaffolding and into the first co
 Current focus:
 
 - preserve API-version-sensitive actor key behavior without carrying forward Chef licensing concerns
-- plan and implement OpenSearch-backed indexing and query parity beyond the current in-memory compatibility subset
-- widen search object/index coverage while preserving ACL-filtered Chef response shapes
-- keep operational admin tooling queued behind the search/indexing bucket unless deployment needs make it more urgent
+- plan the operational admin/reindex/repair bucket now that active OpenSearch-backed search is pinned for the implemented surfaces
+- keep encrypted data bag compatibility and deeper API-version-specific object semantics visible as the main compatibility detours if they become more urgent than operations tooling
+- widen remaining search semantics and object/index coverage only behind the preserved ACL-filtered Chef response shapes
 
 ## What Exists Upstream
 
@@ -367,6 +367,7 @@ These should become regression tests for OpenCook.
 - Implement index template/version management
 - Preserve Chef’s document expansion format for compatibility
 - Introduce a provider capability layer rather than hardcoding version-specific branches
+- Current status: active OpenSearch-backed search is live when PostgreSQL and `OPENCOOK_OPENSEARCH_URL` are configured, including startup rebuild, mutation indexing, hydration from PostgreSQL-backed state, ACL filtering, partial search, provider-unavailable degradation, and Docker functional coverage for the implemented client/environment/node/role/data-bag indexes; public reindex/repair tooling, richer capability negotiation, and broader Lucene semantics remain follow-on work
 
 ### Blob/object storage layer
 
@@ -678,11 +679,11 @@ Exit criteria:
 
 ## Recommended Next Step
 
-Plan and implement the OpenSearch-backed indexing and query parity bucket now that validator bootstrap registration is pinned:
+Plan and implement the operational admin plus reindex/repair bucket now that PostgreSQL, provider-backed blobs, and active OpenSearch-backed search are pinned for the implemented compatibility surfaces:
 
-1. Inventory upstream search/indexing behavior from `SEARCH_AND_INDEXING.md`, the Chef indexing code, and `oc-chef-pedant` search coverage.
-2. Preserve the current Chef-facing `/search` and `/organizations/{org}/search` routes while swapping the durable indexing path behind the existing compatibility surface.
-3. Add compatibility tests for indexing, restart/rehydration, ACL-filtered results, data bag search rows, partial search, and deeper query translation against PostgreSQL-backed object state.
-4. Keep operational admin tooling, reindex/repair commands, and migration workflows as the next larger operational bucket after OpenSearch behavior is pinned.
+1. Inventory upstream `chef-server-ctl` and admin workflows for organizations, users, groups, containers, ACLs, and search/index maintenance.
+2. Design the first OpenCook operational surface without changing Chef-facing API contracts or reintroducing licensing behavior.
+3. Add internal or CLI-accessible reindex/repair flows that can rebuild OpenSearch from PostgreSQL, verify derived index consistency, and report repair outcomes without exposing provider internals.
+4. Keep encrypted data bag compatibility, broader Lucene/query-string semantics, and migration/cutover tooling as follow-on buckets unless deployment testing makes one of them more urgent.
 
-That sequence tackles the biggest remaining external dependency gap without reopening the completed identity, cookbook/blob, core object, and validator bootstrap contracts.
+That sequence builds on the completed identity, cookbook/blob, core object, validator bootstrap, and active OpenSearch contracts without reopening their Chef-facing behavior.

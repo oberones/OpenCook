@@ -8,19 +8,21 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 	"time"
 
 	"github.com/oberones/OpenCook/internal/authn"
 	"github.com/oberones/OpenCook/internal/bootstrap"
 	"github.com/oberones/OpenCook/internal/config"
+	"github.com/oberones/OpenCook/internal/search"
 	"github.com/oberones/OpenCook/internal/store/pg"
 	"github.com/oberones/OpenCook/internal/store/pg/pgtest"
 	"github.com/oberones/OpenCook/internal/version"
 )
 
 func TestBootstrapOptionsUseMemoryCookbookStoreWithoutConfiguredPostgres(t *testing.T) {
-	opts, err := bootstrapOptions(config.Config{}, pg.New(""))
+	opts, err := bootstrapOptions(config.Config{}, pg.New(""), nil)
 	if err != nil {
 		t.Fatalf("bootstrapOptions() error = %v", err)
 	}
@@ -41,7 +43,7 @@ func TestBootstrapOptionsUseMemoryCookbookStoreWithoutConfiguredPostgres(t *test
 func TestBootstrapOptionsUsePostgresCookbookStoreWhenConfigured(t *testing.T) {
 	store := pg.New("postgres://example")
 
-	opts, err := bootstrapOptions(config.Config{}, store)
+	opts, err := bootstrapOptions(config.Config{}, store, nil)
 	if err != nil {
 		t.Fatalf("bootstrapOptions() error = %v", err)
 	}
@@ -103,7 +105,7 @@ func TestBootstrapOptionsLoadActivePostgresState(t *testing.T) {
 		t.Fatalf("ActivateCookbookPersistenceWithDB() error = %v", err)
 	}
 
-	opts, err := bootstrapOptions(config.Config{}, store)
+	opts, err := bootstrapOptions(config.Config{}, store, nil)
 	if err != nil {
 		t.Fatalf("bootstrapOptions() error = %v", err)
 	}
@@ -145,6 +147,70 @@ func TestNewReturnsActivationFailure(t *testing.T) {
 	}
 	if got := err.Error(); got != "activate postgres cookbook persistence: activation failed" {
 		t.Fatalf("New() error = %q, want activation failure message", got)
+	}
+}
+
+func TestNewReturnsOpenSearchEndpointValidationFailure(t *testing.T) {
+	_, err := New(config.Config{
+		ServiceName:   "opencook",
+		Environment:   "test",
+		ListenAddress: ":4000",
+		AuthSkew:      15 * time.Minute,
+		ReadTimeout:   5 * time.Second,
+		WriteTimeout:  5 * time.Second,
+		OpenSearchURL: "ftp://opensearch.example",
+	}, log.New(io.Discard, "", 0), version.Info{Version: "test"})
+	if err == nil {
+		t.Fatal("New() error = nil, want OpenSearch validation failure")
+	}
+	if got := err.Error(); got != "configure opensearch search: search backend invalid configuration: OPENCOOK_OPENSEARCH_URL must use http or https" {
+		t.Fatalf("New() error = %q, want OpenSearch validation failure", got)
+	}
+}
+
+func TestNewReturnsOpenSearchActivationFailure(t *testing.T) {
+	state := pgtest.NewState(pgtest.Seed{})
+	db, cleanup, err := state.OpenDB()
+	if err != nil {
+		t.Fatalf("OpenDB() error = %v", err)
+	}
+	defer func() {
+		if err := cleanup(); err != nil {
+			t.Fatalf("cleanup() error = %v", err)
+		}
+	}()
+
+	previousPostgres := activatePostgresCookbookPersistence
+	activatePostgresCookbookPersistence = func(ctx context.Context, store *pg.Store) error {
+		return store.ActivateCookbookPersistenceWithDB(ctx, db)
+	}
+	defer func() {
+		activatePostgresCookbookPersistence = previousPostgres
+	}()
+
+	previousOpenSearch := activateOpenSearchIndexing
+	activateOpenSearchIndexing = func(context.Context, config.Config, *pg.Store, *bootstrap.Service, *search.OpenSearchClient) (search.Index, error) {
+		return nil, search.ErrUnavailable
+	}
+	defer func() {
+		activateOpenSearchIndexing = previousOpenSearch
+	}()
+
+	_, err = New(config.Config{
+		ServiceName:   "opencook",
+		Environment:   "test",
+		ListenAddress: ":4000",
+		AuthSkew:      15 * time.Minute,
+		ReadTimeout:   5 * time.Second,
+		WriteTimeout:  5 * time.Second,
+		PostgresDSN:   "postgres://opensearch-activation-test",
+		OpenSearchURL: "http://opensearch.example",
+	}, log.New(io.Discard, "", 0), version.Info{Version: "test"})
+	if !errors.Is(err, search.ErrUnavailable) {
+		t.Fatalf("New() error = %v, want ErrUnavailable", err)
+	}
+	if got := err.Error(); got != "activate opensearch indexing: search backend unavailable" {
+		t.Fatalf("New() error = %q, want stable OpenSearch activation failure", got)
 	}
 }
 
@@ -345,6 +411,113 @@ func TestNewCanConstructRepeatedlyAgainstSameActivePostgresState(t *testing.T) {
 	}
 }
 
+func TestNewRebuildsOpenSearchIndexFromActivePostgresStateOnStartup(t *testing.T) {
+	state := pgtest.NewState(pgtest.Seed{
+		Organizations: []pg.CookbookOrganizationRecord{
+			{Name: "ponyville", FullName: "Ponyville"},
+		},
+	})
+	db, cleanup, err := state.OpenDB()
+	if err != nil {
+		t.Fatalf("OpenDB() error = %v", err)
+	}
+	defer func() {
+		if err := cleanup(); err != nil {
+			t.Fatalf("cleanup() error = %v", err)
+		}
+	}()
+
+	previousPostgres := activatePostgresCookbookPersistence
+	activatePostgresCookbookPersistence = func(ctx context.Context, store *pg.Store) error {
+		return store.ActivateCookbookPersistenceWithDB(ctx, db)
+	}
+	defer func() {
+		activatePostgresCookbookPersistence = previousPostgres
+	}()
+
+	previousOpenSearch := activateOpenSearchIndexing
+	var snapshots [][]search.DocumentRef
+	activateOpenSearchIndexing = func(_ context.Context, cfg config.Config, store *pg.Store, bootstrapState *bootstrap.Service, _ *search.OpenSearchClient) (search.Index, error) {
+		if cfg.OpenSearchURL != "http://opensearch.example" {
+			t.Fatalf("OpenSearchURL = %q, want configured endpoint", cfg.OpenSearchURL)
+		}
+		if store == nil || !store.BootstrapCorePersistenceActive() || !store.CoreObjectPersistenceActive() {
+			t.Fatalf("postgres store was not active for OpenSearch indexing: %v", store)
+		}
+		docs, err := search.DocumentsFromBootstrapState(bootstrapState)
+		if err != nil {
+			t.Fatalf("DocumentsFromBootstrapState() error = %v", err)
+		}
+		snapshots = append(snapshots, documentRefs(docs))
+		return activatedAppTestSearchIndex{}, nil
+	}
+	defer func() {
+		activateOpenSearchIndexing = previousOpenSearch
+	}()
+
+	cfg := config.Config{
+		ServiceName:   "opencook",
+		Environment:   "test",
+		ListenAddress: ":4000",
+		AuthSkew:      15 * time.Minute,
+		ReadTimeout:   5 * time.Second,
+		WriteTimeout:  5 * time.Second,
+		PostgresDSN:   "postgres://opensearch-rebuild-test",
+		OpenSearchURL: "http://opensearch.example",
+	}
+	for i := 0; i < 2; i++ {
+		app, err := New(cfg, log.New(io.Discard, "", 0), version.Info{Version: "test"})
+		if err != nil {
+			t.Fatalf("New() #%d error = %v", i+1, err)
+		}
+		req := httptest.NewRequest(http.MethodGet, "/_status", nil)
+		rec := httptest.NewRecorder()
+		app.server.Handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("/_status #%d status = %d, want %d, body = %s", i+1, rec.Code, http.StatusOK, rec.Body.String())
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+			t.Fatalf("json.Unmarshal(/_status #%d) error = %v", i+1, err)
+		}
+		dependencies := payload["dependencies"].(map[string]any)
+		openSearchStatus := dependencies["opensearch"].(map[string]any)
+		if openSearchStatus["backend"] != "activated-test" {
+			t.Fatalf("dependencies.opensearch.backend = %v, want activated-test", openSearchStatus["backend"])
+		}
+	}
+	if len(snapshots) != 2 {
+		t.Fatalf("OpenSearch activation calls = %d, want 2", len(snapshots))
+	}
+	if !reflect.DeepEqual(snapshots[0], snapshots[1]) {
+		t.Fatalf("OpenSearch rebuild snapshots differed: first=%v second=%v", snapshots[0], snapshots[1])
+	}
+	requireDocumentRef(t, snapshots[0], "client", "ponyville-validator")
+	requireDocumentRef(t, snapshots[0], "environment", "_default")
+}
+
+type activatedAppTestSearchIndex struct{}
+
+func (activatedAppTestSearchIndex) Name() string {
+	return "activated-test"
+}
+
+func (activatedAppTestSearchIndex) Status() search.Status {
+	return search.Status{
+		Backend:    "activated-test",
+		Configured: true,
+		Message:    "activated OpenSearch test provider",
+	}
+}
+
+func (activatedAppTestSearchIndex) Indexes(context.Context, string) ([]string, error) {
+	return nil, search.ErrUnavailable
+}
+
+func (activatedAppTestSearchIndex) Search(context.Context, search.Query) (search.Result, error) {
+	return search.Result{}, search.ErrUnavailable
+}
+
 func TestNewStatusReportsDefaultInMemoryModeWithoutPostgres(t *testing.T) {
 	app, err := New(config.Config{
 		ServiceName:   "opencook",
@@ -378,4 +551,27 @@ func TestNewStatusReportsDefaultInMemoryModeWithoutPostgres(t *testing.T) {
 	if postgresStatus["configured"] != false {
 		t.Fatalf("dependencies.postgres.configured = %v, want false", postgresStatus["configured"])
 	}
+}
+
+func documentRefs(docs []search.Document) []search.DocumentRef {
+	refs := make([]search.DocumentRef, 0, len(docs))
+	for _, doc := range docs {
+		refs = append(refs, search.DocumentRef{
+			Organization: doc.Resource.Organization,
+			Index:        doc.Index,
+			Name:         doc.Name,
+		})
+	}
+	return refs
+}
+
+func requireDocumentRef(t *testing.T, refs []search.DocumentRef, index, name string) {
+	t.Helper()
+
+	for _, ref := range refs {
+		if ref.Organization == "ponyville" && ref.Index == index && ref.Name == name {
+			return
+		}
+	}
+	t.Fatalf("refs = %v, want ponyville/%s/%s", refs, index, name)
 }

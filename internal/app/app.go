@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/oberones/OpenCook/internal/api"
@@ -32,7 +33,27 @@ var activatePostgresCookbookPersistence = func(ctx context.Context, store *pg.St
 	return store.ActivateCookbookPersistence(ctx)
 }
 
+var activateOpenSearchIndexing = func(ctx context.Context, cfg config.Config, store *pg.Store, state *bootstrap.Service, client *search.OpenSearchClient) (search.Index, error) {
+	if strings.TrimSpace(cfg.OpenSearchURL) == "" || store == nil || !store.BootstrapCorePersistenceActive() || !store.CoreObjectPersistenceActive() {
+		return nil, nil
+	}
+	if client == nil {
+		var err error
+		client, err = search.NewOpenSearchClient(cfg.OpenSearchURL)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if err := search.RebuildOpenSearchIndex(ctx, client, state); err != nil {
+		return nil, err
+	}
+	return search.NewOpenSearchIndex(state, client, cfg.OpenSearchURL), nil
+}
+
 func New(cfg config.Config, logger *log.Logger, build version.Info) (*Application, error) {
+	if err := search.ValidateOpenSearchEndpoint(cfg.OpenSearchURL); err != nil {
+		return nil, fmt.Errorf("configure opensearch search: %w", err)
+	}
 	compatRegistry := compat.NewDefaultRegistry()
 	postgresStore := pg.New(cfg.PostgresDSN)
 	if err := activatePostgresCookbookPersistence(context.Background(), postgresStore); err != nil {
@@ -42,8 +63,16 @@ func New(cfg config.Config, logger *log.Logger, build version.Info) (*Applicatio
 	if err != nil {
 		return nil, fmt.Errorf("configure blob storage: %w", err)
 	}
+	openSearchClient, err := activeOpenSearchDocumentIndexer(cfg, postgresStore)
+	if err != nil {
+		return nil, fmt.Errorf("configure opensearch indexing: %w", err)
+	}
+	var documentIndexer search.DocumentIndexer
+	if openSearchClient != nil {
+		documentIndexer = openSearchClient
+	}
 	keyStore := authn.NewMemoryKeyStore()
-	opts, err := bootstrapOptions(cfg, postgresStore)
+	opts, err := bootstrapOptions(cfg, postgresStore, documentIndexer)
 	if err != nil {
 		return nil, fmt.Errorf("load postgres bootstrap state: %w", err)
 	}
@@ -54,7 +83,7 @@ func New(cfg config.Config, logger *log.Logger, build version.Info) (*Applicatio
 	if err := seedCookbookOrganizationsFromPostgres(bootstrapState, postgresStore); err != nil {
 		return nil, err
 	}
-	searchIndex := search.NewMemoryIndex(bootstrapState, cfg.OpenSearchURL)
+	var searchIndex search.Index = search.NewMemoryIndex(bootstrapState, cfg.OpenSearchURL)
 	if err := seedBootstrapRequestor(keyStore, cfg); err != nil {
 		return nil, err
 	}
@@ -63,6 +92,13 @@ func New(cfg config.Config, logger *log.Logger, build version.Info) (*Applicatio
 		if err := seedBootstrapRequestorState(bootstrapState, cfg, principal); err != nil {
 			return nil, err
 		}
+	}
+	activeSearchIndex, err := activateOpenSearchIndexing(context.Background(), cfg, postgresStore, bootstrapState, openSearchClient)
+	if err != nil {
+		return nil, fmt.Errorf("activate opensearch indexing: %w", err)
+	}
+	if activeSearchIndex != nil {
+		searchIndex = activeSearchIndex
 	}
 	authSkew := cfg.AuthSkew
 	authnVerifier := authn.NewChefVerifier(keyStore, authn.Options{
@@ -104,29 +140,35 @@ func New(cfg config.Config, logger *log.Logger, build version.Info) (*Applicatio
 	}, nil
 }
 
-func bootstrapOptions(cfg config.Config, postgresStore *pg.Store) (bootstrap.Options, error) {
+func bootstrapOptions(cfg config.Config, postgresStore *pg.Store, indexer search.DocumentIndexer) (bootstrap.Options, error) {
 	opts := bootstrap.Options{
 		SuperuserName: resolveSuperuserName(cfg),
 	}
 	if postgresStore != nil && postgresStore.Configured() {
+		bootstrapCoreStore := bootstrap.BootstrapCoreStore(postgresStore.BootstrapCore())
+		coreObjectStore := bootstrap.CoreObjectStore(postgresStore.CoreObjects())
+		if indexer != nil {
+			bootstrapCoreStore = search.NewIndexingBootstrapCoreStore(bootstrapCoreStore, indexer)
+			coreObjectStore = search.NewIndexingCoreObjectStore(coreObjectStore, indexer)
+		}
 		opts.CookbookStoreFactory = func(*bootstrap.Service) bootstrap.CookbookStore {
 			return postgresStore.CookbookStore()
 		}
 		opts.BootstrapCoreStoreFactory = func(*bootstrap.Service) bootstrap.BootstrapCoreStore {
-			return postgresStore.BootstrapCore()
+			return bootstrapCoreStore
 		}
 		opts.CoreObjectStoreFactory = func(*bootstrap.Service) bootstrap.CoreObjectStore {
-			return postgresStore.CoreObjects()
+			return coreObjectStore
 		}
 		if postgresStore.BootstrapCorePersistenceActive() {
-			state, err := postgresStore.BootstrapCore().LoadBootstrapCore()
+			state, err := bootstrapCoreStore.LoadBootstrapCore()
 			if err != nil {
 				return bootstrap.Options{}, fmt.Errorf("load bootstrap core state: %w", err)
 			}
 			opts.InitialBootstrapCoreState = &state
 		}
 		if postgresStore.CoreObjectPersistenceActive() {
-			state, err := postgresStore.CoreObjects().LoadCoreObjects()
+			state, err := coreObjectStore.LoadCoreObjects()
 			if err != nil {
 				return bootstrap.Options{}, fmt.Errorf("load core object state: %w", err)
 			}
@@ -134,6 +176,13 @@ func bootstrapOptions(cfg config.Config, postgresStore *pg.Store) (bootstrap.Opt
 		}
 	}
 	return opts, nil
+}
+
+func activeOpenSearchDocumentIndexer(cfg config.Config, postgresStore *pg.Store) (*search.OpenSearchClient, error) {
+	if strings.TrimSpace(cfg.OpenSearchURL) == "" || postgresStore == nil || !postgresStore.BootstrapCorePersistenceActive() || !postgresStore.CoreObjectPersistenceActive() {
+		return nil, nil
+	}
+	return search.NewOpenSearchClient(cfg.OpenSearchURL)
 }
 
 func resolveCookbookBackend(postgresStore *pg.Store) string {
