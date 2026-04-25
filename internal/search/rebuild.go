@@ -2,42 +2,33 @@ package search
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/oberones/OpenCook/internal/bootstrap"
 )
 
 func RebuildOpenSearchIndex(ctx context.Context, client *OpenSearchClient, state *bootstrap.Service) error {
-	if client == nil {
-		return fmt.Errorf("%w: opensearch client is required", ErrInvalidConfiguration)
-	}
-	if state == nil {
-		return fmt.Errorf("%w: bootstrap state is required", ErrInvalidConfiguration)
-	}
-
-	if err := client.Ping(ctx); err != nil {
-		return err
-	}
-	if err := client.EnsureChefIndex(ctx); err != nil {
-		return err
-	}
-	if err := client.DeleteByQuery(ctx, "", ""); err != nil {
-		return err
-	}
-
-	docs, err := DocumentsFromBootstrapState(state)
-	if err != nil {
-		return err
-	}
-	if len(docs) > 0 {
-		if err := client.BulkUpsert(ctx, docs); err != nil {
-			return err
-		}
-	}
-	return client.Refresh(ctx)
+	service := NewReindexService(state, client)
+	_, err := service.Run(ctx, ReindexPlan{
+		Mode:             ReindexModeComplete,
+		AllOrganizations: true,
+	})
+	return err
 }
 
 func DocumentsFromBootstrapState(state *bootstrap.Service) ([]Document, error) {
+	return DocumentsFromBootstrapStateForPlan(state, ReindexPlan{AllOrganizations: true})
+}
+
+func DocumentsFromBootstrapStateForPlan(state *bootstrap.Service, plan ReindexPlan) ([]Document, error) {
+	docs, err := documentsFromBootstrapState(state)
+	if err != nil {
+		return nil, err
+	}
+	filtered, _, err := filterReindexDocuments(state, docs, normalizeReindexPlan(plan))
+	return filtered, err
+}
+
+func documentsFromBootstrapState(state *bootstrap.Service) ([]Document, error) {
 	if state == nil {
 		return nil, ErrUnavailable
 	}
