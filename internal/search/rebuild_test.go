@@ -48,6 +48,10 @@ func TestRebuildOpenSearchIndexDeletesStaleDocumentsAndUpsertsCurrentState(t *te
 			}
 			body := decodeJSONMap(t, recorded.Body)
 			properties := body["properties"].(map[string]any)
+			documentID := properties["document_id"].(map[string]any)
+			if documentID["type"] != "keyword" {
+				t.Fatalf("mapping body = %v, want keyword document_id", body)
+			}
 			compatTerms := properties[openSearchCompatTermsField].(map[string]any)
 			if compatTerms["type"] != "keyword" {
 				t.Fatalf("mapping body = %v, want keyword compat_terms", body)

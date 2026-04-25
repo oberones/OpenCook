@@ -12,7 +12,10 @@ import (
 	"strings"
 )
 
-const openSearchChefIndex = "chef"
+const (
+	openSearchChefIndex      = "chef"
+	openSearchSearchPageSize = 1000
+)
 
 type OpenSearchTransport interface {
 	Do(*http.Request) (*http.Response, error)
@@ -178,40 +181,70 @@ func (c *OpenSearchClient) BulkUpsert(ctx context.Context, docs []Document) erro
 	return nil
 }
 
-func (c *OpenSearchClient) SearchIDs(ctx context.Context, query Query, start, rows int) ([]string, error) {
-	body := openSearchSearchBody(query, start, rows)
+func (c *OpenSearchClient) SearchIDs(ctx context.Context, query Query) ([]string, error) {
+	return c.searchIDs(ctx, query, openSearchSearchPageSize)
+}
+
+func (c *OpenSearchClient) searchIDs(ctx context.Context, query Query, pageSize int) ([]string, error) {
+	if pageSize <= 0 {
+		pageSize = openSearchSearchPageSize
+	}
+
+	var ids []string
+	var searchAfter []any
+	for {
+		pageIDs, nextSearchAfter, err := c.searchIDsPage(ctx, query, pageSize, searchAfter)
+		if err != nil {
+			return nil, err
+		}
+		ids = append(ids, pageIDs...)
+		if len(pageIDs) < pageSize {
+			return ids, nil
+		}
+		if len(nextSearchAfter) == 0 {
+			return nil, fmt.Errorf("%w: search_after sort value missing", ErrUnavailable)
+		}
+		searchAfter = nextSearchAfter
+	}
+}
+
+func (c *OpenSearchClient) searchIDsPage(ctx context.Context, query Query, pageSize int, searchAfter []any) ([]string, []any, error) {
+	body := openSearchSearchBody(query, pageSize, searchAfter)
 	req, err := c.newJSONRequest(ctx, http.MethodPost, "/"+openSearchChefIndex+"/_search", nil, body)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	resp, err := c.do(req)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer closeResponseBody(resp)
 	if err := classifyOpenSearchStatus(resp.StatusCode, http.StatusOK); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	var payload struct {
 		Hits struct {
 			Hits []struct {
-				ID string `json:"_id"`
+				ID   string `json:"_id"`
+				Sort []any  `json:"sort"`
 			} `json:"hits"`
 		} `json:"hits"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
-		return nil, fmt.Errorf("%w: decode search response", ErrUnavailable)
+		return nil, nil, fmt.Errorf("%w: decode search response", ErrUnavailable)
 	}
 
 	ids := make([]string, 0, len(payload.Hits.Hits))
+	var nextSearchAfter []any
 	for _, hit := range payload.Hits.Hits {
 		if strings.TrimSpace(hit.ID) == "" {
 			continue
 		}
 		ids = append(ids, hit.ID)
+		nextSearchAfter = hit.Sort
 	}
-	return ids, nil
+	return ids, nextSearchAfter, nil
 }
 
 func (c *OpenSearchClient) Refresh(ctx context.Context) error {
@@ -257,6 +290,7 @@ func openSearchDeleteByQueryBody(org, index string) map[string]any {
 
 func openSearchDocumentSource(doc Document) map[string]any {
 	source := make(map[string]any, len(doc.Fields)+5)
+	source["document_id"] = OpenSearchDocumentID(doc)
 	source["organization"] = doc.Resource.Organization
 	source["index"] = doc.Index
 	source["name"] = doc.Name
@@ -275,6 +309,9 @@ func openSearchChefIndexMapping() map[string]any {
 	return map[string]any{
 		"dynamic": true,
 		"properties": map[string]any{
+			"document_id": map[string]any{
+				"type": "keyword",
+			},
 			openSearchCompatTermsField: map[string]any{
 				"type": "keyword",
 			},
@@ -299,11 +336,10 @@ func openSearchCompatibilityTerms(doc Document) []string {
 	return terms
 }
 
-func openSearchSearchBody(query Query, start, rows int) map[string]any {
-	return map[string]any{
+func openSearchSearchBody(query Query, pageSize int, searchAfter []any) map[string]any {
+	body := map[string]any{
 		"_source": false,
-		"from":    start,
-		"size":    rows,
+		"size":    pageSize,
 		"query": map[string]any{
 			"bool": map[string]any{
 				"filter": openSearchCompatibilityFilters(query.Organization, query.Index),
@@ -312,12 +348,16 @@ func openSearchSearchBody(query Query, start, rows int) map[string]any {
 		},
 		"sort": []any{
 			map[string]any{
-				"_id": map[string]any{
+				"document_id": map[string]any{
 					"order": "asc",
 				},
 			},
 		},
 	}
+	if len(searchAfter) > 0 {
+		body["search_after"] = searchAfter
+	}
+	return body
 }
 
 func openSearchCompatibilityFilters(org, index string) []any {

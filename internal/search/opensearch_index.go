@@ -7,8 +7,6 @@ import (
 	"github.com/oberones/OpenCook/internal/bootstrap"
 )
 
-const openSearchDefaultSearchRows = 10000
-
 type OpenSearchIndex struct {
 	state  *bootstrap.Service
 	client *OpenSearchClient
@@ -55,7 +53,7 @@ func (i *OpenSearchIndex) Search(ctx context.Context, query Query) (Result, erro
 		return Result{}, ErrIndexNotFound
 	}
 
-	ids, err := i.client.SearchIDs(ctx, query, 0, openSearchDefaultSearchRows)
+	ids, err := i.client.SearchIDs(ctx, query)
 	if err != nil {
 		return Result{}, err
 	}
