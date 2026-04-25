@@ -72,10 +72,11 @@ Status: in progress
 - active OpenSearch startup rebuilds the `chef` index from persisted clients, environments, nodes, roles, and data bag items, and successful object mutations update/delete derived search documents
 - route coverage now pins OpenSearch-backed full search, partial search, pagination/order, ACL filtering after provider matches, stale-ID ignoring, active status reporting, and stable `503 search_unavailable` degradation for provider failures
 - the functional Docker stack now proves active OpenSearch search lifecycle behavior across restart, update/stale-term removal, delete, and post-restart absence
+- `opencook admin` now provides OpenSearch reindex, consistency check, and consistency repair commands that rebuild and compare derived documents from PostgreSQL-backed authoritative state, with functional Docker coverage for stale-document detection, dry-run repair, actual repair, and post-restart clean verification
 - policyfile routes are now live for both default-org and explicit-org `/policies` and `/policy_groups`
 - policy revision storage, revision lookup, policy-group listing, policy-group assignment, and richer canonical payload round-tripping are implemented and now persist through PostgreSQL when configured
 - policy payload validation now covers more cookbook-lock and solution-dependency structure, while node policy refs remain compatibility-safe searchable fields instead of enforced foreign keys
-- public reindex/repair tooling, richer OpenSearch capability/version negotiation, broader Lucene/query-string semantics, cookbook/policy/sandbox search coverage, and encrypted data bag search semantics remain follow-on work; operational admin plus reindex/repair tooling is the next recommended bucket unless encrypted data bag compatibility becomes more urgent
+- richer OpenSearch capability/version negotiation, broader Lucene/query-string semantics, cookbook/policy/sandbox search coverage, and encrypted data bag search semantics remain follow-on work; encrypted data bag compatibility is the next recommended bucket
 
 ## Milestone 6: Cookbook and Blob Workflows
 
@@ -209,10 +210,13 @@ Status: complete
 
 ## Milestone 8: Operations and Migration
 
-Status: pending
+Status: in progress
 
-- add a first-class admin/ctl path for managing orgs, users, groups, containers, and ACLs without relying only on raw API calls
+- the first `opencook admin` path is live for signed HTTP-backed user/org/key/group/container/ACL inspection and live-safe management workflows without changing Chef-facing API contracts
+- direct PostgreSQL repair-style commands for org membership, server-admin membership, group membership, and ACL replacement are offline-gated until cross-process cache invalidation exists
+- OpenSearch reindex, consistency check, and repair commands can rebuild and compare derived documents from PostgreSQL-backed state
+- functional Docker coverage now proves admin status, live-safe user/org/key operations, group/container/ACL inspection, complete org reindex, stale OpenSearch detection, dry-run repair, repair, and post-restart verification
 - add full Chef-style documentation for admin and operational workflows, even if the final implementation lands as CLI, API, or a mixed path
-- add health, metrics, repair, backup, and reindex commands
+- add health, metrics, backup, and migration/cutover commands beyond the first reindex/repair slice
 - define migration path from existing Chef Infra Server installs
 - rehearse shadow traffic and cutover workflows

@@ -55,6 +55,7 @@ Implemented so far:
 - initial authenticated routing
 - PostgreSQL-backed bootstrap core persistence for users, organizations, clients, user/client keys, groups, containers, and ACL documents, with in-memory fallback behavior when PostgreSQL is not configured
 - PostgreSQL-backed core object API persistence for nodes, environments, roles, data bags/items, policy revisions/groups/assignments, sandbox metadata/checksum references, and object ACLs, with in-memory fallback behavior when PostgreSQL is not configured
+- the first `opencook admin` operational CLI, including signed HTTP-backed user/org/key/group/container/ACL inspection and live-safe management flows, offline-gated direct PostgreSQL repair commands, and OpenSearch reindex/check/repair from PostgreSQL-backed state
 - the first environment slice:
   - `_default` environment bootstrap
   - list
@@ -257,7 +258,7 @@ Implemented so far:
   - Chef-style wrapped data bag search rows
   - raw-item data bag partial search rows
   - simple `AND`/`NOT` matching and escaped-slash prefix handling
-  - active OpenSearch-backed mode when PostgreSQL and `OPENCOOK_OPENSEARCH_URL` are configured, including startup rebuild from persisted state, successful mutation upserts/deletes, stale-ID ignoring after PostgreSQL hydration, ACL filtering after provider matches, provider-unavailable `503 search_unavailable` degradation, truthful status reporting, and Docker functional coverage for restart/update/delete lifecycle behavior
+  - active OpenSearch-backed mode when PostgreSQL and `OPENCOOK_OPENSEARCH_URL` are configured, including startup rebuild from persisted state, successful mutation upserts/deletes, stale-ID ignoring after PostgreSQL hydration, ACL filtering after provider matches, provider-unavailable `503 search_unavailable` degradation, truthful status reporting, Docker functional coverage for restart/update/delete lifecycle behavior, and operational reindex/check/repair coverage
 - the first data bag slice:
   - `/data`
   - `/data/{bag}`
@@ -282,19 +283,21 @@ Current architectural reality:
 - bootstrap core identity/authz state can now be persisted in PostgreSQL and rehydrated into the existing bootstrap service and verifier key cache
 - implemented core object API state can now be persisted in PostgreSQL and rehydrated into the existing bootstrap service, search-facing state, depsolver-visible state, sandbox checksum references, and object ACLs
 - org bootstrap returns validator key material, and generated `<org>-validator` clients can now register normal clients through the stock bootstrap routes
-- administrative object management is currently API-first; a first-class `chef-server-ctl`-style replacement for orgs, users, groups, containers, and ACLs is still future work
+- the first `opencook admin` operational surface is live, but full `chef-server-ctl` parity, backup/restore, service management, migration/cutover tooling, and online direct PostgreSQL mutation remain future work
 - data bag CRUD is live, but encrypted data bag compatibility is not yet explicitly pinned as a tested slice
 - PostgreSQL is active for cookbook metadata, bootstrap core state, and implemented core object API state; OpenSearch-backed search is active for the implemented search indexes when PostgreSQL and `OPENCOOK_OPENSEARCH_URL` are configured, with the memory adapter preserved as the no-OpenSearch fallback
 - the blob layer now has in-memory, filesystem-backed, and S3-compatible compatibility implementations for sandbox checksum uploads/downloads and cookbook file URLs, and the S3-compatible path now includes request-construction parity, configurable timeout/retry plus `Retry-After` behavior, transport/status classification, malformed-endpoint and missing-credential diagnostics, and provider-backed `blob_unavailable` degradation on the current sandbox/cookbook flows
 
-Do not mistake the no-OpenSearch memory fallback, public reindex/repair gap, or future unimplemented surfaces for the final persistence architecture.
+Do not mistake the no-OpenSearch memory fallback, partial operational tooling, or future unimplemented surfaces for the final persistence architecture.
 
 ## Architecture Map
 
 High-level package roles:
 
 - `cmd/opencook`
-  - server entrypoint
+  - server entrypoint and operational admin CLI
+- `internal/admin`
+  - signed HTTP admin client configuration, request signing, and CLI error handling
 - `internal/app`
   - wiring and dependency assembly
 - `internal/api`
@@ -443,11 +446,11 @@ When you start a new compatibility slice:
 These areas are still intentionally incomplete:
 
 - deeper API-version-specific semantics beyond the current actor-key surface
-- public OpenSearch reindex/repair tooling and deeper provider capability/version behavior
+- deeper OpenSearch provider capability/version behavior
 - remaining core Chef object compatibility beyond the currently pinned nodes, environments, roles, data bags, policies, and sandbox flows
 - deeper node and environment compatibility such as cookbook constraint edge cases and linked object behavior
 - deeper role compatibility beyond the current normalization and linked-environment read behavior
 - broader search semantics beyond the current compatibility subset, especially richer Lucene-style query translation and wider object coverage
 - operational parity and migration tooling
 
-The next likely major slice is operational admin plus reindex/repair tooling, unless encrypted data bag compatibility becomes the more urgent compatibility bucket.
+The next likely major slice is encrypted data bag compatibility, unless broader Lucene/query-string semantics, cookbook/policy/sandbox search coverage, or migration/cutover tooling becomes more urgent.

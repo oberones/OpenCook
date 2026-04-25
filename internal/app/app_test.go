@@ -2,16 +2,23 @@ package app
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"io"
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 	"time"
 
+	"github.com/oberones/OpenCook/internal/admin"
 	"github.com/oberones/OpenCook/internal/authn"
 	"github.com/oberones/OpenCook/internal/bootstrap"
 	"github.com/oberones/OpenCook/internal/config"
@@ -494,6 +501,175 @@ func TestNewRebuildsOpenSearchIndexFromActivePostgresStateOnStartup(t *testing.T
 	}
 	requireDocumentRef(t, snapshots[0], "client", "ponyville-validator")
 	requireDocumentRef(t, snapshots[0], "environment", "_default")
+}
+
+func TestAdminHTTPBootstrapCoreChangesSurvivePostgresRestart(t *testing.T) {
+	privateKey := mustGenerateAppAdminPrivateKey(t)
+	publicKeyPath := filepath.Join(t.TempDir(), "pivotal.pub")
+	if err := os.WriteFile(publicKeyPath, mustMarshalAppAdminPublicKeyPEM(t, &privateKey.PublicKey), 0o600); err != nil {
+		t.Fatalf("WriteFile(public key) error = %v", err)
+	}
+
+	state := pgtest.NewState(pgtest.Seed{})
+	db, cleanup, err := state.OpenDB()
+	if err != nil {
+		t.Fatalf("OpenDB() error = %v", err)
+	}
+	defer cleanup()
+
+	previousPostgres := activatePostgresCookbookPersistence
+	activatePostgresCookbookPersistence = func(ctx context.Context, store *pg.Store) error {
+		return store.ActivateCookbookPersistenceWithDB(ctx, db)
+	}
+	defer func() {
+		activatePostgresCookbookPersistence = previousPostgres
+	}()
+
+	cfg := config.Config{
+		ServiceName:                     "opencook",
+		Environment:                     "test",
+		PostgresDSN:                     "postgres://admin-http-restart-test",
+		AuthSkew:                        15 * time.Minute,
+		BootstrapRequestorName:          "pivotal",
+		BootstrapRequestorType:          "user",
+		BootstrapRequestorKeyID:         "default",
+		BootstrapRequestorPublicKeyPath: publicKeyPath,
+		MaxAuthBodyBytes:                config.DefaultMaxAuthBodyBytes,
+	}
+
+	firstApp, err := New(cfg, log.New(io.Discard, "", 0), version.Info{Version: "test"})
+	if err != nil {
+		t.Fatalf("New() first error = %v", err)
+	}
+	firstClient := newAppAdminClient(t, firstApp.server.Handler, privateKey)
+
+	var userCreate map[string]any
+	if err := firstClient.DoJSON(context.Background(), http.MethodPost, "/users", map[string]any{
+		"username":   "rarity",
+		"first_name": "Rarity",
+		"last_name":  "Belle",
+		"email":      "rarity@example.test",
+	}, &userCreate); err != nil {
+		t.Fatalf("create user through admin HTTP client: %v", err)
+	}
+	var orgCreate map[string]any
+	if err := firstClient.DoJSON(context.Background(), http.MethodPost, "/organizations", map[string]any{
+		"name":      "ponyville",
+		"full_name": "Ponyville",
+		"org_type":  "Business",
+	}, &orgCreate); err != nil {
+		t.Fatalf("create organization through admin HTTP client: %v", err)
+	}
+	var userKeyCreate map[string]any
+	if err := firstClient.DoJSON(context.Background(), http.MethodPost, "/users/rarity/keys", map[string]any{
+		"name":            "laptop",
+		"create_key":      true,
+		"expiration_date": "infinity",
+	}, &userKeyCreate); err != nil {
+		t.Fatalf("create user key through admin HTTP client: %v", err)
+	}
+	var clientKeyCreate map[string]any
+	if err := firstClient.DoJSON(context.Background(), http.MethodPost, "/organizations/ponyville/clients/ponyville-validator/keys", map[string]any{
+		"name":            "rotation",
+		"create_key":      true,
+		"expiration_date": "infinity",
+	}, &clientKeyCreate); err != nil {
+		t.Fatalf("create client key through admin HTTP client: %v", err)
+	}
+
+	secondApp, err := New(cfg, log.New(io.Discard, "", 0), version.Info{Version: "test"})
+	if err != nil {
+		t.Fatalf("New() second error = %v", err)
+	}
+	secondClient := newAppAdminClient(t, secondApp.server.Handler, privateKey)
+
+	var user map[string]any
+	if err := secondClient.DoJSON(context.Background(), http.MethodGet, "/users/rarity", nil, &user); err != nil {
+		t.Fatalf("get rehydrated user: %v", err)
+	}
+	if user["username"] != "rarity" {
+		t.Fatalf("rehydrated user username = %v, want rarity", user["username"])
+	}
+	var org map[string]any
+	if err := secondClient.DoJSON(context.Background(), http.MethodGet, "/organizations/ponyville", nil, &org); err != nil {
+		t.Fatalf("get rehydrated organization: %v", err)
+	}
+	if org["name"] != "ponyville" {
+		t.Fatalf("rehydrated org name = %v, want ponyville", org["name"])
+	}
+	var userKey map[string]any
+	if err := secondClient.DoJSON(context.Background(), http.MethodGet, "/users/rarity/keys/laptop", nil, &userKey); err != nil {
+		t.Fatalf("get rehydrated user key: %v", err)
+	}
+	if userKey["name"] != "laptop" {
+		t.Fatalf("rehydrated user key name = %v, want laptop", userKey["name"])
+	}
+	var validator map[string]any
+	if err := secondClient.DoJSON(context.Background(), http.MethodGet, "/organizations/ponyville/clients/ponyville-validator", nil, &validator); err != nil {
+		t.Fatalf("get rehydrated validator client: %v", err)
+	}
+	if validator["name"] != "ponyville-validator" {
+		t.Fatalf("rehydrated validator name = %v, want ponyville-validator", validator["name"])
+	}
+	var validatorDefaultKey map[string]any
+	if err := secondClient.DoJSON(context.Background(), http.MethodGet, "/organizations/ponyville/clients/ponyville-validator/keys/default", nil, &validatorDefaultKey); err != nil {
+		t.Fatalf("get rehydrated validator default key: %v", err)
+	}
+	if validatorDefaultKey["name"] != "default" {
+		t.Fatalf("rehydrated validator default key name = %v, want default", validatorDefaultKey["name"])
+	}
+	var validatorRotationKey map[string]any
+	if err := secondClient.DoJSON(context.Background(), http.MethodGet, "/organizations/ponyville/clients/ponyville-validator/keys/rotation", nil, &validatorRotationKey); err != nil {
+		t.Fatalf("get rehydrated validator rotation key: %v", err)
+	}
+	if validatorRotationKey["name"] != "rotation" {
+		t.Fatalf("rehydrated validator rotation key name = %v, want rotation", validatorRotationKey["name"])
+	}
+}
+
+func newAppAdminClient(t *testing.T, handler http.Handler, privateKey *rsa.PrivateKey) *admin.Client {
+	t.Helper()
+	client, err := admin.NewClient(admin.Config{
+		ServerURL:        "http://opencook.test",
+		RequestorName:    "pivotal",
+		RequestorType:    "user",
+		ServerAPIVersion: "1",
+	}, admin.WithPrivateKey(privateKey), admin.WithHTTPDoer(appAdminHandlerDoer{handler: handler}))
+	if err != nil {
+		t.Fatalf("admin.NewClient() error = %v", err)
+	}
+	return client
+}
+
+type appAdminHandlerDoer struct {
+	handler http.Handler
+}
+
+func (d appAdminHandlerDoer) Do(req *http.Request) (*http.Response, error) {
+	rec := httptest.NewRecorder()
+	d.handler.ServeHTTP(rec, req)
+	return rec.Result(), nil
+}
+
+func mustGenerateAppAdminPrivateKey(t *testing.T) *rsa.PrivateKey {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("GenerateKey() error = %v", err)
+	}
+	return key
+}
+
+func mustMarshalAppAdminPublicKeyPEM(t *testing.T, key *rsa.PublicKey) []byte {
+	t.Helper()
+	der, err := x509.MarshalPKIXPublicKey(key)
+	if err != nil {
+		t.Fatalf("MarshalPKIXPublicKey() error = %v", err)
+	}
+	return pem.EncodeToMemory(&pem.Block{
+		Type:  "PUBLIC KEY",
+		Bytes: der,
+	})
 }
 
 type activatedAppTestSearchIndex struct{}
