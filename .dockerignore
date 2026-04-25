@@ -1,0 +1,8 @@
+.git
+.github
+bin
+coverage.out
+tmp
+.DS_Store
+*.test
+deploy/functional/.env

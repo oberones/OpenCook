@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/oberones/OpenCook/internal/authn"
 	"github.com/oberones/OpenCook/internal/authz"
 	"github.com/oberones/OpenCook/internal/bootstrap"
 )
@@ -95,12 +96,38 @@ func (s *server) handleClientPost(w http.ResponseWriter, r *http.Request, state 
 		return
 	}
 
-	if !s.authorizeRequest(w, r, authz.ActionCreate, authz.Resource{
+	requestor, ok := requestorFromContext(r.Context())
+	if !ok {
+		writeJSON(w, http.StatusInternalServerError, apiError{
+			Error:   "authn_context_missing",
+			Message: "authenticated requestor missing from context",
+		})
+		return
+	}
+	createResource := authz.Resource{
 		Type:         "container",
 		Name:         "clients",
 		Organization: org,
-	}) {
+	}
+	authorized, err := s.authorizeRequestor(r.Context(), requestor, authz.ActionCreate, createResource)
+	if err != nil {
+		s.logf("authz failure for create %s/%s: %v", createResource.Type, createResource.Name, err)
+		writeJSON(w, http.StatusInternalServerError, apiError{
+			Error:   "authz_failed",
+			Message: "internal authorization error",
+		})
 		return
+	}
+	validatorRegistration := false
+	if !authorized {
+		if !isSameOrgValidatorClient(state, requestor, org) {
+			writeJSON(w, http.StatusForbidden, apiError{
+				Error:   "forbidden",
+				Message: "requestor is not authorized for this resource",
+			})
+			return
+		}
+		validatorRegistration = true
 	}
 
 	var payload struct {
@@ -112,6 +139,20 @@ func (s *server) handleClientPost(w http.ResponseWriter, r *http.Request, state 
 		CreateKey  bool   `json:"create_key"`
 	}
 	if !decodeJSON(w, r, &payload) {
+		return
+	}
+	if validatorRegistration && (payload.Validator || payload.Admin) {
+		writeJSON(w, http.StatusForbidden, apiError{
+			Error:   "forbidden",
+			Message: "requestor is not authorized for this resource",
+		})
+		return
+	}
+	if payload.CreateKey && strings.TrimSpace(payload.PublicKey) != "" {
+		writeJSON(w, http.StatusBadRequest, apiError{
+			Error:   "invalid_request",
+			Message: "public_key and create_key cannot both be set",
+		})
 		return
 	}
 
@@ -136,10 +177,21 @@ func (s *server) handleClientPost(w http.ResponseWriter, r *http.Request, state 
 	if keyMaterial != nil && keyMaterial.PrivateKeyPEM != "" {
 		response["private_key"] = keyMaterial.PrivateKeyPEM
 	}
-	if payload.CreateKey && keyMaterial != nil {
+	if keyMaterial != nil && (payload.CreateKey || strings.TrimSpace(payload.PublicKey) != "") {
 		response["chef_key"] = clientFacingKeyMaterial(*keyMaterial, clientKeyBasePath(org, client.Name, basePath))
 	}
 	writeJSON(w, http.StatusCreated, response)
+}
+
+func isSameOrgValidatorClient(state *bootstrap.Service, requestor authn.Principal, org string) bool {
+	if state == nil || requestor.Type != "client" || requestor.Organization != org {
+		return false
+	}
+	if requestor.Name != org+"-validator" {
+		return false
+	}
+	client, ok := state.GetClient(org, requestor.Name)
+	return ok && client.Validator
 }
 
 func (s *server) handleClientDelete(w http.ResponseWriter, r *http.Request, state *bootstrap.Service, org, basePath string) {
