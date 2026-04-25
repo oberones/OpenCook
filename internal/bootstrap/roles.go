@@ -90,8 +90,12 @@ func (s *Service) CreateRole(orgName string, input CreateRoleInput) (Role, error
 		return Role{}, ErrConflict
 	}
 
+	previous := s.snapshotCoreObjectsLocked()
 	org.roles[role.Name] = role
 	org.acls[roleACLKey(role.Name)] = defaultRoleACL(s.superuserName, input.Creator)
+	if err := s.finishCoreObjectMutationLocked(previous); err != nil {
+		return Role{}, err
+	}
 	return copyRole(role), nil
 }
 
@@ -114,7 +118,11 @@ func (s *Service) UpdateRole(orgName, roleName string, input UpdateRoleInput) (R
 		return Role{}, err
 	}
 
+	previous := s.snapshotCoreObjectsLocked()
 	org.roles[roleName] = role
+	if err := s.finishCoreObjectMutationLocked(previous); err != nil {
+		return Role{}, err
+	}
 	return copyRole(role), nil
 }
 
@@ -132,8 +140,12 @@ func (s *Service) DeleteRole(orgName, roleName string) (Role, error) {
 		return Role{}, ErrNotFound
 	}
 
+	previous := s.snapshotCoreObjectsLocked()
 	delete(org.roles, roleName)
 	delete(org.acls, roleACLKey(roleName))
+	if err := s.finishCoreObjectMutationLocked(previous); err != nil {
+		return Role{}, err
+	}
 	return copyRole(role), nil
 }
 

@@ -43,7 +43,11 @@ func New(cfg config.Config, logger *log.Logger, build version.Info) (*Applicatio
 		return nil, fmt.Errorf("configure blob storage: %w", err)
 	}
 	keyStore := authn.NewMemoryKeyStore()
-	bootstrapState := bootstrap.NewService(keyStore, bootstrapOptions(cfg, postgresStore))
+	opts, err := bootstrapOptions(cfg, postgresStore)
+	if err != nil {
+		return nil, fmt.Errorf("load postgres bootstrap state: %w", err)
+	}
+	bootstrapState := bootstrap.NewService(keyStore, opts)
 	if err := bootstrapState.RehydrateKeyStore(); err != nil {
 		return nil, fmt.Errorf("hydrate bootstrap verifier keys: %w", err)
 	}
@@ -100,7 +104,7 @@ func New(cfg config.Config, logger *log.Logger, build version.Info) (*Applicatio
 	}, nil
 }
 
-func bootstrapOptions(cfg config.Config, postgresStore *pg.Store) bootstrap.Options {
+func bootstrapOptions(cfg config.Config, postgresStore *pg.Store) (bootstrap.Options, error) {
 	opts := bootstrap.Options{
 		SuperuserName: resolveSuperuserName(cfg),
 	}
@@ -111,14 +115,25 @@ func bootstrapOptions(cfg config.Config, postgresStore *pg.Store) bootstrap.Opti
 		opts.BootstrapCoreStoreFactory = func(*bootstrap.Service) bootstrap.BootstrapCoreStore {
 			return postgresStore.BootstrapCore()
 		}
+		opts.CoreObjectStoreFactory = func(*bootstrap.Service) bootstrap.CoreObjectStore {
+			return postgresStore.CoreObjects()
+		}
 		if postgresStore.BootstrapCorePersistenceActive() {
 			state, err := postgresStore.BootstrapCore().LoadBootstrapCore()
-			if err == nil {
-				opts.InitialBootstrapCoreState = &state
+			if err != nil {
+				return bootstrap.Options{}, fmt.Errorf("load bootstrap core state: %w", err)
 			}
+			opts.InitialBootstrapCoreState = &state
+		}
+		if postgresStore.CoreObjectPersistenceActive() {
+			state, err := postgresStore.CoreObjects().LoadCoreObjects()
+			if err != nil {
+				return bootstrap.Options{}, fmt.Errorf("load core object state: %w", err)
+			}
+			opts.InitialCoreObjectState = &state
 		}
 	}
-	return opts
+	return opts, nil
 }
 
 func resolveCookbookBackend(postgresStore *pg.Store) string {

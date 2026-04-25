@@ -1,5 +1,7 @@
 # PostgreSQL Core Object API Persistence Plan
 
+Status: complete
+
 ## Summary
 
 This slice replaces the remaining in-memory core object API state with PostgreSQL-backed persistence after the cookbook and bootstrap-core cutovers.
@@ -49,7 +51,8 @@ The in-scope state currently lives behind `bootstrap.Service` methods and route 
   - org-scoped sandbox metadata with checksum upload items and commit state.
   - sandbox writes coordinate with blob checksum existence and later cookbook/blob checksum retention behavior.
 - Object ACLs:
-  - object create/delete flows currently add or remove ACL documents for created nodes, environments, roles, data bags, policy objects, and sandboxes.
+  - object create/delete flows currently add or remove ACL documents for created nodes, environments, roles, data bags, and policy objects.
+  - sandbox routes currently rely on the existing sandbox/container authorization path, not per-sandbox ACL documents.
   - persisted object state must not rehydrate without the matching ACL documents, otherwise reads and mutations after restart will drift from same-process behavior.
 
 Out of scope for this bucket:
@@ -66,6 +69,10 @@ Out of scope for this bucket:
 
 ### Task 1: Freeze The Core Object Persistence Contract
 
+Status:
+
+- Completed. The plan captures the in-scope state shape, object ACL side effects, route/read dependencies, restart expectations, and explicit out-of-scope boundaries for the core object persistence bucket.
+
 - Inventory the exact state shape, ACL side effects, and read dependencies for nodes, environments, roles, data bags, policies, and sandboxes.
 - Add or extend test helpers for an activated `pg.Store` that includes bootstrap core persistence, cookbook persistence, and the new object persistence path.
 - Define restart/rehydration expectations for each object family.
@@ -80,6 +87,10 @@ Out of scope for this bucket:
 
 ### Task 2: Extract A Core Object Store Interface With An In-Memory Adapter
 
+Status:
+
+- Completed. The `bootstrap.CoreObjectStore` seam, in-memory adapter, snapshot/rehydration helpers, delegation tests, and rollback wiring now cover nodes, environments, roles, data bags/items, policies/policy groups, sandboxes, and current object ACL documents.
+
 - Add a bootstrap object persistence interface beside the existing bootstrap-core and cookbook store seams.
 - Keep validation, normalization, authorization checks, and route-facing semantics in `bootstrap.Service`.
 - Move direct map ownership for nodes, environments, roles, data bags, policies, and sandbox metadata behind an in-memory adapter.
@@ -88,6 +99,10 @@ Out of scope for this bucket:
 - Add failure tests proving failed object-store writes do not partially update service state, object ACL state, search-facing state, sandbox state, or cookbook/depsolver-visible state.
 
 ### Task 3: Add PostgreSQL Schema And Repository Scaffold
+
+Status:
+
+- Completed. The PostgreSQL scaffold now includes `0003_core_object_persistence.sql`, a `pg.CoreObjectRepository`, inactive `LoadCoreObjects`/`SaveCoreObjects` round-tripping, row encode/decode coverage for every persisted model, and migration exposure tests.
 
 - Add migrations for:
   - nodes
@@ -109,6 +124,10 @@ Out of scope for this bucket:
 
 ### Task 4: Persist Nodes, Environments, And Roles
 
+Status:
+
+- Completed for the first active PostgreSQL path. App/test startup now hydrates `CoreObjectStore`, the pg fake driver persists core object rows, and route coverage proves nodes, environments, roles, environment-node views, environment-linked role reads, and role-expanded depsolver behavior survive restart.
+
 - Persist node create/read/list/update/delete state and matching node ACL lifecycle.
 - Persist environment create/read/list/update/delete state and matching environment ACL lifecycle.
 - Preserve `_default` environment bootstrap and immutability semantics.
@@ -129,6 +148,10 @@ Out of scope for this bucket:
 
 ### Task 5: Persist Data Bags And Data Bag Items
 
+Status:
+
+- Completed for the active PostgreSQL path. Route coverage now proves data bag and item create/read/update/delete state survives restart, default-org and org-scoped read aliases stay stable, and live per-data-bag search plus partial search see rehydrated item state on the first post-start request.
+
 - Persist data bag create/read/list/delete state and matching bag ACL lifecycle.
 - Persist data bag item create/read/update/delete state while preserving raw item payload shape.
 - Preserve Chef-style wrapper and error response shaping.
@@ -143,6 +166,10 @@ Out of scope for this bucket:
 - Pin encrypted data bag payloads as raw JSON round-trips if the current implementation treats them as opaque item data. Do not add deeper encryption semantics in this slice.
 
 ### Task 6: Persist Policies, Policy Groups, And Assignments
+
+Status:
+
+- Completed for the active PostgreSQL path. Route coverage now proves canonical policy revision payloads, policy group state, policy assignment create/update/delete behavior, default-org aliases, and org-scoped aliases survive restart, including assignment rewrites between revisions and persisted group/policy deletion.
 
 - Persist policy revision create/read/list/delete state.
 - Persist policy group create/read/list/delete state.
@@ -166,7 +193,11 @@ Out of scope for this bucket:
 
 ### Task 7: Persist Sandbox Metadata And Checksum State
 
-- Persist sandbox create/read/delete metadata and matching sandbox ACL lifecycle.
+Status:
+
+- Completed for the active PostgreSQL path. Route coverage now proves pending sandbox metadata and checksum rows survive restart, signed upload URLs authorize against rehydrated sandbox state, filesystem-backed blob availability still controls `needs_upload` and commit success, successful commit removes pending sandbox state across restart, and rehydrated sandbox-held checksum references prevent cookbook blob cleanup. No standalone sandbox GET/DELETE routes were added; this preserves the current create-plus-commit sandbox surface where commit is the metadata removal path.
+
+- Persist sandbox create/read/delete metadata while preserving the current sandbox/container authorization contract.
 - Persist sandbox checksum item state and commit status.
 - Preserve signed upload URL shape and checksum upload behavior.
 - Keep checksum blob bytes in the selected blob provider.
@@ -180,6 +211,10 @@ Out of scope for this bucket:
 
 ### Task 8: Activate PostgreSQL Object Persistence In The App
 
+Status:
+
+- Completed. App startup now treats the activated PostgreSQL path as cookbook, bootstrap core, and core object persistence together; active bootstrap/core-object snapshots are loaded through an error-returning startup path before service construction; `/status` keeps its payload keys while reporting the fuller active PostgreSQL persistence set; app coverage proves repeated construction against the same persisted state and default no-DSN in-memory behavior remain stable.
+
 - Extend app startup so a configured PostgreSQL store activates bootstrap core persistence, cookbook persistence, and core object API persistence in one startup path.
 - Rehydrate object state before serving requests.
 - Rebuild any in-memory read indexes needed by existing search, depsolver, environment, role, and sandbox routes from persisted state.
@@ -190,6 +225,10 @@ Out of scope for this bucket:
 - Add default in-memory mode tests proving no PostgreSQL configuration still behaves as it does today.
 
 ### Task 9: Pin Failure And Consistency Behavior
+
+Status:
+
+- Completed. Bootstrap failure coverage now forces core-object store write failures across environments, nodes, roles, data bags/items, policy revisions, policy groups/assignments, and sandboxes, proving service maps, object ACLs, depsolver/environment-node derived state, persisted snapshots, and sandbox checksum retention roll back cleanly. Active PostgreSQL route coverage also proves invalid environment, node, role, data bag item, and policy assignment writes do not alter live state or rehydrated state after restart. This also fixed a real policy rollback gap where a failed policy revision persistence write could leave behind an empty in-memory policy entry; the mutation snapshot now precedes policy map creation.
 
 - Add write failure tests for every object family proving failed persistence does not partially mutate:
   - object service state
@@ -204,6 +243,10 @@ Out of scope for this bucket:
 - Preserve current error shapes and avoid leaking database internals through route responses.
 
 ### Task 10: Sync Docs And Close The Bucket
+
+Status:
+
+- Completed. Roadmap, milestone, compatibility matrix, agent guidance, and this plan now mark PostgreSQL core object API persistence complete and point the next bucket at Milestone 7 validator bootstrap compatibility, with OpenSearch indexing and operational tooling queued behind it.
 
 - Update:
   - `docs/chef-infra-server-rewrite-roadmap.md`
