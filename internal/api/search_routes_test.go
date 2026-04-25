@@ -88,6 +88,46 @@ func TestSearchIndexesEndpointIncludesDataBagIndexes(t *testing.T) {
 	}
 }
 
+func TestSearchIndexesEndpointPinsOrgScopedAliasURLs(t *testing.T) {
+	router := newTestRouter(t)
+
+	createReq := newSignedJSONRequest(t, http.MethodPost, "/organizations/ponyville/data", mustMarshalDataBagJSON(t, map[string]any{"name": "ponies"}))
+	createRec := httptest.NewRecorder()
+	router.ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("create org data bag status = %d, want %d, body = %s", createRec.Code, http.StatusCreated, createRec.Body.String())
+	}
+
+	req := newSignedJSONRequest(t, http.MethodGet, "/organizations/ponyville/search", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("org search index status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var payload map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal(org search indexes) error = %v", err)
+	}
+
+	expected := map[string]string{
+		"client":      "/organizations/ponyville/search/client",
+		"environment": "/organizations/ponyville/search/environment",
+		"node":        "/organizations/ponyville/search/node",
+		"role":        "/organizations/ponyville/search/role",
+		"ponies":      "/organizations/ponyville/search/ponies",
+	}
+	if len(payload) != len(expected) {
+		t.Fatalf("org search indexes len = %d, want %d (%v)", len(payload), len(expected), payload)
+	}
+	for key, want := range expected {
+		if payload[key] != want {
+			t.Fatalf("org search index %q = %q, want %q", key, payload[key], want)
+		}
+	}
+}
+
 func TestSearchIndexesEndpointReturnsNotFoundForUnknownOrganization(t *testing.T) {
 	router := newTestRouter(t)
 
@@ -252,6 +292,69 @@ func TestSearchNodeEndpointSupportsFullPartialAndPagination(t *testing.T) {
 	if !ok || len(pagedRows) != 1 {
 		t.Fatalf("paged rows = %T %v, want one result", pagedPayload["rows"], pagedPayload["rows"])
 	}
+}
+
+func TestSearchQueryEndpointPinsDefaultPagingOrderingAndOrgAlias(t *testing.T) {
+	router := newTestRouter(t)
+	createSearchNode(t, router, "twilight", map[string]any{}, map[string]any{}, []string{"web"})
+	createSearchNode(t, router, "rainbow", map[string]any{}, map[string]any{}, []string{"base"})
+
+	req := newSignedSearchRequest(t, http.MethodGet, "/search/node?q=name:*", "/search/node", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("default-paged search status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	payload := decodeSearchPayload(t, rec)
+	if payload["start"] != float64(0) {
+		t.Fatalf("default-paged start = %v, want 0", payload["start"])
+	}
+	if payload["total"] != float64(2) {
+		t.Fatalf("default-paged total = %v, want 2", payload["total"])
+	}
+	rows := payload["rows"].([]any)
+	if len(rows) != 2 {
+		t.Fatalf("default-paged rows len = %d, want 2 (%v)", len(rows), rows)
+	}
+	if rows[0].(map[string]any)["name"] != "rainbow" || rows[1].(map[string]any)["name"] != "twilight" {
+		t.Fatalf("default-paged row order = %v, want rainbow then twilight", rows)
+	}
+
+	orgReq := newSignedSearchRequest(t, http.MethodGet, "/organizations/ponyville/search/node?q=name:twi*", "/organizations/ponyville/search/node", nil)
+	orgRec := httptest.NewRecorder()
+	router.ServeHTTP(orgRec, orgReq)
+	if orgRec.Code != http.StatusOK {
+		t.Fatalf("org-scoped search status = %d, want %d, body = %s", orgRec.Code, http.StatusOK, orgRec.Body.String())
+	}
+
+	orgPayload := decodeSearchPayload(t, orgRec)
+	orgRows := orgPayload["rows"].([]any)
+	if orgPayload["start"] != float64(0) || orgPayload["total"] != float64(1) || len(orgRows) != 1 {
+		t.Fatalf("org-scoped search payload = %v, want start 0 total 1 one row", orgPayload)
+	}
+	if orgRows[0].(map[string]any)["name"] != "twilight" {
+		t.Fatalf("org-scoped search row = %v, want twilight", orgRows[0])
+	}
+}
+
+func TestSearchVisibleStateDoesNotChangeAfterInvalidNodeMutation(t *testing.T) {
+	router := newTestRouter(t)
+	createSearchNode(t, router, "twilight", map[string]any{}, map[string]any{}, []string{"base"})
+
+	assertSearchTotal(t, router, "/search/node?q=recipe:base", "/search/node", 1)
+	assertSearchTotal(t, router, "/search/node?q=role:web", "/search/node", 0)
+
+	body := mustMarshalSearchNodePayload(t, "rainbow", map[string]any{}, map[string]any{}, []string{"role[web]"})
+	req := newSignedJSONRequest(t, http.MethodPut, "/nodes/twilight", body)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("invalid node update status = %d, want %d, body = %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+
+	assertSearchTotal(t, router, "/search/node?q=recipe:base", "/search/node", 1)
+	assertSearchTotal(t, router, "/search/node?q=role:web", "/search/node", 0)
 }
 
 func TestSearchNodeEndpointSupportsPolicyFieldQueriesWithoutPolicyForeignKeys(t *testing.T) {
@@ -421,6 +524,42 @@ func TestSearchQueryEndpointRejectsExtraPathSegments(t *testing.T) {
 	}
 }
 
+func TestSearchRoutesPinCurrentMethodAndPagingErrors(t *testing.T) {
+	router := newTestRouter(t)
+
+	indexReq := newSignedJSONRequest(t, http.MethodPost, "/search", []byte(`{}`))
+	indexRec := httptest.NewRecorder()
+	router.ServeHTTP(indexRec, indexReq)
+	if indexRec.Code != http.StatusNotFound {
+		t.Fatalf("POST /search status = %d, want %d, body = %s", indexRec.Code, http.StatusNotFound, indexRec.Body.String())
+	}
+	assertAPIError(t, indexRec, "not_found")
+
+	queryReq := newSignedSearchRequest(t, http.MethodPut, "/search/node?q=*:*", "/search/node", nil)
+	queryRec := httptest.NewRecorder()
+	router.ServeHTTP(queryRec, queryReq)
+	if queryRec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("PUT /search/node status = %d, want %d, body = %s", queryRec.Code, http.StatusMethodNotAllowed, queryRec.Body.String())
+	}
+	assertAPIError(t, queryRec, "method_not_allowed")
+
+	startReq := newSignedSearchRequest(t, http.MethodGet, "/search/node?q=*:*&start=-1", "/search/node", nil)
+	startRec := httptest.NewRecorder()
+	router.ServeHTTP(startRec, startReq)
+	if startRec.Code != http.StatusBadRequest {
+		t.Fatalf("negative start status = %d, want %d, body = %s", startRec.Code, http.StatusBadRequest, startRec.Body.String())
+	}
+	assertAPIError(t, startRec, "invalid_search_query")
+
+	rowsReq := newSignedSearchRequest(t, http.MethodGet, "/search/node?q=*:*&rows=nope", "/search/node", nil)
+	rowsRec := httptest.NewRecorder()
+	router.ServeHTTP(rowsRec, rowsReq)
+	if rowsRec.Code != http.StatusBadRequest {
+		t.Fatalf("invalid rows status = %d, want %d, body = %s", rowsRec.Code, http.StatusBadRequest, rowsRec.Body.String())
+	}
+	assertAPIError(t, rowsRec, "invalid_search_query")
+}
+
 func TestSearchQueryEndpointReturnsNotFoundForUnknownOrganization(t *testing.T) {
 	router := newTestRouter(t)
 
@@ -563,25 +702,31 @@ func TestSearchDataBagEndpointSupportsFullAndPartialSearch(t *testing.T) {
 func TestSearchDataBagEndpointReturnsChefStyleNotFound(t *testing.T) {
 	router := newTestRouter(t)
 
-	req := httptest.NewRequest(http.MethodGet, "/search/no_bag?q=id:*", nil)
-	applySignedHeaders(t, req, "silent-bob", "", http.MethodGet, "/search/no_bag", nil, signDescription{
-		Version:   "1.1",
-		Algorithm: "sha1",
-	}, "2026-04-02T15:04:05Z")
-	req.SetPathValue("index", "no_bag")
-	rec := httptest.NewRecorder()
-	router.ServeHTTP(rec, req)
+	for _, route := range []struct {
+		name     string
+		rawPath  string
+		signPath string
+	}{
+		{name: "default", rawPath: "/search/no_bag?q=id:*", signPath: "/search/no_bag"},
+		{name: "org_scoped", rawPath: "/organizations/ponyville/search/no_bag?q=id:*", signPath: "/organizations/ponyville/search/no_bag"},
+	} {
+		t.Run(route.name, func(t *testing.T) {
+			req := newSignedSearchRequest(t, http.MethodGet, route.rawPath, route.signPath, nil)
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("search missing data bag status = %d, want %d, body = %s", rec.Code, http.StatusNotFound, rec.Body.String())
-	}
+			if rec.Code != http.StatusNotFound {
+				t.Fatalf("search missing data bag status = %d, want %d, body = %s", rec.Code, http.StatusNotFound, rec.Body.String())
+			}
 
-	var payload map[string][]string
-	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
-		t.Fatalf("json.Unmarshal(search missing data bag) error = %v", err)
-	}
-	if len(payload["error"]) != 1 || payload["error"][0] != "I don't know how to search for no_bag data objects." {
-		t.Fatalf("search missing data bag payload = %v, want Chef-style message", payload)
+			var payload map[string][]string
+			if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+				t.Fatalf("json.Unmarshal(search missing data bag) error = %v", err)
+			}
+			if len(payload["error"]) != 1 || payload["error"][0] != "I don't know how to search for no_bag data objects." {
+				t.Fatalf("search missing data bag payload = %v, want Chef-style message", payload)
+			}
+		})
 	}
 }
 
@@ -816,6 +961,9 @@ func TestSearchEndpointFiltersDeniedResults(t *testing.T) {
 	if len(rows) != 1 {
 		t.Fatalf("filtered search rows len = %d, want 1 (%v)", len(rows), rows)
 	}
+	if payload["start"] != float64(0) || payload["total"] != float64(1) {
+		t.Fatalf("filtered search start/total = %v/%v, want 0/1", payload["start"], payload["total"])
+	}
 	row := rows[0].(map[string]any)
 	if row["name"] != "web" {
 		t.Fatalf("filtered search row name = %v, want %q", row["name"], "web")
@@ -932,6 +1080,54 @@ func newSearchTestRouterWithConfigAndAuthorizer(t *testing.T, cfg config.Config,
 		Postgres:         pg.New(""),
 	})
 	return router, state
+}
+
+func newSignedSearchRequest(t *testing.T, method, rawPath, signPath string, body []byte) *http.Request {
+	t.Helper()
+
+	req := httptest.NewRequest(method, rawPath, bytes.NewReader(body))
+	applySignedHeaders(t, req, "silent-bob", "", method, signPath, body, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	return req
+}
+
+func createSearchNode(t *testing.T, router http.Handler, name string, defaults, normal map[string]any, runList []string) {
+	t.Helper()
+
+	body := mustMarshalSearchNodePayload(t, name, defaults, normal, runList)
+	req := newSignedJSONRequest(t, http.MethodPost, "/nodes", body)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create search node %q status = %d, want %d, body = %s", name, rec.Code, http.StatusCreated, rec.Body.String())
+	}
+}
+
+func decodeSearchPayload(t *testing.T, rec *httptest.ResponseRecorder) map[string]any {
+	t.Helper()
+
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal(search payload) error = %v, body = %s", err, rec.Body.String())
+	}
+	return payload
+}
+
+func assertSearchTotal(t *testing.T, router http.Handler, rawPath, signPath string, want int) {
+	t.Helper()
+
+	req := newSignedSearchRequest(t, http.MethodGet, rawPath, signPath, nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("search %s status = %d, want %d, body = %s", rawPath, rec.Code, http.StatusOK, rec.Body.String())
+	}
+	payload := decodeSearchPayload(t, rec)
+	if payload["total"] != float64(want) {
+		t.Fatalf("search %s total = %v, want %d", rawPath, payload["total"], want)
+	}
 }
 
 func mustMarshalSearchNodePayload(t *testing.T, name string, defaults, normal map[string]any, runList []string) []byte {

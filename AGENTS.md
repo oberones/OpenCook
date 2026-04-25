@@ -257,6 +257,7 @@ Implemented so far:
   - Chef-style wrapped data bag search rows
   - raw-item data bag partial search rows
   - simple `AND`/`NOT` matching and escaped-slash prefix handling
+  - active OpenSearch-backed mode when PostgreSQL and `OPENCOOK_OPENSEARCH_URL` are configured, including startup rebuild from persisted state, successful mutation upserts/deletes, stale-ID ignoring after PostgreSQL hydration, ACL filtering after provider matches, provider-unavailable `503 search_unavailable` degradation, truthful status reporting, and Docker functional coverage for restart/update/delete lifecycle behavior
 - the first data bag slice:
   - `/data`
   - `/data/{bag}`
@@ -283,10 +284,10 @@ Current architectural reality:
 - org bootstrap returns validator key material, and generated `<org>-validator` clients can now register normal clients through the stock bootstrap routes
 - administrative object management is currently API-first; a first-class `chef-server-ctl`-style replacement for orgs, users, groups, containers, and ACLs is still future work
 - data bag CRUD is live, but encrypted data bag compatibility is not yet explicitly pinned as a tested slice
-- PostgreSQL is active for cookbook metadata, bootstrap core state, and implemented core object API state; OpenSearch is still placeholder or early scaffolding
+- PostgreSQL is active for cookbook metadata, bootstrap core state, and implemented core object API state; OpenSearch-backed search is active for the implemented search indexes when PostgreSQL and `OPENCOOK_OPENSEARCH_URL` are configured, with the memory adapter preserved as the no-OpenSearch fallback
 - the blob layer now has in-memory, filesystem-backed, and S3-compatible compatibility implementations for sandbox checksum uploads/downloads and cookbook file URLs, and the S3-compatible path now includes request-construction parity, configurable timeout/retry plus `Retry-After` behavior, transport/status classification, malformed-endpoint and missing-credential diagnostics, and provider-backed `blob_unavailable` degradation on the current sandbox/cookbook flows
 
-Do not mistake the remaining in-memory search implementation or future unimplemented surfaces for the final persistence architecture.
+Do not mistake the no-OpenSearch memory fallback, public reindex/repair gap, or future unimplemented surfaces for the final persistence architecture.
 
 ## Architecture Map
 
@@ -311,9 +312,9 @@ High-level package roles:
 - `internal/store/pg`
   - active PostgreSQL-backed cookbook, bootstrap core, and implemented core object API persistence
 - `internal/search`
-  - future OpenSearch-backed compatibility layer
+  - memory fallback plus active OpenSearch-backed compatibility search/indexing for implemented searchable object families
 - `internal/blob`
-  - current in-memory and filesystem-backed compatibility blob storage plus the future Bookshelf/S3-compatible provider path
+  - current in-memory, filesystem-backed, and S3-compatible provider-backed blob storage for sandbox and cookbook content
 
 ## Compatibility Rules
 
@@ -395,7 +396,7 @@ Do not bury business rules in low-level storage helpers if they need a consisten
 
 ### 6. Preserve current staged architecture
 
-Right now the repo intentionally keeps remaining object/search compatibility implementations in memory until their behavior is stable enough to move to PostgreSQL and OpenSearch.
+Right now the repo intentionally keeps any not-yet-pinned compatibility surfaces in memory until their behavior is stable enough to move to PostgreSQL and derived indexes.
 
 When adding behavior:
 
@@ -442,11 +443,11 @@ When you start a new compatibility slice:
 These areas are still intentionally incomplete:
 
 - deeper API-version-specific semantics beyond the current actor-key surface
-- OpenSearch-backed indexing and provider capability behavior
+- public OpenSearch reindex/repair tooling and deeper provider capability/version behavior
 - remaining core Chef object compatibility beyond the currently pinned nodes, environments, roles, data bags, policies, and sandbox flows
 - deeper node and environment compatibility such as cookbook constraint edge cases and linked object behavior
 - deeper role compatibility beyond the current normalization and linked-environment read behavior
-- broader search semantics beyond the current in-memory compatibility layer, especially richer Lucene-style query translation and wider object coverage
+- broader search semantics beyond the current compatibility subset, especially richer Lucene-style query translation and wider object coverage
 - operational parity and migration tooling
 
-The next likely major slice is OpenSearch-backed indexing and query parity, with operational admin tooling queued behind it unless deployment needs make that work more urgent.
+The next likely major slice is operational admin plus reindex/repair tooling, unless encrypted data bag compatibility becomes the more urgent compatibility bucket.

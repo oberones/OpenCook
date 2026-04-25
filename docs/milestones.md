@@ -68,10 +68,14 @@ Status: in progress
 - default-org client search results now point at live `/clients/...` routes instead of org-only URLs
 - data bag search now mirrors Chef-style wrapper results and raw-item partial search behavior
 - simple `AND`/`NOT` matching and escaped-slash prefix handling are now covered for the in-memory compatibility layer
+- active OpenSearch-backed search is now live when PostgreSQL and `OPENCOOK_OPENSEARCH_URL` are configured, with PostgreSQL-backed state remaining authoritative
+- active OpenSearch startup rebuilds the `chef` index from persisted clients, environments, nodes, roles, and data bag items, and successful object mutations update/delete derived search documents
+- route coverage now pins OpenSearch-backed full search, partial search, pagination/order, ACL filtering after provider matches, stale-ID ignoring, active status reporting, and stable `503 search_unavailable` degradation for provider failures
+- the functional Docker stack now proves active OpenSearch search lifecycle behavior across restart, update/stale-term removal, delete, and post-restart absence
 - policyfile routes are now live for both default-org and explicit-org `/policies` and `/policy_groups`
 - policy revision storage, revision lookup, policy-group listing, policy-group assignment, and richer canonical payload round-tripping are implemented and now persist through PostgreSQL when configured
 - policy payload validation now covers more cookbook-lock and solution-dependency structure, while node policy refs remain compatibility-safe searchable fields instead of enforced foreign keys
-- OpenSearch-backed indexing, deeper query translation, provider capability handling, and reindex tooling are still pending and are the next recommended compatibility bucket
+- public reindex/repair tooling, richer OpenSearch capability/version negotiation, broader Lucene/query-string semantics, cookbook/policy/sandbox search coverage, and encrypted data bag search semantics remain follow-on work; operational admin plus reindex/repair tooling is the next recommended bucket unless encrypted data bag compatibility becomes more urgent
 
 ## Milestone 6: Cookbook and Blob Workflows
 
