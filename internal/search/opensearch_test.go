@@ -73,6 +73,10 @@ func TestOpenSearchClientPingAndEnsureChefIndexRequestShapes(t *testing.T) {
 		t.Fatalf("PUT body mappings = %v, want dynamic true", body["mappings"])
 	}
 	properties := body["mappings"].(map[string]any)["properties"].(map[string]any)
+	documentID := properties["document_id"].(map[string]any)
+	if documentID["type"] != "keyword" {
+		t.Fatalf("document_id mapping = %v, want keyword", documentID)
+	}
 	compatTerms := properties[openSearchCompatTermsField].(map[string]any)
 	if compatTerms["type"] != "keyword" {
 		t.Fatalf("compat terms mapping = %v, want keyword", compatTerms)
@@ -127,6 +131,9 @@ func TestOpenSearchClientBulkUpsertRequestShape(t *testing.T) {
 	if source["organization"] != "ponyville" || source["index"] != "node" {
 		t.Fatalf("bulk source identity = %v, want ponyville/node/twilight", source)
 	}
+	if source["document_id"] != "ponyville/node/twilight" {
+		t.Fatalf("bulk source document_id = %v, want ponyville/node/twilight", source["document_id"])
+	}
 	requireJSONListContains(t, source["name"], "twilight")
 	requireJSONListContains(t, source["recipe"], "base")
 	requireJSONListContains(t, source["role"], "web")
@@ -154,7 +161,7 @@ func TestOpenSearchClientSearchIDsRequestShape(t *testing.T) {
 		Organization: "ponyville",
 		Index:        "node",
 		Q:            "name:twi*",
-	}, 5, 10)
+	})
 	if err != nil {
 		t.Fatalf("SearchIDs() error = %v", err)
 	}
@@ -164,16 +171,76 @@ func TestOpenSearchClientSearchIDsRequestShape(t *testing.T) {
 
 	recorded := transport.Requests()[0]
 	body := decodeJSONMap(t, recorded.Body)
-	if body["_source"] != false || body["from"] != float64(5) || body["size"] != float64(10) {
-		t.Fatalf("search body paging/source = %v, want _source false from 5 size 10", body)
+	if _, ok := body["from"]; ok {
+		t.Fatalf("search body included from = %v, want search_after pagination", body["from"])
+	}
+	if _, ok := body["search_after"]; ok {
+		t.Fatalf("first search body included search_after = %v", body["search_after"])
+	}
+	if body["_source"] != false || body["size"] != float64(openSearchSearchPageSize) {
+		t.Fatalf("search body paging/source = %v, want _source false size %d", body, openSearchSearchPageSize)
 	}
 	boolQuery := body["query"].(map[string]any)["bool"].(map[string]any)
 	requireTermFilter(t, boolQuery["filter"], openSearchCompatTermsField, "__org=ponyville")
 	requireTermFilter(t, boolQuery["filter"], openSearchCompatTermsField, "__index=node")
 	requireCompatPrefixClause(t, boolQuery["must"], "name=twi")
-	sortSpec := body["sort"].([]any)[0].(map[string]any)["_id"].(map[string]any)
+	sortSpec := body["sort"].([]any)[0].(map[string]any)["document_id"].(map[string]any)
 	if sortSpec["order"] != "asc" {
-		t.Fatalf("sort = %v, want _id asc", body["sort"])
+		t.Fatalf("sort = %v, want document_id asc", body["sort"])
+	}
+}
+
+func TestOpenSearchClientSearchIDsUsesSearchAfterPagination(t *testing.T) {
+	requestCount := 0
+	transport := newRecordingOpenSearchTransport(t, func(r *http.Request, recorded recordedOpenSearchRequest) (int, string) {
+		requestCount++
+		if r.Method != http.MethodPost || r.URL.Path != "/chef/_search" {
+			t.Fatalf("request = %s %s, want POST /chef/_search", r.Method, r.URL.Path)
+		}
+		body := decodeJSONMap(t, recorded.Body)
+		if body["size"] != float64(2) {
+			t.Fatalf("request %d size = %v, want 2", requestCount, body["size"])
+		}
+		switch requestCount {
+		case 1:
+			if _, ok := body["search_after"]; ok {
+				t.Fatalf("first search request search_after = %v, want omitted", body["search_after"])
+			}
+			return http.StatusOK, `{"hits":{"hits":[` +
+				`{"_id":"ponyville/node/applejack","sort":["ponyville/node/applejack"]},` +
+				`{"_id":"ponyville/node/fluttershy","sort":["ponyville/node/fluttershy"]}` +
+				`]}}`
+		case 2:
+			searchAfter := body["search_after"].([]any)
+			if len(searchAfter) != 1 || searchAfter[0] != "ponyville/node/fluttershy" {
+				t.Fatalf("second search_after = %v, want fluttershy document id", searchAfter)
+			}
+			return http.StatusOK, `{"hits":{"hits":[` +
+				`{"_id":"ponyville/node/twilight","sort":["ponyville/node/twilight"]}` +
+				`]}}`
+		default:
+			t.Fatalf("unexpected search request %d", requestCount)
+			return http.StatusInternalServerError, ""
+		}
+	})
+
+	client, err := NewOpenSearchClient("http://opensearch.local", WithOpenSearchTransport(transport))
+	if err != nil {
+		t.Fatalf("NewOpenSearchClient() error = %v", err)
+	}
+	ids, err := client.searchIDs(context.Background(), Query{
+		Organization: "ponyville",
+		Index:        "node",
+		Q:            "name:*",
+	}, 2)
+	if err != nil {
+		t.Fatalf("searchIDs() error = %v", err)
+	}
+	if got, want := strings.Join(ids, ","), "ponyville/node/applejack,ponyville/node/fluttershy,ponyville/node/twilight"; got != want {
+		t.Fatalf("searchIDs() = %s, want %s", got, want)
+	}
+	if requestCount != 2 {
+		t.Fatalf("requestCount = %d, want 2", requestCount)
 	}
 }
 
