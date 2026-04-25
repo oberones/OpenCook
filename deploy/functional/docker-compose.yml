@@ -99,6 +99,15 @@ services:
       OPENCOOK_FUNCTIONAL_ORG: ${OPENCOOK_FUNCTIONAL_ORG:-ponyville}
       OPENCOOK_FUNCTIONAL_STATE_DIR: /var/lib/opencook-functional
       OPENCOOK_FUNCTIONAL_PHASE: ${OPENCOOK_FUNCTIONAL_PHASE:-verify}
+      OPENCOOK_ADMIN_SERVER_URL: http://opencook:4000
+      OPENCOOK_ADMIN_REQUESTOR_NAME: ${OPENCOOK_FUNCTIONAL_ACTOR_NAME:-pivotal}
+      OPENCOOK_ADMIN_REQUESTOR_TYPE: user
+      OPENCOOK_ADMIN_PRIVATE_KEY_PATH: /src/test/functional/fixtures/bootstrap_private.pem
+      OPENCOOK_ADMIN_DEFAULT_ORG: ${OPENCOOK_FUNCTIONAL_ORG:-ponyville}
+      OPENCOOK_POSTGRES_DSN: postgres://opencook:opencook@postgres:5432/opencook?sslmode=disable
+      OPENCOOK_OPENSEARCH_URL: http://opensearch:9200
+      OPENCOOK_BOOTSTRAP_REQUESTOR_NAME: ${OPENCOOK_FUNCTIONAL_ACTOR_NAME:-pivotal}
+      OPENCOOK_BOOTSTRAP_REQUESTOR_TYPE: user
       GOCACHE: /tmp/opencook-go-cache
     depends_on:
       opencook:

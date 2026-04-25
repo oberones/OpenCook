@@ -10,7 +10,7 @@ The tests intentionally talk to OpenCook over HTTP with Chef-style signed reques
 scripts/functional-compose.sh
 ```
 
-The default flow builds the images, starts the stack, creates compatibility objects, restarts OpenCook, verifies rehydration through active OpenSearch-backed search, runs invalid-write/no-mutation checks, updates searchable fields and verifies old search terms disappear, restarts again, deletes the objects, restarts one more time, and verifies deletion persisted.
+The default flow builds the images, starts the stack, creates compatibility objects, restarts OpenCook, verifies rehydration through active OpenSearch-backed search, runs invalid-write/no-mutation checks, updates searchable fields and verifies old search terms disappear, restarts again, runs the operational admin/reindex/search-repair phases, restarts after repair, deletes the objects, restarts one more time, and verifies deletion persisted.
 
 By default the script removes containers and volumes on exit. Keep the stack for inspection with:
 
@@ -30,15 +30,22 @@ docker compose -p opencook-functional -f deploy/functional/docker-compose.yml do
 KEEP_STACK=1 scripts/functional-compose.sh create restart verify
 KEEP_STACK=1 scripts/functional-compose.sh invalid restart verify
 KEEP_STACK=1 scripts/functional-compose.sh search-update verify-search-updated restart verify-search-updated
+KEEP_STACK=1 scripts/functional-compose.sh operational restart operational-verify
 KEEP_STACK=1 scripts/functional-compose.sh delete restart verify-deleted
 ```
 
-Supported phase names are `create`, `verify`, `invalid`, `search-update`, `verify-search-updated`, `delete`, `verify-deleted`, and `restart`.
+Supported phase names are `create`, `verify`, `invalid`, `search-update`, `verify-search-updated`, `operational`, `operational-verify`, `delete`, `verify-deleted`, and `restart`.
 
-To run just the OpenSearch-heavy phases after a stack already has created fixtures, use:
+To run just the OpenSearch-heavy compatibility phases after a stack already has created fixtures, use:
 
 ```sh
 KEEP_STACK=1 REBUILD=0 scripts/functional-compose.sh verify search-update verify-search-updated restart verify-search-updated
+```
+
+To run only the operational admin/reindex/search-repair phases, use:
+
+```sh
+KEEP_STACK=1 REBUILD=0 scripts/functional-compose.sh operational restart operational-verify
 ```
 
 ## Remote Docker
@@ -47,6 +54,12 @@ The Compose stack does not rely on bind mounts, so it can run against a remote D
 
 ```sh
 DOCKER_HOST=ssh://example-host scripts/functional-compose.sh
+```
+
+To run only the operational phases against a remote Docker daemon:
+
+```sh
+DOCKER_HOST=ssh://example-host KEEP_STACK=1 scripts/functional-compose.sh operational restart operational-verify
 ```
 
 Useful overrides:
@@ -69,6 +82,9 @@ OPENCOOK_FUNCTIONAL_ACTOR_NAME=pivotal
 - Validator-created clients persist key material across restart, authenticate signed follow-up requests, retain default key metadata, appear in the `clients` group, expose their client ACL read side effect, and show up in client search rows.
 - Searchable clients, environments, nodes, roles, and data bag items are visible through active OpenSearch-backed search after OpenCook restarts.
 - Searchable environments, nodes, roles, and data bag items update OpenSearch-visible terms, removing old terms and matching new terms.
+- `opencook admin` can sign live HTTP admin requests from the test container to the OpenCook container over the shared Compose network.
+- Live-safe operational commands cover admin status, user/org creation, user key creation, a follow-up signed request with the generated key, group/container/ACL inspection, and complete org reindex.
+- Operational search consistency detects an injected stale OpenSearch document, dry-runs repair, repairs the stale document, and verifies clean state after an OpenCook restart.
 - Deleted clients, environments, nodes, roles, and data bag items stop appearing in search after restart.
 - Environments, nodes, roles, data bags, policy groups, and policy revisions survive OpenCook restarts.
 - Filesystem-backed blob uploads survive restart and can be reused by a later sandbox.

@@ -84,6 +84,9 @@ run_phase search-update
 run_phase verify-search-updated
 restart_opencook
 run_phase verify-search-updated
+run_phase operational
+restart_opencook
+run_phase operational-verify
 run_phase delete
 restart_opencook
 run_phase verify-deleted
