@@ -4,6 +4,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/oberones/OpenCook/internal/authn"
 	"github.com/oberones/OpenCook/internal/authz"
 )
 
@@ -91,8 +92,9 @@ func (s *Service) snapshotCoreObjectsLocked() CoreObjectState {
 
 func (s *Service) restoreCoreObjectsLocked(state CoreObjectState) {
 	state = cloneCoreObjectState(state)
+	defaultEnvironmentACLs := s.defaultEnvironmentACLsLocked()
 
-	for _, org := range s.orgs {
+	for name, org := range s.orgs {
 		if org == nil {
 			continue
 		}
@@ -106,6 +108,9 @@ func (s *Service) restoreCoreObjectsLocked(state CoreObjectState) {
 		org.policyGroups = make(map[string]PolicyGroup)
 		removeCoreObjectACLs(org.acls)
 		ensureOrganizationStateMaps(org)
+		if _, hasPersistedCoreObjects := state.Orgs[name]; !hasPersistedCoreObjects {
+			s.ensureDefaultEnvironmentACLLocked(name, org, defaultEnvironmentACLs)
+		}
 	}
 
 	for name, orgState := range state.Orgs {
@@ -132,7 +137,43 @@ func (s *Service) restoreCoreObjectsLocked(state CoreObjectState) {
 			org.acls[key] = cloneACL(acl)
 		}
 		ensureOrganizationStateMaps(org)
+		s.ensureDefaultEnvironmentACLLocked(name, org, defaultEnvironmentACLs)
 	}
+}
+
+func (s *Service) defaultEnvironmentACLsLocked() map[string]authz.ACL {
+	key := environmentACLKey(defaultEnvironmentName)
+	out := make(map[string]authz.ACL, len(s.orgs))
+	for name, org := range s.orgs {
+		if org == nil || org.acls == nil {
+			continue
+		}
+		if acl, ok := org.acls[key]; ok {
+			out[name] = cloneACL(acl)
+		}
+	}
+	return out
+}
+
+func (s *Service) ensureDefaultEnvironmentACLLocked(orgName string, org *organizationState, preserved map[string]authz.ACL) {
+	if org == nil {
+		return
+	}
+	if org.acls == nil {
+		org.acls = make(map[string]authz.ACL)
+	}
+	key := environmentACLKey(defaultEnvironmentName)
+	if _, ok := org.acls[key]; ok {
+		return
+	}
+	if acl, ok := preserved[orgName]; ok {
+		org.acls[key] = cloneACL(acl)
+		return
+	}
+	org.acls[key] = defaultEnvironmentACL(s.superuserName, authn.Principal{
+		Type: "user",
+		Name: s.superuserName,
+	})
 }
 
 func (s *Service) persistCoreObjectsLocked() error {
