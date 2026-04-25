@@ -94,6 +94,14 @@ make verify
 
 `make verify` runs formatting, `go vet`, and the test suite.
 
+To exercise OpenCook with PostgreSQL, OpenSearch, and filesystem-backed blob storage on a shared Docker network:
+
+```bash
+scripts/functional-compose.sh
+```
+
+See [Functional Docker Stack](docs/functional-testing.md) for phase-by-phase and remote Docker usage.
+
 ## Contributing
 
 Contributions are welcome.
