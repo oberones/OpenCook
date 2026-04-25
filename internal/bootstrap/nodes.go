@@ -120,8 +120,12 @@ func (s *Service) CreateNode(orgName string, input CreateNodeInput) (Node, error
 		return Node{}, ErrConflict
 	}
 
+	previous := s.snapshotCoreObjectsLocked()
 	org.nodes[node.Name] = node
 	org.acls[nodeACLKey(node.Name)] = defaultNodeACL(s.superuserName, input.Creator)
+	if err := s.finishCoreObjectMutationLocked(previous); err != nil {
+		return Node{}, err
+	}
 	return copyNode(node), nil
 }
 
@@ -144,7 +148,11 @@ func (s *Service) UpdateNode(orgName, nodeName string, input UpdateNodeInput) (N
 		return Node{}, err
 	}
 
+	previous := s.snapshotCoreObjectsLocked()
 	org.nodes[nodeName] = node
+	if err := s.finishCoreObjectMutationLocked(previous); err != nil {
+		return Node{}, err
+	}
 	return copyNode(node), nil
 }
 
@@ -162,8 +170,12 @@ func (s *Service) DeleteNode(orgName, nodeName string) (Node, error) {
 		return Node{}, ErrNotFound
 	}
 
+	previous := s.snapshotCoreObjectsLocked()
 	delete(org.nodes, nodeName)
 	delete(org.acls, nodeACLKey(nodeName))
+	if err := s.finishCoreObjectMutationLocked(previous); err != nil {
+		return Node{}, err
+	}
 	return copyNode(node), nil
 }
 

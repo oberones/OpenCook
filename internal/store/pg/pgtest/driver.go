@@ -31,6 +31,7 @@ type Seed struct {
 	Versions      []pg.CookbookVersionBundle
 	Artifacts     []pg.CookbookArtifactBundle
 	BootstrapCore bootstrap.BootstrapCoreState
+	CoreObjects   bootstrap.CoreObjectState
 }
 
 type State struct {
@@ -39,6 +40,7 @@ type State struct {
 	versions  map[versionKey]pg.CookbookVersionBundle
 	artifacts map[artifactKey]pg.CookbookArtifactBundle
 	bootstrap bootstrap.BootstrapCoreState
+	objects   bootstrap.CoreObjectState
 }
 
 type versionKey struct {
@@ -59,6 +61,7 @@ func NewState(seed Seed) *State {
 		versions:  make(map[versionKey]pg.CookbookVersionBundle),
 		artifacts: make(map[artifactKey]pg.CookbookArtifactBundle),
 		bootstrap: bootstrap.CloneBootstrapCoreState(seed.BootstrapCore),
+		objects:   bootstrap.CloneCoreObjectState(seed.CoreObjects),
 	}
 
 	for _, org := range seed.Organizations {
@@ -84,6 +87,9 @@ func NewState(seed Seed) *State {
 		}
 		state.artifacts[key] = copyArtifactBundle(bundle)
 		state.ensureOrgRecord(key.org, key.org)
+	}
+	if state.objects.Orgs == nil {
+		state.objects.Orgs = make(map[string]bootstrap.CoreObjectOrganizationState)
 	}
 
 	return state
@@ -317,6 +323,120 @@ func (s *State) exec(query string, args []driver.NamedValue) (driver.Result, err
 		org := s.bootstrap.Orgs[orgName]
 		org.ACLs[aclKey] = acl
 		s.bootstrap.Orgs[orgName] = org
+		return driver.RowsAffected(1), nil
+	case strings.Contains(query, "CREATE TABLE IF NOT EXISTS oc_core_"):
+		return driver.RowsAffected(0), nil
+	case strings.Contains(query, "DELETE FROM oc_core_"):
+		s.objects = bootstrap.CoreObjectState{Orgs: make(map[string]bootstrap.CoreObjectOrganizationState)}
+		return driver.RowsAffected(1), nil
+	case strings.Contains(query, "INSERT INTO oc_core_environments"):
+		orgName := namedString(args, 0)
+		name := namedString(args, 1)
+		org := ensureCoreObjectOrg(s.objects, orgName)
+		var env bootstrap.Environment
+		_ = json.Unmarshal(namedBytes(args, 2), &env)
+		org.Environments[name] = env
+		s.objects.Orgs[orgName] = org
+		return driver.RowsAffected(1), nil
+	case strings.Contains(query, "INSERT INTO oc_core_nodes"):
+		orgName := namedString(args, 0)
+		name := namedString(args, 1)
+		org := ensureCoreObjectOrg(s.objects, orgName)
+		var node bootstrap.Node
+		_ = json.Unmarshal(namedBytes(args, 2), &node)
+		org.Nodes[name] = node
+		s.objects.Orgs[orgName] = org
+		return driver.RowsAffected(1), nil
+	case strings.Contains(query, "INSERT INTO oc_core_roles"):
+		orgName := namedString(args, 0)
+		name := namedString(args, 1)
+		org := ensureCoreObjectOrg(s.objects, orgName)
+		var role bootstrap.Role
+		_ = json.Unmarshal(namedBytes(args, 2), &role)
+		org.Roles[name] = role
+		s.objects.Orgs[orgName] = org
+		return driver.RowsAffected(1), nil
+	case strings.Contains(query, "INSERT INTO oc_core_data_bags"):
+		orgName := namedString(args, 0)
+		name := namedString(args, 1)
+		org := ensureCoreObjectOrg(s.objects, orgName)
+		var bag bootstrap.DataBag
+		_ = json.Unmarshal(namedBytes(args, 2), &bag)
+		org.DataBags[name] = bag
+		s.objects.Orgs[orgName] = org
+		return driver.RowsAffected(1), nil
+	case strings.Contains(query, "INSERT INTO oc_core_data_bag_items"):
+		orgName := namedString(args, 0)
+		bagName := namedString(args, 1)
+		itemID := namedString(args, 2)
+		org := ensureCoreObjectOrg(s.objects, orgName)
+		if org.DataBagItems[bagName] == nil {
+			org.DataBagItems[bagName] = make(map[string]bootstrap.DataBagItem)
+		}
+		var item bootstrap.DataBagItem
+		_ = json.Unmarshal(namedBytes(args, 3), &item)
+		org.DataBagItems[bagName][itemID] = item
+		s.objects.Orgs[orgName] = org
+		return driver.RowsAffected(1), nil
+	case strings.Contains(query, "INSERT INTO oc_core_policy_revisions"):
+		orgName := namedString(args, 0)
+		policyName := namedString(args, 1)
+		revisionID := namedString(args, 2)
+		org := ensureCoreObjectOrg(s.objects, orgName)
+		if org.Policies[policyName] == nil {
+			org.Policies[policyName] = make(map[string]bootstrap.PolicyRevision)
+		}
+		var payload map[string]any
+		_ = json.Unmarshal(namedBytes(args, 3), &payload)
+		org.Policies[policyName][revisionID] = bootstrap.PolicyRevision{
+			Name:       policyName,
+			RevisionID: revisionID,
+			Payload:    payload,
+		}
+		s.objects.Orgs[orgName] = org
+		return driver.RowsAffected(1), nil
+	case strings.Contains(query, "INSERT INTO oc_core_policy_groups"):
+		orgName := namedString(args, 0)
+		name := namedString(args, 1)
+		org := ensureCoreObjectOrg(s.objects, orgName)
+		var group bootstrap.PolicyGroup
+		_ = json.Unmarshal(namedBytes(args, 2), &group)
+		org.PolicyGroups[name] = group
+		s.objects.Orgs[orgName] = org
+		return driver.RowsAffected(1), nil
+	case strings.Contains(query, "INSERT INTO oc_core_sandboxes"):
+		orgName := namedString(args, 0)
+		id := namedString(args, 1)
+		org := ensureCoreObjectOrg(s.objects, orgName)
+		org.Sandboxes[id] = bootstrap.Sandbox{
+			ID:           id,
+			Organization: orgName,
+			Checksums:    []string{},
+			CreatedAt:    valueTime(args, 2),
+		}
+		s.objects.Orgs[orgName] = org
+		return driver.RowsAffected(1), nil
+	case strings.Contains(query, "INSERT INTO oc_core_sandbox_checksums"):
+		orgName := namedString(args, 0)
+		id := namedString(args, 1)
+		checksum := namedString(args, 3)
+		org := ensureCoreObjectOrg(s.objects, orgName)
+		sandbox := org.Sandboxes[id]
+		if sandbox.ID == "" {
+			sandbox = bootstrap.Sandbox{ID: id, Organization: orgName, Checksums: []string{}}
+		}
+		sandbox.Checksums = append(sandbox.Checksums, checksum)
+		org.Sandboxes[id] = sandbox
+		s.objects.Orgs[orgName] = org
+		return driver.RowsAffected(1), nil
+	case strings.Contains(query, "INSERT INTO oc_core_object_acls"):
+		orgName := namedString(args, 0)
+		aclKey := namedString(args, 1)
+		org := ensureCoreObjectOrg(s.objects, orgName)
+		var acl authz.ACL
+		_ = json.Unmarshal(namedBytes(args, 2), &acl)
+		org.ACLs[aclKey] = acl
+		s.objects.Orgs[orgName] = org
 		return driver.RowsAffected(1), nil
 	case strings.Contains(query, "CREATE TABLE IF NOT EXISTS oc_cookbook_orgs"):
 		return driver.RowsAffected(0), nil
@@ -563,6 +683,106 @@ func (s *State) query(query string, _ []driver.NamedValue) (driver.Rows, error) 
 			}
 		}
 		return &fakeRows{columns: []string{"org_name", "acl_key", "acl_json"}, values: values}, nil
+	case strings.Contains(query, "FROM oc_core_environments"):
+		rows, err := encodeCoreObjectRows(s.objects)
+		if err != nil {
+			return nil, err
+		}
+		values := make([][]driver.Value, 0, len(rows.Environments))
+		for _, row := range rows.Environments {
+			values = append(values, []driver.Value{row.Organization, row.Name, append([]byte(nil), row.PayloadJSON...)})
+		}
+		return &fakeRows{columns: []string{"org_name", "environment_name", "payload_json"}, values: values}, nil
+	case strings.Contains(query, "FROM oc_core_nodes"):
+		rows, err := encodeCoreObjectRows(s.objects)
+		if err != nil {
+			return nil, err
+		}
+		values := make([][]driver.Value, 0, len(rows.Nodes))
+		for _, row := range rows.Nodes {
+			values = append(values, []driver.Value{row.Organization, row.Name, append([]byte(nil), row.PayloadJSON...)})
+		}
+		return &fakeRows{columns: []string{"org_name", "node_name", "payload_json"}, values: values}, nil
+	case strings.Contains(query, "FROM oc_core_roles"):
+		rows, err := encodeCoreObjectRows(s.objects)
+		if err != nil {
+			return nil, err
+		}
+		values := make([][]driver.Value, 0, len(rows.Roles))
+		for _, row := range rows.Roles {
+			values = append(values, []driver.Value{row.Organization, row.Name, append([]byte(nil), row.PayloadJSON...)})
+		}
+		return &fakeRows{columns: []string{"org_name", "role_name", "payload_json"}, values: values}, nil
+	case strings.Contains(query, "FROM oc_core_data_bags"):
+		rows, err := encodeCoreObjectRows(s.objects)
+		if err != nil {
+			return nil, err
+		}
+		values := make([][]driver.Value, 0, len(rows.DataBags))
+		for _, row := range rows.DataBags {
+			values = append(values, []driver.Value{row.Organization, row.Name, append([]byte(nil), row.PayloadJSON...)})
+		}
+		return &fakeRows{columns: []string{"org_name", "bag_name", "payload_json"}, values: values}, nil
+	case strings.Contains(query, "FROM oc_core_data_bag_items"):
+		rows, err := encodeCoreObjectRows(s.objects)
+		if err != nil {
+			return nil, err
+		}
+		values := make([][]driver.Value, 0, len(rows.DataBagItems))
+		for _, row := range rows.DataBagItems {
+			values = append(values, []driver.Value{row.Organization, row.BagName, row.ItemID, append([]byte(nil), row.PayloadJSON...)})
+		}
+		return &fakeRows{columns: []string{"org_name", "bag_name", "item_id", "payload_json"}, values: values}, nil
+	case strings.Contains(query, "FROM oc_core_policy_revisions"):
+		rows, err := encodeCoreObjectRows(s.objects)
+		if err != nil {
+			return nil, err
+		}
+		values := make([][]driver.Value, 0, len(rows.PolicyRevisions))
+		for _, row := range rows.PolicyRevisions {
+			values = append(values, []driver.Value{row.Organization, row.PolicyName, row.RevisionID, append([]byte(nil), row.PayloadJSON...)})
+		}
+		return &fakeRows{columns: []string{"org_name", "policy_name", "revision_id", "payload_json"}, values: values}, nil
+	case strings.Contains(query, "FROM oc_core_policy_groups"):
+		rows, err := encodeCoreObjectRows(s.objects)
+		if err != nil {
+			return nil, err
+		}
+		values := make([][]driver.Value, 0, len(rows.PolicyGroups))
+		for _, row := range rows.PolicyGroups {
+			values = append(values, []driver.Value{row.Organization, row.Name, append([]byte(nil), row.PayloadJSON...)})
+		}
+		return &fakeRows{columns: []string{"org_name", "group_name", "payload_json"}, values: values}, nil
+	case strings.Contains(query, "FROM oc_core_sandboxes"):
+		rows, err := encodeCoreObjectRows(s.objects)
+		if err != nil {
+			return nil, err
+		}
+		values := make([][]driver.Value, 0, len(rows.Sandboxes))
+		for _, row := range rows.Sandboxes {
+			values = append(values, []driver.Value{row.Organization, row.ID, row.CreatedAt})
+		}
+		return &fakeRows{columns: []string{"org_name", "sandbox_id", "created_at"}, values: values}, nil
+	case strings.Contains(query, "FROM oc_core_sandbox_checksums"):
+		rows, err := encodeCoreObjectRows(s.objects)
+		if err != nil {
+			return nil, err
+		}
+		values := make([][]driver.Value, 0, len(rows.SandboxChecksums))
+		for _, row := range rows.SandboxChecksums {
+			values = append(values, []driver.Value{row.Organization, row.SandboxID, int64(row.Ordinal), row.Checksum})
+		}
+		return &fakeRows{columns: []string{"org_name", "sandbox_id", "ordinal", "checksum"}, values: values}, nil
+	case strings.Contains(query, "FROM oc_core_object_acls"):
+		rows, err := encodeCoreObjectRows(s.objects)
+		if err != nil {
+			return nil, err
+		}
+		values := make([][]driver.Value, 0, len(rows.ACLs))
+		for _, row := range rows.ACLs {
+			values = append(values, []driver.Value{row.Organization, row.ACLKey, append([]byte(nil), row.ACLJSON...)})
+		}
+		return &fakeRows{columns: []string{"org_name", "acl_key", "acl_json"}, values: values}, nil
 	case strings.Contains(query, "FROM oc_cookbook_orgs"):
 		keys := make([]string, 0, len(s.orgs))
 		for name := range s.orgs {
@@ -792,6 +1012,14 @@ func namedTime(args []driver.NamedValue, idx int) *time.Time {
 	return &value
 }
 
+func valueTime(args []driver.NamedValue, idx int) time.Time {
+	value := namedTime(args, idx)
+	if value == nil {
+		return time.Time{}
+	}
+	return *value
+}
+
 func nullableDriverTime(value *time.Time) driver.Value {
 	if value == nil {
 		return nil
@@ -813,6 +1041,45 @@ func appendBootstrapMembershipValues(values [][]driver.Value, orgName, groupName
 		values = append(values, []driver.Value{orgName, groupName, memberType, member})
 	}
 	return values
+}
+
+func encodeCoreObjectRows(state bootstrap.CoreObjectState) (pg.CoreObjectRows, error) {
+	return pg.New("").CoreObjects().EncodeCoreObjects(state)
+}
+
+func ensureCoreObjectOrg(state bootstrap.CoreObjectState, orgName string) bootstrap.CoreObjectOrganizationState {
+	if state.Orgs == nil {
+		state.Orgs = make(map[string]bootstrap.CoreObjectOrganizationState)
+	}
+	org := state.Orgs[orgName]
+	if org.DataBags == nil {
+		org.DataBags = make(map[string]bootstrap.DataBag)
+	}
+	if org.DataBagItems == nil {
+		org.DataBagItems = make(map[string]map[string]bootstrap.DataBagItem)
+	}
+	if org.Environments == nil {
+		org.Environments = make(map[string]bootstrap.Environment)
+	}
+	if org.Nodes == nil {
+		org.Nodes = make(map[string]bootstrap.Node)
+	}
+	if org.Roles == nil {
+		org.Roles = make(map[string]bootstrap.Role)
+	}
+	if org.Sandboxes == nil {
+		org.Sandboxes = make(map[string]bootstrap.Sandbox)
+	}
+	if org.Policies == nil {
+		org.Policies = make(map[string]map[string]bootstrap.PolicyRevision)
+	}
+	if org.PolicyGroups == nil {
+		org.PolicyGroups = make(map[string]bootstrap.PolicyGroup)
+	}
+	if org.ACLs == nil {
+		org.ACLs = make(map[string]authz.ACL)
+	}
+	return org
 }
 
 type fakeRows struct {

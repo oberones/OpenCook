@@ -52,8 +52,9 @@ Status: in progress
 - default-org and explicit-org role routes are now available too
 - default-org and explicit-org data bag routes are now available too
 - creator-aware node ACLs now allow clients to manage their own node objects
-- the rest of the object surface still needs follow-on slices
-- PostgreSQL-backed persistence for nodes, environments, roles, data bags, policies, and sandboxes is still pending now that bootstrap core persistence is in place
+- PostgreSQL-backed persistence for nodes, environments, roles, data bags/items, policies, policy groups, sandbox metadata, checksum references, and object ACLs is now live when PostgreSQL is configured, with restart/rehydration coverage for route reads, search-facing state, and depsolver-visible state
+- invalid writes and failed persistence writes now have no-mutation/rollback coverage across the active PostgreSQL path and the bootstrap object-store seam
+- the rest of the object surface still needs follow-on compatibility slices where upstream behavior is not yet pinned, especially encrypted data bags and deeper API-version edge cases
 
 ## Milestone 5: Search Compatibility
 
@@ -68,7 +69,7 @@ Status: in progress
 - data bag search now mirrors Chef-style wrapper results and raw-item partial search behavior
 - simple `AND`/`NOT` matching and escaped-slash prefix handling are now covered for the in-memory compatibility layer
 - policyfile routes are now live for both default-org and explicit-org `/policies` and `/policy_groups`
-- in-memory policy revision storage, revision lookup, policy-group listing, policy-group assignment, and richer canonical payload round-tripping are implemented
+- policy revision storage, revision lookup, policy-group listing, policy-group assignment, and richer canonical payload round-tripping are implemented and now persist through PostgreSQL when configured
 - policy payload validation now covers more cookbook-lock and solution-dependency structure, while node policy refs remain compatibility-safe searchable fields instead of enforced foreign keys
 - OpenSearch-backed indexing, deeper query translation, provider capability handling, and reindex tooling are still pending
 
@@ -190,6 +191,7 @@ Status: in progress
 - PostgreSQL-backed cookbook persistence is now live for cookbook versions and cookbook artifacts
 - mixed PostgreSQL-backed cookbook metadata plus provider-backed blob lifecycle hardening is now also complete
 - PostgreSQL-backed bootstrap core persistence is now live for identity and authorization root state
+- PostgreSQL-backed core object API persistence is now live for nodes, environments, roles, data bags/items, policy state, sandbox metadata/checksum references, and object ACLs
 - S3-compatible blob storage remains the target production mode after the compatibility contract settles
 
 ## Milestone 7: Validator Bootstrap Compatibility

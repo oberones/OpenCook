@@ -141,6 +141,7 @@ func (s *Service) CreatePolicyRevision(orgName, targetName string, input CreateP
 		return PolicyRevision{}, err
 	}
 
+	previous := s.snapshotCoreObjectsLocked()
 	revisions := ensurePolicyRevisions(org.policies, revision.Name)
 	if _, exists := revisions[revision.RevisionID]; exists {
 		return PolicyRevision{}, ErrConflict
@@ -149,6 +150,9 @@ func (s *Service) CreatePolicyRevision(orgName, targetName string, input CreateP
 	revisions[revision.RevisionID] = revision
 	if _, ok := org.acls[policyACLKey(revision.Name)]; !ok {
 		org.acls[policyACLKey(revision.Name)] = defaultPolicyACL(s.superuserName, input.Creator)
+	}
+	if err := s.finishCoreObjectMutationLocked(previous); err != nil {
+		return PolicyRevision{}, err
 	}
 	return copyPolicyRevision(revision), nil
 }
@@ -173,6 +177,7 @@ func (s *Service) DeletePolicy(orgName, policyName string) ([]string, error) {
 	}
 	sort.Strings(revisionIDs)
 
+	previous := s.snapshotCoreObjectsLocked()
 	delete(org.policies, policyName)
 	delete(org.acls, policyACLKey(policyName))
 	for groupName, group := range org.policyGroups {
@@ -181,6 +186,9 @@ func (s *Service) DeletePolicy(orgName, policyName string) ([]string, error) {
 		}
 		delete(group.Policies, policyName)
 		org.policyGroups[groupName] = group
+	}
+	if err := s.finishCoreObjectMutationLocked(previous); err != nil {
+		return nil, err
 	}
 
 	return revisionIDs, nil
@@ -205,6 +213,7 @@ func (s *Service) DeletePolicyRevision(orgName, policyName, revisionID string) (
 		return PolicyRevision{}, ErrNotFound
 	}
 
+	previous := s.snapshotCoreObjectsLocked()
 	delete(revisions, revisionID)
 	for groupName, group := range org.policyGroups {
 		if group.Policies[policyName] != revisionID {
@@ -212,6 +221,9 @@ func (s *Service) DeletePolicyRevision(orgName, policyName, revisionID string) (
 		}
 		delete(group.Policies, policyName)
 		org.policyGroups[groupName] = group
+	}
+	if err := s.finishCoreObjectMutationLocked(previous); err != nil {
+		return PolicyRevision{}, err
 	}
 
 	return copyPolicyRevision(revision), nil
@@ -264,8 +276,12 @@ func (s *Service) DeletePolicyGroup(orgName, groupName string) (PolicyGroup, err
 		return PolicyGroup{}, ErrNotFound
 	}
 
+	previous := s.snapshotCoreObjectsLocked()
 	delete(org.policyGroups, groupName)
 	delete(org.acls, policyGroupACLKey(groupName))
+	if err := s.finishCoreObjectMutationLocked(previous); err != nil {
+		return PolicyGroup{}, err
+	}
 	return copyPolicyGroup(group), nil
 }
 
@@ -324,6 +340,7 @@ func (s *Service) UpsertPolicyGroupAssignment(orgName, groupName, targetPolicyNa
 	}
 	revision := plan.Revision
 
+	previous := s.snapshotCoreObjectsLocked()
 	revisions := ensurePolicyRevisions(org.policies, revision.Name)
 	if plan.CreatesRevision {
 		revisions[revision.RevisionID] = revision
@@ -340,6 +357,9 @@ func (s *Service) UpsertPolicyGroupAssignment(orgName, groupName, targetPolicyNa
 	_, existed := group.Policies[revision.Name]
 	group.Policies[revision.Name] = revision.RevisionID
 	org.policyGroups[groupName] = group
+	if err := s.finishCoreObjectMutationLocked(previous); err != nil {
+		return PolicyRevision{}, false, err
+	}
 
 	return copyPolicyRevision(revision), !existed, nil
 }
@@ -369,8 +389,12 @@ func (s *Service) DeletePolicyGroupAssignment(orgName, groupName, policyName str
 		return PolicyRevision{}, ErrNotFound
 	}
 
+	previous := s.snapshotCoreObjectsLocked()
 	delete(group.Policies, policyName)
 	org.policyGroups[groupName] = group
+	if err := s.finishCoreObjectMutationLocked(previous); err != nil {
+		return PolicyRevision{}, err
+	}
 	return copyPolicyRevision(revision), nil
 }
 

@@ -93,7 +93,7 @@ Task 8: Sync docs and close the bucket
 
 - updated the roadmap, milestones, compatibility matrix, and agent guidance
 - marked this bucket complete
-- pointed follow-on work at PostgreSQL-backed core object APIs and validator bootstrap compatibility
+- pointed follow-on work at PostgreSQL-backed core object APIs (now complete) and validator bootstrap compatibility
 
 ## Test Plan
 
@@ -112,6 +112,6 @@ Full verification:
 
 Recommended next buckets:
 
-- persist the remaining core object APIs: nodes, roles, environments, data bags, policies, and sandboxes
+- completed: PostgreSQL-backed core object API persistence for nodes, roles, environments, data bags, policies, and sandboxes
 - finish Milestone 7 validator-authenticated client registration compatibility
 - move search indexing toward PostgreSQL-to-OpenSearch operational flows after object persistence has a durable source of truth

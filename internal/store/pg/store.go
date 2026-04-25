@@ -21,12 +21,14 @@ type Store struct {
 	db            *sql.DB
 	cookbooks     *CookbookRepository
 	bootstrapCore *BootstrapCoreRepository
+	coreObjects   *CoreObjectRepository
 }
 
 func New(dsn string) *Store {
 	store := &Store{dsn: dsn}
 	store.cookbooks = newCookbookRepository(store)
 	store.bootstrapCore = newBootstrapCoreRepository(store)
+	store.coreObjects = newCoreObjectRepository(store)
 	return store
 }
 
@@ -44,6 +46,10 @@ func (s *Store) CookbookPersistenceActive() bool {
 
 func (s *Store) BootstrapCorePersistenceActive() bool {
 	return s != nil && s.db != nil && s.bootstrapCore != nil
+}
+
+func (s *Store) CoreObjectPersistenceActive() bool {
+	return s != nil && s.db != nil && s.coreObjects != nil
 }
 
 func (s *Store) ActivateCookbookPersistence(ctx context.Context) error {
@@ -84,6 +90,9 @@ func (s *Store) ActivateCookbookPersistenceWithDB(ctx context.Context, db *sql.D
 	if err := s.bootstrapCore.activate(ctx, db); err != nil {
 		return err
 	}
+	if err := s.coreObjects.activate(ctx, db); err != nil {
+		return err
+	}
 	s.db = db
 	return nil
 }
@@ -110,13 +119,13 @@ func (s *Store) Status() Status {
 		return Status{
 			Driver:     "postgres",
 			Configured: true,
-			Message:    "PostgreSQL cookbook and bootstrap core persistence active",
+			Message:    "PostgreSQL cookbook, bootstrap core, and core object persistence active",
 		}
 	}
 
 	return Status{
 		Driver:     "postgres",
 		Configured: true,
-		Message:    "PostgreSQL configured for cookbook and bootstrap core persistence; waiting for app activation",
+		Message:    "PostgreSQL configured for cookbook, bootstrap core, and core object persistence; waiting for app activation",
 	}
 }

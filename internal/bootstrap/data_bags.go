@@ -88,9 +88,13 @@ func (s *Service) CreateDataBag(orgName string, input CreateDataBagInput) (DataB
 		return DataBag{}, ErrConflict
 	}
 
+	previous := s.snapshotCoreObjectsLocked()
 	org.dataBags[bag.Name] = bag
 	ensureDataBagItems(org.dataBagItems, bag.Name)
 	org.acls[dataBagACLKey(bag.Name)] = defaultDataBagACL(s.superuserName, input.Creator)
+	if err := s.finishCoreObjectMutationLocked(previous); err != nil {
+		return DataBag{}, err
+	}
 	return bag, nil
 }
 
@@ -108,9 +112,13 @@ func (s *Service) DeleteDataBag(orgName, bagName string) (DataBag, error) {
 		return DataBag{}, ErrNotFound
 	}
 
+	previous := s.snapshotCoreObjectsLocked()
 	delete(org.dataBags, bagName)
 	delete(org.dataBagItems, bagName)
 	delete(org.acls, dataBagACLKey(bagName))
+	if err := s.finishCoreObjectMutationLocked(previous); err != nil {
+		return DataBag{}, err
+	}
 	return bag, nil
 }
 
@@ -175,7 +183,11 @@ func (s *Service) CreateDataBagItem(orgName, bagName string, input CreateDataBag
 		return DataBagItem{}, ErrConflict
 	}
 
+	previous := s.snapshotCoreObjectsLocked()
 	items[item.ID] = item
+	if err := s.finishCoreObjectMutationLocked(previous); err != nil {
+		return DataBagItem{}, err
+	}
 	return copyDataBagItem(item), nil
 }
 
@@ -200,7 +212,11 @@ func (s *Service) UpdateDataBagItem(orgName, bagName, itemID string, input Updat
 		return DataBagItem{}, err
 	}
 
+	previous := s.snapshotCoreObjectsLocked()
 	items[itemID] = item
+	if err := s.finishCoreObjectMutationLocked(previous); err != nil {
+		return DataBagItem{}, err
+	}
 	return copyDataBagItem(item), nil
 }
 
@@ -222,7 +238,11 @@ func (s *Service) DeleteDataBagItem(orgName, bagName, itemID string) (DataBagIte
 		return DataBagItem{}, ErrNotFound
 	}
 
+	previous := s.snapshotCoreObjectsLocked()
 	delete(items, itemID)
+	if err := s.finishCoreObjectMutationLocked(previous); err != nil {
+		return DataBagItem{}, err
+	}
 	return copyDataBagItem(item), nil
 }
 

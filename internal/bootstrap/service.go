@@ -48,7 +48,9 @@ type Options struct {
 	SuperuserName             string
 	CookbookStoreFactory      func(*Service) CookbookStore
 	BootstrapCoreStoreFactory func(*Service) BootstrapCoreStore
+	CoreObjectStoreFactory    func(*Service) CoreObjectStore
 	InitialBootstrapCoreState *BootstrapCoreState
+	InitialCoreObjectState    *CoreObjectState
 }
 
 type Service struct {
@@ -57,6 +59,7 @@ type Service struct {
 	superuserName      string
 	cookbookStore      CookbookStore
 	bootstrapCoreStore BootstrapCoreStore
+	coreObjectStore    CoreObjectStore
 	users              map[string]User
 	userACLs           map[string]authz.ACL
 	userKeys           map[string]map[string]KeyRecord
@@ -212,8 +215,17 @@ func NewService(keyStore *authn.MemoryKeyStore, opts Options) *Service {
 	if s.bootstrapCoreStore == nil {
 		s.bootstrapCoreStore = NewMemoryBootstrapCoreStore(BootstrapCoreState{})
 	}
+	if opts.CoreObjectStoreFactory != nil {
+		s.coreObjectStore = opts.CoreObjectStoreFactory(s)
+	}
+	if s.coreObjectStore == nil {
+		s.coreObjectStore = NewMemoryCoreObjectStore(CoreObjectState{})
+	}
 	if opts.InitialBootstrapCoreState != nil {
 		s.restoreBootstrapCoreLocked(*opts.InitialBootstrapCoreState)
+	}
+	if opts.InitialCoreObjectState != nil {
+		s.restoreCoreObjectsLocked(*opts.InitialCoreObjectState)
 	}
 	s.ensureUserLocked(superuser)
 	return s

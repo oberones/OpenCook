@@ -130,6 +130,12 @@ func TestActivePostgresBootstrapOrganizationArtifactsRehydrate(t *testing.T) {
 func newActivePostgresBootstrapFixture(t *testing.T, pgState *pgtest.State) *activePostgresBootstrapFixture {
 	t.Helper()
 
+	return newActivePostgresBootstrapFixtureWithBlob(t, pgState, blob.NewMemoryStore(""))
+}
+
+func newActivePostgresBootstrapFixtureWithBlob(t *testing.T, pgState *pgtest.State, blobStore blob.Store) *activePostgresBootstrapFixture {
+	t.Helper()
+
 	db, cleanup, err := pgState.OpenDB()
 	if err != nil {
 		t.Fatalf("OpenDB() error = %v", err)
@@ -150,18 +156,29 @@ func newActivePostgresBootstrapFixture(t *testing.T, pgState *pgtest.State) *act
 	if err != nil {
 		t.Fatalf("LoadBootstrapCore() error = %v", err)
 	}
+	initialObjects, err := postgresStore.CoreObjects().LoadCoreObjects()
+	if err != nil {
+		t.Fatalf("LoadCoreObjects() error = %v", err)
+	}
 	state := bootstrap.NewService(keyStore, bootstrap.Options{
 		SuperuserName:             "pivotal",
 		InitialBootstrapCoreState: &initial,
+		InitialCoreObjectState:    &initialObjects,
 		CookbookStoreFactory: func(*bootstrap.Service) bootstrap.CookbookStore {
 			return postgresStore.CookbookStore()
 		},
 		BootstrapCoreStoreFactory: func(*bootstrap.Service) bootstrap.BootstrapCoreStore {
 			return postgresStore.BootstrapCore()
 		},
+		CoreObjectStoreFactory: func(*bootstrap.Service) bootstrap.CoreObjectStore {
+			return postgresStore.CoreObjects()
+		},
 	})
 	if err := state.RehydrateKeyStore(); err != nil {
 		t.Fatalf("RehydrateKeyStore() error = %v", err)
+	}
+	if blobStore == nil {
+		blobStore = blob.NewMemoryStore("")
 	}
 
 	privateKey := mustParsePrivateKey(t)
@@ -196,7 +213,7 @@ func newActivePostgresBootstrapFixture(t *testing.T, pgState *pgtest.State) *act
 		Authn:            authn.NewChefVerifier(keyStore, authn.Options{AllowedClockSkew: &skew, Now: now}),
 		Authz:            authz.NewACLAuthorizer(state),
 		Bootstrap:        state,
-		Blob:             blob.NewMemoryStore(""),
+		Blob:             blobStore,
 		BlobUploadSecret: []byte("test-blob-upload-secret"),
 		Search:           search.NewMemoryIndex(state, ""),
 		Postgres:         postgresStore,
