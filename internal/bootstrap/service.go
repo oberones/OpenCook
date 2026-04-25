@@ -793,7 +793,11 @@ func (s *Service) CreateClient(orgName string, input CreateClientInput) (Client,
 		URI:          "/organizations/" + orgName + "/clients/" + name,
 	}
 	org.clients[name] = client
-	org.acls[clientACLKey(name)] = defaultClientACL(s.superuserName)
+	if input.Validator {
+		org.acls[clientACLKey(name)] = defaultClientACL(s.superuserName)
+	} else {
+		org.acls[clientACLKey(name)] = defaultClientACL(s.superuserName, name)
+	}
 
 	group := org.groups["clients"]
 	group.Clients = uniqueSorted(append(group.Clients, name))
@@ -1497,13 +1501,14 @@ func defaultGroupACL(superuserName, group string) authz.ACL {
 	}
 }
 
-func defaultClientACL(superuserName string) authz.ACL {
+func defaultClientACL(superuserName string, actors ...string) authz.ACL {
+	aclActors := uniqueSorted(append([]string{superuserName}, actors...))
 	return authz.ACL{
-		Create: authz.Permission{Actors: []string{superuserName}, Groups: []string{"admins"}},
-		Read:   authz.Permission{Actors: []string{superuserName}, Groups: []string{"admins", "users"}},
-		Update: authz.Permission{Actors: []string{superuserName}, Groups: []string{"admins"}},
-		Delete: authz.Permission{Actors: []string{superuserName}, Groups: []string{"admins", "users"}},
-		Grant:  authz.Permission{Actors: []string{superuserName}, Groups: []string{"admins"}},
+		Create: authz.Permission{Actors: aclActors, Groups: []string{"admins"}},
+		Read:   authz.Permission{Actors: aclActors, Groups: []string{"admins", "users"}},
+		Update: authz.Permission{Actors: aclActors, Groups: []string{"admins"}},
+		Delete: authz.Permission{Actors: aclActors, Groups: []string{"admins", "users"}},
+		Grant:  authz.Permission{Actors: aclActors, Groups: []string{"admins"}},
 	}
 }
 

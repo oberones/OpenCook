@@ -57,6 +57,8 @@ OPENCOOK_FUNCTIONAL_ACTOR_NAME=pivotal
 - OpenCook can boot with PostgreSQL and OpenSearch reachable on the Compose network.
 - Bootstrap auth works with a fixture RSA key and Chef request-signing headers.
 - Organization bootstrap rehydrates groups, containers, ACLs, and the validator client shape.
+- Validator-authenticated bootstrap registration uses the generated `<org>-validator` key from organization creation to create normal clients through both explicit-org and configured default-org client routes.
+- Validator-created clients persist key material across restart, authenticate signed follow-up requests, retain default key metadata, appear in the `clients` group, expose their client ACL read side effect, and show up in client search rows.
 - Environments, nodes, roles, data bags, policy groups, and policy revisions survive OpenCook restarts.
 - Filesystem-backed blob uploads survive restart and can be reused by a later sandbox.
 - Invalid writes return compatibility errors without mutating persisted state.

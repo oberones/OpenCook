@@ -24,9 +24,14 @@ import (
 )
 
 const (
-	policyName       = "appserver"
-	policyGroupName  = "dev"
-	policyRevisionID = "1111111111111111111111111111111111111111"
+	policyName                           = "appserver"
+	policyGroupName                      = "dev"
+	policyRevisionID                     = "1111111111111111111111111111111111111111"
+	validatorBootstrapClientName         = "functional-bootstrap-client"
+	validatorDefaultBootstrapClientName  = "functional-default-bootstrap-client"
+	validatorBootstrapClientKeyStateFile = "validator_bootstrap_client_private.pem"
+	validatorDefaultClientKeyStateFile   = "validator_default_bootstrap_client_private.pem"
+	validatorKeyStateFile                = "validator_private.pem"
 )
 
 var sandboxBlob = []byte("opencook functional sandbox blob\n")
@@ -140,19 +145,24 @@ func newFunctionalClient(t *testing.T, cfg functionalConfig) *functionalClient {
 	t.Helper()
 
 	privateKey := parsePrivateKeyFile(t, cfg.privateKeyPath)
+	return newFunctionalClientFromPrivateKey(cfg.baseURL, cfg.actorName, privateKey)
+}
+
+func newFunctionalClientFromPrivateKey(baseURL *url.URL, actorName string, privateKey *rsa.PrivateKey) *functionalClient {
 	return &functionalClient{
 		httpClient:       &http.Client{Timeout: 15 * time.Second},
-		baseURL:          cfg.baseURL,
-		actorName:        cfg.actorName,
-		serverAPIVersion: "0",
+		baseURL:          baseURL,
+		actorName:        actorName,
+		serverAPIVersion: "1",
 		privateKey:       privateKey,
 	}
 }
 
 func runCreatePhase(t *testing.T, client *functionalClient, cfg functionalConfig) {
 	requireOperationalStatus(t, client)
-	ensureOrganization(t, client, cfg.org)
+	orgPayload := ensureOrganization(t, client, cfg.org)
 	requireOrganizationBootstrap(t, client, cfg.org)
+	ensureValidatorBootstrapRegistration(t, client, cfg, orgPayload)
 
 	client.expectJSON(t, http.MethodPost, "/environments", environmentPayload("production"), http.StatusCreated, http.StatusConflict)
 	client.expectJSON(t, http.MethodPost, "/organizations/"+cfg.org+"/roles", rolePayload("web"), http.StatusCreated, http.StatusConflict)
@@ -174,6 +184,7 @@ func runCreatePhase(t *testing.T, client *functionalClient, cfg functionalConfig
 func runVerifyPhase(t *testing.T, client *functionalClient, cfg functionalConfig) {
 	requireOperationalStatus(t, client)
 	requireOrganizationBootstrap(t, client, cfg.org)
+	requireValidatorBootstrapRegisteredClient(t, client, cfg)
 
 	orgPayload := asMap(t, client.expectJSON(t, http.MethodGet, "/organizations/"+cfg.org, nil, http.StatusOK).JSON)
 	if orgPayload["name"] != cfg.org {
@@ -261,6 +272,11 @@ func runInvalidPhase(t *testing.T, client *functionalClient, cfg functionalConfi
 }
 
 func runDeletePhase(t *testing.T, client *functionalClient, cfg functionalConfig) {
+	client.expectJSON(t, http.MethodDelete, "/organizations/"+cfg.org+"/clients/"+validatorBootstrapClientName, nil, http.StatusOK, http.StatusNotFound)
+	_ = os.Remove(filepath.Join(cfg.stateDir, validatorBootstrapClientKeyStateFile))
+	client.expectJSON(t, http.MethodDelete, "/organizations/"+cfg.org+"/clients/"+validatorDefaultBootstrapClientName, nil, http.StatusOK, http.StatusNotFound)
+	_ = os.Remove(filepath.Join(cfg.stateDir, validatorDefaultClientKeyStateFile))
+
 	client.expectJSON(t, http.MethodDelete, "/policy_groups/"+policyGroupName+"/policies/"+policyName, nil, http.StatusOK, http.StatusNotFound)
 	client.expectJSON(t, http.MethodDelete, "/policy_groups/"+policyGroupName, nil, http.StatusOK, http.StatusNotFound)
 	client.expectJSON(t, http.MethodDelete, "/policies/"+policyName+"/revisions/"+policyRevisionID, nil, http.StatusOK, http.StatusNotFound)
@@ -274,6 +290,8 @@ func runDeletePhase(t *testing.T, client *functionalClient, cfg functionalConfig
 
 func runVerifyDeletedPhase(t *testing.T, client *functionalClient, cfg functionalConfig) {
 	requireOperationalStatus(t, client)
+	client.expectJSON(t, http.MethodGet, "/organizations/"+cfg.org+"/clients/"+validatorBootstrapClientName, nil, http.StatusNotFound)
+	client.expectJSON(t, http.MethodGet, "/clients/"+validatorDefaultBootstrapClientName, nil, http.StatusNotFound)
 	client.expectJSON(t, http.MethodGet, "/nodes/twilight", nil, http.StatusNotFound)
 	client.expectJSON(t, http.MethodGet, "/roles/web", nil, http.StatusNotFound)
 	client.expectJSON(t, http.MethodGet, "/environments/production", nil, http.StatusNotFound)
@@ -302,7 +320,7 @@ func requireOperationalStatus(t *testing.T, client *functionalClient) {
 	}
 }
 
-func ensureOrganization(t *testing.T, client *functionalClient, org string) {
+func ensureOrganization(t *testing.T, client *functionalClient, org string) map[string]any {
 	t.Helper()
 
 	resp := client.expectJSON(t, http.MethodPost, "/organizations", map[string]any{
@@ -315,7 +333,9 @@ func ensureOrganization(t *testing.T, client *functionalClient, org string) {
 		if payload["clientname"] != org+"-validator" {
 			t.Fatalf("validator clientname = %v, want %s-validator", payload["clientname"], org)
 		}
+		return payload
 	}
+	return nil
 }
 
 func requireOrganizationBootstrap(t *testing.T, client *functionalClient, org string) {
@@ -331,6 +351,196 @@ func requireOrganizationBootstrap(t *testing.T, client *functionalClient, org st
 	}
 	client.expectJSON(t, http.MethodGet, "/organizations/"+org+"/containers/nodes/_acl", nil, http.StatusOK)
 	client.expectJSON(t, http.MethodGet, "/organizations/"+org+"/_acl", nil, http.StatusOK)
+}
+
+func ensureValidatorBootstrapRegistration(t *testing.T, admin *functionalClient, cfg functionalConfig, orgPayload map[string]any) {
+	t.Helper()
+
+	validatorPrivateKeyPEM := validatorPrivateKeyFromBootstrapPayload(t, cfg, orgPayload)
+	if validatorPrivateKeyPEM == "" {
+		validatorPrivateKeyPEM = strings.TrimSpace(readOptionalStateFile(t, cfg.stateDir, validatorKeyStateFile))
+	}
+	if validatorPrivateKeyPEM == "" {
+		validatorPrivateKeyPEM = rotateClientDefaultKey(t, admin, cfg.org, cfg.org+"-validator")
+	}
+	writeStateFile(t, cfg.stateDir, validatorKeyStateFile, validatorPrivateKeyPEM)
+
+	validator := newFunctionalClientFromPrivateKey(admin.baseURL, cfg.org+"-validator", parsePrivateKeyPEM(t, "validator private key", validatorPrivateKeyPEM))
+	ensureValidatorRegisteredClient(t, admin, validator, cfg, validatorRegistrationSpec{
+		name:             validatorBootstrapClientName,
+		createPath:       "/organizations/" + cfg.org + "/clients",
+		selfReadPath:     "/organizations/" + cfg.org + "/clients/" + validatorBootstrapClientName,
+		keyListPath:      "/organizations/" + cfg.org + "/clients/" + validatorBootstrapClientName + "/keys",
+		wantURI:          "/organizations/" + cfg.org + "/clients/" + validatorBootstrapClientName,
+		wantChefKeyURI:   "/organizations/" + cfg.org + "/clients/" + validatorBootstrapClientName + "/keys/default",
+		searchPath:       "/organizations/" + cfg.org + "/search/client?q=name:" + validatorBootstrapClientName,
+		stateKeyFilename: validatorBootstrapClientKeyStateFile,
+	})
+	ensureValidatorRegisteredClient(t, admin, validator, cfg, validatorRegistrationSpec{
+		name:             validatorDefaultBootstrapClientName,
+		createPath:       "/clients",
+		selfReadPath:     "/clients/" + validatorDefaultBootstrapClientName,
+		keyListPath:      "/clients/" + validatorDefaultBootstrapClientName + "/keys",
+		wantURI:          "/clients/" + validatorDefaultBootstrapClientName,
+		wantChefKeyURI:   "/clients/" + validatorDefaultBootstrapClientName + "/keys/default",
+		searchPath:       "/search/client?q=name:" + validatorDefaultBootstrapClientName,
+		stateKeyFilename: validatorDefaultClientKeyStateFile,
+	})
+}
+
+type validatorRegistrationSpec struct {
+	name             string
+	createPath       string
+	selfReadPath     string
+	keyListPath      string
+	wantURI          string
+	wantChefKeyURI   string
+	searchPath       string
+	stateKeyFilename string
+}
+
+func ensureValidatorRegisteredClient(t *testing.T, admin, validator *functionalClient, cfg functionalConfig, spec validatorRegistrationSpec) {
+	t.Helper()
+
+	resp := validator.expectJSON(t, http.MethodPost, spec.createPath, map[string]any{
+		"name":       spec.name,
+		"create_key": true,
+	}, http.StatusCreated, http.StatusConflict)
+
+	clientPrivateKeyPEM := ""
+	if resp.Status == http.StatusCreated {
+		payload := asMap(t, resp.JSON)
+		if payload["uri"] != spec.wantURI {
+			t.Fatalf("validator-created client uri = %v, want %q", payload["uri"], spec.wantURI)
+		}
+		chefKey := asMap(t, payload["chef_key"])
+		if chefKey["uri"] != spec.wantChefKeyURI {
+			t.Fatalf("validator-created chef_key uri = %v, want %q", chefKey["uri"], spec.wantChefKeyURI)
+		}
+		clientPrivateKeyPEM = privateKeyFromClientCreatePayload(t, payload)
+	} else {
+		clientPrivateKeyPEM = strings.TrimSpace(readOptionalStateFile(t, cfg.stateDir, spec.stateKeyFilename))
+		if clientPrivateKeyPEM == "" {
+			clientPrivateKeyPEM = rotateClientDefaultKey(t, admin, cfg.org, spec.name)
+		}
+	}
+	writeStateFile(t, cfg.stateDir, spec.stateKeyFilename, clientPrivateKeyPEM)
+
+	registeredClient := newFunctionalClientFromPrivateKey(admin.baseURL, spec.name, parsePrivateKeyPEM(t, spec.name+" private key", clientPrivateKeyPEM))
+	requireValidatorBootstrapRegisteredClientWithClient(t, admin, registeredClient, cfg.org, spec)
+}
+
+func requireValidatorBootstrapRegisteredClient(t *testing.T, admin *functionalClient, cfg functionalConfig) {
+	t.Helper()
+
+	specs := []validatorRegistrationSpec{
+		{
+			name:             validatorBootstrapClientName,
+			selfReadPath:     "/organizations/" + cfg.org + "/clients/" + validatorBootstrapClientName,
+			keyListPath:      "/organizations/" + cfg.org + "/clients/" + validatorBootstrapClientName + "/keys",
+			searchPath:       "/organizations/" + cfg.org + "/search/client?q=name:" + validatorBootstrapClientName,
+			stateKeyFilename: validatorBootstrapClientKeyStateFile,
+		},
+		{
+			name:             validatorDefaultBootstrapClientName,
+			selfReadPath:     "/clients/" + validatorDefaultBootstrapClientName,
+			keyListPath:      "/clients/" + validatorDefaultBootstrapClientName + "/keys",
+			searchPath:       "/search/client?q=name:" + validatorDefaultBootstrapClientName,
+			stateKeyFilename: validatorDefaultClientKeyStateFile,
+		},
+	}
+	for _, spec := range specs {
+		privateKeyPEM := strings.TrimSpace(readStateFile(t, cfg.stateDir, spec.stateKeyFilename))
+		client := newFunctionalClientFromPrivateKey(cfg.baseURL, spec.name, parsePrivateKeyPEM(t, spec.name+" private key", privateKeyPEM))
+		requireValidatorBootstrapRegisteredClientWithClient(t, admin, client, cfg.org, spec)
+	}
+}
+
+func requireValidatorBootstrapRegisteredClientWithClient(t *testing.T, admin, client *functionalClient, org string, spec validatorRegistrationSpec) {
+	t.Helper()
+
+	clientPayload := asMap(t, client.expectJSON(t, http.MethodGet, spec.selfReadPath, nil, http.StatusOK).JSON)
+	if clientPayload["name"] != spec.name || clientPayload["validator"] != false {
+		t.Fatalf("validator-created client payload = %v, want normal client %q", clientPayload, spec.name)
+	}
+
+	keysPayload := asSlice(t, client.expectJSON(t, http.MethodGet, spec.keyListPath, nil, http.StatusOK).JSON)
+	if len(keysPayload) != 1 {
+		t.Fatalf("validator-created client keys = %v, want one default key", keysPayload)
+	}
+	key := asMap(t, keysPayload[0])
+	if key["name"] != "default" || key["expired"] != false {
+		t.Fatalf("validator-created client default key = %v, want active default key", key)
+	}
+
+	containerPayload := asMap(t, client.expectJSON(t, http.MethodGet, "/organizations/"+org+"/containers/data", nil, http.StatusOK).JSON)
+	if containerPayload["containername"] != "data" {
+		t.Fatalf("registered client container read payload = %v, want data container", containerPayload)
+	}
+
+	groupPayload := asMap(t, admin.expectJSON(t, http.MethodGet, "/organizations/"+org+"/groups/clients", nil, http.StatusOK).JSON)
+	clientsGroupMembers := jsonStringSlice(t, groupPayload["clients"])
+	clientsGroupActors := jsonStringSlice(t, groupPayload["actors"])
+	if !containsString(clientsGroupMembers, org+"-validator") || !containsString(clientsGroupMembers, spec.name) {
+		t.Fatalf("clients group clients = %v, want validator and %q", clientsGroupMembers, spec.name)
+	}
+	if !containsString(clientsGroupActors, org+"-validator") || !containsString(clientsGroupActors, spec.name) {
+		t.Fatalf("clients group actors = %v, want validator and %q", clientsGroupActors, spec.name)
+	}
+
+	aclPayload := asMap(t, admin.expectJSON(t, http.MethodGet, "/organizations/"+org+"/clients/"+spec.name+"/_acl", nil, http.StatusOK).JSON)
+	readPermission := asMap(t, aclPayload["read"])
+	if !containsString(jsonStringSlice(t, readPermission["actors"]), spec.name) {
+		t.Fatalf("client ACL read actors = %v, want %q", readPermission["actors"], spec.name)
+	}
+
+	searchPayload := asMap(t, admin.expectJSON(t, http.MethodGet, spec.searchPath, nil, http.StatusOK).JSON)
+	requireRows(t, searchPayload, 1)
+}
+
+func validatorPrivateKeyFromBootstrapPayload(t *testing.T, cfg functionalConfig, payload map[string]any) string {
+	t.Helper()
+
+	if payload == nil {
+		return ""
+	}
+	if payload["clientname"] != cfg.org+"-validator" {
+		t.Fatalf("validator clientname = %v, want %s-validator", payload["clientname"], cfg.org)
+	}
+	privateKeyPEM, _ := payload["private_key"].(string)
+	if strings.TrimSpace(privateKeyPEM) == "" {
+		t.Fatalf("organization bootstrap response missing validator private_key: %v", payload)
+	}
+	return privateKeyPEM
+}
+
+func privateKeyFromClientCreatePayload(t *testing.T, payload map[string]any) string {
+	t.Helper()
+
+	if chefKey, ok := payload["chef_key"].(map[string]any); ok {
+		if privateKeyPEM, ok := chefKey["private_key"].(string); ok && strings.TrimSpace(privateKeyPEM) != "" {
+			return privateKeyPEM
+		}
+	}
+	if privateKeyPEM, ok := payload["private_key"].(string); ok && strings.TrimSpace(privateKeyPEM) != "" {
+		return privateKeyPEM
+	}
+	t.Fatalf("client create response missing private key material: %v", payload)
+	return ""
+}
+
+func rotateClientDefaultKey(t *testing.T, admin *functionalClient, org, clientName string) string {
+	t.Helper()
+
+	resp := admin.expectJSON(t, http.MethodPut, "/organizations/"+org+"/clients/"+clientName+"/keys/default", map[string]any{
+		"create_key": true,
+	}, http.StatusOK)
+	payload := asMap(t, resp.JSON)
+	privateKeyPEM, _ := payload["private_key"].(string)
+	if strings.TrimSpace(privateKeyPEM) == "" {
+		t.Fatalf("rotated %s/%s default key response missing private_key: %v", org, clientName, payload)
+	}
+	return privateKeyPEM
 }
 
 func createPendingSandbox(t *testing.T, client *functionalClient, cfg functionalConfig) {
@@ -431,6 +641,30 @@ func readStateFile(t *testing.T, dir, name string) string {
 		t.Fatalf("read %s state: %v", name, err)
 	}
 	return string(data)
+}
+
+func readOptionalStateFile(t *testing.T, dir, name string) string {
+	t.Helper()
+
+	data, err := os.ReadFile(filepath.Join(dir, name))
+	if os.IsNotExist(err) {
+		return ""
+	}
+	if err != nil {
+		t.Fatalf("read %s state: %v", name, err)
+	}
+	return string(data)
+}
+
+func writeStateFile(t *testing.T, dir, name, value string) {
+	t.Helper()
+
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("create state dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, name), []byte(value), 0o600); err != nil {
+		t.Fatalf("write %s state: %v", name, err)
+	}
 }
 
 func environmentPayload(name string) map[string]any {
@@ -678,6 +912,40 @@ func asMap(t *testing.T, value any) map[string]any {
 	return out
 }
 
+func asSlice(t *testing.T, value any) []any {
+	t.Helper()
+
+	out, ok := value.([]any)
+	if !ok {
+		t.Fatalf("value = %T %v, want JSON array", value, value)
+	}
+	return out
+}
+
+func jsonStringSlice(t *testing.T, value any) []string {
+	t.Helper()
+
+	raw := asSlice(t, value)
+	out := make([]string, 0, len(raw))
+	for _, item := range raw {
+		text, ok := item.(string)
+		if !ok {
+			t.Fatalf("value item = %T %v, want JSON string", item, item)
+		}
+		out = append(out, text)
+	}
+	return out
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
 func requireRows(t *testing.T, payload map[string]any, want int) {
 	t.Helper()
 
@@ -694,20 +962,27 @@ func parsePrivateKeyFile(t *testing.T, path string) *rsa.PrivateKey {
 	if err != nil {
 		t.Fatalf("read private key %s: %v", path, err)
 	}
+	return parsePrivateKeyPEM(t, path, string(data))
+}
+
+func parsePrivateKeyPEM(t *testing.T, source, raw string) *rsa.PrivateKey {
+	t.Helper()
+
+	data := []byte(raw)
 	block, _ := pem.Decode(data)
 	if block == nil {
-		t.Fatalf("decode private key %s: no PEM block", path)
+		t.Fatalf("decode private key %s: no PEM block", source)
 	}
 	if key, err := x509.ParsePKCS1PrivateKey(block.Bytes); err == nil {
 		return key
 	}
 	parsed, err := x509.ParsePKCS8PrivateKey(block.Bytes)
 	if err != nil {
-		t.Fatalf("parse private key %s: %v", path, err)
+		t.Fatalf("parse private key %s: %v", source, err)
 	}
 	key, ok := parsed.(*rsa.PrivateKey)
 	if !ok {
-		t.Fatalf("private key %s has type %T, want RSA", path, parsed)
+		t.Fatalf("private key %s has type %T, want RSA", source, parsed)
 	}
 	return key
 }

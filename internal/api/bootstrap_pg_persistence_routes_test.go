@@ -28,6 +28,18 @@ type activePostgresBootstrapFixture struct {
 	router  http.Handler
 }
 
+func (f *activePostgresBootstrapFixture) restart() *activePostgresBootstrapFixture {
+	f.t.Helper()
+
+	return newActivePostgresBootstrapFixture(f.t, f.pgState)
+}
+
+func (f *activePostgresBootstrapFixture) createOrganizationWithValidator(orgName string) signedClientRequestor {
+	f.t.Helper()
+
+	return createOrganizationAndCaptureValidator(f.t, f.router, orgName)
+}
+
 func TestActivePostgresBootstrapUserKeysAuthenticateAfterRestart(t *testing.T) {
 	fixture := newActivePostgresBootstrapFixture(t, pgtest.NewState(pgtest.Seed{}))
 	privateKey := mustParsePrivateKey(t)
