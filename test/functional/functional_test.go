@@ -18,9 +18,12 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/oberones/OpenCook/internal/testfixtures"
 )
 
 const (
@@ -190,6 +193,7 @@ func runCreatePhase(t *testing.T, client *functionalClient, cfg functionalConfig
 	}, http.StatusCreated, http.StatusConflict)
 
 	ensureFunctionalSearchFixtures(t, client, functionalSearchAlpha)
+	ensureFunctionalEncryptedDataBagFixture(t, client, cfg, testfixtures.EncryptedDataBagItem())
 
 	client.expectJSON(t, http.MethodPut, "/policy_groups/"+policyGroupName+"/policies/"+policyName, policyPayload(policyName, policyRevisionID), http.StatusCreated, http.StatusOK)
 	createPendingSandbox(t, client, cfg)
@@ -240,6 +244,7 @@ func runVerifyPhase(t *testing.T, client *functionalClient, cfg functionalConfig
 	searchBag := asMap(t, client.expectJSON(t, http.MethodGet, "/organizations/"+cfg.org+"/search/ponies?q=id:twilight", nil, http.StatusOK).JSON)
 	requireRows(t, searchBag, 1)
 	requireFunctionalSearchFixtures(t, client, cfg, functionalSearchAlpha)
+	requireFunctionalEncryptedDataBagFixture(t, client, cfg, encryptedPayloadWithID(testfixtures.EncryptedDataBagItem()))
 
 	assignmentPayload := asMap(t, client.expectJSON(t, http.MethodGet, "/policy_groups/"+policyGroupName+"/policies/"+policyName, nil, http.StatusOK).JSON)
 	if assignmentPayload["revision_id"] != policyRevisionID {
@@ -254,6 +259,8 @@ func runVerifyPhase(t *testing.T, client *functionalClient, cfg functionalConfig
 func runInvalidPhase(t *testing.T, client *functionalClient, cfg functionalConfig) {
 	beforeNode := asMap(t, client.expectJSON(t, http.MethodGet, "/nodes/twilight", nil, http.StatusOK).JSON)
 	beforeData := asMap(t, client.expectJSON(t, http.MethodGet, "/data/ponies/twilight", nil, http.StatusOK).JSON)
+	encryptedPath := functionalEncryptedDataBagItemPath()
+	beforeEncrypted := asMap(t, client.expectJSON(t, http.MethodGet, encryptedPath, nil, http.StatusOK).JSON)
 
 	client.expectJSON(t, http.MethodPut, "/nodes/twilight", map[string]any{
 		"name":       "rainbow",
@@ -275,6 +282,10 @@ func runInvalidPhase(t *testing.T, client *functionalClient, cfg functionalConfi
 			"policyfile_demo": map[string]any{"identifier": "f04cc40faf628253fe7d9566d66a1733fb1afbe9", "version": "1.2.3"},
 		},
 	}, http.StatusBadRequest)
+	badEncrypted := encryptedPayloadWithID(testfixtures.UpdatedEncryptedDataBagItem())
+	badEncrypted["id"] = "wrong-encrypted-id"
+	badEncrypted["environment"] = "functional-invalid-encrypted"
+	client.expectJSON(t, http.MethodPut, encryptedPath, badEncrypted, http.StatusBadRequest)
 
 	afterNode := asMap(t, client.expectJSON(t, http.MethodGet, "/nodes/twilight", nil, http.StatusOK).JSON)
 	if afterNode["name"] != beforeNode["name"] || afterNode["chef_environment"] != beforeNode["chef_environment"] {
@@ -284,20 +295,30 @@ func runInvalidPhase(t *testing.T, client *functionalClient, cfg functionalConfi
 	if afterData["id"] != beforeData["id"] || afterData["kind"] != beforeData["kind"] {
 		t.Fatalf("data bag item changed after invalid writes: before=%v after=%v", beforeData, afterData)
 	}
+	afterEncrypted := asMap(t, client.expectJSON(t, http.MethodGet, encryptedPath, nil, http.StatusOK).JSON)
+	if !reflect.DeepEqual(afterEncrypted, beforeEncrypted) {
+		t.Fatalf("encrypted data bag item changed after invalid writes: before=%v after=%v", beforeEncrypted, afterEncrypted)
+	}
+	requireFunctionalEncryptedDataBagFixture(t, client, cfg, beforeEncrypted)
 	requireFunctionalSearchFixtures(t, client, cfg, functionalSearchAlpha)
 }
 
 func runSearchUpdatePhase(t *testing.T, client *functionalClient, cfg functionalConfig) {
 	requireOperationalStatus(t, client)
 	updateFunctionalSearchFixtures(t, client, functionalSearchBeta)
+	updatedEncrypted := updateFunctionalEncryptedDataBagFixture(t, client, cfg, testfixtures.UpdatedEncryptedDataBagItem())
 	requireFunctionalSearchFixtures(t, client, cfg, functionalSearchBeta)
 	requireFunctionalSearchOldTermsAbsent(t, client, cfg, functionalSearchAlpha)
+	requireFunctionalEncryptedDataBagFixture(t, client, cfg, updatedEncrypted)
+	requireFunctionalEncryptedOldTermsAbsent(t, client, cfg, testfixtures.EncryptedDataBagItem())
 }
 
 func runVerifySearchUpdatedPhase(t *testing.T, client *functionalClient, cfg functionalConfig) {
 	requireOperationalStatus(t, client)
 	requireFunctionalSearchFixtures(t, client, cfg, functionalSearchBeta)
 	requireFunctionalSearchOldTermsAbsent(t, client, cfg, functionalSearchAlpha)
+	requireFunctionalEncryptedDataBagFixture(t, client, cfg, encryptedPayloadWithID(testfixtures.UpdatedEncryptedDataBagItem()))
+	requireFunctionalEncryptedOldTermsAbsent(t, client, cfg, testfixtures.EncryptedDataBagItem())
 }
 
 func runDeletePhase(t *testing.T, client *functionalClient, cfg functionalConfig) {
@@ -312,6 +333,8 @@ func runDeletePhase(t *testing.T, client *functionalClient, cfg functionalConfig
 	client.expectJSON(t, http.MethodDelete, "/policies/"+policyName+"/revisions/"+policyRevisionID, nil, http.StatusOK, http.StatusNotFound)
 
 	client.expectJSON(t, http.MethodDelete, "/data/"+functionalSearchBagName+"/"+functionalSearchItemID, nil, http.StatusOK, http.StatusNotFound)
+	client.expectJSON(t, http.MethodDelete, functionalEncryptedDataBagItemPath(), nil, http.StatusOK, http.StatusNotFound)
+	client.expectJSON(t, http.MethodDelete, functionalEncryptedDataBagPath(), nil, http.StatusOK, http.StatusNotFound)
 	client.expectJSON(t, http.MethodDelete, "/nodes/"+functionalSearchNodeName, nil, http.StatusOK, http.StatusNotFound)
 	client.expectJSON(t, http.MethodDelete, "/roles/"+functionalSearchRoleName, nil, http.StatusOK, http.StatusNotFound)
 	client.expectJSON(t, http.MethodDelete, "/environments/"+functionalSearchEnvironmentName, nil, http.StatusOK, http.StatusNotFound)
@@ -330,6 +353,7 @@ func runVerifyDeletedPhase(t *testing.T, client *functionalClient, cfg functiona
 	client.expectJSON(t, http.MethodGet, "/roles/web", nil, http.StatusNotFound)
 	client.expectJSON(t, http.MethodGet, "/environments/production", nil, http.StatusNotFound)
 	client.expectJSON(t, http.MethodGet, "/data/ponies", nil, http.StatusNotFound)
+	requireFunctionalEncryptedDataBagDeleted(t, client, cfg)
 	client.expectJSON(t, http.MethodGet, "/policy_groups/"+policyGroupName, nil, http.StatusNotFound)
 	client.expectJSON(t, http.MethodGet, "/policies/"+policyName+"/revisions/"+policyRevisionID, nil, http.StatusNotFound)
 	client.expectJSON(t, http.MethodGet, "/organizations/"+cfg.org, nil, http.StatusOK)
@@ -422,6 +446,112 @@ func requireFunctionalSearchFixturesDeleted(t *testing.T, client *functionalClie
 		requireSearchRows(t, client, "/organizations/"+cfg.org+"/search/"+functionalSearchBagName+"?q=id:"+functionalSearchItemID, 0)
 		client.expectJSON(t, http.MethodDelete, "/data/"+functionalSearchBagName, nil, http.StatusOK, http.StatusNotFound)
 	}
+}
+
+// ensureFunctionalEncryptedDataBagFixture creates or resets the deterministic
+// encrypted-looking data bag item through normal Chef-facing routes.
+func ensureFunctionalEncryptedDataBagFixture(t *testing.T, client *functionalClient, cfg functionalConfig, payload map[string]any) {
+	t.Helper()
+
+	bagName := testfixtures.EncryptedDataBagName()
+	itemPath := functionalEncryptedDataBagItemPath()
+	client.expectJSON(t, http.MethodPost, "/organizations/"+cfg.org+"/data", map[string]any{"name": bagName}, http.StatusCreated, http.StatusConflict)
+	resp := client.expectJSON(t, http.MethodPost, "/organizations/"+cfg.org+"/data/"+bagName, payload, http.StatusCreated, http.StatusConflict)
+	if resp.Status == http.StatusConflict {
+		client.expectJSON(t, http.MethodPut, itemPath, payload, http.StatusOK)
+	}
+}
+
+// updateFunctionalEncryptedDataBagFixture updates the encrypted-looking item and
+// returns the expected stored representation after URL-derived id normalization.
+func updateFunctionalEncryptedDataBagFixture(t *testing.T, client *functionalClient, cfg functionalConfig, payload map[string]any) map[string]any {
+	t.Helper()
+
+	path := "/organizations/" + cfg.org + "/data/" + testfixtures.EncryptedDataBagName() + "/" + testfixtures.EncryptedDataBagItemID()
+	client.expectJSON(t, http.MethodPut, path, payload, http.StatusOK)
+	return encryptedPayloadWithID(payload)
+}
+
+// requireFunctionalEncryptedDataBagFixture proves reads, full search, and
+// partial search all see the same opaque encrypted JSON without a secret.
+func requireFunctionalEncryptedDataBagFixture(t *testing.T, client *functionalClient, cfg functionalConfig, want map[string]any) {
+	t.Helper()
+
+	itemPath := functionalEncryptedDataBagItemPath()
+	itemPayload := asMap(t, client.expectJSON(t, http.MethodGet, itemPath, nil, http.StatusOK).JSON)
+	requireEncryptedDataBagPayload(t, itemPayload, want)
+
+	bagName := testfixtures.EncryptedDataBagName()
+	passwordCiphertext := encryptedEnvelopeString(t, want, "password", "encrypted_data")
+	fullSearch := requireSearchRows(t, client, searchQueryPath("/organizations/"+cfg.org+"/search/"+bagName, "password_encrypted_data:"+passwordCiphertext), 1)
+	row := asMap(t, searchRows(t, fullSearch)[0])
+	rawData := asMap(t, row["raw_data"])
+	requireEncryptedDataBagPayload(t, rawData, want)
+	assertFunctionalSearchBodyOmitsPlaintext(t, fullSearch)
+
+	requireFunctionalEncryptedPartialSearch(t, client, cfg, want)
+}
+
+// requireFunctionalEncryptedPartialSearch checks selected encrypted envelope
+// members and clear metadata fields through POST partial search.
+func requireFunctionalEncryptedPartialSearch(t *testing.T, client *functionalClient, cfg functionalConfig, want map[string]any) {
+	t.Helper()
+
+	bagName := testfixtures.EncryptedDataBagName()
+	body := map[string][]string{
+		"password_ciphertext": {"password", "encrypted_data"},
+		"password_iv":         {"password", "iv"},
+		"api_auth_tag":        {"api_key", "auth_tag"},
+		"environment":         {"environment"},
+	}
+	path := searchQueryPath("/organizations/"+cfg.org+"/search/"+bagName, "environment:"+fmt.Sprint(want["environment"]))
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		payload := asMap(t, client.expectJSON(t, http.MethodPost, path, body, http.StatusOK).JSON)
+		rows := searchRows(t, payload)
+		if len(rows) == 1 {
+			row := asMap(t, rows[0])
+			wantURL := "/organizations/" + cfg.org + "/data/" + bagName + "/" + testfixtures.EncryptedDataBagItemID()
+			if row["url"] != wantURL {
+				t.Fatalf("encrypted partial search url = %v, want %q", row["url"], wantURL)
+			}
+			data := asMap(t, row["data"])
+			if data["password_ciphertext"] != encryptedEnvelopeString(t, want, "password", "encrypted_data") ||
+				data["password_iv"] != encryptedEnvelopeString(t, want, "password", "iv") ||
+				data["api_auth_tag"] != encryptedEnvelopeString(t, want, "api_key", "auth_tag") ||
+				data["environment"] != want["environment"] {
+				t.Fatalf("encrypted partial search data = %v, want selected stored envelope fields from %v", data, want)
+			}
+			assertFunctionalSearchBodyOmitsPlaintext(t, payload)
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s rows = %v, want one encrypted partial search row", path, payload["rows"])
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+}
+
+// requireFunctionalEncryptedOldTermsAbsent proves OpenSearch stale terms are
+// removed after encrypted-looking data bag item updates.
+func requireFunctionalEncryptedOldTermsAbsent(t *testing.T, client *functionalClient, cfg functionalConfig, old map[string]any) {
+	t.Helper()
+
+	bagName := testfixtures.EncryptedDataBagName()
+	base := "/organizations/" + cfg.org + "/search/" + bagName
+	requireSearchRows(t, client, searchQueryPath(base, "environment:"+fmt.Sprint(old["environment"])), 0)
+	requireSearchRows(t, client, searchQueryPath(base, "password_encrypted_data:"+encryptedEnvelopeString(t, old, "password", "encrypted_data")), 0)
+	requireSearchRows(t, client, searchQueryPath(base, "api_key_auth_tag:"+encryptedEnvelopeString(t, old, "api_key", "auth_tag")), 0)
+}
+
+// requireFunctionalEncryptedDataBagDeleted verifies delete and post-restart
+// absence for both the data bag route and its dynamic search index.
+func requireFunctionalEncryptedDataBagDeleted(t *testing.T, client *functionalClient, cfg functionalConfig) {
+	t.Helper()
+
+	client.expectJSON(t, http.MethodGet, functionalEncryptedDataBagPath(), nil, http.StatusNotFound)
+	client.expectJSON(t, http.MethodGet, functionalEncryptedDataBagItemPath(), nil, http.StatusNotFound)
+	client.expectJSON(t, http.MethodGet, "/organizations/"+cfg.org+"/search/"+testfixtures.EncryptedDataBagName()+"?q=id:"+testfixtures.EncryptedDataBagItemID(), nil, http.StatusNotFound)
 }
 
 func ensureOrganization(t *testing.T, client *functionalClient, org string) map[string]any {
@@ -850,6 +980,71 @@ func searchDataBagItemPayload(id, marker string) map[string]any {
 			"functional_search_marker": marker,
 		},
 	}
+}
+
+// functionalEncryptedDataBagPath returns the default-org encrypted fixture bag
+// route so restart phases exercise the configured default organization alias.
+func functionalEncryptedDataBagPath() string {
+	return "/data/" + testfixtures.EncryptedDataBagName()
+}
+
+// functionalEncryptedDataBagItemPath returns the default-org encrypted fixture
+// item route used for read/update/delete lifecycle checks.
+func functionalEncryptedDataBagItemPath() string {
+	return functionalEncryptedDataBagPath() + "/" + testfixtures.EncryptedDataBagItemID()
+}
+
+// encryptedPayloadWithID copies a fixture payload and adds the URL-derived id
+// expected after PUT bodies omit the `id` field.
+func encryptedPayloadWithID(payload map[string]any) map[string]any {
+	out := testfixtures.CloneDataBagPayload(payload)
+	out["id"] = testfixtures.EncryptedDataBagItemID()
+	return out
+}
+
+// requireEncryptedDataBagPayload compares opaque JSON payloads exactly so the
+// functional suite catches accidental encrypted-envelope normalization.
+func requireEncryptedDataBagPayload(t *testing.T, got, want map[string]any) {
+	t.Helper()
+
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("encrypted data bag payload = %#v, want %#v", got, want)
+	}
+}
+
+// encryptedEnvelopeString extracts one stored encrypted envelope field from the
+// JSON fixture without teaching the server-side tests any crypto semantics.
+func encryptedEnvelopeString(t *testing.T, payload map[string]any, envelopeName, fieldName string) string {
+	t.Helper()
+
+	envelope := asMap(t, payload[envelopeName])
+	value, ok := envelope[fieldName].(string)
+	if !ok {
+		t.Fatalf("encrypted envelope %s.%s = %T(%v), want string", envelopeName, fieldName, envelope[fieldName], envelope[fieldName])
+	}
+	return value
+}
+
+// assertFunctionalSearchBodyOmitsPlaintext keeps the functional encrypted data
+// bag checks focused on stored ciphertext rather than invented plaintext values.
+func assertFunctionalSearchBodyOmitsPlaintext(t *testing.T, payload map[string]any) {
+	t.Helper()
+
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal search payload for plaintext check: %v", err)
+	}
+	for _, forbidden := range []string{"correct horse battery staple", "data_bag_secret"} {
+		if strings.Contains(string(raw), forbidden) {
+			t.Fatalf("search payload leaked %q: %s", forbidden, string(raw))
+		}
+	}
+}
+
+// searchQueryPath URL-encodes the q parameter so base64 ciphertext fields with
+// padding characters survive through the HTTP client and router unchanged.
+func searchQueryPath(path, query string) string {
+	return path + "?q=" + url.QueryEscape(query)
 }
 
 func policyPayload(name, revisionID string) map[string]any {

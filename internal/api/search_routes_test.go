@@ -18,6 +18,7 @@ import (
 	"github.com/oberones/OpenCook/internal/config"
 	"github.com/oberones/OpenCook/internal/search"
 	"github.com/oberones/OpenCook/internal/store/pg"
+	"github.com/oberones/OpenCook/internal/testfixtures"
 	"github.com/oberones/OpenCook/internal/version"
 )
 
@@ -699,6 +700,64 @@ func TestSearchDataBagEndpointSupportsFullAndPartialSearch(t *testing.T) {
 	}
 }
 
+// TestSearchDataBagEndpointTreatsEncryptedItemsAsOpaqueSearchDocuments pins the
+// memory-backed search contract for Chef encrypted-data-bag-looking payloads:
+// the server indexes and returns the stored JSON without decrypting or requiring
+// any data bag secret.
+func TestSearchDataBagEndpointTreatsEncryptedItemsAsOpaqueSearchDocuments(t *testing.T) {
+	router := newTestRouter(t)
+	bagName := testfixtures.EncryptedDataBagName()
+	itemID := testfixtures.EncryptedDataBagItemID()
+	passwordCiphertext := encryptedDataBagFixtureField(t, "password", "encrypted_data")
+	passwordIV := encryptedDataBagFixtureField(t, "password", "iv")
+	apiAuthTag := encryptedDataBagFixtureField(t, "api_key", "auth_tag")
+
+	createDataBagForTest(t, router, "/data", bagName)
+	createItemReq := newSignedJSONRequest(t, http.MethodPost, "/data/"+bagName, mustMarshalDataBagJSON(t, testfixtures.EncryptedDataBagItem()))
+	createItemRec := httptest.NewRecorder()
+	router.ServeHTTP(createItemRec, createItemReq)
+	if createItemRec.Code != http.StatusCreated {
+		t.Fatalf("create encrypted data bag item status = %d, want %d, body = %s", createItemRec.Code, http.StatusCreated, createItemRec.Body.String())
+	}
+
+	fullRec := serveSignedSearchRequestAs(t, router, "silent-bob", http.MethodGet, searchPath("/search/"+bagName, "password_encrypted_data:"+passwordCiphertext), "/search/"+bagName, nil)
+	assertEncryptedDataBagSearchFullRow(t, decodeSearchPayload(t, fullRec), bagName, itemID)
+	assertSearchResponseOmitsDecryptedPlaintext(t, fullRec)
+
+	partialRec := serveSignedSearchRequestAs(t, router, "silent-bob", http.MethodPost, searchPath("/organizations/ponyville/search/"+bagName, "environment:production AND api_key_auth_tag:"+apiAuthTag), "/organizations/ponyville/search/"+bagName, encryptedDataBagPartialSearchBody(t))
+	assertEncryptedDataBagPartialSearchRow(t, decodeSearchPayload(t, partialRec), "/organizations/ponyville/data/"+bagName+"/"+itemID)
+	assertSearchResponseOmitsDecryptedPlaintext(t, partialRec)
+
+	assertSearchTotal(t, router, searchPath("/search/"+bagName, "password_iv:"+passwordIV), "/search/"+bagName, 1)
+	assertSearchTotal(t, router, searchPath("/search/"+bagName, "encrypted_data:"+passwordCiphertext), "/search/"+bagName, 1)
+	assertSearchTotal(t, router, searchPath("/search/"+bagName, "environment:production"), "/search/"+bagName, 1)
+	assertSearchTotal(t, router, searchPath("/search/"+bagName, "raw_data_password_encrypted_data:"+passwordCiphertext), "/search/"+bagName, 0)
+	assertSearchTotal(t, router, searchPath("/search/"+bagName, "correct-horse-battery-staple"), "/search/"+bagName, 0)
+}
+
+// TestSearchDataBagEndpointFiltersDeniedEncryptedItems proves encrypted-looking
+// data bag documents still go through the normal ACL filter after query matching.
+func TestSearchDataBagEndpointFiltersDeniedEncryptedItems(t *testing.T) {
+	bagName := testfixtures.EncryptedDataBagName()
+	router, _ := newSearchTestRouterWithAuthorizer(t, func(state *bootstrap.Service) authz.Authorizer {
+		return &denySearchDocumentAfterIndexGateAuthorizer{
+			base:   authz.NewACLAuthorizer(state),
+			target: "data_bag:" + bagName,
+		}
+	})
+
+	createDataBagForTest(t, router, "/data", bagName)
+	createItemReq := newSignedJSONRequest(t, http.MethodPost, "/data/"+bagName, mustMarshalDataBagJSON(t, testfixtures.EncryptedDataBagItem()))
+	createItemRec := httptest.NewRecorder()
+	router.ServeHTTP(createItemRec, createItemReq)
+	if createItemRec.Code != http.StatusCreated {
+		t.Fatalf("create encrypted data bag item status = %d, want %d, body = %s", createItemRec.Code, http.StatusCreated, createItemRec.Body.String())
+	}
+
+	query := "password_encrypted_data:" + encryptedDataBagFixtureField(t, "password", "encrypted_data")
+	assertSearchTotal(t, router, searchPath("/search/"+bagName, query), "/search/"+bagName, 0)
+}
+
 func TestSearchDataBagEndpointReturnsChefStyleNotFound(t *testing.T) {
 	router := newTestRouter(t)
 
@@ -991,6 +1050,36 @@ func (a denyingSearchAuthorizer) Authorize(ctx context.Context, subject authz.Su
 	return a.base.Authorize(ctx, subject, action, resource)
 }
 
+// denySearchDocumentAfterIndexGateAuthorizer allows the search index gate but
+// denies the later hydrated-document read. Data bag search uses the parent bag
+// as both resources, so the call count lets tests prove post-query filtering.
+type denySearchDocumentAfterIndexGateAuthorizer struct {
+	base   authz.Authorizer
+	target string
+	reads  int
+}
+
+// Name identifies the test-only authorizer in failures without affecting route
+// behavior under the normal ACL authorizer.
+func (a *denySearchDocumentAfterIndexGateAuthorizer) Name() string {
+	return "deny-search-document-after-index-gate-test"
+}
+
+// Authorize delegates normal checks, but denies the second read of the target
+// resource so tests can distinguish route authorization from result filtering.
+func (a *denySearchDocumentAfterIndexGateAuthorizer) Authorize(ctx context.Context, subject authz.Subject, action authz.Action, resource authz.Resource) (authz.Decision, error) {
+	if action == authz.ActionRead && resource.Type+":"+resource.Name == a.target {
+		a.reads++
+		if a.reads > 1 {
+			return authz.Decision{Allowed: false, Reason: "denied for document filter test"}, nil
+		}
+	}
+	if a.base == nil {
+		return authz.Decision{Allowed: true, Reason: "no base authorizer"}, nil
+	}
+	return a.base.Authorize(ctx, subject, action, resource)
+}
+
 func newSearchTestRouterWithAuthorizer(t *testing.T, authorizerFactory func(*bootstrap.Service) authz.Authorizer) (http.Handler, *bootstrap.Service) {
 	t.Helper()
 
@@ -1082,15 +1171,140 @@ func newSearchTestRouterWithConfigAndAuthorizer(t *testing.T, cfg config.Config,
 	return router, state
 }
 
+// newSignedSearchRequest signs a search request as the default org member used
+// by most memory-backed route tests.
 func newSignedSearchRequest(t *testing.T, method, rawPath, signPath string, body []byte) *http.Request {
 	t.Helper()
 
+	return newSignedSearchRequestAs(t, "silent-bob", method, rawPath, signPath, body)
+}
+
+// newSignedSearchRequestAs lets search tests exercise the same signed route
+// surface with alternate actors when they need ACL-specific assertions.
+func newSignedSearchRequestAs(t *testing.T, userID, method, rawPath, signPath string, body []byte) *http.Request {
+	t.Helper()
+
 	req := httptest.NewRequest(method, rawPath, bytes.NewReader(body))
-	applySignedHeaders(t, req, "silent-bob", "", method, signPath, body, signDescription{
+	applySignedHeaders(t, req, userID, "", method, signPath, body, signDescription{
 		Version:   "1.1",
 		Algorithm: "sha1",
 	}, "2026-04-02T15:04:05Z")
 	return req
+}
+
+// serveSignedSearchRequestAs performs a signed search request and fails fast on
+// non-200 responses so search-shape assertions can stay focused on payloads.
+func serveSignedSearchRequestAs(t *testing.T, router http.Handler, userID, method, rawPath, signPath string, body []byte) *httptest.ResponseRecorder {
+	t.Helper()
+
+	req := newSignedSearchRequestAs(t, userID, method, rawPath, signPath, body)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("%s %s status = %d, want %d, body = %s", method, rawPath, rec.Code, http.StatusOK, rec.Body.String())
+	}
+	return rec
+}
+
+// encryptedDataBagFixtureField extracts a nested encrypted envelope value from
+// the shared fixture so search tests do not duplicate ciphertext constants.
+func encryptedDataBagFixtureField(t *testing.T, envelopeName, fieldName string) string {
+	t.Helper()
+
+	envelope, ok := testfixtures.EncryptedDataBagItem()[envelopeName].(map[string]any)
+	if !ok {
+		t.Fatalf("fixture field %q = %T, want envelope object", envelopeName, testfixtures.EncryptedDataBagItem()[envelopeName])
+	}
+	value, ok := envelope[fieldName].(string)
+	if !ok {
+		t.Fatalf("fixture field %s.%s = %T, want string", envelopeName, fieldName, envelope[fieldName])
+	}
+	return value
+}
+
+// encryptedDataBagPartialSearchBody selects encrypted envelope members plus a
+// clear metadata field, matching how Chef partial search returns stored values.
+func encryptedDataBagPartialSearchBody(t *testing.T) []byte {
+	t.Helper()
+
+	body, err := json.Marshal(map[string][]string{
+		"password_ciphertext": {"password", "encrypted_data"},
+		"password_iv":         {"password", "iv"},
+		"api_auth_tag":        {"api_key", "auth_tag"},
+		"environment":         {"environment"},
+	})
+	if err != nil {
+		t.Fatalf("json.Marshal(encrypted partial search body) error = %v", err)
+	}
+	return body
+}
+
+// assertEncryptedDataBagSearchFullRow checks the Chef-style full search row and
+// confirms encrypted-looking JSON is nested under raw_data exactly as stored.
+func assertEncryptedDataBagSearchFullRow(t *testing.T, payload map[string]any, bagName, itemID string) {
+	t.Helper()
+
+	rows := payload["rows"].([]any)
+	if payload["total"] != float64(1) || len(rows) != 1 {
+		t.Fatalf("encrypted full search payload = %v, want one row", payload)
+	}
+	row := rows[0].(map[string]any)
+	wantName := "data_bag_item_" + bagName + "_" + itemID
+	if row["name"] != wantName {
+		t.Fatalf("encrypted search row name = %v, want %q", row["name"], wantName)
+	}
+	if row["data_bag"] != bagName {
+		t.Fatalf("encrypted search row data_bag = %v, want %q", row["data_bag"], bagName)
+	}
+	rawData, ok := row["raw_data"].(map[string]any)
+	if !ok {
+		t.Fatalf("encrypted search row raw_data = %T(%v), want object", row["raw_data"], row["raw_data"])
+	}
+	assertRawDataBagItemPayload(t, rawData, testfixtures.EncryptedDataBagItem())
+}
+
+// assertEncryptedDataBagPartialSearchRow verifies partial search returns only
+// the requested stored envelope fields and clear metadata values.
+func assertEncryptedDataBagPartialSearchRow(t *testing.T, payload map[string]any, wantURL string) {
+	t.Helper()
+
+	rows := payload["rows"].([]any)
+	if payload["total"] != float64(1) || len(rows) != 1 {
+		t.Fatalf("encrypted partial search payload = %v, want one row", payload)
+	}
+	row := rows[0].(map[string]any)
+	if row["url"] != wantURL {
+		t.Fatalf("encrypted partial search url = %v, want %q", row["url"], wantURL)
+	}
+	data := row["data"].(map[string]any)
+	if data["password_ciphertext"] != encryptedDataBagFixtureField(t, "password", "encrypted_data") {
+		t.Fatalf("partial password_ciphertext = %v, want stored ciphertext", data["password_ciphertext"])
+	}
+	if data["password_iv"] != encryptedDataBagFixtureField(t, "password", "iv") {
+		t.Fatalf("partial password_iv = %v, want stored iv", data["password_iv"])
+	}
+	if data["api_auth_tag"] != encryptedDataBagFixtureField(t, "api_key", "auth_tag") {
+		t.Fatalf("partial api_auth_tag = %v, want stored auth tag", data["api_auth_tag"])
+	}
+	if data["environment"] != "production" {
+		t.Fatalf("partial environment = %v, want production", data["environment"])
+	}
+}
+
+// assertSearchResponseOmitsDecryptedPlaintext guards against accidentally
+// decoding or inventing plaintext while handling encrypted-looking envelopes.
+func assertSearchResponseOmitsDecryptedPlaintext(t *testing.T, rec *httptest.ResponseRecorder) {
+	t.Helper()
+
+	for _, forbidden := range [][]byte{
+		[]byte("example-password-ciphertext"),
+		[]byte("correct horse battery staple"),
+		[]byte("data_bag_secret"),
+	} {
+		if bytes.Contains(rec.Body.Bytes(), forbidden) {
+			t.Fatalf("search response unexpectedly exposed plaintext marker %q: %s", string(forbidden), rec.Body.String())
+		}
+	}
 }
 
 func createSearchNode(t *testing.T, router http.Handler, name string, defaults, normal map[string]any, runList []string) {

@@ -45,7 +45,7 @@ Status: in progress
 - `/roles/{name}/environments` and `/roles/{name}/environments/{environment}` now also pin ambiguous/configured default-org handling, missing-organization and missing-role `404`s, missing-role-over-missing-environment precedence, trailing-slash acceptance, method-not-allowed with `Allow: GET`, extra-path `404`s, and role-read-only auth parity on both default-org and org-scoped routes
 - in-memory data bag list/get/create/delete behavior is implemented for both default-org and explicit-org routes
 - in-memory data bag item get/create/update/delete behavior is implemented with Chef-style response shapes and error messages
-- encrypted data bag compatibility is not yet an explicit tested slice and still needs dedicated coverage
+- encrypted-looking data bag item payloads are now pinned as opaque JSON across create/read/update/delete, invalid-write no-mutation, ACL behavior, PostgreSQL rehydration, memory/OpenSearch search, operational reindex/check/repair, and functional Docker coverage
 - default-org and explicit-org client read/create/delete routes are now available too
 - default-org and explicit-org node routes are both available for the first object slice
 - default-org and explicit-org environment routes are now available too
@@ -54,7 +54,7 @@ Status: in progress
 - creator-aware node ACLs now allow clients to manage their own node objects
 - PostgreSQL-backed persistence for nodes, environments, roles, data bags/items, policies, policy groups, sandbox metadata, checksum references, and object ACLs is now live when PostgreSQL is configured, with restart/rehydration coverage for route reads, search-facing state, and depsolver-visible state
 - invalid writes and failed persistence writes now have no-mutation/rollback coverage across the active PostgreSQL path and the bootstrap object-store seam
-- the rest of the object surface still needs follow-on compatibility slices where upstream behavior is not yet pinned, especially encrypted data bags and deeper API-version edge cases
+- the rest of the object surface still needs follow-on compatibility slices where upstream behavior is not yet pinned, especially deeper API-version edge cases
 
 ## Milestone 5: Search Compatibility
 
@@ -66,17 +66,17 @@ Status: in progress
 - search results are filtered through current read authz before pagination is applied
 - node partial search now reflects merged attribute precedence for search-facing behavior
 - default-org client search results now point at live `/clients/...` routes instead of org-only URLs
-- data bag search now mirrors Chef-style wrapper results and raw-item partial search behavior
+- data bag search now mirrors Chef-style wrapper results, encrypted-looking item opacity, and raw-item partial search behavior
 - simple `AND`/`NOT` matching and escaped-slash prefix handling are now covered for the in-memory compatibility layer
 - active OpenSearch-backed search is now live when PostgreSQL and `OPENCOOK_OPENSEARCH_URL` are configured, with PostgreSQL-backed state remaining authoritative
 - active OpenSearch startup rebuilds the `chef` index from persisted clients, environments, nodes, roles, and data bag items, and successful object mutations update/delete derived search documents
 - route coverage now pins OpenSearch-backed full search, partial search, pagination/order, ACL filtering after provider matches, stale-ID ignoring, active status reporting, and stable `503 search_unavailable` degradation for provider failures
-- the functional Docker stack now proves active OpenSearch search lifecycle behavior across restart, update/stale-term removal, delete, and post-restart absence
-- `opencook admin` now provides OpenSearch reindex, consistency check, and consistency repair commands that rebuild and compare derived documents from PostgreSQL-backed authoritative state, with functional Docker coverage for stale-document detection, dry-run repair, actual repair, and post-restart clean verification
+- the functional Docker stack now proves active OpenSearch search lifecycle behavior across restart, update/stale-term removal, delete, and post-restart absence, including encrypted-looking data bag item coverage
+- `opencook admin` now provides OpenSearch reindex, consistency check, and consistency repair commands that rebuild and compare derived documents from PostgreSQL-backed authoritative state, with encrypted data bag index coverage and functional Docker coverage for stale-document detection, dry-run repair, actual repair, and post-restart clean verification
 - policyfile routes are now live for both default-org and explicit-org `/policies` and `/policy_groups`
 - policy revision storage, revision lookup, policy-group listing, policy-group assignment, and richer canonical payload round-tripping are implemented and now persist through PostgreSQL when configured
 - policy payload validation now covers more cookbook-lock and solution-dependency structure, while node policy refs remain compatibility-safe searchable fields instead of enforced foreign keys
-- richer OpenSearch capability/version negotiation, broader Lucene/query-string semantics, cookbook/policy/sandbox search coverage, and encrypted data bag search semantics remain follow-on work; encrypted data bag compatibility is the next recommended bucket
+- richer OpenSearch capability/version negotiation, broader Lucene/query-string semantics, and cookbook/policy/sandbox search coverage remain follow-on work; broader Lucene/query-string search compatibility is the next recommended bucket
 
 ## Milestone 6: Cookbook and Blob Workflows
 
@@ -214,8 +214,8 @@ Status: in progress
 
 - the first `opencook admin` path is live for signed HTTP-backed user/org/key/group/container/ACL inspection and live-safe management workflows without changing Chef-facing API contracts
 - direct PostgreSQL repair-style commands for org membership, server-admin membership, group membership, and ACL replacement are offline-gated until cross-process cache invalidation exists
-- OpenSearch reindex, consistency check, and repair commands can rebuild and compare derived documents from PostgreSQL-backed state
-- functional Docker coverage now proves admin status, live-safe user/org/key operations, group/container/ACL inspection, complete org reindex, stale OpenSearch detection, dry-run repair, repair, and post-restart verification
+- OpenSearch reindex, consistency check, and repair commands can rebuild and compare derived documents from PostgreSQL-backed state, including encrypted data bag indexes
+- functional Docker coverage now proves admin status, live-safe user/org/key operations, group/container/ACL inspection, complete org reindex, encrypted data bag scoped reindex/check/repair, stale OpenSearch detection, dry-run repair, repair, and post-restart verification
 - add full Chef-style documentation for admin and operational workflows, even if the final implementation lands as CLI, API, or a mixed path
 - add health, metrics, backup, and migration/cutover commands beyond the first reindex/repair slice
 - define migration path from existing Chef Infra Server installs

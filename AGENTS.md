@@ -257,8 +257,9 @@ Implemented so far:
   - merged node attributes for search-facing partial search
   - Chef-style wrapped data bag search rows
   - raw-item data bag partial search rows
+  - encrypted-looking data bag full/partial search and OpenSearch reindex/check/repair coverage without server-side secrets
   - simple `AND`/`NOT` matching and escaped-slash prefix handling
-  - active OpenSearch-backed mode when PostgreSQL and `OPENCOOK_OPENSEARCH_URL` are configured, including startup rebuild from persisted state, successful mutation upserts/deletes, stale-ID ignoring after PostgreSQL hydration, ACL filtering after provider matches, provider-unavailable `503 search_unavailable` degradation, truthful status reporting, Docker functional coverage for restart/update/delete lifecycle behavior, and operational reindex/check/repair coverage
+  - active OpenSearch-backed mode when PostgreSQL and `OPENCOOK_OPENSEARCH_URL` are configured, including startup rebuild from persisted state, successful mutation upserts/deletes, stale-ID ignoring after PostgreSQL hydration, ACL filtering after provider matches, provider-unavailable `503 search_unavailable` degradation, truthful status reporting, Docker functional coverage for restart/update/delete lifecycle behavior including encrypted data bag items, and operational reindex/check/repair coverage
 - the first data bag slice:
   - `/data`
   - `/data/{bag}`
@@ -269,6 +270,7 @@ Implemented so far:
   - bag list/get/create/delete
   - item get/create/update/delete
   - Chef-style item wrapper/error response shaping
+  - encrypted-looking item payload compatibility as a server-opacity contract: create/read/update/delete, opaque JSON preservation, compatible `id` handling, invalid-write no-mutation, parent-bag ACL behavior, PostgreSQL rehydration, memory/OpenSearch search, operational reindex/check/repair, and functional Docker coverage
 - actor key lifecycle for users and clients:
   - list
   - get
@@ -284,7 +286,7 @@ Current architectural reality:
 - implemented core object API state can now be persisted in PostgreSQL and rehydrated into the existing bootstrap service, search-facing state, depsolver-visible state, sandbox checksum references, and object ACLs
 - org bootstrap returns validator key material, and generated `<org>-validator` clients can now register normal clients through the stock bootstrap routes
 - the first `opencook admin` operational surface is live, but full `chef-server-ctl` parity, backup/restore, service management, migration/cutover tooling, and online direct PostgreSQL mutation remain future work
-- data bag CRUD is live, but encrypted data bag compatibility is not yet explicitly pinned as a tested slice
+- data bag CRUD and encrypted data bag payload opacity are now explicitly pinned as tested compatibility slices
 - PostgreSQL is active for cookbook metadata, bootstrap core state, and implemented core object API state; OpenSearch-backed search is active for the implemented search indexes when PostgreSQL and `OPENCOOK_OPENSEARCH_URL` are configured, with the memory adapter preserved as the no-OpenSearch fallback
 - the blob layer now has in-memory, filesystem-backed, and S3-compatible compatibility implementations for sandbox checksum uploads/downloads and cookbook file URLs, and the S3-compatible path now includes request-construction parity, configurable timeout/retry plus `Retry-After` behavior, transport/status classification, malformed-endpoint and missing-credential diagnostics, and provider-backed `blob_unavailable` degradation on the current sandbox/cookbook flows
 
@@ -450,7 +452,7 @@ These areas are still intentionally incomplete:
 - remaining core Chef object compatibility beyond the currently pinned nodes, environments, roles, data bags, policies, and sandbox flows
 - deeper node and environment compatibility such as cookbook constraint edge cases and linked object behavior
 - deeper role compatibility beyond the current normalization and linked-environment read behavior
-- broader search semantics beyond the current compatibility subset, especially richer Lucene-style query translation and wider object coverage
+- broader search semantics beyond the current compatibility subset, especially richer Lucene/query-string translation and wider object coverage
 - operational parity and migration tooling
 
-The next likely major slice is encrypted data bag compatibility, unless broader Lucene/query-string semantics, cookbook/policy/sandbox search coverage, or migration/cutover tooling becomes more urgent.
+The next likely major slice is broader Lucene/query-string search compatibility, unless cookbook/policy/sandbox search coverage, deeper API-version-specific object semantics, or migration/cutover tooling becomes more urgent.
