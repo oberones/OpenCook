@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -18,6 +19,7 @@ import (
 	"github.com/oberones/OpenCook/internal/bootstrap"
 	"github.com/oberones/OpenCook/internal/search"
 	"github.com/oberones/OpenCook/internal/store/pg/pgtest"
+	"github.com/oberones/OpenCook/internal/testfixtures"
 )
 
 func TestActivePostgresOpenSearchRoutesHydratePersistedSearchResults(t *testing.T) {
@@ -265,6 +267,38 @@ func TestActivePostgresOpenSearchQueryUnavailableUsesStableError(t *testing.T) {
 	}
 }
 
+// TestActivePostgresOpenSearchEncryptedDataBagQueryUnavailableUsesStableError
+// keeps Chef-facing provider-unavailable behavior redacted for encrypted-looking
+// data bag search routes as well as built-in indexes.
+func TestActivePostgresOpenSearchEncryptedDataBagQueryUnavailableUsesStableError(t *testing.T) {
+	persisted := newActivePostgresBootstrapFixture(t, pgtest.NewState(pgtest.Seed{}))
+	fixture := newActivePostgresOpenSearchFixture(t, persisted.pgState, unavailableAPIOpenSearchTransport{}, nil)
+	fixture.createOrganizationWithValidator("ponyville")
+
+	bagName := testfixtures.EncryptedDataBagName()
+	bagPath := "/organizations/ponyville/data/" + bagName
+	sendActivePostgresPivotalJSON(t, fixture.router, http.MethodPost, "/organizations/ponyville/data", mustMarshalDataBagJSON(t, map[string]any{"name": bagName}), http.StatusCreated)
+	sendActivePostgresPivotalJSON(t, fixture.router, http.MethodPost, bagPath, mustMarshalDataBagJSON(t, testfixtures.EncryptedDataBagItem()), http.StatusCreated)
+
+	rawPath := searchPath("/search/"+bagName, "password_encrypted_data:"+encryptedDataBagFixtureField(t, "password", "encrypted_data"))
+	req := httptest.NewRequest(http.MethodGet, rawPath, nil)
+	applySignedHeaders(t, req, "pivotal", "", http.MethodGet, "/search/"+bagName, nil, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	rec := httptest.NewRecorder()
+	fixture.router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("encrypted unavailable search status = %d, want %d, body = %s", rec.Code, http.StatusServiceUnavailable, rec.Body.String())
+	}
+	assertAPIError(t, rec, "search_unavailable")
+	for _, leaked := range []string{"opensearch.example", "provider body", "internal cluster", "correct horse battery staple"} {
+		if strings.Contains(rec.Body.String(), leaked) {
+			t.Fatalf("encrypted unavailable search leaked %q in body: %s", leaked, rec.Body.String())
+		}
+	}
+}
+
 func TestActivePostgresOpenSearchIndexingFailuresDoNotRollbackObjectPersistence(t *testing.T) {
 	indexer := &failingAPIDocumentIndexer{}
 	fixture := newActivePostgresBootstrapFixtureWithSearchIndexerAndAuthorizer(t, pgtest.NewState(pgtest.Seed{}), nil, indexer, nil)
@@ -300,6 +334,89 @@ func TestActivePostgresOpenSearchIndexingFailuresDoNotRollbackObjectPersistence(
 	if missingRec.Code != http.StatusNotFound {
 		t.Fatalf("node deleted despite failed index delete status = %d, want %d, body = %s", missingRec.Code, http.StatusNotFound, missingRec.Body.String())
 	}
+}
+
+// TestActivePostgresOpenSearchEncryptedDataBagInvalidWritesDoNotMutateDocuments
+// proves invalid encrypted-looking item writes do not emit stale OpenSearch
+// document changes when provider-backed indexing is active.
+func TestActivePostgresOpenSearchEncryptedDataBagInvalidWritesDoNotMutateDocuments(t *testing.T) {
+	transport := newStatefulAPIOpenSearchTransport(t)
+	client, err := search.NewOpenSearchClient("http://opensearch.example", search.WithOpenSearchTransport(transport))
+	if err != nil {
+		t.Fatalf("NewOpenSearchClient() error = %v", err)
+	}
+	fixture := newActivePostgresOpenSearchIndexingFixture(t, pgtest.NewState(pgtest.Seed{}), client, nil)
+	fixture.createOrganizationWithValidator("ponyville")
+
+	bagName := testfixtures.EncryptedDataBagName()
+	itemID := testfixtures.EncryptedDataBagItemID()
+	bagPath := "/organizations/ponyville/data/" + bagName
+	itemPath := bagPath + "/" + itemID
+	sendActivePostgresPivotalJSON(t, fixture.router, http.MethodPost, "/organizations/ponyville/data", mustMarshalDataBagJSON(t, map[string]any{"name": bagName}), http.StatusCreated)
+	sendActivePostgresPivotalJSON(t, fixture.router, http.MethodPost, bagPath, mustMarshalDataBagJSON(t, testfixtures.EncryptedDataBagItem()), http.StatusCreated)
+	assertActiveOpenSearchFullRows(t, fixture.router, searchPath("/search/"+bagName, "id:"+itemID), "/search/"+bagName, []string{"data_bag_item_" + bagName + "_" + itemID})
+
+	beforeInvalidWrites := transport.SnapshotDocuments()
+	mismatchedUpdate := encryptedEnvelopeVariantPayload(t, itemID, func(envelope map[string]any) {
+		envelope["encrypted_data"] = "opensearch-should-not-see-this"
+	})
+	mismatchedUpdate["id"] = "wrong-item"
+	mismatchedUpdate["environment"] = "blocked"
+	sendActivePostgresPivotalJSON(t, fixture.router, http.MethodPut, itemPath, mustMarshalDataBagJSON(t, mismatchedUpdate), http.StatusBadRequest)
+
+	missingID := testfixtures.CloneDataBagPayload(testfixtures.EncryptedDataBagItem())
+	delete(missingID, "id")
+	sendActivePostgresPivotalJSON(t, fixture.router, http.MethodPost, bagPath, mustMarshalDataBagJSON(t, missingID), http.StatusBadRequest)
+
+	transport.RequireDocuments(t, beforeInvalidWrites)
+	assertActiveOpenSearchFullRows(t, fixture.router, searchPath("/search/"+bagName, "id:"+itemID), "/search/"+bagName, []string{"data_bag_item_" + bagName + "_" + itemID})
+	assertActiveOpenSearchFullRows(t, fixture.router, searchPath("/search/"+bagName, "environment:blocked"), "/search/"+bagName, []string{})
+	assertActiveOpenSearchFullRows(t, fixture.router, searchPath("/search/"+bagName, "id:wrong-item"), "/search/"+bagName, []string{})
+}
+
+// TestActivePostgresOpenSearchEncryptedDataBagSearchAndPartialSearch pins the
+// active PostgreSQL plus OpenSearch-backed path to the same opaque encrypted
+// data bag search contract as the in-memory search index.
+func TestActivePostgresOpenSearchEncryptedDataBagSearchAndPartialSearch(t *testing.T) {
+	transport := newStatefulAPIOpenSearchTransport(t)
+	client, err := search.NewOpenSearchClient("http://opensearch.example", search.WithOpenSearchTransport(transport))
+	if err != nil {
+		t.Fatalf("NewOpenSearchClient() error = %v", err)
+	}
+	fixture := newActivePostgresOpenSearchIndexingFixture(t, pgtest.NewState(pgtest.Seed{}), client, nil)
+	fixture.createOrganizationWithValidator("ponyville")
+
+	bagName := testfixtures.EncryptedDataBagName()
+	itemID := testfixtures.EncryptedDataBagItemID()
+	bagPath := "/organizations/ponyville/data/" + bagName
+	passwordCiphertext := encryptedDataBagFixtureField(t, "password", "encrypted_data")
+	passwordIV := encryptedDataBagFixtureField(t, "password", "iv")
+	apiAuthTag := encryptedDataBagFixtureField(t, "api_key", "auth_tag")
+
+	sendActivePostgresPivotalJSON(t, fixture.router, http.MethodPost, "/organizations/ponyville/data", mustMarshalDataBagJSON(t, map[string]any{"name": bagName}), http.StatusCreated)
+	sendActivePostgresPivotalJSON(t, fixture.router, http.MethodPost, bagPath, mustMarshalDataBagJSON(t, testfixtures.EncryptedDataBagItem()), http.StatusCreated)
+
+	fullRec := performActiveOpenSearchRequest(t, fixture.router, http.MethodGet, searchPath("/search/"+bagName, "password_encrypted_data:"+passwordCiphertext), "/search/"+bagName, nil)
+	assertEncryptedDataBagSearchFullRow(t, decodeSearchPayload(t, fullRec), bagName, itemID)
+	assertSearchResponseOmitsDecryptedPlaintext(t, fullRec)
+
+	partialRec := performActiveOpenSearchRequest(t, fixture.router, http.MethodPost, searchPath("/organizations/ponyville/search/"+bagName, "environment:production AND api_key_auth_tag:"+apiAuthTag), "/organizations/ponyville/search/"+bagName, encryptedDataBagPartialSearchBody(t))
+	assertEncryptedDataBagPartialSearchRow(t, decodeSearchPayload(t, partialRec), "/organizations/ponyville/data/"+bagName+"/"+itemID)
+	assertSearchResponseOmitsDecryptedPlaintext(t, partialRec)
+
+	assertActiveOpenSearchFullRows(t, fixture.router, searchPath("/search/"+bagName, "password_iv:"+passwordIV), "/search/"+bagName, []string{"data_bag_item_" + bagName + "_" + itemID})
+	assertActiveOpenSearchFullRows(t, fixture.router, searchPath("/search/"+bagName, "encrypted_data:"+passwordCiphertext), "/search/"+bagName, []string{"data_bag_item_" + bagName + "_" + itemID})
+	assertActiveOpenSearchFullRows(t, fixture.router, searchPath("/search/"+bagName, "environment:production"), "/search/"+bagName, []string{"data_bag_item_" + bagName + "_" + itemID})
+	assertActiveOpenSearchFullRows(t, fixture.router, searchPath("/search/"+bagName, "raw_data_password_encrypted_data:"+passwordCiphertext), "/search/"+bagName, []string{})
+	assertActiveOpenSearchFullRows(t, fixture.router, searchPath("/search/"+bagName, "correct-horse-battery-staple"), "/search/"+bagName, []string{})
+
+	denied := newActivePostgresOpenSearchFixture(t, fixture.pgState, transport, func(state *bootstrap.Service) authz.Authorizer {
+		return &denySearchDocumentAfterIndexGateAuthorizer{
+			base:   authz.NewACLAuthorizer(state),
+			target: "data_bag:" + bagName,
+		}
+	})
+	assertActiveOpenSearchFullRows(t, denied.router, searchPath("/search/"+bagName, "password_encrypted_data:"+passwordCiphertext), "/search/"+bagName, []string{})
 }
 
 func newActivePostgresOpenSearchFixture(t *testing.T, pgState *pgtest.State, transport search.OpenSearchTransport, authorizerFactory func(*bootstrap.Service) authz.Authorizer) *activePostgresBootstrapFixture {
@@ -637,6 +754,30 @@ func newStatefulAPIOpenSearchTransport(t *testing.T) *statefulAPIOpenSearchTrans
 	return &statefulAPIOpenSearchTransport{
 		t:    t,
 		docs: make(map[string]map[string]any),
+	}
+}
+
+// SnapshotDocuments returns a deep copy of fake OpenSearch documents so tests
+// can verify failed Chef-facing mutations did not emit provider-side changes.
+func (tr *statefulAPIOpenSearchTransport) SnapshotDocuments() map[string]map[string]any {
+	tr.mu.Lock()
+	defer tr.mu.Unlock()
+
+	out := make(map[string]map[string]any, len(tr.docs))
+	for id, doc := range tr.docs {
+		out[id] = cloneOpenSearchSource(doc)
+	}
+	return out
+}
+
+// RequireDocuments compares the fake OpenSearch document set against a prior
+// snapshot and fails with the complete diff context when unexpected drift occurs.
+func (tr *statefulAPIOpenSearchTransport) RequireDocuments(t *testing.T, want map[string]map[string]any) {
+	t.Helper()
+
+	got := tr.SnapshotDocuments()
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("OpenSearch documents = %#v, want %#v", got, want)
 	}
 }
 

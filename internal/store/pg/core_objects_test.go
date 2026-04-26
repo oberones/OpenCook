@@ -1,6 +1,7 @@
 package pg
 
 import (
+	"encoding/json"
 	"reflect"
 	"strings"
 	"testing"
@@ -8,6 +9,7 @@ import (
 
 	"github.com/oberones/OpenCook/internal/authz"
 	"github.com/oberones/OpenCook/internal/bootstrap"
+	"github.com/oberones/OpenCook/internal/testfixtures"
 )
 
 func TestCoreObjectRepositoryExposesCoreObjectMigration(t *testing.T) {
@@ -102,6 +104,33 @@ func TestCoreObjectRepositoryEncodeDecodeRows(t *testing.T) {
 	if !reflect.DeepEqual(got, state) {
 		t.Fatalf("DecodeCoreObjects() = %#v, want %#v", got, state)
 	}
+}
+
+// TestCoreObjectRepositoryEncodeDecodeEncryptedDataBagItems pins the pg row
+// codec for encrypted-looking data bag payloads as opaque JSON, including
+// nested arrays, nulls, numbers, booleans, and unknown envelope fields.
+func TestCoreObjectRepositoryEncodeDecodeEncryptedDataBagItems(t *testing.T) {
+	repo := New("postgres://example").CoreObjects()
+	state := encryptedDataBagCoreObjectState()
+
+	rows, err := repo.EncodeCoreObjects(state)
+	if err != nil {
+		t.Fatalf("EncodeCoreObjects() error = %v", err)
+	}
+	if len(rows.DataBags) != 1 {
+		t.Fatalf("len(rows.DataBags) = %d, want 1", len(rows.DataBags))
+	}
+	if len(rows.DataBagItems) != 2 {
+		t.Fatalf("len(rows.DataBagItems) = %d, want 2", len(rows.DataBagItems))
+	}
+	assertEncodedDataBagItemPayload(t, rows, testfixtures.EncryptedDataBagName(), testfixtures.EncryptedDataBagItemID(), testfixtures.EncryptedDataBagItem())
+	assertEncodedDataBagItemPayload(t, rows, testfixtures.EncryptedDataBagName(), "nested", testfixtures.NestedEncryptedDataBagItem())
+
+	got, err := repo.DecodeCoreObjects(rows)
+	if err != nil {
+		t.Fatalf("DecodeCoreObjects() error = %v", err)
+	}
+	assertEncryptedDataBagCoreObjectState(t, got, state)
 }
 
 func sampleCoreObjectState() bootstrap.CoreObjectState {
@@ -206,4 +235,80 @@ func sampleCoreObjectState() bootstrap.CoreObjectState {
 			},
 		},
 	}
+}
+
+// encryptedDataBagCoreObjectState builds a minimal persisted-state fixture for
+// encrypted data bags so pg codec tests do not depend on unrelated core objects.
+func encryptedDataBagCoreObjectState() bootstrap.CoreObjectState {
+	bagName := testfixtures.EncryptedDataBagName()
+	itemID := testfixtures.EncryptedDataBagItemID()
+	nestedPayload := testfixtures.NestedEncryptedDataBagItem()
+	nestedID := nestedPayload["id"].(string)
+
+	return bootstrap.CoreObjectState{
+		Orgs: map[string]bootstrap.CoreObjectOrganizationState{
+			"ponyville": {
+				DataBags: map[string]bootstrap.DataBag{
+					bagName: {
+						Name:      bagName,
+						JSONClass: "Chef::DataBag",
+						ChefType:  "data_bag",
+					},
+				},
+				DataBagItems: map[string]map[string]bootstrap.DataBagItem{
+					bagName: {
+						itemID: {
+							ID:      itemID,
+							RawData: testfixtures.EncryptedDataBagItem(),
+						},
+						nestedID: {
+							ID:      nestedID,
+							RawData: nestedPayload,
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+// assertEncryptedDataBagCoreObjectState compares only the data bag families in
+// a decoded minimal fixture because DecodeCoreObjects initializes unrelated
+// object maps to empty maps instead of preserving nils.
+func assertEncryptedDataBagCoreObjectState(t *testing.T, got bootstrap.CoreObjectState, want bootstrap.CoreObjectState) {
+	t.Helper()
+
+	gotOrg := got.Orgs["ponyville"]
+	wantOrg := want.Orgs["ponyville"]
+	if !reflect.DeepEqual(gotOrg.DataBags, wantOrg.DataBags) {
+		t.Fatalf("decoded data bags = %#v, want %#v", gotOrg.DataBags, wantOrg.DataBags)
+	}
+	if !reflect.DeepEqual(gotOrg.DataBagItems, wantOrg.DataBagItems) {
+		t.Fatalf("decoded data bag items = %#v, want %#v", gotOrg.DataBagItems, wantOrg.DataBagItems)
+	}
+}
+
+// assertEncodedDataBagItemPayload decodes an individual encoded row before the
+// repository decode step so regressions in the stored JSON blob are easier to
+// localize than a whole-state comparison failure.
+func assertEncodedDataBagItemPayload(t *testing.T, rows CoreObjectRows, bagName, itemID string, wantRaw map[string]any) {
+	t.Helper()
+
+	for _, row := range rows.DataBagItems {
+		if row.BagName != bagName || row.ItemID != itemID {
+			continue
+		}
+		var item bootstrap.DataBagItem
+		if err := json.Unmarshal(row.PayloadJSON, &item); err != nil {
+			t.Fatalf("json.Unmarshal(data bag item %s/%s) error = %v", bagName, itemID, err)
+		}
+		if item.ID != itemID {
+			t.Fatalf("encoded data bag item ID = %q, want %q", item.ID, itemID)
+		}
+		if !reflect.DeepEqual(item.RawData, wantRaw) {
+			t.Fatalf("encoded data bag item raw data = %#v, want %#v", item.RawData, wantRaw)
+		}
+		return
+	}
+	t.Fatalf("encoded data bag item %s/%s missing from rows", bagName, itemID)
 }

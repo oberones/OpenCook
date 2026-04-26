@@ -10,6 +10,7 @@ import (
 	"github.com/oberones/OpenCook/internal/admin"
 	"github.com/oberones/OpenCook/internal/config"
 	"github.com/oberones/OpenCook/internal/search"
+	"github.com/oberones/OpenCook/internal/testfixtures"
 )
 
 func TestAdminSearchCheckAndRepairCommands(t *testing.T) {
@@ -66,6 +67,79 @@ func TestAdminSearchCheckAndRepairCommands(t *testing.T) {
 	}
 	out = decodeAdminReindexOutput(t, stdout.String())
 	assertAdminReindexCount(t, out, "clean", 1)
+}
+
+// TestAdminSearchEncryptedDataBagCheckAndRepairCommands proves scoped search
+// check/repair detects and fixes encrypted-looking data bag document drift from
+// PostgreSQL-backed state without requiring a data bag secret.
+func TestAdminSearchEncryptedDataBagCheckAndRepairCommands(t *testing.T) {
+	bagName := testfixtures.EncryptedDataBagName()
+	itemID := testfixtures.EncryptedDataBagItemID()
+	encryptedID := "ponyville/" + bagName + "/" + itemID
+	staleID := "ponyville/" + bagName + "/stale"
+	target := newFakeAdminSearchTarget(staleID)
+	cmd, stdout, stderr := newAdminSearchTestCommand(t, adminEncryptedDataBagSearchStore(), target)
+
+	if code := cmd.Run(context.Background(), []string{"admin", "search", "check", "--org", "ponyville", "--index", bagName, "--with-timing"}); code != exitPartial {
+		t.Fatalf("Run(encrypted search check) exit = %d, want %d; stdout = %s stderr = %s", code, exitPartial, stdout.String(), stderr.String())
+	}
+	out := decodeAdminReindexOutput(t, stdout.String())
+	assertAdminReindexCount(t, out, "missing", 1)
+	assertAdminReindexCount(t, out, "stale", 1)
+	requireAdminOutputStrings(t, out, "missing_documents", []string{encryptedID})
+	requireAdminOutputStrings(t, out, "stale_documents", []string{staleID})
+	assertAdminEncryptedOperationalOutputDoesNotLeakSecret(t, stdout.String(), stderr.String())
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := cmd.Run(context.Background(), []string{"admin", "search", "repair", "--org", "ponyville", "--index", bagName, "--yes"}); code != exitOK {
+		t.Fatalf("Run(encrypted search repair) exit = %d, want %d; stdout = %s stderr = %s", code, exitOK, stdout.String(), stderr.String())
+	}
+	if target.ensureCalls != 1 || target.refreshes != 1 {
+		t.Fatalf("encrypted repair ensure/refresh = %d/%d, want 1/1", target.ensureCalls, target.refreshes)
+	}
+	if !sameAdminStrings(target.deletedIDs, []string{staleID}) {
+		t.Fatalf("encrypted repair deleted IDs = %v, want stale item", target.deletedIDs)
+	}
+	doc := requireAdminEncryptedDataBagDocument(t, target.upsertedDocuments())
+	requireAdminEncryptedDataBagSearchFields(t, doc)
+	if _, ok := target.ids[encryptedID]; !ok {
+		t.Fatalf("provider IDs = %v, want repaired encrypted item present", target.ids)
+	}
+	if _, ok := target.ids[staleID]; ok {
+		t.Fatalf("provider IDs = %v, want stale encrypted item removed", target.ids)
+	}
+	assertAdminEncryptedOperationalOutputDoesNotLeakSecret(t, stdout.String(), stderr.String())
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := cmd.Run(context.Background(), []string{"admin", "search", "check", "--org", "ponyville", "--index", bagName}); code != exitOK {
+		t.Fatalf("Run(encrypted search clean check) exit = %d, want %d; stdout = %s stderr = %s", code, exitOK, stdout.String(), stderr.String())
+	}
+	out = decodeAdminReindexOutput(t, stdout.String())
+	assertAdminReindexCount(t, out, "clean", 1)
+}
+
+// TestAdminSearchEncryptedDataBagProviderFailureIsRedacted keeps unavailable
+// provider behavior stable for encrypted data bag scoped admin search commands.
+func TestAdminSearchEncryptedDataBagProviderFailureIsRedacted(t *testing.T) {
+	bagName := testfixtures.EncryptedDataBagName()
+	target := &fakeAdminSearchTarget{
+		ids:       map[string]struct{}{},
+		searchErr: errors.New("raw provider body from internal cluster correct horse battery staple"),
+	}
+	cmd, stdout, stderr := newAdminSearchTestCommand(t, adminEncryptedDataBagSearchStore(), target)
+
+	code := cmd.Run(context.Background(), []string{"admin", "search", "check", "--org", "ponyville", "--index", bagName})
+	if code != exitDependencyUnavailable {
+		t.Fatalf("Run(encrypted search provider failure) exit = %d, want %d; stdout = %s stderr = %s", code, exitDependencyUnavailable, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "reindex failed") {
+		t.Fatalf("stderr = %q, want redacted failure message", stderr.String())
+	}
+	assertAdminEncryptedOperationalOutputDoesNotLeakSecret(t, stdout.String(), stderr.String())
+	out := decodeAdminReindexOutput(t, stdout.String())
+	assertAdminReindexCount(t, out, "failed", 1)
 }
 
 func TestAdminSearchCommandFailuresAreStableAndRedacted(t *testing.T) {
@@ -269,6 +343,38 @@ func (t *fakeAdminSearchTarget) DeleteDocument(_ context.Context, id string) err
 func (t *fakeAdminSearchTarget) Refresh(context.Context) error {
 	t.refreshes++
 	return nil
+}
+
+// upsertedDocuments flattens fake admin search repair bulk batches so tests can
+// assert the repaired provider document body.
+func (t *fakeAdminSearchTarget) upsertedDocuments() []search.Document {
+	var docs []search.Document
+	for _, batch := range t.bulkBatches {
+		docs = append(docs, batch...)
+	}
+	return docs
+}
+
+// requireAdminOutputStrings extracts a string list from JSON output and keeps
+// document-drift assertions precise without relying on map iteration order.
+func requireAdminOutputStrings(t *testing.T, out map[string]any, key string, want []string) {
+	t.Helper()
+
+	raw, ok := out[key].([]any)
+	if !ok {
+		t.Fatalf("output[%s] = %#v, want list", key, out[key])
+	}
+	got := make([]string, 0, len(raw))
+	for _, item := range raw {
+		value, ok := item.(string)
+		if !ok {
+			t.Fatalf("output[%s] item = %#v, want string", key, item)
+		}
+		got = append(got, value)
+	}
+	if !sameAdminStrings(got, want) {
+		t.Fatalf("output[%s] = %v, want %v", key, got, want)
+	}
 }
 
 func splitAdminSearchID(id string) (string, string, bool) {
