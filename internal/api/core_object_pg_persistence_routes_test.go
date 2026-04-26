@@ -11,6 +11,7 @@ import (
 	"github.com/oberones/OpenCook/internal/blob"
 	"github.com/oberones/OpenCook/internal/store/pg"
 	"github.com/oberones/OpenCook/internal/store/pg/pgtest"
+	"github.com/oberones/OpenCook/internal/testfixtures"
 )
 
 func TestActivePostgresCoreObjectsRehydrateNodesEnvironmentsAndRoles(t *testing.T) {
@@ -181,6 +182,88 @@ func TestActivePostgresCoreObjectsRehydrateDataBagsAndSearch(t *testing.T) {
 	if _, ok := emptyBags["ponies"]; ok {
 		t.Fatalf("rehydrated data bag list = %v, want ponies deleted", emptyBags)
 	}
+}
+
+// TestActivePostgresCoreObjectsRehydrateEncryptedDataBagPayloads pins restart
+// behavior for encrypted-looking data bag items without introducing any server
+// knowledge of encrypted field schemas or secrets.
+func TestActivePostgresCoreObjectsRehydrateEncryptedDataBagPayloads(t *testing.T) {
+	fixture := newActivePostgresBootstrapFixture(t, pgtest.NewState(pgtest.Seed{}))
+	bagName := testfixtures.EncryptedDataBagName()
+	itemID := testfixtures.EncryptedDataBagItemID()
+	bagPath := "/data/" + bagName
+	itemPath := bagPath + "/" + itemID
+	orgItemPath := "/organizations/ponyville/data/" + bagName + "/" + itemID
+
+	mustServeActivePostgresCoreObjectRequest(t, fixture.router, http.MethodPost, "/organizations", map[string]any{
+		"name":      "ponyville",
+		"full_name": "Ponyville",
+		"org_type":  "Business",
+	}, http.StatusCreated)
+	mustServeActivePostgresCoreObjectRequest(t, fixture.router, http.MethodPost, "/data", map[string]any{
+		"name": bagName,
+	}, http.StatusCreated)
+	createPayload := testfixtures.EncryptedDataBagItem()
+	mustServeActivePostgresCoreObjectRequest(t, fixture.router, http.MethodPost, bagPath, createPayload, http.StatusCreated)
+
+	restarted := newActivePostgresBootstrapFixture(t, fixture.pgState)
+	createdAfterRestart := mustServeActivePostgresCoreObjectRequest(t, restarted.router, http.MethodGet, orgItemPath, nil, http.StatusOK)
+	assertRawDataBagItemPayload(t, createdAfterRestart, createPayload)
+
+	updatePayload := testfixtures.UpdatedEncryptedDataBagItem()
+	mustServeActivePostgresCoreObjectRequest(t, restarted.router, http.MethodPut, itemPath, updatePayload, http.StatusOK)
+	wantUpdated := testfixtures.CloneDataBagPayload(updatePayload)
+	wantUpdated["id"] = itemID
+
+	updated := newActivePostgresBootstrapFixture(t, fixture.pgState)
+	updatedAfterRestart := mustServeActivePostgresCoreObjectRequest(t, updated.router, http.MethodGet, orgItemPath, nil, http.StatusOK)
+	assertRawDataBagItemPayload(t, updatedAfterRestart, wantUpdated)
+
+	mustServeActivePostgresCoreObjectRequest(t, updated.router, http.MethodDelete, orgItemPath, nil, http.StatusOK)
+	deleted := newActivePostgresBootstrapFixture(t, fixture.pgState)
+	mustServeActivePostgresCoreObjectRequest(t, deleted.router, http.MethodGet, itemPath, nil, http.StatusNotFound)
+}
+
+// TestActivePostgresEncryptedDataBagInvalidWritesDoNotPersistOrSearch proves
+// invalid encrypted-looking item writes do not mutate live state, persisted
+// PostgreSQL state, or the search-visible projection rebuilt after restart.
+func TestActivePostgresEncryptedDataBagInvalidWritesDoNotPersistOrSearch(t *testing.T) {
+	fixture := newActivePostgresBootstrapFixture(t, pgtest.NewState(pgtest.Seed{}))
+	bagName := testfixtures.EncryptedDataBagName()
+	itemID := testfixtures.EncryptedDataBagItemID()
+	bagPath := "/data/" + bagName
+	itemPath := bagPath + "/" + itemID
+
+	mustServeActivePostgresCoreObjectRequest(t, fixture.router, http.MethodPost, "/organizations", map[string]any{
+		"name":      "ponyville",
+		"full_name": "Ponyville",
+		"org_type":  "Business",
+	}, http.StatusCreated)
+	mustServeActivePostgresCoreObjectRequest(t, fixture.router, http.MethodPost, "/data", map[string]any{
+		"name": bagName,
+	}, http.StatusCreated)
+	createPayload := testfixtures.EncryptedDataBagItem()
+	mustServeActivePostgresCoreObjectRequest(t, fixture.router, http.MethodPost, bagPath, createPayload, http.StatusCreated)
+
+	malformedRec := performDataBagRequestAs(t, fixture.router, "pivotal", http.MethodPost, bagPath, []byte(`{"id":"malformed"`))
+	assertDataBagAPIError(t, malformedRec, http.StatusBadRequest, "invalid_json", "request body must be valid JSON")
+
+	missingID := testfixtures.CloneDataBagPayload(testfixtures.EncryptedDataBagItem())
+	delete(missingID, "id")
+	missingIDRec := performDataBagRequestAs(t, fixture.router, "pivotal", http.MethodPost, bagPath, mustMarshalDataBagJSON(t, missingID))
+	assertDataBagError(t, missingIDRec, http.StatusBadRequest, "Field 'id' missing")
+
+	mismatchedUpdate := encryptedEnvelopeVariantPayload(t, itemID, func(envelope map[string]any) {
+		envelope["encrypted_data"] = "blocked-persisted-ciphertext"
+	})
+	mismatchedUpdate["id"] = "wrong-item"
+	mismatchedUpdate["environment"] = "blocked"
+	mismatchRec := performDataBagRequestAs(t, fixture.router, "pivotal", http.MethodPut, itemPath, mustMarshalDataBagJSON(t, mismatchedUpdate))
+	assertDataBagError(t, mismatchRec, http.StatusBadRequest, "DataBagItem name mismatch.")
+
+	assertActivePostgresEncryptedDataBagBaseline(t, fixture.router, itemPath, bagName, itemID, createPayload)
+	restarted := newActivePostgresBootstrapFixture(t, fixture.pgState)
+	assertActivePostgresEncryptedDataBagBaseline(t, restarted.router, itemPath, bagName, itemID, createPayload)
 }
 
 func TestActivePostgresCoreObjectsRehydratePoliciesAndPolicyGroups(t *testing.T) {
@@ -608,6 +691,29 @@ func assertActivePostgresInvalidWriteBaseline(t *testing.T, router http.Handler,
 		t.Fatalf("policy assignment revision after invalid writes = %v, want %s", assignmentPayload["revision_id"], revisionID)
 	}
 	mustServeActivePostgresCoreObjectRequest(t, router, http.MethodGet, "/policies/appserver/revisions/dddddddddddddddddddddddddddddddddddddddd", nil, http.StatusNotFound)
+}
+
+// assertActivePostgresEncryptedDataBagBaseline verifies the item body and the
+// search-visible projection both remain on the original encrypted-looking data.
+func assertActivePostgresEncryptedDataBagBaseline(t *testing.T, router http.Handler, itemPath, bagName, itemID string, want map[string]any) {
+	t.Helper()
+
+	itemPayload := mustServeActivePostgresCoreObjectRequest(t, router, http.MethodGet, itemPath, nil, http.StatusOK)
+	assertRawDataBagItemPayload(t, itemPayload, want)
+	assertActivePostgresDataBagSearchTotal(t, router, searchPath("/search/"+bagName, "id:"+itemID), 1)
+	assertActivePostgresDataBagSearchTotal(t, router, searchPath("/search/"+bagName, "environment:blocked"), 0)
+	assertActivePostgresDataBagSearchTotal(t, router, searchPath("/search/"+bagName, "id:malformed"), 0)
+}
+
+// assertActivePostgresDataBagSearchTotal signs searches as pivotal because the
+// active PostgreSQL fixture does not seed the same default users as newTestRouter.
+func assertActivePostgresDataBagSearchTotal(t *testing.T, router http.Handler, rawPath string, want float64) {
+	t.Helper()
+
+	payload := mustServeActivePostgresSearchRequest(t, router, http.MethodGet, rawPath, nil, http.StatusOK)
+	if payload["total"] != want {
+		t.Fatalf("search %s total = %v, want %v", rawPath, payload["total"], want)
+	}
 }
 
 func mustServeActivePostgresCoreObjectRequest(t *testing.T, router http.Handler, method, path string, payload map[string]any, want int) map[string]any {

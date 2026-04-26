@@ -14,6 +14,7 @@ import (
 	"github.com/oberones/OpenCook/internal/bootstrap"
 	"github.com/oberones/OpenCook/internal/config"
 	"github.com/oberones/OpenCook/internal/search"
+	"github.com/oberones/OpenCook/internal/testfixtures"
 )
 
 func TestAdminReindexCommandScopesAndModes(t *testing.T) {
@@ -138,6 +139,47 @@ func TestAdminReindexDryRunDoesNotRequireOpenSearchOrMutateProvider(t *testing.T
 	out := decodeAdminReindexOutput(t, stdout.String())
 	assertAdminReindexCount(t, out, "scanned", 1)
 	assertAdminReindexCount(t, out, "skipped", 2)
+}
+
+// TestAdminReindexEncryptedDataBagIndexRebuildsOpaqueDocuments proves the CLI
+// loads PostgreSQL-backed encrypted-looking data bag state and rebuilds the
+// provider document without requiring or exposing a data bag secret.
+func TestAdminReindexEncryptedDataBagIndexRebuildsOpaqueDocuments(t *testing.T) {
+	bagName := testfixtures.EncryptedDataBagName()
+	target := &fakeAdminReindexTarget{}
+	cmd, stdout, stderr := newAdminReindexTestCommand(t, adminEncryptedDataBagSearchStore(), target)
+
+	if code := cmd.Run(context.Background(), []string{"admin", "reindex", "--org", "ponyville", "--index", bagName, "--no-drop"}); code != exitOK {
+		t.Fatalf("Run(encrypted reindex) exit = %d, want %d; stdout = %s stderr = %s", code, exitOK, stdout.String(), stderr.String())
+	}
+	if len(target.deleteQueries) != 0 || len(target.deletedIDs) != 0 {
+		t.Fatalf("encrypted reindex deletes = %#v/%#v, want none for --no-drop", target.deleteQueries, target.deletedIDs)
+	}
+	doc := requireAdminEncryptedDataBagDocument(t, target.upsertedDocuments())
+	requireAdminEncryptedDataBagSearchFields(t, doc)
+	out := decodeAdminReindexOutput(t, stdout.String())
+	assertAdminReindexCount(t, out, "scanned", 1)
+	assertAdminReindexCount(t, out, "upserted", 1)
+	assertAdminEncryptedOperationalOutputDoesNotLeakSecret(t, stdout.String(), stderr.String())
+}
+
+// TestAdminReindexEncryptedDataBagProviderFailureIsRedacted keeps the
+// provider-unavailable contract pinned for encrypted data bag scoped reindexing.
+func TestAdminReindexEncryptedDataBagProviderFailureIsRedacted(t *testing.T) {
+	bagName := testfixtures.EncryptedDataBagName()
+	target := &fakeAdminReindexTarget{pingErr: fmt.Errorf("%w: raw provider body from internal cluster correct horse battery staple", search.ErrUnavailable)}
+	cmd, stdout, stderr := newAdminReindexTestCommand(t, adminEncryptedDataBagSearchStore(), target)
+
+	code := cmd.Run(context.Background(), []string{"admin", "reindex", "--org", "ponyville", "--index", bagName, "--no-drop"})
+	if code != exitDependencyUnavailable {
+		t.Fatalf("Run(encrypted provider failure) exit = %d, want %d; stdout = %s stderr = %s", code, exitDependencyUnavailable, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stderr.String(), search.ErrUnavailable.Error()) {
+		t.Fatalf("stderr = %q, want redacted unavailable message", stderr.String())
+	}
+	assertAdminEncryptedOperationalOutputDoesNotLeakSecret(t, stdout.String(), stderr.String())
+	out := decodeAdminReindexOutput(t, stdout.String())
+	assertAdminReindexCount(t, out, "failed", 1)
 }
 
 func TestAdminReindexMissingOrgIndexAndProviderFailuresAreStable(t *testing.T) {
@@ -339,6 +381,32 @@ func adminReindexCoreObjectState() bootstrap.CoreObjectState {
 	}
 }
 
+// adminEncryptedDataBagSearchStore adds the shared encrypted-looking data bag
+// fixture to the fake offline store, matching what admin commands see after
+// loading PostgreSQL-backed core object rows.
+func adminEncryptedDataBagSearchStore() *fakeOfflineStore {
+	store := adminReindexTestStore()
+	org := store.objects.Orgs["ponyville"]
+	bagName := testfixtures.EncryptedDataBagName()
+	itemID := testfixtures.EncryptedDataBagItemID()
+	if org.DataBags == nil {
+		org.DataBags = map[string]bootstrap.DataBag{}
+	}
+	org.DataBags[bagName] = bootstrap.DataBag{Name: bagName, JSONClass: "Chef::DataBag", ChefType: "data_bag"}
+	if org.DataBagItems == nil {
+		org.DataBagItems = map[string]map[string]bootstrap.DataBagItem{}
+	}
+	org.DataBagItems[bagName] = map[string]bootstrap.DataBagItem{
+		itemID: {ID: itemID, RawData: testfixtures.EncryptedDataBagItem()},
+	}
+	if org.ACLs == nil {
+		org.ACLs = map[string]authz.ACL{}
+	}
+	org.ACLs["data:"+bagName] = authz.ACL{Read: authz.Permission{Actors: []string{"pivotal"}}}
+	store.objects.Orgs["ponyville"] = org
+	return store
+}
+
 type fakeAdminReindexTarget struct {
 	pings         int
 	ensureCalls   int
@@ -398,6 +466,82 @@ func (t *fakeAdminReindexTarget) upsertedRefs() []search.DocumentRef {
 		}
 	}
 	return refs
+}
+
+// upsertedDocuments flattens fake admin reindex bulk batches so command tests
+// can inspect the generated search document contents.
+func (t *fakeAdminReindexTarget) upsertedDocuments() []search.Document {
+	var docs []search.Document
+	for _, batch := range t.bulkBatches {
+		docs = append(docs, batch...)
+	}
+	return docs
+}
+
+// requireAdminEncryptedDataBagDocument verifies the admin command rebuilt the
+// shared encrypted-looking item as a data bag search document with raw_data intact.
+func requireAdminEncryptedDataBagDocument(t *testing.T, docs []search.Document) search.Document {
+	t.Helper()
+
+	bagName := testfixtures.EncryptedDataBagName()
+	itemID := testfixtures.EncryptedDataBagItemID()
+	for _, doc := range docs {
+		if doc.Resource.Organization != "ponyville" || doc.Index != bagName || doc.Name != itemID {
+			continue
+		}
+		rawData, ok := doc.Object["raw_data"].(map[string]any)
+		if !ok {
+			t.Fatalf("admin encrypted document raw_data = %T(%v), want object", doc.Object["raw_data"], doc.Object["raw_data"])
+		}
+		if !payloadEqual(rawData, testfixtures.EncryptedDataBagItem()) {
+			t.Fatalf("admin encrypted document raw_data = %#v, want %#v", rawData, testfixtures.EncryptedDataBagItem())
+		}
+		return doc
+	}
+	t.Fatalf("docs = %v, want ponyville/%s/%s", docs, bagName, itemID)
+	return search.Document{}
+}
+
+// requireAdminEncryptedDataBagSearchFields checks the generated provider
+// document indexes stored ciphertext envelope fields and clear metadata only.
+func requireAdminEncryptedDataBagSearchFields(t *testing.T, doc search.Document) {
+	t.Helper()
+
+	password := testfixtures.EncryptedDataBagItem()["password"].(map[string]any)
+	apiKey := testfixtures.EncryptedDataBagItem()["api_key"].(map[string]any)
+	requireAdminSearchFieldContains(t, doc.Fields, "password_encrypted_data", password["encrypted_data"].(string))
+	requireAdminSearchFieldContains(t, doc.Fields, "password_iv", password["iv"].(string))
+	requireAdminSearchFieldContains(t, doc.Fields, "api_key_auth_tag", apiKey["auth_tag"].(string))
+	requireAdminSearchFieldContains(t, doc.Fields, "environment", "production")
+	if _, ok := doc.Fields["raw_data_password_encrypted_data"]; ok {
+		t.Fatalf("admin encrypted document fields unexpectedly included raw_data-prefixed keys: %v", doc.Fields)
+	}
+}
+
+// requireAdminSearchFieldContains provides a compact assertion for generated
+// provider document fields without depending on OpenSearch implementation details.
+func requireAdminSearchFieldContains(t *testing.T, fields map[string][]string, key, want string) {
+	t.Helper()
+
+	for _, got := range fields[key] {
+		if got == want {
+			return
+		}
+	}
+	t.Fatalf("fields[%q] = %v, want to include %q", key, fields[key], want)
+}
+
+// assertAdminEncryptedOperationalOutputDoesNotLeakSecret guards command output
+// and errors against plaintext or raw provider-body leakage.
+func assertAdminEncryptedOperationalOutputDoesNotLeakSecret(t *testing.T, stdout, stderr string) {
+	t.Helper()
+
+	combined := stdout + "\n" + stderr
+	for _, forbidden := range []string{"correct horse battery staple", "raw provider body", "data_bag_secret"} {
+		if strings.Contains(combined, forbidden) {
+			t.Fatalf("admin operational output leaked %q: stdout=%q stderr=%q", forbidden, stdout, stderr)
+		}
+	}
 }
 
 func decodeAdminReindexOutput(t *testing.T, raw string) map[string]any {

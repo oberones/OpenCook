@@ -10,7 +10,7 @@ The tests intentionally talk to OpenCook over HTTP with Chef-style signed reques
 scripts/functional-compose.sh
 ```
 
-The default flow builds the images, starts the stack, creates compatibility objects, restarts OpenCook, verifies rehydration through active OpenSearch-backed search, runs invalid-write/no-mutation checks, updates searchable fields and verifies old search terms disappear, restarts again, runs the operational admin/reindex/search-repair phases, restarts after repair, deletes the objects, restarts one more time, and verifies deletion persisted.
+The default flow builds the images, starts the stack, creates compatibility objects including encrypted-looking data bag items, restarts OpenCook, verifies rehydration through active OpenSearch-backed search, runs invalid-write/no-mutation checks, updates searchable fields and verifies old search terms disappear, restarts again, runs the operational admin/reindex/search-repair phases, restarts after repair, deletes the objects, restarts one more time, and verifies deletion persisted.
 
 By default the script removes containers and volumes on exit. Keep the stack for inspection with:
 
@@ -80,12 +80,13 @@ OPENCOOK_FUNCTIONAL_ACTOR_NAME=pivotal
 - Organization bootstrap rehydrates groups, containers, ACLs, and the validator client shape.
 - Validator-authenticated bootstrap registration uses the generated `<org>-validator` key from organization creation to create normal clients through both explicit-org and configured default-org client routes.
 - Validator-created clients persist key material across restart, authenticate signed follow-up requests, retain default key metadata, appear in the `clients` group, expose their client ACL read side effect, and show up in client search rows.
-- Searchable clients, environments, nodes, roles, and data bag items are visible through active OpenSearch-backed search after OpenCook restarts.
-- Searchable environments, nodes, roles, and data bag items update OpenSearch-visible terms, removing old terms and matching new terms.
+- Searchable clients, environments, nodes, roles, ordinary data bag items, and encrypted-looking data bag items are visible through active OpenSearch-backed search after OpenCook restarts.
+- Encrypted-looking data bag partial search can select encrypted envelope fields and clear metadata without requiring a data bag secret.
+- Searchable environments, nodes, roles, ordinary data bag items, and encrypted-looking data bag items update OpenSearch-visible terms, removing old terms and matching new terms.
 - `opencook admin` can sign live HTTP admin requests from the test container to the OpenCook container over the shared Compose network.
 - Live-safe operational commands cover admin status, user/org creation, user key creation, a follow-up signed request with the generated key, group/container/ACL inspection, and complete org reindex.
-- Operational search consistency detects an injected stale OpenSearch document, dry-runs repair, repairs the stale document, and verifies clean state after an OpenCook restart.
-- Deleted clients, environments, nodes, roles, and data bag items stop appearing in search after restart.
+- Operational search consistency detects injected stale OpenSearch documents, including encrypted data bag index drift, dry-runs repair, repairs the stale documents, and verifies clean state after an OpenCook restart.
+- Deleted clients, environments, nodes, roles, ordinary data bag items, and encrypted-looking data bag items stop appearing in search after restart.
 - Environments, nodes, roles, data bags, policy groups, and policy revisions survive OpenCook restarts.
 - Filesystem-backed blob uploads survive restart and can be reused by a later sandbox.
 - Invalid writes return compatibility errors without mutating persisted state.

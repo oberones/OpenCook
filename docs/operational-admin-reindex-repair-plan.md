@@ -353,7 +353,7 @@ Status:
 ### Task 10: Sync Docs And Close The Bucket
 
 - Completed. The roadmap, milestone, compatibility matrix, README, functional testing guide, AGENTS instructions, and this plan now describe the operational admin plus reindex/repair bucket as implemented.
-- The next recommended bucket is encrypted data bag compatibility, with broader Lucene/query-string semantics, cookbook/policy/sandbox search coverage, and migration/cutover tooling left visible as follow-on work.
+- Encrypted data bag compatibility is now complete; the next recommended bucket is broader Lucene/query-string search compatibility, with cookbook/policy/sandbox search coverage and migration/cutover tooling left visible as follow-on work.
 
 - Update:
   - `README.md`

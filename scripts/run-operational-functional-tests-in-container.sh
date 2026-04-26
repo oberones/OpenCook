@@ -15,6 +15,9 @@ operational_key_path="$state_dir/$operational_key_name.pem"
 opensearch_url="${OPENCOOK_OPENSEARCH_URL:-http://opensearch:9200}"
 stale_doc_id="$org/node/functional-stale-node"
 stale_doc_path="$org%2Fnode%2Ffunctional-stale-node"
+encrypted_bag="${OPENCOOK_FUNCTIONAL_ENCRYPTED_BAG:-encrypted_secrets}"
+encrypted_stale_doc_id="$org/$encrypted_bag/functional-stale-encrypted"
+encrypted_stale_doc_path="$org%2F$encrypted_bag%2Ffunctional-stale-encrypted"
 
 build_cli() {
   go build -trimpath -o "$cli" ./cmd/opencook
@@ -118,6 +121,28 @@ write_stale_opensearch_document() {
 JSON
 }
 
+write_stale_encrypted_opensearch_document() {
+  curl -fsS -XPUT "$opensearch_url/chef/_doc/$encrypted_stale_doc_path?refresh=true" \
+    -H 'Content-Type: application/json' \
+    --data-binary @- >/tmp/opencook-stale-encrypted-opensearch.json <<JSON
+{
+  "document_id": "$encrypted_stale_doc_id",
+  "organization": "$org",
+  "index": "$encrypted_bag",
+  "name": "functional-stale-encrypted",
+  "resource_type": "data_bag",
+  "resource_name": "$encrypted_bag",
+  "compat_terms": [
+    "__org=$org",
+    "__index=$encrypted_bag",
+    "id=functional-stale-encrypted",
+    "environment=functional-stale-encrypted",
+    "__any=functional-stale-encrypted"
+  ]
+}
+JSON
+}
+
 run_operational_phase() {
   build_cli
 
@@ -147,6 +172,10 @@ run_operational_phase() {
   echo "==> operational complete org reindex"
   admin reindex --org "$org" --complete --with-timing --json >/tmp/opencook-admin-reindex.json
   require_json_contains /tmp/opencook-admin-reindex.json '"mode": "complete"'
+  admin search check --org "$org" --index "$encrypted_bag" --json >/tmp/opencook-admin-encrypted-search-clean.json
+  require_json_contains /tmp/opencook-admin-encrypted-search-clean.json '"clean": 1'
+  admin reindex --org "$org" --index "$encrypted_bag" --no-drop --json >/tmp/opencook-admin-encrypted-reindex.json
+  require_json_contains /tmp/opencook-admin-encrypted-reindex.json '"upserted": 1'
 
   echo "==> operational stale OpenSearch detection"
   write_stale_opensearch_document
@@ -160,6 +189,17 @@ run_operational_phase() {
   require_json_contains /tmp/opencook-admin-search-repair.json '"deleted": 1'
   admin search check --org "$org" --index node --json >/tmp/opencook-admin-search-check-clean.json
   require_json_contains /tmp/opencook-admin-search-check-clean.json '"clean": 1'
+
+  echo "==> operational encrypted data bag search repair"
+  write_stale_encrypted_opensearch_document
+  expect_exit 3 admin search check --org "$org" --index "$encrypted_bag" --with-timing --json >/tmp/opencook-admin-encrypted-search-check-drift.json
+  require_json_contains /tmp/opencook-admin-encrypted-search-check-drift.json "$encrypted_stale_doc_id"
+  expect_exit 3 admin search repair --org "$org" --index "$encrypted_bag" --dry-run --json >/tmp/opencook-admin-encrypted-search-repair-dry-run.json
+  require_json_contains /tmp/opencook-admin-encrypted-search-repair-dry-run.json '"skipped": 1'
+  admin search repair --org "$org" --index "$encrypted_bag" --yes --with-timing --json >/tmp/opencook-admin-encrypted-search-repair.json
+  require_json_contains /tmp/opencook-admin-encrypted-search-repair.json '"deleted": 1'
+  admin search check --org "$org" --index "$encrypted_bag" --json >/tmp/opencook-admin-encrypted-search-check-clean-after-repair.json
+  require_json_contains /tmp/opencook-admin-encrypted-search-check-clean-after-repair.json '"clean": 1'
 }
 
 run_operational_verify_phase() {
@@ -171,6 +211,8 @@ run_operational_verify_phase() {
   require_json_contains /tmp/opencook-admin-post-restart-key.json "\"username\": \"$admin_requestor\""
   admin search check --org "$org" --index node --json >/tmp/opencook-admin-post-restart-search.json
   require_json_contains /tmp/opencook-admin-post-restart-search.json '"clean": 1'
+  admin search check --org "$org" --index "$encrypted_bag" --json >/tmp/opencook-admin-post-restart-encrypted-search.json
+  require_json_contains /tmp/opencook-admin-post-restart-encrypted-search.json '"clean": 1'
 }
 
 export OPENCOOK_ADMIN_SERVER_URL="$base_url"

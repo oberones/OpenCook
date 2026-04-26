@@ -108,6 +108,30 @@ func TestReindexServiceScopesToOrgIndexDataBagAndNames(t *testing.T) {
 	})
 }
 
+// TestReindexServiceReindexesEncryptedDataBagDocuments proves the scoped
+// reindex path can rebuild encrypted-looking data bag item documents from the
+// PostgreSQL-derived bootstrap state without needing a data bag secret.
+func TestReindexServiceReindexesEncryptedDataBagDocuments(t *testing.T) {
+	state := newEncryptedDataBagRebuildState(t)
+	target := &recordingReindexTarget{}
+	bagName := encryptedDataBagSearchIndexName()
+
+	result, err := NewReindexService(state, target).Run(context.Background(), ReindexPlan{
+		Mode:         ReindexModeReindex,
+		Organization: "ponyville",
+		Index:        bagName,
+	})
+	if err != nil {
+		t.Fatalf("Run(encrypted data bag reindex) error = %v", err)
+	}
+
+	doc := requireEncryptedDataBagDocument(t, target.upsertedDocuments())
+	requireEncryptedDataBagSearchFields(t, doc)
+	if result.Counts.Scanned != 1 || result.Counts.Upserted != 1 || result.Counts.Deleted != 0 || result.Counts.Missing != 0 {
+		t.Fatalf("counts = %+v, want scanned/upserted 1 only", result.Counts)
+	}
+}
+
 func TestReindexServiceDropAndDryRunPlans(t *testing.T) {
 	state := newSearchRebuildState(t)
 
@@ -267,6 +291,16 @@ func (t *recordingReindexTarget) upsertedRefs() []DocumentRef {
 		}
 	}
 	return refs
+}
+
+// upsertedDocuments flattens recorded bulk batches so tests can assert the
+// generated document body, not only the target document IDs.
+func (t *recordingReindexTarget) upsertedDocuments() []Document {
+	var docs []Document
+	for _, batch := range t.bulkBatches {
+		docs = append(docs, batch...)
+	}
+	return docs
 }
 
 func hasReindexRef(refs []DocumentRef, org, index, name string) bool {

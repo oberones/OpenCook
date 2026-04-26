@@ -114,6 +114,56 @@ func TestConsistencyServiceRepairFixesDriftAndIsIdempotent(t *testing.T) {
 	}
 }
 
+// TestConsistencyServiceRepairsEncryptedDataBagDocuments pins search check and
+// repair for encrypted-looking data bag items: missing provider documents are
+// rebuilt from stored JSON, and stale provider IDs are removed without secrets.
+func TestConsistencyServiceRepairsEncryptedDataBagDocuments(t *testing.T) {
+	state := newEncryptedDataBagRebuildState(t)
+	bagName := encryptedDataBagSearchIndexName()
+	itemID := encryptedDataBagSearchItemName()
+	target := newRecordingConsistencyTarget("ponyville/" + bagName + "/stale")
+
+	check, err := NewConsistencyService(state, target).Run(context.Background(), ConsistencyPlan{
+		Organization: "ponyville",
+		Index:        bagName,
+	})
+	if err != nil {
+		t.Fatalf("Run(encrypted check) error = %v", err)
+	}
+	if check.Counts.Expected != 1 || check.Counts.Observed != 1 || check.Counts.Missing != 1 || check.Counts.Stale != 1 {
+		t.Fatalf("check counts = %+v, want expected/observed/missing/stale 1", check.Counts)
+	}
+	if !sameStrings(check.MissingDocuments, []string{"ponyville/" + bagName + "/" + itemID}) {
+		t.Fatalf("missing encrypted docs = %v, want encrypted item", check.MissingDocuments)
+	}
+	if !sameStrings(check.StaleDocuments, []string{"ponyville/" + bagName + "/stale"}) {
+		t.Fatalf("stale encrypted docs = %v, want stale item", check.StaleDocuments)
+	}
+
+	repair, err := NewConsistencyService(state, target).Run(context.Background(), ConsistencyPlan{
+		Organization: "ponyville",
+		Index:        bagName,
+		Repair:       true,
+	})
+	if err != nil {
+		t.Fatalf("Run(encrypted repair) error = %v", err)
+	}
+	if repair.Counts.Upserted != 1 || repair.Counts.Deleted != 1 || repair.Counts.Missing != 1 || repair.Counts.Stale != 1 {
+		t.Fatalf("repair counts = %+v, want missing/stale/upserted/deleted 1", repair.Counts)
+	}
+	if target.ensureCalls != 1 || target.refreshes != 1 {
+		t.Fatalf("repair ensure/refresh = %d/%d, want 1/1", target.ensureCalls, target.refreshes)
+	}
+	if !sameStrings(target.deletedIDs, []string{"ponyville/" + bagName + "/stale"}) {
+		t.Fatalf("deleted IDs = %v, want stale encrypted item", target.deletedIDs)
+	}
+	doc := requireEncryptedDataBagDocument(t, target.upsertedDocuments())
+	requireEncryptedDataBagSearchFields(t, doc)
+	if !target.hasID("ponyville/"+bagName+"/"+itemID) || target.hasID("ponyville/"+bagName+"/stale") {
+		t.Fatalf("provider IDs after repair = %v, want encrypted item present and stale removed", target.ids)
+	}
+}
+
 func TestConsistencyServiceDryRunRepairDoesNotMutateProvider(t *testing.T) {
 	state := newSearchRebuildState(t)
 	target := newRecordingConsistencyTarget(
@@ -304,6 +354,16 @@ func (t *recordingConsistencyTarget) DeleteDocument(_ context.Context, id string
 func (t *recordingConsistencyTarget) Refresh(context.Context) error {
 	t.refreshes++
 	return nil
+}
+
+// upsertedDocuments flattens consistency repair bulk writes so tests can inspect
+// opaque document bodies in addition to repaired document IDs.
+func (t *recordingConsistencyTarget) upsertedDocuments() []Document {
+	var docs []Document
+	for _, batch := range t.bulkBatches {
+		docs = append(docs, batch...)
+	}
+	return docs
 }
 
 func (t *recordingConsistencyTarget) hasID(id string) bool {
