@@ -17,10 +17,10 @@ OpenCook is free and open source software released under the MIT License. Licens
 
 OpenCook is in active development and already provides a meaningful compatibility foundation for local development, experimentation, and integration work.
 
-Today, it should be viewed as an early server implementation rather than a production-ready drop-in replacement. Some subsystems still rely on in-memory state, and deeper operational tooling, search edge-case coverage, and broader compatibility hardening are still in progress.
+Today, it should be viewed as an early server implementation rather than a production-ready drop-in replacement. Some subsystems still rely on in-memory state, and migration/cutover tooling, search edge-case coverage, and broader compatibility hardening are still in progress.
 
 Org bootstrap can mint validator key material, and generated `<org>-validator` clients can now register normal clients through the stock client bootstrap routes.
-Administrative object management is also still API-first today; a first-class `chef-server-ctl`-style replacement for orgs, users, groups, and ACLs remains future work.
+The first `opencook admin` operational CLI is live for signed admin inspection and live-safe identity/authz workflows, with offline-gated repair commands and OpenSearch reindex/consistency repair from PostgreSQL-backed state.
 Data bag CRUD is live, but encrypted data bag compatibility is not yet an explicitly tracked/tested compatibility slice.
 
 ## Current Capabilities
@@ -30,6 +30,7 @@ Data bag CRUD is live, but encrypted data bag compatibility is not yet an explic
 - Cookbook flows: sandboxes, signed checksum upload/download flows, cookbook artifacts, cookbook versions, cookbook read views, `universe`, and environment depsolver behavior.
 - Search and policy: built-in Chef search indexes with an in-memory fallback and active OpenSearch-backed mode when PostgreSQL plus OpenSearch are configured, partial search support, and policy/policy-group compatibility routes.
 - Blob backends: in-memory, filesystem-backed, and S3-compatible storage for sandbox and cookbook content.
+- Operations: `opencook serve`, signed `opencook admin` workflows for users, organizations, keys, groups, containers, ACL inspection, and PostgreSQL-backed OpenSearch reindex/check/repair commands.
 
 ## Installation
 
