@@ -67,16 +67,16 @@ Status: in progress
 - node partial search now reflects merged attribute precedence for search-facing behavior
 - default-org client search results now point at live `/clients/...` routes instead of org-only URLs
 - data bag search now mirrors Chef-style wrapper results, encrypted-looking item opacity, and raw-item partial search behavior
-- simple `AND`/`NOT` matching and escaped-slash prefix handling are now covered for the in-memory compatibility layer
+- broader Lucene/query-string compatibility is now pinned for the implemented indexes, including grouped booleans, precedence, unary negation, quoted phrases, escaped punctuation, wildcard field names, wildcard values, existence checks, lexicographic ranges, invalid-query shaping, deterministic paging/order, and partial search
 - active OpenSearch-backed search is now live when PostgreSQL and `OPENCOOK_OPENSEARCH_URL` are configured, with PostgreSQL-backed state remaining authoritative
 - active OpenSearch startup rebuilds the `chef` index from persisted clients, environments, nodes, roles, and data bag items, and successful object mutations update/delete derived search documents
-- route coverage now pins OpenSearch-backed full search, partial search, pagination/order, ACL filtering after provider matches, stale-ID ignoring, active status reporting, and stable `503 search_unavailable` degradation for provider failures
-- the functional Docker stack now proves active OpenSearch search lifecycle behavior across restart, update/stale-term removal, delete, and post-restart absence, including encrypted-looking data bag item coverage
+- route coverage now pins OpenSearch-backed full search, partial search, widened query planning through the shared AST, pagination/order, ACL filtering after provider matches, stale-ID ignoring, active status reporting, and stable `503 search_unavailable` degradation for provider failures
+- the functional Docker stack now proves active OpenSearch search lifecycle behavior across restart, representative query-string compatibility, update/stale-term removal, delete, and post-restart absence, including encrypted-looking data bag item coverage
 - `opencook admin` now provides OpenSearch reindex, consistency check, and consistency repair commands that rebuild and compare derived documents from PostgreSQL-backed authoritative state, with encrypted data bag index coverage and functional Docker coverage for stale-document detection, dry-run repair, actual repair, and post-restart clean verification
 - policyfile routes are now live for both default-org and explicit-org `/policies` and `/policy_groups`
 - policy revision storage, revision lookup, policy-group listing, policy-group assignment, and richer canonical payload round-tripping are implemented and now persist through PostgreSQL when configured
 - policy payload validation now covers more cookbook-lock and solution-dependency structure, while node policy refs remain compatibility-safe searchable fields instead of enforced foreign keys
-- richer OpenSearch capability/version negotiation, broader Lucene/query-string semantics, and cookbook/policy/sandbox search coverage remain follow-on work; broader Lucene/query-string search compatibility is the next recommended bucket
+- richer OpenSearch capability/version negotiation and cookbook/policy/sandbox search coverage remain follow-on work; cookbook/policy/sandbox search coverage is the next recommended bucket
 
 ## Milestone 6: Cookbook and Blob Workflows
 

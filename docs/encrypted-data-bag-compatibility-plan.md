@@ -230,7 +230,7 @@ Status:
 Status:
 
 - Completed. Synced `README.md`, the roadmap, milestones, compatibility matrix, functional testing guide, `AGENTS.md`, root next-step wording, and this plan to mark encrypted data bag compatibility complete.
-- The next recommended bucket is broader Lucene/query-string search compatibility, with cookbook/policy/sandbox search coverage, deeper API-version-specific object semantics, and migration/cutover tooling remaining visible follow-on candidates.
+- The broader Lucene/query-string search compatibility bucket is now complete; cookbook/policy/sandbox search coverage is the next recommended bucket, with deeper API-version-specific object semantics, OpenSearch provider capability/version hardening, and migration/cutover tooling remaining visible follow-on candidates.
 
 - Update:
   - `README.md`
@@ -242,16 +242,16 @@ Status:
   - this plan file
 - Mark encrypted data bag compatibility complete.
 - Point the next bucket at the strongest remaining compatibility gap after implementation, likely one of:
-  - broader Lucene/query-string semantics
   - cookbook/policy/sandbox search coverage
   - deeper API-version-specific object semantics
+  - OpenSearch provider capability/version hardening
   - migration/cutover tooling
 
 ## Bucket Status
 
 Encrypted data bag compatibility is complete for the current server-opacity contract. OpenCook now treats encrypted-looking data bag items as opaque JSON across default-org and explicit-org CRUD, in-memory and PostgreSQL persistence, memory and OpenSearch search, partial search, ACL filtering, invalid-write no-mutation behavior, operational reindex/check/repair, and Docker functional coverage.
 
-The next recommended bucket is broader Lucene/query-string search compatibility. Cookbook/policy/sandbox search coverage, deeper API-version-specific object semantics, and migration/cutover tooling remain follow-on candidates.
+The broader Lucene/query-string search compatibility bucket is now complete. Cookbook/policy/sandbox search coverage is the next recommended bucket, while deeper API-version-specific object semantics, OpenSearch provider capability/version hardening, and migration/cutover tooling remain follow-on candidates.
 
 ## Test Plan
 

@@ -208,8 +208,13 @@ func (c *OpenSearchClient) searchIDs(ctx context.Context, query Query, pageSize 
 	}
 }
 
+// searchIDsPage requests one provider page after compiling the shared query
+// plan, so parser errors are caught before a backend request is attempted.
 func (c *OpenSearchClient) searchIDsPage(ctx context.Context, query Query, pageSize int, searchAfter []any) ([]string, []any, error) {
-	body := openSearchSearchBody(query, pageSize, searchAfter)
+	body, err := openSearchSearchBody(query, pageSize, searchAfter)
+	if err != nil {
+		return nil, nil, err
+	}
 	req, err := c.newJSONRequest(ctx, http.MethodPost, "/"+openSearchChefIndex+"/_search", nil, body)
 	if err != nil {
 		return nil, nil, err
@@ -336,14 +341,20 @@ func openSearchCompatibilityTerms(doc Document) []string {
 	return terms
 }
 
-func openSearchSearchBody(query Query, pageSize int, searchAfter []any) map[string]any {
+// openSearchSearchBody compiles the shared query plan into the active
+// OpenSearch request body while preserving org/index compat_terms filters.
+func openSearchSearchBody(query Query, pageSize int, searchAfter []any) (map[string]any, error) {
+	plan := CompileQuery(query.Q)
+	if err := plan.Err(); err != nil {
+		return nil, err
+	}
 	body := map[string]any{
 		"_source": false,
 		"size":    pageSize,
 		"query": map[string]any{
 			"bool": map[string]any{
 				"filter": openSearchCompatibilityFilters(query.Organization, query.Index),
-				"must":   CompileQuery(query.Q).OpenSearchQueryClause(),
+				"must":   plan.OpenSearchQueryClause(),
 			},
 		},
 		"sort": []any{
@@ -357,7 +368,7 @@ func openSearchSearchBody(query Query, pageSize int, searchAfter []any) map[stri
 	if len(searchAfter) > 0 {
 		body["search_after"] = searchAfter
 	}
-	return body
+	return body, nil
 }
 
 func openSearchCompatibilityFilters(org, index string) []any {

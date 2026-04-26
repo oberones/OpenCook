@@ -258,8 +258,8 @@ Implemented so far:
   - Chef-style wrapped data bag search rows
   - raw-item data bag partial search rows
   - encrypted-looking data bag full/partial search and OpenSearch reindex/check/repair coverage without server-side secrets
-  - simple `AND`/`NOT` matching and escaped-slash prefix handling
-  - active OpenSearch-backed mode when PostgreSQL and `OPENCOOK_OPENSEARCH_URL` are configured, including startup rebuild from persisted state, successful mutation upserts/deletes, stale-ID ignoring after PostgreSQL hydration, ACL filtering after provider matches, provider-unavailable `503 search_unavailable` degradation, truthful status reporting, Docker functional coverage for restart/update/delete lifecycle behavior including encrypted data bag items, and operational reindex/check/repair coverage
+  - broader Lucene/query-string compatibility for the implemented indexes, including grouped booleans, precedence, unary negation, quoted phrases, escaped punctuation, wildcard field/value matching, existence checks, ranges, invalid-query shaping, deterministic paging/order, and partial search
+  - active OpenSearch-backed mode when PostgreSQL and `OPENCOOK_OPENSEARCH_URL` are configured, including startup rebuild from persisted state, successful mutation upserts/deletes, stale-ID ignoring after PostgreSQL hydration, ACL filtering after provider matches, provider-unavailable `503 search_unavailable` degradation, truthful status reporting, Docker functional coverage for restart/query-compatibility/update/delete lifecycle behavior including encrypted data bag items, and operational reindex/check/repair coverage
 - the first data bag slice:
   - `/data`
   - `/data/{bag}`
@@ -452,7 +452,7 @@ These areas are still intentionally incomplete:
 - remaining core Chef object compatibility beyond the currently pinned nodes, environments, roles, data bags, policies, and sandbox flows
 - deeper node and environment compatibility such as cookbook constraint edge cases and linked object behavior
 - deeper role compatibility beyond the current normalization and linked-environment read behavior
-- broader search semantics beyond the current compatibility subset, especially richer Lucene/query-string translation and wider object coverage
+- wider search object coverage beyond the current client/environment/node/role/data-bag indexes, especially cookbook/policy/sandbox search coverage
 - operational parity and migration tooling
 
-The next likely major slice is broader Lucene/query-string search compatibility, unless cookbook/policy/sandbox search coverage, deeper API-version-specific object semantics, or migration/cutover tooling becomes more urgent.
+The next likely major slice is cookbook/policy/sandbox search coverage, unless deeper API-version-specific object semantics, OpenSearch provider capability/version hardening, or migration/cutover tooling becomes more urgent.

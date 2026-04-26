@@ -19,7 +19,7 @@ case "$phase" in
   operational|operational-verify)
     exec bash /src/scripts/run-operational-functional-tests-in-container.sh "$phase"
     ;;
-  create|verify|invalid|search-update|verify-search-updated|delete|verify-deleted|all)
+  create|verify|query-compat|invalid|search-update|verify-search-updated|delete|verify-deleted|all)
     ;;
   *)
     echo "unknown functional test phase: $phase" >&2

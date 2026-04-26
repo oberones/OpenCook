@@ -76,7 +76,7 @@ func TestFunctional(t *testing.T) {
 
 	phases := []string{cfg.phase}
 	if cfg.phase == "all" {
-		phases = []string{"create", "verify", "invalid", "search-update", "verify-search-updated", "delete", "verify-deleted"}
+		phases = []string{"create", "verify", "query-compat", "invalid", "search-update", "verify-search-updated", "query-compat", "delete", "verify-deleted"}
 	}
 
 	for _, phase := range phases {
@@ -88,6 +88,8 @@ func TestFunctional(t *testing.T) {
 				runCreatePhase(t, client, cfg)
 			case "verify":
 				runVerifyPhase(t, client, cfg)
+			case "query-compat":
+				runQueryCompatibilityPhase(t, client, cfg)
 			case "invalid":
 				runInvalidPhase(t, client, cfg)
 			case "search-update":
@@ -254,6 +256,18 @@ func runVerifyPhase(t *testing.T, client *functionalClient, cfg functionalConfig
 
 	commitPendingSandboxIfNeeded(t, client, cfg)
 	requireSandboxBlobReuse(t, client, cfg.org)
+}
+
+func runQueryCompatibilityPhase(t *testing.T, client *functionalClient, cfg functionalConfig) {
+	requireOperationalStatus(t, client)
+	marker := currentFunctionalSearchMarker(t, client, cfg)
+	requireFunctionalSearchQueryCompatibility(t, client, cfg, marker)
+	switch marker {
+	case functionalSearchAlpha:
+		requireFunctionalSearchWidenedOldTermsAbsent(t, client, cfg, functionalSearchBeta)
+	case functionalSearchBeta:
+		requireFunctionalSearchWidenedOldTermsAbsent(t, client, cfg, functionalSearchAlpha)
+	}
 }
 
 func runInvalidPhase(t *testing.T, client *functionalClient, cfg functionalConfig) {
@@ -426,6 +440,69 @@ func requireFunctionalSearchOldTermsAbsent(t *testing.T, client *functionalClien
 	requireSearchRows(t, client, "/organizations/"+cfg.org+"/search/node?q=functional_search_marker:"+marker, 0)
 	requireSearchRows(t, client, "/search/role?q=functional_search_marker:"+marker, 0)
 	requireSearchRows(t, client, "/organizations/"+cfg.org+"/search/"+functionalSearchBagName+"?q=kind:"+marker, 0)
+	requireFunctionalSearchWidenedOldTermsAbsent(t, client, cfg, marker)
+}
+
+func currentFunctionalSearchMarker(t *testing.T, client *functionalClient, cfg functionalConfig) string {
+	t.Helper()
+
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		alpha := searchRowCount(t, client, searchQueryPath("/organizations/"+cfg.org+"/search/node", "functional_search_marker:"+functionalSearchAlpha))
+		beta := searchRowCount(t, client, searchQueryPath("/organizations/"+cfg.org+"/search/node", "functional_search_marker:"+functionalSearchBeta))
+		switch {
+		case alpha == 1 && beta == 0:
+			return functionalSearchAlpha
+		case beta == 1 && alpha == 0:
+			return functionalSearchBeta
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("functional search marker state alpha=%d beta=%d, want exactly one active marker", alpha, beta)
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+}
+
+func requireFunctionalSearchQueryCompatibility(t *testing.T, client *functionalClient, cfg functionalConfig, marker string) {
+	t.Helper()
+
+	requireSearchRows(t, client, searchQueryPath("/search/client", "name:functional-search-*"), 1)
+	requireSearchRows(t, client, searchQueryPath("/search/environment", `description:"functional OpenSearch environment `+marker+`"`), 1)
+	requireSearchRows(t, client, searchQueryPath("/organizations/"+cfg.org+"/search/node", "(functional_search_marker:"+marker+" OR recipe:missing) AND functional_sequence:[001 TO 999]"), 1)
+	requireSearchRows(t, client, searchQueryPath("/organizations/"+cfg.org+"/search/node", `functional_path:functional\/search\/*`), 1)
+	requireSearchRows(t, client, searchQueryPath("/search/role", "description:*"+marker), 1)
+	requireSearchRows(t, client, searchQueryPath("/organizations/"+cfg.org+"/search/"+functionalSearchBagName, "ba*:functional*"), 1)
+	requireSearchRows(t, client, searchQueryPath("/organizations/"+cfg.org+"/search/"+functionalSearchBagName, `note:"hello `+marker+`"`), 1)
+
+	nodePartial := requirePartialSearchRows(t, client, searchQueryPath("/organizations/"+cfg.org+"/search/node", "(functional_search_marker:"+marker+" OR recipe:missing) AND functional_sequence:[001 TO 999]"), map[string][]string{
+		"marker":   {"functional_search_marker"},
+		"sequence": {"functional_sequence"},
+	}, 1)
+	nodeData := asMap(t, asMap(t, searchRows(t, nodePartial)[0])["data"])
+	if nodeData["marker"] != marker || nodeData["sequence"] != "050" {
+		t.Fatalf("node partial query compat data = %v, want marker %q sequence 050", nodeData, marker)
+	}
+
+	bagPartial := requirePartialSearchRows(t, client, searchQueryPath("/search/"+functionalSearchBagName, "ba*:functional*"), map[string][]string{
+		"badge":  {"badge"},
+		"marker": {"nested", "functional_search_marker"},
+	}, 1)
+	bagData := asMap(t, asMap(t, searchRows(t, bagPartial)[0])["data"])
+	if bagData["badge"] != "functional["+marker+"]" || bagData["marker"] != marker {
+		t.Fatalf("data bag partial query compat data = %v, want marker %q", bagData, marker)
+	}
+
+	currentEncrypted := asMap(t, client.expectJSON(t, http.MethodGet, functionalEncryptedDataBagItemPath(), nil, http.StatusOK).JSON)
+	requireFunctionalEncryptedDataBagQueryCompatibility(t, client, cfg, currentEncrypted)
+}
+
+func requireFunctionalSearchWidenedOldTermsAbsent(t *testing.T, client *functionalClient, cfg functionalConfig, marker string) {
+	t.Helper()
+
+	requireSearchRows(t, client, searchQueryPath("/search/environment", `description:"functional OpenSearch environment `+marker+`"`), 0)
+	requireSearchRows(t, client, searchQueryPath("/organizations/"+cfg.org+"/search/node", "(functional_search_marker:"+marker+" OR recipe:missing) AND functional_sequence:[001 TO 999]"), 0)
+	requireSearchRows(t, client, searchQueryPath("/search/role", "description:*"+marker), 0)
+	requireSearchRows(t, client, searchQueryPath("/organizations/"+cfg.org+"/search/"+functionalSearchBagName, `note:"hello `+marker+`"`), 0)
 }
 
 func requireFunctionalSearchFixturesDeleted(t *testing.T, client *functionalClient, cfg functionalConfig) {
@@ -440,10 +517,18 @@ func requireFunctionalSearchFixturesDeleted(t *testing.T, client *functionalClie
 	requireSearchRows(t, client, "/search/environment?q=name:"+functionalSearchEnvironmentName, 0)
 	requireSearchRows(t, client, "/search/node?q=name:"+functionalSearchNodeName, 0)
 	requireSearchRows(t, client, "/search/role?q=name:"+functionalSearchRoleName, 0)
+	for _, marker := range []string{functionalSearchAlpha, functionalSearchBeta} {
+		requireSearchRows(t, client, searchQueryPath("/search/environment", `description:"functional OpenSearch environment `+marker+`"`), 0)
+		requireSearchRows(t, client, searchQueryPath("/search/node", "(functional_search_marker:"+marker+" OR recipe:missing) AND functional_sequence:[001 TO 999]"), 0)
+		requireSearchRows(t, client, searchQueryPath("/search/role", "description:*"+marker), 0)
+	}
 
 	resp := client.expectJSON(t, http.MethodGet, "/data/"+functionalSearchBagName, nil, http.StatusOK, http.StatusNotFound)
 	if resp.Status == http.StatusOK {
 		requireSearchRows(t, client, "/organizations/"+cfg.org+"/search/"+functionalSearchBagName+"?q=id:"+functionalSearchItemID, 0)
+		for _, marker := range []string{functionalSearchAlpha, functionalSearchBeta} {
+			requireSearchRows(t, client, searchQueryPath("/organizations/"+cfg.org+"/search/"+functionalSearchBagName, `note:"hello `+marker+`"`), 0)
+		}
 		client.expectJSON(t, http.MethodDelete, "/data/"+functionalSearchBagName, nil, http.StatusOK, http.StatusNotFound)
 	}
 }
@@ -488,8 +573,19 @@ func requireFunctionalEncryptedDataBagFixture(t *testing.T, client *functionalCl
 	rawData := asMap(t, row["raw_data"])
 	requireEncryptedDataBagPayload(t, rawData, want)
 	assertFunctionalSearchBodyOmitsPlaintext(t, fullSearch)
+	requireFunctionalEncryptedDataBagQueryCompatibility(t, client, cfg, want)
 
 	requireFunctionalEncryptedPartialSearch(t, client, cfg, want)
+}
+
+func requireFunctionalEncryptedDataBagQueryCompatibility(t *testing.T, client *functionalClient, cfg functionalConfig, want map[string]any) {
+	t.Helper()
+
+	bagName := testfixtures.EncryptedDataBagName()
+	fullSearch := requireSearchRows(t, client, searchQueryPath("/organizations/"+cfg.org+"/search/"+bagName, "*_encrypted_data:*"), 1)
+	assertFunctionalSearchBodyOmitsPlaintext(t, fullSearch)
+	fullGrouped := requireSearchRows(t, client, searchQueryPath("/search/"+bagName, "environment:"+fmt.Sprint(want["environment"])+" AND *_encrypted_data:*"), 1)
+	assertFunctionalSearchBodyOmitsPlaintext(t, fullGrouped)
 }
 
 // requireFunctionalEncryptedPartialSearch checks selected encrypted envelope
@@ -504,7 +600,7 @@ func requireFunctionalEncryptedPartialSearch(t *testing.T, client *functionalCli
 		"api_auth_tag":        {"api_key", "auth_tag"},
 		"environment":         {"environment"},
 	}
-	path := searchQueryPath("/organizations/"+cfg.org+"/search/"+bagName, "environment:"+fmt.Sprint(want["environment"]))
+	path := searchQueryPath("/organizations/"+cfg.org+"/search/"+bagName, "environment:"+fmt.Sprint(want["environment"])+" AND *_encrypted_data:*")
 	deadline := time.Now().Add(15 * time.Second)
 	for {
 		payload := asMap(t, client.expectJSON(t, http.MethodPost, path, body, http.StatusOK).JSON)
@@ -540,6 +636,7 @@ func requireFunctionalEncryptedOldTermsAbsent(t *testing.T, client *functionalCl
 	bagName := testfixtures.EncryptedDataBagName()
 	base := "/organizations/" + cfg.org + "/search/" + bagName
 	requireSearchRows(t, client, searchQueryPath(base, "environment:"+fmt.Sprint(old["environment"])), 0)
+	requireSearchRows(t, client, searchQueryPath(base, "environment:"+fmt.Sprint(old["environment"])+" AND *_encrypted_data:*"), 0)
 	requireSearchRows(t, client, searchQueryPath(base, "password_encrypted_data:"+encryptedEnvelopeString(t, old, "password", "encrypted_data")), 0)
 	requireSearchRows(t, client, searchQueryPath(base, "api_key_auth_tag:"+encryptedEnvelopeString(t, old, "api_key", "auth_tag")), 0)
 }
@@ -947,6 +1044,8 @@ func searchEnvironmentPayload(name, marker string) map[string]any {
 	payload["description"] = "functional OpenSearch environment " + marker
 	payload["default_attributes"] = map[string]any{
 		"functional_search_marker": marker,
+		"functional_path":          "functional/search/" + marker,
+		"functional_phrase":        "hello " + marker,
 	}
 	return payload
 }
@@ -955,6 +1054,8 @@ func searchNodePayload(name, environment, marker string) map[string]any {
 	payload := nodePayload(name, environment)
 	payload["normal"] = map[string]any{
 		"functional_search_marker": marker,
+		"functional_sequence":      "050",
+		"functional_path":          "functional/search/" + marker,
 	}
 	payload["run_list"] = []string{"role[" + functionalSearchRoleName + "]"}
 	return payload
@@ -965,6 +1066,7 @@ func searchRolePayload(name, marker string) map[string]any {
 	payload["description"] = "functional OpenSearch role " + marker
 	payload["default_attributes"] = map[string]any{
 		"functional_search_marker": marker,
+		"functional_path":          "functional/search/" + marker,
 	}
 	payload["env_run_lists"] = map[string][]string{
 		functionalSearchEnvironmentName: []string{"recipe[search_demo]"},
@@ -974,8 +1076,11 @@ func searchRolePayload(name, marker string) map[string]any {
 
 func searchDataBagItemPayload(id, marker string) map[string]any {
 	return map[string]any{
-		"id":   id,
-		"kind": marker,
+		"id":    id,
+		"kind":  marker,
+		"badge": "functional[" + marker + "]",
+		"note":  "hello " + marker,
+		"path":  "functional/search/" + marker,
 		"nested": map[string]any{
 			"functional_search_marker": marker,
 		},
@@ -1308,6 +1413,29 @@ func requireSearchRows(t *testing.T, client *functionalClient, path string, want
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
+}
+
+func requirePartialSearchRows(t *testing.T, client *functionalClient, path string, body any, want int) map[string]any {
+	t.Helper()
+
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		payload := asMap(t, client.expectJSON(t, http.MethodPost, path, body, http.StatusOK).JSON)
+		if len(searchRows(t, payload)) == want {
+			return payload
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s partial rows = %v, want %d rows", path, payload["rows"], want)
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+}
+
+func searchRowCount(t *testing.T, client *functionalClient, path string) int {
+	t.Helper()
+
+	payload := asMap(t, client.expectJSON(t, http.MethodGet, path, nil, http.StatusOK).JSON)
+	return len(searchRows(t, payload))
 }
 
 func searchRows(t *testing.T, payload map[string]any) []any {
