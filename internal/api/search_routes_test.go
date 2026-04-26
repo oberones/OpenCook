@@ -339,6 +339,264 @@ func TestSearchQueryEndpointPinsDefaultPagingOrderingAndOrgAlias(t *testing.T) {
 	}
 }
 
+func TestSearchQueryEndpointSupportsGroupedBooleanPrecedence(t *testing.T) {
+	router := newTestRouter(t)
+	createSearchNode(t, router, "twilight", map[string]any{}, map[string]any{"team": "friendship"}, []string{"web"})
+	createSearchNode(t, router, "rainbow", map[string]any{}, map[string]any{"team": "weather"}, []string{"base"})
+
+	assertSearchNames(t, router, searchPath("/search/node", "(team:friendship OR recipe:missing) AND recipe:web"), "/search/node", []string{"twilight"})
+	assertSearchNames(t, router, searchPath("/search/node", "name:rainbow OR recipe:web AND team:friendship"), "/search/node", []string{"rainbow", "twilight"})
+	assertSearchNames(t, router, searchPath("/search/node", "(name:rainbow OR recipe:web) AND team:friendship"), "/search/node", []string{"twilight"})
+	assertSearchNames(t, router, searchPath("/search/node", "recipe:web AND NOT (team:weather OR name:rainbow)"), "/search/node", []string{"twilight"})
+}
+
+func TestSearchQueryEndpointSupportsEscapedQuotedAndWordBreakTerms(t *testing.T) {
+	router := newTestRouter(t)
+	createSearchNode(t, router, "search_supernode", map[string]any{
+		"attr_colon":  "hello:world",
+		"attr_bang":   "hello!world",
+		"attr_phrase": "hello world",
+		"path":        "foo/bar",
+	}, map[string]any{}, []string{"app::default"})
+
+	createBagReq := newSignedJSONRequest(t, http.MethodPost, "/data", mustMarshalDataBagJSON(t, map[string]any{"name": "ponies"}))
+	createBagRec := httptest.NewRecorder()
+	router.ServeHTTP(createBagRec, createBagReq)
+	if createBagRec.Code != http.StatusCreated {
+		t.Fatalf("create word-break data bag status = %d, want %d, body = %s", createBagRec.Code, http.StatusCreated, createBagRec.Body.String())
+	}
+	createItemReq := newSignedJSONRequest(t, http.MethodPost, "/data/ponies", mustMarshalDataBagJSON(t, map[string]any{
+		"id":          "alice",
+		"badge":       "primary[blue]",
+		"note":        "hello world",
+		"punctuation": "hello!world",
+		"path":        "foo/bar",
+	}))
+	createItemRec := httptest.NewRecorder()
+	router.ServeHTTP(createItemRec, createItemReq)
+	if createItemRec.Code != http.StatusCreated {
+		t.Fatalf("create word-break data bag item status = %d, want %d, body = %s", createItemRec.Code, http.StatusCreated, createItemRec.Body.String())
+	}
+
+	assertSearchNames(t, router, searchPath("/search/node", `attr_colon:hello\:world`), "/search/node", []string{"search_supernode"})
+	assertSearchNames(t, router, searchPath("/search/node", `attr_bang:hello\!world`), "/search/node", []string{"search_supernode"})
+	assertSearchNames(t, router, searchPath("/search/node", `attr_bang:hello`), "/search/node", []string{})
+	assertSearchNames(t, router, searchPath("/search/node", `attr_bang:world`), "/search/node", []string{})
+	assertSearchNames(t, router, searchPath("/search/node", `attr_phrase:"hello world"`), "/search/node", []string{"search_supernode"})
+	assertSearchNames(t, router, searchPath("/search/node", `attr_bang:*"hello world"*`), "/search/node", []string{})
+	assertSearchNames(t, router, searchPath("/search/node", `path:foo\/*`), "/search/node", []string{"search_supernode"})
+	assertSearchNames(t, router, searchPath("/search/node", `recipe:app\:\:default`), "/search/node", []string{"search_supernode"})
+	assertSearchNames(t, router, searchPath("/search/ponies", `badge:primary\[blue\]`), "/search/ponies", []string{"data_bag_item_ponies_alice"})
+	assertSearchNames(t, router, searchPath("/search/ponies", `note:"hello world"`), "/search/ponies", []string{"data_bag_item_ponies_alice"})
+	assertSearchNames(t, router, searchPath("/search/ponies", `punctuation:*\!*`), "/search/ponies", []string{"data_bag_item_ponies_alice"})
+	assertSearchNames(t, router, searchPath("/search/ponies", `punctuation:*"hello world"*`), "/search/ponies", []string{})
+}
+
+func TestSearchQueryEndpointSupportsWildcardAndExistenceSemantics(t *testing.T) {
+	router := newTestRouter(t)
+
+	nodeBody := mustMarshalSearchNodePayload(t, "twilight", map[string]any{
+		"top": map[string]any{
+			"mid": map[string]any{
+				"bottom": "nested-target",
+			},
+		},
+	}, map[string]any{}, []string{"app::default", "role[webserver]"})
+	var nodePayload map[string]any
+	if err := json.Unmarshal(nodeBody, &nodePayload); err != nil {
+		t.Fatalf("json.Unmarshal(wildcard node payload) error = %v", err)
+	}
+	nodePayload["policy_name"] = "delivery-app"
+	nodePayload["policy_group"] = "prod-blue"
+	nodeBody = mustMarshalDataBagJSON(t, nodePayload)
+	createNodeReq := newSignedJSONRequest(t, http.MethodPost, "/nodes", nodeBody)
+	createNodeRec := httptest.NewRecorder()
+	router.ServeHTTP(createNodeRec, createNodeReq)
+	if createNodeRec.Code != http.StatusCreated {
+		t.Fatalf("create wildcard node status = %d, want %d, body = %s", createNodeRec.Code, http.StatusCreated, createNodeRec.Body.String())
+	}
+
+	createBagReq := newSignedJSONRequest(t, http.MethodPost, "/data", mustMarshalDataBagJSON(t, map[string]any{"name": "ponies"}))
+	createBagRec := httptest.NewRecorder()
+	router.ServeHTTP(createBagRec, createBagReq)
+	if createBagRec.Code != http.StatusCreated {
+		t.Fatalf("create wildcard data bag status = %d, want %d, body = %s", createBagRec.Code, http.StatusCreated, createBagRec.Body.String())
+	}
+	createItemReq := newSignedJSONRequest(t, http.MethodPost, "/data/ponies", mustMarshalDataBagJSON(t, map[string]any{
+		"id":    "alice",
+		"badge": "primary[blue]",
+		"path":  "foo/bar",
+	}))
+	createItemRec := httptest.NewRecorder()
+	router.ServeHTTP(createItemRec, createItemReq)
+	if createItemRec.Code != http.StatusCreated {
+		t.Fatalf("create wildcard data bag item status = %d, want %d, body = %s", createItemRec.Code, http.StatusCreated, createItemRec.Body.String())
+	}
+
+	secretBag := "secrets"
+	createSecretBagReq := newSignedJSONRequest(t, http.MethodPost, "/data", mustMarshalDataBagJSON(t, map[string]any{"name": secretBag}))
+	createSecretBagRec := httptest.NewRecorder()
+	router.ServeHTTP(createSecretBagRec, createSecretBagReq)
+	if createSecretBagRec.Code != http.StatusCreated {
+		t.Fatalf("create encrypted wildcard data bag status = %d, want %d, body = %s", createSecretBagRec.Code, http.StatusCreated, createSecretBagRec.Body.String())
+	}
+	createSecretItemReq := newSignedJSONRequest(t, http.MethodPost, "/data/"+secretBag, mustMarshalDataBagJSON(t, testfixtures.EncryptedDataBagItem()))
+	createSecretItemRec := httptest.NewRecorder()
+	router.ServeHTTP(createSecretItemRec, createSecretItemReq)
+	if createSecretItemRec.Code != http.StatusCreated {
+		t.Fatalf("create encrypted wildcard item status = %d, want %d, body = %s", createSecretItemRec.Code, http.StatusCreated, createSecretItemRec.Body.String())
+	}
+
+	assertSearchNames(t, router, searchPath("/search/node", "*:*"), "/search/node", []string{"twilight"})
+	assertSearchNames(t, router, searchPath("/search/node", "name:*"), "/search/node", []string{"twilight"})
+	assertSearchNames(t, router, searchPath("/search/node", "missing:*"), "/search/node", []string{})
+	assertSearchNames(t, router, searchPath("/search/node", "name:*light"), "/search/node", []string{"twilight"})
+	assertSearchNames(t, router, searchPath("/search/node", "name:twi*ght"), "/search/node", []string{"twilight"})
+	assertSearchNames(t, router, searchPath("/search/node", "name:twi?ight"), "/search/node", []string{"twilight"})
+	assertSearchNames(t, router, searchPath("/search/node", "top_mid_bottom:nested-target"), "/search/node", []string{"twilight"})
+	assertSearchNames(t, router, searchPath("/search/node", "bottom:nested-target"), "/search/node", []string{"twilight"})
+	assertSearchNames(t, router, searchPath("/search/node", "top_*_bottom:nested-target"), "/search/node", []string{"twilight"})
+	assertSearchNames(t, router, searchPath("/search/node", `run_list:*app\:\:default*`), "/search/node", []string{"twilight"})
+	assertSearchNames(t, router, searchPath("/search/node", "recipe:*default"), "/search/node", []string{"twilight"})
+	assertSearchNames(t, router, searchPath("/search/node", "role:web*"), "/search/node", []string{"twilight"})
+	assertSearchNames(t, router, searchPath("/search/node", "policy_name:*app"), "/search/node", []string{"twilight"})
+	assertSearchNames(t, router, searchPath("/search/node", "policy_group:prod*blue"), "/search/node", []string{"twilight"})
+	assertSearchNames(t, router, searchPath("/search/ponies", `*:primary\[blue\]`), "/search/ponies", []string{"data_bag_item_ponies_alice"})
+	assertSearchNames(t, router, searchPath("/search/ponies", "ba*:primary*"), "/search/ponies", []string{"data_bag_item_ponies_alice"})
+	assertSearchNames(t, router, searchPath("/search/ponies", `path:*\/bar`), "/search/ponies", []string{"data_bag_item_ponies_alice"})
+	assertSearchNames(t, router, searchPath("/search/"+secretBag, "*_encrypted_data:*"), "/search/"+secretBag, []string{"data_bag_item_" + secretBag + "_" + testfixtures.EncryptedDataBagItemID()})
+	assertSearchNames(t, router, searchPath("/search/"+secretBag, "encrypted_data:*"), "/search/"+secretBag, []string{"data_bag_item_" + secretBag + "_" + testfixtures.EncryptedDataBagItemID()})
+}
+
+func TestSearchQueryEndpointSupportsRangeSemantics(t *testing.T) {
+	router := newTestRouter(t)
+
+	createRangedNode := func(name, build, channel string) {
+		t.Helper()
+		createSearchNode(t, router, name, map[string]any{
+			"build":   build,
+			"channel": channel,
+		}, map[string]any{}, []string{"base"})
+	}
+	createRangedNode("applejack", "001", "alpha")
+	createRangedNode("rainbow", "010", "stable")
+	createRangedNode("twilight", "100", "zeta")
+
+	assertSearchNames(t, router, searchPath("/search/node", "build:[001 TO 099]"), "/search/node", []string{"applejack", "rainbow"})
+	assertSearchNames(t, router, searchPath("/search/node", "build:{001 TO 099}"), "/search/node", []string{"rainbow"})
+	assertSearchNames(t, router, searchPath("/search/node", "build:{010 TO 010}"), "/search/node", []string{})
+	assertSearchNames(t, router, searchPath("/search/node", "build:[* TO 010]"), "/search/node", []string{"applejack", "rainbow"})
+	assertSearchNames(t, router, searchPath("/search/node", "build:[010 TO *]"), "/search/node", []string{"rainbow", "twilight"})
+	assertSearchNames(t, router, searchPath("/search/node", "build:[* TO *]"), "/search/node", []string{"applejack", "rainbow", "twilight"})
+	assertSearchNames(t, router, searchPath("/search/node", "channel:[beta TO zzz]"), "/search/node", []string{"rainbow", "twilight"})
+	assertSearchNames(t, router, searchPath("/search/node", "name:rainbow AND build:[001 TO 099]"), "/search/node", []string{"rainbow"})
+
+	invalidReq := newSignedSearchRequest(t, http.MethodGet, searchPath("/search/node", "build:[001 099]"), "/search/node", nil)
+	invalidRec := httptest.NewRecorder()
+	router.ServeHTTP(invalidRec, invalidReq)
+	if invalidRec.Code != http.StatusBadRequest {
+		t.Fatalf("malformed range status = %d, want %d, body = %s", invalidRec.Code, http.StatusBadRequest, invalidRec.Body.String())
+	}
+	assertAPIError(t, invalidRec, "invalid_search_query")
+}
+
+func TestSearchRoutesSupportWidenedQueryFormsAcrossSurfaces(t *testing.T) {
+	router := newTestRouter(t)
+
+	postJSON := func(path string, body []byte) {
+		t.Helper()
+
+		req := newSignedJSONRequest(t, http.MethodPost, path, body)
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("POST %s status = %d, want %d, body = %s", path, rec.Code, http.StatusCreated, rec.Body.String())
+		}
+	}
+
+	postJSON("/environments", []byte(`{"name":"production","json_class":"Chef::Environment","chef_type":"environment","description":"production search target","cookbook_versions":{},"default_attributes":{"region":"equus"},"override_attributes":{}}`))
+	postJSON("/roles", []byte(`{"name":"web","description":"visible role search target","json_class":"Chef::Role","chef_type":"role","default_attributes":{},"override_attributes":{"tier":"frontend"},"run_list":["base"],"env_run_lists":{}}`))
+	createSearchNode(t, router, "twilight", map[string]any{
+		"path":  "foo/bar",
+		"build": "010",
+	}, map[string]any{
+		"team": "friendship",
+	}, []string{"web"})
+	createDataBagForTest(t, router, "/data", "ponies")
+	postJSON("/data/ponies", mustMarshalDataBagJSON(t, map[string]any{
+		"id":    "alice",
+		"badge": "primary[blue]",
+		"note":  "hello world",
+	}))
+
+	secretBag := testfixtures.EncryptedDataBagName()
+	secretItemName := "data_bag_item_" + secretBag + "_" + testfixtures.EncryptedDataBagItemID()
+	createDataBagForTest(t, router, "/data", secretBag)
+	postJSON("/data/"+secretBag, mustMarshalDataBagJSON(t, testfixtures.EncryptedDataBagItem()))
+
+	for _, tc := range []struct {
+		name     string
+		rawPath  string
+		signPath string
+		want     []string
+	}{
+		{name: "client default alias", rawPath: searchPath("/search/client", "name:org-*"), signPath: "/search/client", want: []string{"org-validator"}},
+		{name: "client org alias", rawPath: searchPath("/organizations/ponyville/search/client", "clientname:org-*"), signPath: "/organizations/ponyville/search/client", want: []string{"org-validator"}},
+		{name: "environment default alias", rawPath: searchPath("/search/environment", `description:"production search target"`), signPath: "/search/environment", want: []string{"production"}},
+		{name: "environment org alias", rawPath: searchPath("/organizations/ponyville/search/environment", "description:*search*"), signPath: "/organizations/ponyville/search/environment", want: []string{"production"}},
+		{name: "node default alias", rawPath: searchPath("/search/node", "(team:friendship OR recipe:missing) AND build:[001 TO 099]"), signPath: "/search/node", want: []string{"twilight"}},
+		{name: "node org alias", rawPath: searchPath("/organizations/ponyville/search/node", `path:foo\/*`), signPath: "/organizations/ponyville/search/node", want: []string{"twilight"}},
+		{name: "role default alias", rawPath: searchPath("/search/role", "description:*role*"), signPath: "/search/role", want: []string{"web"}},
+		{name: "role org alias", rawPath: searchPath("/organizations/ponyville/search/role", "(name:web OR name:db) AND NOT name:db"), signPath: "/organizations/ponyville/search/role", want: []string{"web"}},
+		{name: "data bag default alias", rawPath: searchPath("/search/ponies", "ba*:primary*"), signPath: "/search/ponies", want: []string{"data_bag_item_ponies_alice"}},
+		{name: "data bag org alias", rawPath: searchPath("/organizations/ponyville/search/ponies", `note:"hello world"`), signPath: "/organizations/ponyville/search/ponies", want: []string{"data_bag_item_ponies_alice"}},
+		{name: "encrypted data bag default alias", rawPath: searchPath("/search/"+secretBag, "*_encrypted_data:*"), signPath: "/search/" + secretBag, want: []string{secretItemName}},
+		{name: "encrypted data bag org alias", rawPath: searchPath("/organizations/ponyville/search/"+secretBag, "environment:production AND *_encrypted_data:*"), signPath: "/organizations/ponyville/search/" + secretBag, want: []string{secretItemName}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assertSearchNames(t, router, tc.rawPath, tc.signPath, tc.want)
+		})
+	}
+
+	assertSearchPartialData(t, router, http.MethodPost, searchPath("/search/client", "name:org-*"), "/search/client", []byte(`{"org":["orgname"]}`), "/clients/org-validator", map[string]any{"org": "ponyville"})
+	assertSearchPartialData(t, router, http.MethodPost, searchPath("/organizations/ponyville/search/environment", "description:*search*"), "/organizations/ponyville/search/environment", []byte(`{"desc":["description"]}`), "/organizations/ponyville/environments/production", map[string]any{"desc": "production search target"})
+	assertSearchPartialData(t, router, http.MethodPost, searchPath("/search/node", "(team:friendship OR recipe:missing) AND build:[001 TO 099]"), "/search/node", []byte(`{"team":["team"],"build":["build"]}`), "/nodes/twilight", map[string]any{"team": "friendship", "build": "010"})
+	assertSearchPartialData(t, router, http.MethodPost, searchPath("/organizations/ponyville/search/role", "description:*role*"), "/organizations/ponyville/search/role", []byte(`{"desc":["description"]}`), "/organizations/ponyville/roles/web", map[string]any{"desc": "visible role search target"})
+	assertSearchPartialData(t, router, http.MethodPost, searchPath("/search/ponies", "ba*:primary*"), "/search/ponies", []byte(`{"badge":["badge"],"note":["note"]}`), "/data/ponies/alice", map[string]any{"badge": "primary[blue]", "note": "hello world"})
+
+	encryptedPartialRec := serveSignedSearchRequestAs(t, router, "silent-bob", http.MethodPost, searchPath("/organizations/ponyville/search/"+secretBag, "*_encrypted_data:*"), "/organizations/ponyville/search/"+secretBag, encryptedDataBagPartialSearchBody(t))
+	assertEncryptedDataBagPartialSearchRow(t, decodeSearchPayload(t, encryptedPartialRec), "/organizations/ponyville/data/"+secretBag+"/"+testfixtures.EncryptedDataBagItemID())
+}
+
+func TestSearchRoutesPinPagingTotalsAndOrderingForWidenedQueries(t *testing.T) {
+	router, _ := newSearchTestRouterWithAuthorizer(t, func(state *bootstrap.Service) authz.Authorizer {
+		return denyingSearchAuthorizer{
+			base: authz.NewACLAuthorizer(state),
+			denyRead: map[string]struct{}{
+				"node:charlie": {},
+				"node:hotel":   {},
+			},
+		}
+	})
+
+	for _, name := range []string{"zeta", "alpha", "kilo", "bravo", "hotel", "charlie", "india", "delta", "juliet", "echo", "foxtrot", "golf"} {
+		createSearchNode(t, router, name, map[string]any{
+			"sequence": "050",
+		}, map[string]any{
+			"team": "fleet",
+		}, []string{"base"})
+	}
+
+	query := "(team:fleet OR recipe:missing) AND sequence:[001 TO 999]"
+	expected := []string{"alpha", "bravo", "delta", "echo", "foxtrot", "golf", "india", "juliet", "kilo", "zeta"}
+
+	assertSearchPageNames(t, router, searchPath("/search/node", query), "/search/node", 0, 10, expected)
+	assertSearchPageNames(t, router, searchPath("/search/node", query)+"&rows=0", "/search/node", 0, 10, expected)
+	assertSearchPageNames(t, router, searchPath("/search/node", query)+"&rows=100000", "/search/node", 0, 10, expected)
+	assertSearchPageNames(t, router, searchPath("/search/node", query)+"&start=2&rows=3", "/search/node", 2, 10, []string{"delta", "echo", "foxtrot"})
+	assertSearchPageNames(t, router, searchPath("/search/node", query)+"&start=999&rows=25", "/search/node", 999, 10, []string{})
+}
+
 func TestSearchVisibleStateDoesNotChangeAfterInvalidNodeMutation(t *testing.T) {
 	router := newTestRouter(t)
 	createSearchNode(t, router, "twilight", map[string]any{}, map[string]any{}, []string{"base"})
@@ -559,6 +817,14 @@ func TestSearchRoutesPinCurrentMethodAndPagingErrors(t *testing.T) {
 		t.Fatalf("invalid rows status = %d, want %d, body = %s", rowsRec.Code, http.StatusBadRequest, rowsRec.Body.String())
 	}
 	assertAPIError(t, rowsRec, "invalid_search_query")
+
+	invalidQueryReq := newSignedSearchRequest(t, http.MethodGet, searchPath("/search/node", "(name:twilight"), "/search/node", nil)
+	invalidQueryRec := httptest.NewRecorder()
+	router.ServeHTTP(invalidQueryRec, invalidQueryReq)
+	if invalidQueryRec.Code != http.StatusBadRequest {
+		t.Fatalf("invalid query status = %d, want %d, body = %s", invalidQueryRec.Code, http.StatusBadRequest, invalidQueryRec.Body.String())
+	}
+	assertAPIError(t, invalidQueryRec, "invalid_search_query")
 }
 
 func TestSearchQueryEndpointReturnsNotFoundForUnknownOrganization(t *testing.T) {
@@ -1027,6 +1293,36 @@ func TestSearchEndpointFiltersDeniedResults(t *testing.T) {
 	if row["name"] != "web" {
 		t.Fatalf("filtered search row name = %v, want %q", row["name"], "web")
 	}
+	assertSearchNames(t, router, searchPath("/search/role", "(name:web OR name:secret) AND name:*"), "/search/role", []string{"web"})
+}
+
+func TestSearchEndpointPaginatesBroadWildcardAfterACLFiltering(t *testing.T) {
+	router, _ := newSearchTestRouterWithAuthorizer(t, func(state *bootstrap.Service) authz.Authorizer {
+		return denyingSearchAuthorizer{
+			base: authz.NewACLAuthorizer(state),
+			denyRead: map[string]struct{}{
+				"node:rainbow": {},
+			},
+		}
+	})
+	createSearchNode(t, router, "rainbow", map[string]any{}, map[string]any{}, []string{"base"})
+	createSearchNode(t, router, "rarity", map[string]any{}, map[string]any{}, []string{"base"})
+	createSearchNode(t, router, "twilight", map[string]any{}, map[string]any{}, []string{"base"})
+
+	req := newSignedSearchRequest(t, http.MethodGet, searchPath("/search/node", "name:*")+"&rows=1&start=1", "/search/node", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("wildcard ACL-paged search status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	payload := decodeSearchPayload(t, rec)
+	rows := payload["rows"].([]any)
+	if payload["total"] != float64(2) || payload["start"] != float64(1) || len(rows) != 1 {
+		t.Fatalf("wildcard ACL-paged payload = %v, want start 1 total 2 one row", payload)
+	}
+	if rows[0].(map[string]any)["name"] != "twilight" {
+		t.Fatalf("wildcard ACL-paged row = %v, want twilight", rows[0])
+	}
 }
 
 type denyingSearchAuthorizer struct {
@@ -1341,6 +1637,79 @@ func assertSearchTotal(t *testing.T, router http.Handler, rawPath, signPath stri
 	payload := decodeSearchPayload(t, rec)
 	if payload["total"] != float64(want) {
 		t.Fatalf("search %s total = %v, want %d", rawPath, payload["total"], want)
+	}
+}
+
+// assertSearchPartialData verifies POST partial search route behavior while
+// callers vary the query language and default-org/org-scoped aliases.
+func assertSearchPartialData(t *testing.T, router http.Handler, method, rawPath, signPath string, body []byte, wantURL string, wantData map[string]any) {
+	t.Helper()
+
+	rec := serveSignedSearchRequestAs(t, router, "silent-bob", method, rawPath, signPath, body)
+	payload := decodeSearchPayload(t, rec)
+	rows := payload["rows"].([]any)
+	if payload["total"] != float64(1) || len(rows) != 1 {
+		t.Fatalf("partial search %s payload = %v, want one row", rawPath, payload)
+	}
+	row := rows[0].(map[string]any)
+	if row["url"] != wantURL {
+		t.Fatalf("partial search %s url = %v, want %q", rawPath, row["url"], wantURL)
+	}
+	data := row["data"].(map[string]any)
+	for key, want := range wantData {
+		if data[key] != want {
+			t.Fatalf("partial search %s data[%q] = %v, want %v (data=%v)", rawPath, key, data[key], want, data)
+		}
+	}
+}
+
+// assertSearchPageNames pins paging against filtered route results, not raw
+// provider candidates, while preserving the current deterministic row order.
+func assertSearchPageNames(t *testing.T, router http.Handler, rawPath, signPath string, wantStart, wantTotal int, wantNames []string) {
+	t.Helper()
+
+	req := newSignedSearchRequest(t, http.MethodGet, rawPath, signPath, nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("search page %s status = %d, want %d, body = %s", rawPath, rec.Code, http.StatusOK, rec.Body.String())
+	}
+	payload := decodeSearchPayload(t, rec)
+	if payload["start"] != float64(wantStart) || payload["total"] != float64(wantTotal) {
+		t.Fatalf("search page %s start/total = %v/%v, want %d/%d", rawPath, payload["start"], payload["total"], wantStart, wantTotal)
+	}
+	rows := payload["rows"].([]any)
+	if len(rows) != len(wantNames) {
+		t.Fatalf("search page %s rows len = %d, want %d (%v)", rawPath, len(rows), len(wantNames), rows)
+	}
+	for i, wantName := range wantNames {
+		if got := rows[i].(map[string]any)["name"]; got != wantName {
+			t.Fatalf("search page %s row[%d] name = %v, want %q", rawPath, i, got, wantName)
+		}
+	}
+}
+
+// assertSearchNames verifies a full search route returns the expected hydrated
+// row names in order after provider matching and route-level ACL filtering.
+func assertSearchNames(t *testing.T, router http.Handler, rawPath, signPath string, want []string) {
+	t.Helper()
+
+	req := newSignedSearchRequest(t, http.MethodGet, rawPath, signPath, nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("search %s status = %d, want %d, body = %s", rawPath, rec.Code, http.StatusOK, rec.Body.String())
+	}
+	payload := decodeSearchPayload(t, rec)
+	rows := payload["rows"].([]any)
+	if payload["total"] != float64(len(want)) || len(rows) != len(want) {
+		t.Fatalf("search %s payload = %v, want %d rows", rawPath, payload, len(want))
+	}
+	for i, wantName := range want {
+		got := rows[i].(map[string]any)["name"]
+		if got != wantName {
+			t.Fatalf("search %s row[%d] name = %v, want %q", rawPath, i, got, wantName)
+		}
 	}
 }
 

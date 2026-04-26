@@ -43,6 +43,8 @@ func (i MemoryIndex) Indexes(_ context.Context, org string) ([]string, error) {
 	return searchIndexesForState(i.state, org)
 }
 
+// Search evaluates the shared compiled query plan against documents derived
+// from the in-memory bootstrap state.
 func (i MemoryIndex) Search(_ context.Context, query Query) (Result, error) {
 	if i.state == nil {
 		return Result{}, ErrUnavailable
@@ -57,6 +59,9 @@ func (i MemoryIndex) Search(_ context.Context, query Query) (Result, error) {
 	}
 
 	plan := CompileQuery(query.Q)
+	if err := plan.Err(); err != nil {
+		return Result{}, err
+	}
 	matched := make([]Document, 0, len(docs))
 	for _, doc := range docs {
 		if !plan.Matches(doc) {
