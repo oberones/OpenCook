@@ -182,6 +182,42 @@ func TestAdminReindexEncryptedDataBagProviderFailureIsRedacted(t *testing.T) {
 	assertAdminReindexCount(t, out, "failed", 1)
 }
 
+func TestAdminReindexSkipsUnsupportedObjectFamilies(t *testing.T) {
+	target := &fakeAdminReindexTarget{}
+	cmd, stdout, stderr := newAdminReindexTestCommand(t, adminUnsupportedSearchStore(), target)
+
+	if code := cmd.Run(context.Background(), []string{"admin", "reindex", "--org", "ponyville", "--no-drop"}); code != exitOK {
+		t.Fatalf("Run(unsupported family reindex) exit = %d, want %d; stdout = %s stderr = %s", code, exitOK, stdout.String(), stderr.String())
+	}
+	requireAdminReindexRefs(t, target.upsertedRefs(), adminSupportedSearchRefs())
+	requireNoAdminReindexRefsForIndexes(t, target.upsertedRefs(), adminUnsupportedSearchIndexes()...)
+	out := decodeAdminReindexOutput(t, stdout.String())
+	assertAdminReindexCount(t, out, "scanned", 4)
+	assertAdminReindexCount(t, out, "upserted", 4)
+	assertAdminReindexCount(t, out, "missing", 0)
+}
+
+func TestAdminReindexRejectsUnsupportedIndexes(t *testing.T) {
+	for _, index := range adminUnsupportedSearchIndexes() {
+		t.Run(index, func(t *testing.T) {
+			target := &fakeAdminReindexTarget{}
+			cmd, stdout, stderr := newAdminReindexTestCommand(t, adminUnsupportedSearchStore(), target)
+
+			if code := cmd.Run(context.Background(), []string{"admin", "reindex", "--org", "ponyville", "--index", index, "--no-drop"}); code != exitNotFound {
+				t.Fatalf("Run(reindex unsupported %s) exit = %d, want %d; stdout = %s stderr = %s", index, code, exitNotFound, stdout.String(), stderr.String())
+			}
+			if target.pings != 0 || target.ensureCalls != 0 || len(target.bulkBatches) != 0 || len(target.deletedIDs) != 0 || len(target.deleteQueries) != 0 {
+				t.Fatalf("unsupported reindex mutated target: pings=%d ensure=%d bulks=%d deleted=%v queries=%v", target.pings, target.ensureCalls, len(target.bulkBatches), target.deletedIDs, target.deleteQueries)
+			}
+			if !strings.Contains(stderr.String(), search.ErrIndexNotFound.Error()) {
+				t.Fatalf("stderr = %q, want ErrIndexNotFound", stderr.String())
+			}
+			out := decodeAdminReindexOutput(t, stdout.String())
+			assertAdminReindexCount(t, out, "failed", 1)
+		})
+	}
+}
+
 func TestAdminReindexMissingOrgIndexAndProviderFailuresAreStable(t *testing.T) {
 	for _, tc := range []struct {
 		name         string
@@ -407,6 +443,101 @@ func adminEncryptedDataBagSearchStore() *fakeOfflineStore {
 	return store
 }
 
+func adminUnsupportedSearchStore() *fakeOfflineStore {
+	store := adminReindexTestStore()
+	org := store.objects.Orgs["ponyville"]
+	revision := bootstrap.PolicyRevision{
+		Name:       "appserver",
+		RevisionID: "1111111111111111111111111111111111111111",
+		Payload:    adminUnsupportedPolicyPayload(),
+	}
+	org.Policies = map[string]map[string]bootstrap.PolicyRevision{
+		"appserver": {
+			revision.RevisionID: revision,
+		},
+	}
+	org.PolicyGroups = map[string]bootstrap.PolicyGroup{
+		"dev": {
+			Name:     "dev",
+			Policies: map[string]string{"appserver": revision.RevisionID},
+		},
+	}
+	org.Sandboxes = map[string]bootstrap.Sandbox{
+		"sandbox-one": {
+			ID:           "sandbox-one",
+			Organization: "ponyville",
+			Checksums:    []string{"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+		},
+	}
+	store.objects.Orgs["ponyville"] = org
+	return store
+}
+
+func adminUnsupportedPolicyPayload() map[string]any {
+	return map[string]any{
+		"name":        "appserver",
+		"revision_id": "1111111111111111111111111111111111111111",
+		"run_list":    []any{"recipe[policyfile_demo::default]"},
+		"cookbook_locks": map[string]any{
+			"policyfile_demo": map[string]any{
+				"identifier": "f04cc40faf628253fe7d9566d66a1733fb1afbe9",
+				"version":    "1.2.3",
+			},
+		},
+	}
+}
+
+func adminSupportedSearchRefs() []search.DocumentRef {
+	return []search.DocumentRef{
+		{Organization: "ponyville", Index: "client", Name: "web01"},
+		{Organization: "ponyville", Index: "environment", Name: "_default"},
+		{Organization: "ponyville", Index: "node", Name: "twilight"},
+		{Organization: "ponyville", Index: "ponies", Name: "alice"},
+	}
+}
+
+func adminSupportedProviderIDs() []string {
+	return []string{
+		"ponyville/client/web01",
+		"ponyville/environment/_default",
+		"ponyville/node/twilight",
+		"ponyville/ponies/alice",
+	}
+}
+
+func adminUnsupportedProviderIDs() []string {
+	return []string{
+		"ponyville/checksums/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		"ponyville/cookbook_artifacts/unindexedartifact",
+		"ponyville/cookbooks/unindexed",
+		"ponyville/policy/appserver",
+		"ponyville/policy_groups/dev",
+		"ponyville/sandbox/sandbox-one",
+	}
+}
+
+func adminUnsupportedProviderScopes() []string {
+	return []string{
+		"ponyville/checksums",
+		"ponyville/cookbook_artifacts",
+		"ponyville/cookbooks",
+		"ponyville/policy",
+		"ponyville/policy_groups",
+		"ponyville/sandbox",
+	}
+}
+
+func adminUnsupportedSearchIndexes() []string {
+	return []string{
+		"cookbooks",
+		"cookbook_artifacts",
+		"policy",
+		"policy_groups",
+		"sandbox",
+		"checksums",
+	}
+}
+
 type fakeAdminReindexTarget struct {
 	pings         int
 	ensureCalls   int
@@ -565,6 +696,33 @@ func assertAdminReindexCount(t *testing.T, out map[string]any, key string, want 
 	}
 	if int(got) != want {
 		t.Fatalf("counts[%s] = %d, want %d", key, int(got), want)
+	}
+}
+
+func requireAdminReindexRefs(t *testing.T, got, want []search.DocumentRef) {
+	t.Helper()
+
+	if len(got) != len(want) {
+		t.Fatalf("upserted refs = %v, want %v", got, want)
+	}
+	for _, ref := range want {
+		if !hasAdminReindexRef(got, ref) {
+			t.Fatalf("upserted refs = %v, missing %v", got, ref)
+		}
+	}
+}
+
+func requireNoAdminReindexRefsForIndexes(t *testing.T, refs []search.DocumentRef, indexes ...string) {
+	t.Helper()
+
+	unsupported := make(map[string]struct{}, len(indexes))
+	for _, index := range indexes {
+		unsupported[index] = struct{}{}
+	}
+	for _, ref := range refs {
+		if _, blocked := unsupported[ref.Index]; blocked {
+			t.Fatalf("refs = %v, unexpectedly included unsupported index %q", refs, ref.Index)
+		}
 	}
 }
 

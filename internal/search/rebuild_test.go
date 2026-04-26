@@ -27,6 +27,20 @@ func TestDocumentsFromBootstrapStateIncludesStartupSearchSurfaces(t *testing.T) 
 	requireDocumentRef(t, docs, "ponies", "alice")
 }
 
+func TestDocumentsFromBootstrapStateSkipsUnsupportedObjectFamilies(t *testing.T) {
+	state := newSearchRebuildState(t)
+	seedUnsupportedRebuildObjects(t, state)
+
+	docs, err := DocumentsFromBootstrapState(state)
+	if err != nil {
+		t.Fatalf("DocumentsFromBootstrapState() error = %v", err)
+	}
+
+	requireDocumentRef(t, docs, "client", "ponyville-validator")
+	requireDocumentRef(t, docs, "node", "twilight")
+	requireNoDocumentIndexes(t, docs, "policy", "policies", "policy_group", "policy_groups", "sandbox", "sandboxes", "checksum", "checksums")
+}
+
 func TestRebuildOpenSearchIndexDeletesStaleDocumentsAndUpsertsCurrentState(t *testing.T) {
 	state := newSearchRebuildState(t)
 
@@ -171,6 +185,40 @@ func newSearchRebuildState(t *testing.T) *bootstrap.Service {
 	return state
 }
 
+func seedUnsupportedRebuildObjects(t *testing.T, state *bootstrap.Service) {
+	t.Helper()
+
+	creator := authn.Principal{Type: "user", Name: "pivotal"}
+	revision, err := state.CreatePolicyRevision("ponyville", "appserver", bootstrap.CreatePolicyRevisionInput{
+		Creator: creator,
+		Payload: map[string]any{
+			"name":        "appserver",
+			"revision_id": "1111111111111111111111111111111111111111",
+			"run_list":    []any{"recipe[policyfile_demo::default]"},
+			"cookbook_locks": map[string]any{
+				"policyfile_demo": map[string]any{
+					"identifier": "f04cc40faf628253fe7d9566d66a1733fb1afbe9",
+					"version":    "1.2.3",
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreatePolicyRevision() error = %v", err)
+	}
+	if _, _, err := state.UpsertPolicyGroupAssignment("ponyville", "prod", "appserver", bootstrap.UpdatePolicyGroupAssignmentInput{
+		Creator: creator,
+		Payload: revision.Payload,
+	}); err != nil {
+		t.Fatalf("UpsertPolicyGroupAssignment() error = %v", err)
+	}
+	if _, err := state.CreateSandbox("ponyville", bootstrap.CreateSandboxInput{
+		Checksums: []string{"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+	}); err != nil {
+		t.Fatalf("CreateSandbox() error = %v", err)
+	}
+}
+
 // newEncryptedDataBagRebuildState layers the shared encrypted-looking fixture
 // onto the normal rebuild state so reindex/repair tests exercise the same
 // PostgreSQL-derived search document builder without introducing crypto logic.
@@ -256,4 +304,18 @@ func requireDocumentRef(t *testing.T, docs []Document, index, name string) {
 		}
 	}
 	t.Fatalf("docs = %v, want ponyville/%s/%s", docs, index, name)
+}
+
+func requireNoDocumentIndexes(t *testing.T, docs []Document, indexes ...string) {
+	t.Helper()
+
+	unsupported := make(map[string]struct{}, len(indexes))
+	for _, index := range indexes {
+		unsupported[index] = struct{}{}
+	}
+	for _, doc := range docs {
+		if _, blocked := unsupported[doc.Index]; blocked {
+			t.Fatalf("docs included unsupported search index %q in document %#v", doc.Index, doc)
+		}
+	}
 }

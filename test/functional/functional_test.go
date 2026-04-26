@@ -38,6 +38,11 @@ const (
 	functionalSearchItemID               = "searchitem"
 	functionalSearchAlpha                = "functionalsearchalpha"
 	functionalSearchBeta                 = "functionalsearchbeta"
+	functionalUnsupportedCookbookName    = "functional-search-cookbook"
+	functionalUnsupportedCookbookVersion = "1.0.0"
+	functionalUnsupportedArtifactName    = "functional-search-artifact"
+	functionalUnsupportedArtifactID      = "2222222222222222222222222222222222222222"
+	functionalUnsupportedArtifactVersion = "1.0.1"
 	validatorBootstrapClientName         = "functional-bootstrap-client"
 	validatorDefaultBootstrapClientName  = "functional-default-bootstrap-client"
 	validatorBootstrapClientKeyStateFile = "validator_bootstrap_client_private.pem"
@@ -199,6 +204,7 @@ func runCreatePhase(t *testing.T, client *functionalClient, cfg functionalConfig
 
 	client.expectJSON(t, http.MethodPut, "/policy_groups/"+policyGroupName+"/policies/"+policyName, policyPayload(policyName, policyRevisionID), http.StatusCreated, http.StatusOK)
 	createPendingSandbox(t, client, cfg)
+	ensureFunctionalUnsupportedSearchFixtures(t, client, cfg)
 }
 
 func runVerifyPhase(t *testing.T, client *functionalClient, cfg functionalConfig) {
@@ -256,6 +262,7 @@ func runVerifyPhase(t *testing.T, client *functionalClient, cfg functionalConfig
 
 	commitPendingSandboxIfNeeded(t, client, cfg)
 	requireSandboxBlobReuse(t, client, cfg.org)
+	requireFunctionalUnsupportedSearchFixtures(t, client, cfg)
 }
 
 func runQueryCompatibilityPhase(t *testing.T, client *functionalClient, cfg functionalConfig) {
@@ -342,6 +349,8 @@ func runDeletePhase(t *testing.T, client *functionalClient, cfg functionalConfig
 	_ = os.Remove(filepath.Join(cfg.stateDir, validatorDefaultClientKeyStateFile))
 	client.expectJSON(t, http.MethodDelete, "/clients/"+functionalSearchClientName, nil, http.StatusOK, http.StatusNotFound)
 
+	client.expectJSON(t, http.MethodDelete, "/organizations/"+cfg.org+"/cookbook_artifacts/"+functionalUnsupportedArtifactName+"/"+functionalUnsupportedArtifactID, nil, http.StatusOK, http.StatusNotFound)
+	client.expectJSON(t, http.MethodDelete, "/organizations/"+cfg.org+"/cookbooks/"+functionalUnsupportedCookbookName+"/"+functionalUnsupportedCookbookVersion, nil, http.StatusOK, http.StatusNotFound)
 	client.expectJSON(t, http.MethodDelete, "/policy_groups/"+policyGroupName+"/policies/"+policyName, nil, http.StatusOK, http.StatusNotFound)
 	client.expectJSON(t, http.MethodDelete, "/policy_groups/"+policyGroupName, nil, http.StatusOK, http.StatusNotFound)
 	client.expectJSON(t, http.MethodDelete, "/policies/"+policyName+"/revisions/"+policyRevisionID, nil, http.StatusOK, http.StatusNotFound)
@@ -370,8 +379,11 @@ func runVerifyDeletedPhase(t *testing.T, client *functionalClient, cfg functiona
 	requireFunctionalEncryptedDataBagDeleted(t, client, cfg)
 	client.expectJSON(t, http.MethodGet, "/policy_groups/"+policyGroupName, nil, http.StatusNotFound)
 	client.expectJSON(t, http.MethodGet, "/policies/"+policyName+"/revisions/"+policyRevisionID, nil, http.StatusNotFound)
+	client.expectJSON(t, http.MethodGet, "/organizations/"+cfg.org+"/cookbook_artifacts/"+functionalUnsupportedArtifactName+"/"+functionalUnsupportedArtifactID, nil, http.StatusNotFound)
+	client.expectJSON(t, http.MethodGet, "/organizations/"+cfg.org+"/cookbooks/"+functionalUnsupportedCookbookName+"/"+functionalUnsupportedCookbookVersion, nil, http.StatusNotFound)
 	client.expectJSON(t, http.MethodGet, "/organizations/"+cfg.org, nil, http.StatusOK)
 	requireFunctionalSearchFixturesDeleted(t, client, cfg)
+	requireFunctionalUnsupportedSearchContract(t, client, cfg)
 }
 
 func requireOperationalStatus(t *testing.T, client *functionalClient) {
@@ -431,6 +443,7 @@ func requireFunctionalSearchFixtures(t *testing.T, client *functionalClient, cfg
 	requireSearchRows(t, client, "/organizations/"+cfg.org+"/search/node?q=functional_search_marker:"+marker, 1)
 	requireSearchRows(t, client, "/search/role?q=functional_search_marker:"+marker, 1)
 	requireSearchRows(t, client, "/organizations/"+cfg.org+"/search/"+functionalSearchBagName+"?q=kind:"+marker, 1)
+	requireFunctionalUnsupportedSearchContract(t, client, cfg)
 }
 
 func requireFunctionalSearchOldTermsAbsent(t *testing.T, client *functionalClient, cfg functionalConfig, marker string) {
@@ -470,6 +483,7 @@ func requireFunctionalSearchQueryCompatibility(t *testing.T, client *functionalC
 	requireSearchRows(t, client, searchQueryPath("/search/environment", `description:"functional OpenSearch environment `+marker+`"`), 1)
 	requireSearchRows(t, client, searchQueryPath("/organizations/"+cfg.org+"/search/node", "(functional_search_marker:"+marker+" OR recipe:missing) AND functional_sequence:[001 TO 999]"), 1)
 	requireSearchRows(t, client, searchQueryPath("/organizations/"+cfg.org+"/search/node", `functional_path:functional\/search\/*`), 1)
+	requireSearchRows(t, client, searchQueryPath("/organizations/"+cfg.org+"/search/node", "policy_name:"+policyName+" AND policy_group:"+policyGroupName), 1)
 	requireSearchRows(t, client, searchQueryPath("/search/role", "description:*"+marker), 1)
 	requireSearchRows(t, client, searchQueryPath("/organizations/"+cfg.org+"/search/"+functionalSearchBagName, "ba*:functional*"), 1)
 	requireSearchRows(t, client, searchQueryPath("/organizations/"+cfg.org+"/search/"+functionalSearchBagName, `note:"hello `+marker+`"`), 1)
@@ -481,6 +495,15 @@ func requireFunctionalSearchQueryCompatibility(t *testing.T, client *functionalC
 	nodeData := asMap(t, asMap(t, searchRows(t, nodePartial)[0])["data"])
 	if nodeData["marker"] != marker || nodeData["sequence"] != "050" {
 		t.Fatalf("node partial query compat data = %v, want marker %q sequence 050", nodeData, marker)
+	}
+
+	policyPartial := requirePartialSearchRows(t, client, searchQueryPath("/organizations/"+cfg.org+"/search/node", "policy_name:"+policyName+" AND policy_group:"+policyGroupName), map[string][]string{
+		"policy_name":  {"policy_name"},
+		"policy_group": {"policy_group"},
+	}, 1)
+	policyData := asMap(t, asMap(t, searchRows(t, policyPartial)[0])["data"])
+	if policyData["policy_name"] != policyName || policyData["policy_group"] != policyGroupName {
+		t.Fatalf("node policy partial data = %v, want %s/%s", policyData, policyName, policyGroupName)
 	}
 
 	bagPartial := requirePartialSearchRows(t, client, searchQueryPath("/search/"+functionalSearchBagName, "ba*:functional*"), map[string][]string{
@@ -530,6 +553,69 @@ func requireFunctionalSearchFixturesDeleted(t *testing.T, client *functionalClie
 			requireSearchRows(t, client, searchQueryPath("/organizations/"+cfg.org+"/search/"+functionalSearchBagName, `note:"hello `+marker+`"`), 0)
 		}
 		client.expectJSON(t, http.MethodDelete, "/data/"+functionalSearchBagName, nil, http.StatusOK, http.StatusNotFound)
+	}
+}
+
+func ensureFunctionalUnsupportedSearchFixtures(t *testing.T, client *functionalClient, cfg functionalConfig) {
+	t.Helper()
+
+	checksum := checksumHex(sandboxBlob)
+	client.expectJSON(t, http.MethodPut, "/organizations/"+cfg.org+"/cookbooks/"+functionalUnsupportedCookbookName+"/"+functionalUnsupportedCookbookVersion+"?force=true", cookbookVersionPayload(functionalUnsupportedCookbookName, functionalUnsupportedCookbookVersion, checksum), http.StatusCreated, http.StatusOK)
+	client.expectJSON(t, http.MethodPut, "/organizations/"+cfg.org+"/cookbook_artifacts/"+functionalUnsupportedArtifactName+"/"+functionalUnsupportedArtifactID, cookbookArtifactPayload(functionalUnsupportedArtifactName, functionalUnsupportedArtifactID, functionalUnsupportedArtifactVersion, checksum), http.StatusCreated, http.StatusConflict)
+}
+
+func requireFunctionalUnsupportedSearchFixtures(t *testing.T, client *functionalClient, cfg functionalConfig) {
+	t.Helper()
+
+	cookbook := asMap(t, client.expectJSON(t, http.MethodGet, "/organizations/"+cfg.org+"/cookbooks/"+functionalUnsupportedCookbookName+"/"+functionalUnsupportedCookbookVersion, nil, http.StatusOK).JSON)
+	if cookbook["cookbook_name"] != functionalUnsupportedCookbookName || cookbook["version"] != functionalUnsupportedCookbookVersion {
+		t.Fatalf("unsupported cookbook fixture = %v, want %s/%s", cookbook, functionalUnsupportedCookbookName, functionalUnsupportedCookbookVersion)
+	}
+	artifact := asMap(t, client.expectJSON(t, http.MethodGet, "/organizations/"+cfg.org+"/cookbook_artifacts/"+functionalUnsupportedArtifactName+"/"+functionalUnsupportedArtifactID, nil, http.StatusOK).JSON)
+	if artifact["name"] != functionalUnsupportedArtifactName || artifact["identifier"] != functionalUnsupportedArtifactID {
+		t.Fatalf("unsupported cookbook artifact fixture = %v, want %s/%s", artifact, functionalUnsupportedArtifactName, functionalUnsupportedArtifactID)
+	}
+	requireFunctionalUnsupportedSearchContract(t, client, cfg)
+}
+
+func requireFunctionalUnsupportedSearchContract(t *testing.T, client *functionalClient, cfg functionalConfig) {
+	t.Helper()
+
+	requireSearchIndexesExcludeUnsupported(t, client, "/search")
+	requireSearchIndexesExcludeUnsupported(t, client, "/organizations/"+cfg.org+"/search")
+	for _, index := range unsupportedFunctionalSearchIndexes() {
+		for _, base := range []string{"/search/", "/organizations/" + cfg.org + "/search/"} {
+			client.expectJSON(t, http.MethodGet, searchQueryPath(base+index, "*:*"), nil, http.StatusNotFound)
+			client.expectJSON(t, http.MethodPost, searchQueryPath(base+index, "*:*"), map[string][]string{"name": {"name"}}, http.StatusNotFound)
+		}
+	}
+}
+
+func requireSearchIndexesExcludeUnsupported(t *testing.T, client *functionalClient, path string) {
+	t.Helper()
+
+	indexes := asMap(t, client.expectJSON(t, http.MethodGet, path, nil, http.StatusOK).JSON)
+	for _, index := range unsupportedFunctionalSearchIndexes() {
+		if _, exists := indexes[index]; exists {
+			t.Fatalf("%s indexes = %v, unexpectedly included unsupported index %q", path, indexes, index)
+		}
+	}
+}
+
+func unsupportedFunctionalSearchIndexes() []string {
+	return []string{
+		"cookbook",
+		"cookbooks",
+		"cookbook_artifact",
+		"cookbook_artifacts",
+		"policy",
+		"policies",
+		"policy_group",
+		"policy_groups",
+		"sandbox",
+		"sandboxes",
+		"checksum",
+		"checksums",
 	}
 }
 
@@ -1052,6 +1138,8 @@ func searchEnvironmentPayload(name, marker string) map[string]any {
 
 func searchNodePayload(name, environment, marker string) map[string]any {
 	payload := nodePayload(name, environment)
+	payload["policy_name"] = policyName
+	payload["policy_group"] = policyGroupName
 	payload["normal"] = map[string]any{
 		"functional_search_marker": marker,
 		"functional_sequence":      "050",
@@ -1163,6 +1251,69 @@ func policyPayload(name, revisionID string) map[string]any {
 				"version":    "1.2.3",
 			},
 		},
+	}
+}
+
+func cookbookVersionPayload(name, version, checksum string) map[string]any {
+	return map[string]any{
+		"name":          name + "-" + version,
+		"cookbook_name": name,
+		"version":       version,
+		"json_class":    "Chef::CookbookVersion",
+		"chef_type":     "cookbook_version",
+		"frozen?":       false,
+		"metadata": map[string]any{
+			"version":          version,
+			"name":             name,
+			"maintainer":       "OpenCook",
+			"maintainer_email": "opencook@example.test",
+			"description":      "functional unsupported-search cookbook fixture",
+			"long_description": "functional unsupported-search cookbook fixture",
+			"license":          "Apache v2.0",
+			"dependencies":     map[string]any{},
+			"attributes":       map[string]any{},
+			"recipes":          map[string]any{name + "::default": ""},
+		},
+		"recipes": []any{cookbookFilePayload(checksum)},
+		"all_files": []any{
+			cookbookFilePayload(checksum),
+		},
+	}
+}
+
+func cookbookArtifactPayload(name, identifier, version, checksum string) map[string]any {
+	return map[string]any{
+		"name":       name,
+		"identifier": identifier,
+		"version":    version,
+		"chef_type":  "cookbook_version",
+		"frozen?":    false,
+		"metadata": map[string]any{
+			"version":          version,
+			"name":             name,
+			"maintainer":       "OpenCook",
+			"maintainer_email": "opencook@example.test",
+			"description":      "functional unsupported-search cookbook artifact fixture",
+			"long_description": "functional unsupported-search cookbook artifact fixture",
+			"license":          "Apache v2.0",
+			"dependencies":     map[string]any{},
+			"attributes":       map[string]any{},
+			"recipes":          map[string]any{name + "::default": ""},
+			"providing":        map[string]any{name + "::default": ">= 0.0.0"},
+		},
+		"recipes": []any{cookbookFilePayload(checksum)},
+		"all_files": []any{
+			cookbookFilePayload(checksum),
+		},
+	}
+}
+
+func cookbookFilePayload(checksum string) map[string]any {
+	return map[string]any{
+		"name":        "recipes/default.rb",
+		"path":        "recipes/default.rb",
+		"checksum":    checksum,
+		"specificity": "default",
 	}
 }
 
