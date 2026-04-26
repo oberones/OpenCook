@@ -294,17 +294,21 @@ func analyzeSearchConsistency(state *bootstrap.Service, expectedDocs []Document,
 		observed[id] = struct{}{}
 		analysis.counts.Observed++
 		ref, ok := parseOpenSearchDocumentID(id)
+		unsupportedScope := false
 		if ok {
-			analysis.countForRef(ref).Observed++
-			if scope, unsupportedScope := consistencyUnsupportedScope(state, ref); unsupportedScope {
+			var scope string
+			scope, unsupportedScope = consistencyUnsupportedScope(state, ref)
+			if unsupportedScope {
 				unsupported[scope] = struct{}{}
+			} else {
+				analysis.countForRef(ref).Observed++
 			}
 		} else {
 			unsupported["malformed-document-id"] = struct{}{}
 		}
 		if _, expected := expectedByID[id]; !expected {
 			analysis.staleIDs = append(analysis.staleIDs, id)
-			if ok {
+			if ok && !unsupportedScope {
 				analysis.countForRef(ref).Stale++
 			}
 		}

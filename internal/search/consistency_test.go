@@ -44,6 +44,9 @@ func TestConsistencyServiceReportsDriftAndObjectCounts(t *testing.T) {
 	if !hasConsistencyObjectCount(result.ObjectCounts, "ponyville", "node", 1, 1, 1, 1) {
 		t.Fatalf("object counts = %+v, want node expected/observed/missing/stale 1", result.ObjectCounts)
 	}
+	if hasConsistencyObjectCount(result.ObjectCounts, "ponyville", "unsupported", 0, 1, 0, 1) {
+		t.Fatalf("object counts = %+v, want unsupported provider scope reported only in unsupported_scopes", result.ObjectCounts)
+	}
 }
 
 func TestConsistencyServiceRepairFixesDriftAndIsIdempotent(t *testing.T) {

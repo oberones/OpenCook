@@ -142,6 +142,98 @@ func TestAdminSearchEncryptedDataBagProviderFailureIsRedacted(t *testing.T) {
 	assertAdminReindexCount(t, out, "failed", 1)
 }
 
+func TestAdminSearchReportsUnsupportedProviderScopesWithoutAdvertisingIndexes(t *testing.T) {
+	ids := append(adminSupportedProviderIDs(), adminUnsupportedProviderIDs()...)
+	target := newFakeAdminSearchTarget(ids...)
+	cmd, stdout, stderr := newAdminSearchTestCommand(t, adminUnsupportedSearchStore(), target)
+
+	if code := cmd.Run(context.Background(), []string{"admin", "search", "check", "--org", "ponyville"}); code != exitPartial {
+		t.Fatalf("Run(search check unsupported scopes) exit = %d, want %d; stdout = %s stderr = %s", code, exitPartial, stdout.String(), stderr.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("search check stderr = %q, want empty for unsupported-scope drift", stderr.String())
+	}
+	out := decodeAdminReindexOutput(t, stdout.String())
+	assertAdminReindexCount(t, out, "expected", 4)
+	assertAdminReindexCount(t, out, "observed", 10)
+	assertAdminReindexCount(t, out, "missing", 0)
+	assertAdminReindexCount(t, out, "stale", 6)
+	assertAdminReindexCount(t, out, "unsupported", 6)
+	requireAdminOutputStrings(t, out, "stale_documents", adminUnsupportedProviderIDs())
+	requireAdminOutputStrings(t, out, "unsupported_scopes", adminUnsupportedProviderScopes())
+	requireNoAdminObjectCountsForIndexes(t, out, adminUnsupportedSearchIndexes()...)
+}
+
+func TestAdminSearchRepairDeletesUnsupportedProviderScopesWithoutUpsertingThem(t *testing.T) {
+	ids := append(adminSupportedProviderIDs(), adminUnsupportedProviderIDs()...)
+	target := newFakeAdminSearchTarget(ids...)
+	cmd, stdout, stderr := newAdminSearchTestCommand(t, adminUnsupportedSearchStore(), target)
+
+	if code := cmd.Run(context.Background(), []string{"admin", "search", "repair", "--org", "ponyville", "--yes"}); code != exitOK {
+		t.Fatalf("Run(search repair unsupported scopes) exit = %d, want %d; stdout = %s stderr = %s", code, exitOK, stdout.String(), stderr.String())
+	}
+	if target.ensureCalls != 1 || target.refreshes != 1 {
+		t.Fatalf("unsupported repair ensure/refresh = %d/%d, want 1/1", target.ensureCalls, target.refreshes)
+	}
+	if !sameAdminStrings(target.deletedIDs, adminUnsupportedProviderIDs()) {
+		t.Fatalf("unsupported repair deleted IDs = %v, want %v", target.deletedIDs, adminUnsupportedProviderIDs())
+	}
+	if len(target.bulkBatches) != 0 {
+		t.Fatalf("unsupported repair bulk batches = %#v, want none", target.bulkBatches)
+	}
+	out := decodeAdminReindexOutput(t, stdout.String())
+	assertAdminReindexCount(t, out, "deleted", 6)
+	assertAdminReindexCount(t, out, "upserted", 0)
+	assertAdminReindexCount(t, out, "unsupported", 6)
+	requireAdminOutputStrings(t, out, "stale_documents", adminUnsupportedProviderIDs())
+	requireAdminOutputStrings(t, out, "unsupported_scopes", adminUnsupportedProviderScopes())
+	requireNoAdminObjectCountsForIndexes(t, out, adminUnsupportedSearchIndexes()...)
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := cmd.Run(context.Background(), []string{"admin", "search", "check", "--org", "ponyville"}); code != exitOK {
+		t.Fatalf("Run(search check after unsupported repair) exit = %d, want %d; stdout = %s stderr = %s", code, exitOK, stdout.String(), stderr.String())
+	}
+	out = decodeAdminReindexOutput(t, stdout.String())
+	assertAdminReindexCount(t, out, "clean", 1)
+	assertAdminReindexCount(t, out, "unsupported", 0)
+	assertAdminReindexCount(t, out, "stale", 0)
+}
+
+func TestAdminSearchRejectsUnsupportedIndexes(t *testing.T) {
+	for _, index := range adminUnsupportedSearchIndexes() {
+		t.Run("check "+index, func(t *testing.T) {
+			target := newFakeAdminSearchTarget()
+			cmd, stdout, stderr := newAdminSearchTestCommand(t, adminUnsupportedSearchStore(), target)
+
+			if code := cmd.Run(context.Background(), []string{"admin", "search", "check", "--org", "ponyville", "--index", index}); code != exitNotFound {
+				t.Fatalf("Run(search check unsupported %s) exit = %d, want %d; stdout = %s stderr = %s", index, code, exitNotFound, stdout.String(), stderr.String())
+			}
+			requireAdminSearchTargetUnchanged(t, target)
+			if !strings.Contains(stderr.String(), search.ErrIndexNotFound.Error()) {
+				t.Fatalf("stderr = %q, want ErrIndexNotFound", stderr.String())
+			}
+			out := decodeAdminReindexOutput(t, stdout.String())
+			assertAdminReindexCount(t, out, "failed", 1)
+		})
+
+		t.Run("repair "+index, func(t *testing.T) {
+			target := newFakeAdminSearchTarget()
+			cmd, stdout, stderr := newAdminSearchTestCommand(t, adminUnsupportedSearchStore(), target)
+
+			if code := cmd.Run(context.Background(), []string{"admin", "search", "repair", "--org", "ponyville", "--index", index, "--yes"}); code != exitNotFound {
+				t.Fatalf("Run(search repair unsupported %s) exit = %d, want %d; stdout = %s stderr = %s", index, code, exitNotFound, stdout.String(), stderr.String())
+			}
+			requireAdminSearchTargetUnchanged(t, target)
+			if !strings.Contains(stderr.String(), search.ErrIndexNotFound.Error()) {
+				t.Fatalf("stderr = %q, want ErrIndexNotFound", stderr.String())
+			}
+			out := decodeAdminReindexOutput(t, stdout.String())
+			assertAdminReindexCount(t, out, "failed", 1)
+		})
+	}
+}
+
 func TestAdminSearchCommandFailuresAreStableAndRedacted(t *testing.T) {
 	for _, tc := range []struct {
 		name         string
@@ -355,6 +447,14 @@ func (t *fakeAdminSearchTarget) upsertedDocuments() []search.Document {
 	return docs
 }
 
+func requireAdminSearchTargetUnchanged(t *testing.T, target *fakeAdminSearchTarget) {
+	t.Helper()
+
+	if target.pings != 0 || target.ensureCalls != 0 || target.refreshes != 0 || len(target.deletedIDs) != 0 || len(target.bulkBatches) != 0 {
+		t.Fatalf("search target mutated: pings=%d ensure=%d refresh=%d deleted=%v bulks=%d", target.pings, target.ensureCalls, target.refreshes, target.deletedIDs, len(target.bulkBatches))
+	}
+}
+
 // requireAdminOutputStrings extracts a string list from JSON output and keeps
 // document-drift assertions precise without relying on map iteration order.
 func requireAdminOutputStrings(t *testing.T, out map[string]any, key string, want []string) {
@@ -374,6 +474,32 @@ func requireAdminOutputStrings(t *testing.T, out map[string]any, key string, wan
 	}
 	if !sameAdminStrings(got, want) {
 		t.Fatalf("output[%s] = %v, want %v", key, got, want)
+	}
+}
+
+func requireNoAdminObjectCountsForIndexes(t *testing.T, out map[string]any, indexes ...string) {
+	t.Helper()
+
+	unsupported := make(map[string]struct{}, len(indexes))
+	for _, index := range indexes {
+		unsupported[index] = struct{}{}
+	}
+	raw, ok := out["object_counts"].([]any)
+	if !ok {
+		return
+	}
+	for _, item := range raw {
+		count, ok := item.(map[string]any)
+		if !ok {
+			t.Fatalf("object_counts item = %#v, want object", item)
+		}
+		index, ok := count["index"].(string)
+		if !ok {
+			t.Fatalf("object_counts item index = %#v, want string", count["index"])
+		}
+		if _, blocked := unsupported[index]; blocked {
+			t.Fatalf("object_counts = %#v, unexpectedly advertised unsupported index %q", raw, index)
+		}
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 	"time"
 
@@ -127,6 +128,104 @@ func TestSearchIndexesEndpointPinsOrgScopedAliasURLs(t *testing.T) {
 			t.Fatalf("org search index %q = %q, want %q", key, payload[key], want)
 		}
 	}
+}
+
+// TestSearchUnsupportedObjectFamilyIndexesStayUnsupportedWithObjectsPresent
+// proves persisted cookbook/policy/sandbox-style objects do not expand the Chef
+// public search index list or become queryable as invented data-object indexes.
+func TestSearchUnsupportedObjectFamilyIndexesStayUnsupportedWithObjectsPresent(t *testing.T) {
+	router := newTestRouter(t)
+	seedUnsupportedSearchObjectFamilies(t, router)
+
+	assertSearchIndexListingOnlyIncludesSupportedFamilies(t, router, "/search")
+	assertSearchIndexListingOnlyIncludesSupportedFamilies(t, router, "/organizations/ponyville/search")
+
+	for _, index := range unsupportedObjectFamilySearchIndexes() {
+		t.Run(index, func(t *testing.T) {
+			assertUnsupportedSearchIndex(t, router, http.MethodGet, searchPath("/search/"+index, "*:*"), "/search/"+index, nil, index)
+			assertUnsupportedSearchIndex(t, router, http.MethodPost, searchPath("/search/"+index, "name:*"), "/search/"+index, []byte(`{"name":["name"]}`), index)
+			assertUnsupportedSearchIndex(t, router, http.MethodGet, searchPath("/organizations/ponyville/search/"+index, "*:*"), "/organizations/ponyville/search/"+index, nil, index)
+			assertUnsupportedSearchIndex(t, router, http.MethodPost, searchPath("/organizations/ponyville/search/"+index, "name:*"), "/organizations/ponyville/search/"+index, []byte(`{"name":["name"]}`), index)
+		})
+	}
+}
+
+// TestSearchUnsupportedObjectFamilyMissingOrgPrecedence keeps org resolution
+// ahead of unsupported-index handling on org-scoped search routes.
+func TestSearchUnsupportedObjectFamilyMissingOrgPrecedence(t *testing.T) {
+	router := newTestRouter(t)
+
+	for _, tc := range []struct {
+		name   string
+		method string
+		body   []byte
+	}{
+		{name: "full search", method: http.MethodGet},
+		{name: "partial search", method: http.MethodPost, body: []byte(`{"name":["name"]}`)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := newSignedSearchRequestAs(t, "pivotal", tc.method, searchPath("/organizations/missing/search/policy", "*:*"), "/organizations/missing/search/policy", tc.body)
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusNotFound {
+				t.Fatalf("missing-org unsupported search status = %d, want %d, body = %s", rec.Code, http.StatusNotFound, rec.Body.String())
+			}
+			assertAPIError(t, rec, "not_found")
+		})
+	}
+}
+
+// TestSearchUnsupportedObjectFamilyIndexPrecedesReadAuthorization ensures
+// unknown object-family indexes are rejected before any resource ACL mapping.
+func TestSearchUnsupportedObjectFamilyIndexPrecedesReadAuthorization(t *testing.T) {
+	router, _ := newSearchTestRouterWithAuthorizer(t, func(state *bootstrap.Service) authz.Authorizer {
+		return denyingSearchAuthorizer{
+			base: authz.NewACLAuthorizer(state),
+			denyRead: map[string]struct{}{
+				"container:cookbooks":     {},
+				"container:policy_groups": {},
+				"container:policies":      {},
+				"container:sandboxes":     {},
+			},
+		}
+	})
+	seedUnsupportedSearchObjectFamilies(t, router)
+
+	assertUnsupportedSearchIndex(t, router, http.MethodGet, searchPath("/search/policy", "*:*"), "/search/policy", nil, "policy")
+}
+
+// TestSearchIndirectFieldsRemainSearchableWithUnsupportedObjectsPresent proves
+// cookbook/policy/sandbox object presence does not steal compatibility fields
+// that Chef exposes indirectly through existing searchable object families.
+func TestSearchIndirectFieldsRemainSearchableWithUnsupportedObjectsPresent(t *testing.T) {
+	router, _ := newSearchTestRouterWithAuthorizer(t, func(state *bootstrap.Service) authz.Authorizer {
+		return denyingSearchAuthorizer{
+			base: authz.NewACLAuthorizer(state),
+			denyRead: map[string]struct{}{
+				"node:hidden-node": {},
+			},
+		}
+	})
+	seedUnsupportedSearchObjectFamilies(t, router)
+	seedIndirectSearchFields(t, router)
+
+	assertSearchNames(t, router, searchPath("/search/node", "policy_name:delivery-app AND policy_group:prod-blue"), "/search/node", []string{"policy-node"})
+	assertSearchNames(t, router, searchPath("/search/node", "recipe:*default AND role:indirect-web"), "/search/node", []string{"policy-node"})
+	assertSearchNames(t, router, searchPath("/search/environment", `searchcookbook:"= 1.0.0"`), "/search/environment", []string{"production"})
+	assertSearchNames(t, router, searchPath("/search/role", "recipe:*default"), "/search/role", []string{"indirect-web"})
+	assertSearchNames(t, router, searchPath("/search/searchbag", "marker:indirect"), "/search/searchbag", []string{"data_bag_item_searchbag_visible"})
+	assertSearchNames(t, router, searchPath("/search/node", "policy_name:delivery-app OR policy_name:hidden-app"), "/search/node", []string{"policy-node"})
+
+	assertSearchPartialData(t, router, http.MethodPost, searchPath("/search/node", "policy_name:delivery-app"), "/search/node", []byte(`{"policy_name":["policy_name"],"policy_group":["policy_group"],"run_list":["run_list"]}`), "/nodes/policy-node", map[string]any{
+		"policy_name":  "delivery-app",
+		"policy_group": "prod-blue",
+		"run_list":     []any{"recipe[searchcookbook::default]", "role[indirect-web]"},
+	})
+	assertSearchPartialData(t, router, http.MethodPost, searchPath("/search/searchbag", "marker:indirect"), "/search/searchbag", []byte(`{"marker":["marker"],"kind":["details","kind"]}`), "/data/searchbag/visible", map[string]any{
+		"marker": "indirect",
+		"kind":   "retained",
+	})
 }
 
 func TestSearchIndexesEndpointReturnsNotFoundForUnknownOrganization(t *testing.T) {
@@ -1484,6 +1583,175 @@ func newSearchTestRouterWithConfigAndAuthorizer(t *testing.T, cfg config.Config,
 	return router, state
 }
 
+// seedUnsupportedSearchObjectFamilies creates real objects whose lifecycle APIs
+// exist but whose families are not exposed as Chef public search indexes.
+func seedUnsupportedSearchObjectFamilies(t *testing.T, router http.Handler) {
+	t.Helper()
+
+	sendPivotalJSONForSearchSeed(t, router, http.MethodPut, "/cookbooks/searchcookbook/1.0.0", cookbookVersionPayload("searchcookbook", "1.0.0", "", nil), http.StatusCreated)
+	sendPivotalJSONForSearchSeed(t, router, http.MethodPut, "/cookbook_artifacts/searchartifact/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", cookbookArtifactPayload("searchartifact", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "1.0.0", "", nil), http.StatusCreated)
+	sendPivotalJSONForSearchSeed(t, router, http.MethodPut, "/policy_groups/search-dev/policies/search-policy", minimalPolicyPayload("search-policy", "1111111111111111111111111111111111111111"), http.StatusCreated)
+	sendPivotalJSONForSearchSeed(t, router, http.MethodPost, "/sandboxes", map[string]any{
+		"checksums": map[string]any{
+			checksumHex([]byte("unsupported search sandbox checksum")): nil,
+		},
+	}, http.StatusCreated)
+}
+
+// seedIndirectSearchFields creates supported search documents that reference
+// cookbook and policy concepts only as fields on Chef's existing indexes.
+func seedIndirectSearchFields(t *testing.T, router http.Handler) {
+	t.Helper()
+
+	sendPivotalJSONForSearchSeed(t, router, http.MethodPost, "/environments", map[string]any{
+		"name":              "production",
+		"json_class":        "Chef::Environment",
+		"chef_type":         "environment",
+		"description":       "indirect search target",
+		"cookbook_versions": map[string]any{"searchcookbook": "= 1.0.0"},
+		"default_attributes": map[string]any{
+			"environment_marker": "indirect",
+		},
+		"override_attributes": map[string]any{},
+	}, http.StatusCreated)
+	sendPivotalJSONForSearchSeed(t, router, http.MethodPost, "/roles", map[string]any{
+		"name":                "indirect-web",
+		"description":         "indirect role target",
+		"json_class":          "Chef::Role",
+		"chef_type":           "role",
+		"default_attributes":  map[string]any{},
+		"override_attributes": map[string]any{},
+		"run_list":            []any{"searchcookbook::default"},
+		"env_run_lists":       map[string]any{},
+	}, http.StatusCreated)
+
+	policyNodePayload := indirectSearchNodePayload(t, "policy-node", "delivery-app", "prod-blue")
+	sendPivotalJSONForSearchSeed(t, router, http.MethodPost, "/nodes", policyNodePayload, http.StatusCreated)
+	hiddenNodePayload := indirectSearchNodePayload(t, "hidden-node", "hidden-app", "prod-blue")
+	sendPivotalJSONForSearchSeed(t, router, http.MethodPost, "/nodes", hiddenNodePayload, http.StatusCreated)
+
+	sendPivotalJSONForSearchSeed(t, router, http.MethodPost, "/data", map[string]any{"name": "searchbag"}, http.StatusCreated)
+	sendPivotalJSONForSearchSeed(t, router, http.MethodPost, "/data/searchbag", map[string]any{
+		"id":     "visible",
+		"marker": "indirect",
+		"details": map[string]any{
+			"kind": "retained",
+		},
+	}, http.StatusCreated)
+}
+
+// indirectSearchNodePayload augments the normal node route payload with
+// policyfile fields, keeping query coverage on the node index instead of
+// introducing unsupported policy joins.
+func indirectSearchNodePayload(t *testing.T, name, policyName, policyGroup string) map[string]any {
+	t.Helper()
+
+	body := mustMarshalSearchNodePayload(t, name, map[string]any{
+		"node_marker": "indirect",
+	}, map[string]any{}, []string{"searchcookbook::default", "role[indirect-web]"})
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("json.Unmarshal(indirect node payload) error = %v", err)
+	}
+	payload["policy_name"] = policyName
+	payload["policy_group"] = policyGroup
+	return payload
+}
+
+// sendPivotalJSONForSearchSeed keeps Task 2 setup on signed public routes so
+// unsupported-search coverage proves real object presence, not direct map state.
+func sendPivotalJSONForSearchSeed(t *testing.T, router http.Handler, method, path string, payload map[string]any, want int) {
+	t.Helper()
+
+	req := newSignedJSONRequestAs(t, "pivotal", method, path, mustMarshalSandboxJSON(t, payload))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != want {
+		t.Fatalf("%s %s status = %d, want %d, body = %s", method, path, rec.Code, want, rec.Body.String())
+	}
+}
+
+// unsupportedObjectFamilySearchIndexes names the tempting object-family routes
+// this bucket must keep unavailable unless upstream Chef exposes them.
+func unsupportedObjectFamilySearchIndexes() []string {
+	return []string{
+		"cookbook",
+		"cookbooks",
+		"cookbook_artifacts",
+		"policy",
+		"policies",
+		"policy_group",
+		"policy_groups",
+		"sandbox",
+		"sandboxes",
+		"checksum",
+		"checksums",
+	}
+}
+
+// assertSearchIndexListingOnlyIncludesSupportedFamilies pins the public index
+// list to Chef's built-ins plus data bags; seeded object APIs must not appear.
+func assertSearchIndexListingOnlyIncludesSupportedFamilies(t *testing.T, router http.Handler, path string) {
+	t.Helper()
+
+	req := newSignedSearchRequestAs(t, "pivotal", http.MethodGet, path, path, nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("search index listing %s status = %d, want %d, body = %s", path, rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var payload map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal(%s) error = %v, body = %s", path, err, rec.Body.String())
+	}
+	expected := map[string]string{
+		"client":      path + "/client",
+		"environment": path + "/environment",
+		"node":        path + "/node",
+		"role":        path + "/role",
+	}
+	if len(payload) != len(expected) {
+		t.Fatalf("%s indexes len = %d, want %d (%v)", path, len(payload), len(expected), payload)
+	}
+	for index, wantURL := range expected {
+		if payload[index] != wantURL {
+			t.Fatalf("%s index %q = %q, want %q", path, index, payload[index], wantURL)
+		}
+	}
+	for _, index := range unsupportedObjectFamilySearchIndexes() {
+		if _, exists := payload[index]; exists {
+			t.Fatalf("%s unexpectedly included unsupported index %q: %v", path, index, payload)
+		}
+	}
+}
+
+// assertUnsupportedSearchIndex checks the Chef-style data-object 404 for object
+// families that are API-visible but intentionally absent from public search.
+func assertUnsupportedSearchIndex(t *testing.T, router http.Handler, method, rawPath, signPath string, body []byte, index string) {
+	t.Helper()
+
+	req := newSignedSearchRequestAs(t, "pivotal", method, rawPath, signPath, body)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("%s %s status = %d, want %d, body = %s", method, rawPath, rec.Code, http.StatusNotFound, rec.Body.String())
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal(%s %s) error = %v, body = %s", method, rawPath, err, rec.Body.String())
+	}
+	errors, ok := payload["error"].([]any)
+	if !ok || len(errors) != 1 {
+		t.Fatalf("%s %s error payload = %v, want one error message", method, rawPath, payload)
+	}
+	want := "I don't know how to search for " + index + " data objects."
+	if errors[0] != want {
+		t.Fatalf("%s %s error = %v, want %q", method, rawPath, errors[0], want)
+	}
+}
+
 // newSignedSearchRequest signs a search request as the default org member used
 // by most memory-backed route tests.
 func newSignedSearchRequest(t *testing.T, method, rawPath, signPath string, body []byte) *http.Request {
@@ -1674,7 +1942,7 @@ func assertSearchPartialData(t *testing.T, router http.Handler, method, rawPath,
 	}
 	data := row["data"].(map[string]any)
 	for key, want := range wantData {
-		if data[key] != want {
+		if !reflect.DeepEqual(data[key], want) {
 			t.Fatalf("partial search %s data[%q] = %v, want %v (data=%v)", rawPath, key, data[key], want, data)
 		}
 	}

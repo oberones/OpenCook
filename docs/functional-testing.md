@@ -89,11 +89,14 @@ OPENCOOK_FUNCTIONAL_ACTOR_NAME=pivotal
 - Validator-created clients persist key material across restart, authenticate signed follow-up requests, retain default key metadata, appear in the `clients` group, expose their client ACL read side effect, and show up in client search rows.
 - Searchable clients, environments, nodes, roles, ordinary data bag items, and encrypted-looking data bag items are visible through active OpenSearch-backed search after OpenCook restarts.
 - The targeted `query-compat` phase covers representative grouped boolean, quoted phrase, escaped slash, wildcard field, wildcard value, range, full search, and partial search behavior against active PostgreSQL plus OpenSearch.
+- Cookbook versions, cookbook artifacts, policy groups, policy revisions, sandboxes, and checksum-backed blobs can exist in persisted PostgreSQL/blob state while cookbook/policy/sandbox/checksum-style search indexes remain absent from index listings and return Chef-style unsupported-index responses.
+- Node `policy_name` and `policy_group` fields remain searchable and selectable through the supported node index; policy objects themselves are not exposed as search indexes.
 - Encrypted-looking data bag partial search can select encrypted envelope fields and clear metadata without requiring a data bag secret.
 - Searchable environments, nodes, roles, ordinary data bag items, and encrypted-looking data bag items update OpenSearch-visible terms, removing old terms and matching new terms.
 - `opencook admin` can sign live HTTP admin requests from the test container to the OpenCook container over the shared Compose network.
 - Live-safe operational commands cover admin status, user/org creation, user key creation, a follow-up signed request with the generated key, group/container/ACL inspection, and complete org reindex.
 - Operational search consistency detects injected stale OpenSearch documents, including encrypted data bag index drift, dry-runs repair, repairs the stale documents, and verifies clean state after an OpenCook restart.
+- Operational reindex/check/repair rejects unsupported cookbook, cookbook-artifact, policy, policy-group, sandbox, and checksum indexes, and unscoped repair deletes stale unsupported provider documents without recreating unsupported search documents.
 - Deleted clients, environments, nodes, roles, ordinary data bag items, and encrypted-looking data bag items stop appearing in search after restart.
 - Environments, nodes, roles, data bags, policy groups, and policy revisions survive OpenCook restarts.
 - Filesystem-backed blob uploads survive restart and can be reused by a later sandbox.
