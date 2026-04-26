@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -190,6 +192,152 @@ func TestOpenSearchClientSearchIDsRequestShape(t *testing.T) {
 	}
 }
 
+func TestOpenSearchSearchBodyUsesSharedASTRequestShapes(t *testing.T) {
+	tests := []struct {
+		name  string
+		query string
+		want  map[string]any
+	}{
+		{
+			name:  "boolean",
+			query: "role:web AND NOT recipe:missing",
+			want: map[string]any{"bool": map[string]any{
+				"must":     []any{openSearchCompatTermClause("role", "web")},
+				"must_not": []any{openSearchCompatTermClause("recipe", "missing")},
+			}},
+		},
+		{
+			name:  "grouped",
+			query: "(team:friendship OR recipe:missing) AND name:twilight",
+			want: map[string]any{"bool": map[string]any{
+				"must": []any{
+					map[string]any{"bool": map[string]any{
+						"should": []any{
+							openSearchCompatRequiredClause(openSearchCompatTermClause("team", "friendship")),
+							openSearchCompatRequiredClause(openSearchCompatTermClause("recipe", "missing")),
+						},
+						"minimum_should_match": 1,
+					}},
+					openSearchCompatTermClause("name", "twilight"),
+				},
+			}},
+		},
+		{
+			name:  "quoted phrase",
+			query: `note:"hello world"`,
+			want:  openSearchCompatRequiredClause(openSearchCompatTermClause("note", "hello world")),
+		},
+		{
+			name:  "existence",
+			query: "name:*",
+			want:  openSearchCompatRequiredClause(openSearchCompatPrefixClause("name", "")),
+		},
+		{
+			name:  "wildcard value",
+			query: "name:*light",
+			want:  openSearchCompatRequiredClause(openSearchCompatWildcardClause("name", "*light")),
+		},
+		{
+			name:  "wildcard field and value",
+			query: "te*:friend*",
+			want:  openSearchCompatRequiredClause(openSearchCompatWildcardClause("te*", "friend*")),
+		},
+		{
+			name:  "range",
+			query: "build:[001 TO 099]",
+			want:  openSearchCompatRequiredClause(openSearchCompatRangeClause("build", "001", "099", true, true, false, false)),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body, err := openSearchSearchBody(Query{
+				Organization: "ponyville",
+				Index:        "node",
+				Q:            tt.query,
+			}, 25, []any{"ponyville/node/applejack"})
+			if err != nil {
+				t.Fatalf("openSearchSearchBody(%q) error = %v", tt.query, err)
+			}
+			if body["_source"] != false || body["size"] != 25 {
+				t.Fatalf("body paging/source = %v, want _source false size 25", body)
+			}
+			searchAfter := body["search_after"].([]any)
+			if len(searchAfter) != 1 || searchAfter[0] != "ponyville/node/applejack" {
+				t.Fatalf("search_after = %v, want previous document id", searchAfter)
+			}
+			boolQuery := body["query"].(map[string]any)["bool"].(map[string]any)
+			requireTermFilter(t, boolQuery["filter"], openSearchCompatTermsField, "__org=ponyville")
+			requireTermFilter(t, boolQuery["filter"], openSearchCompatTermsField, "__index=node")
+			if got := boolQuery["must"].(map[string]any); !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("must clause for %q = %#v, want %#v", tt.query, got, tt.want)
+			}
+			rawBody, err := json.Marshal(body)
+			if err != nil {
+				t.Fatalf("json.Marshal(body) error = %v", err)
+			}
+			if strings.Contains(string(rawBody), "query_string") {
+				t.Fatalf("body used provider query_string instead of shared AST clause: %s", rawBody)
+			}
+		})
+	}
+}
+
+// openSearchCompatRequiredClause mirrors the bool.must wrapper emitted by
+// andNode so OpenSearch request-shape tests compare against the real AST output.
+func openSearchCompatRequiredClause(children ...map[string]any) map[string]any {
+	must := make([]any, 0, len(children))
+	for _, child := range children {
+		must = append(must, child)
+	}
+	return map[string]any{"bool": map[string]any{"must": must}}
+}
+
+func TestOpenSearchClientSearchIDsInvalidQueryDoesNotContactProvider(t *testing.T) {
+	transport := newRecordingOpenSearchTransport(t, func(*http.Request, recordedOpenSearchRequest) (int, string) {
+		t.Fatal("provider request was made for invalid query")
+		return http.StatusInternalServerError, ""
+	})
+	client, err := NewOpenSearchClient("http://opensearch.local", WithOpenSearchTransport(transport))
+	if err != nil {
+		t.Fatalf("NewOpenSearchClient() error = %v", err)
+	}
+
+	_, err = client.SearchIDs(context.Background(), Query{
+		Organization: "ponyville",
+		Index:        "node",
+		Q:            "build:[001 099]",
+	})
+	if !errors.Is(err, ErrInvalidQuery) {
+		t.Fatalf("SearchIDs(invalid query) error = %v, want ErrInvalidQuery", err)
+	}
+	if requests := transport.Requests(); len(requests) != 0 {
+		t.Fatalf("provider requests = %d, want 0", len(requests))
+	}
+}
+
+func TestOpenSearchClientSearchIDsRejectedProviderDoesNotLeakBodies(t *testing.T) {
+	transport := newRecordingOpenSearchTransport(t, func(*http.Request, recordedOpenSearchRequest) (int, string) {
+		return http.StatusBadRequest, "raw provider body with query parse internals"
+	})
+	client, err := NewOpenSearchClient("http://opensearch.local", WithOpenSearchTransport(transport))
+	if err != nil {
+		t.Fatalf("NewOpenSearchClient() error = %v", err)
+	}
+
+	_, err = client.SearchIDs(context.Background(), Query{
+		Organization: "ponyville",
+		Index:        "node",
+		Q:            "name:twilight",
+	})
+	if !errors.Is(err, ErrRejected) {
+		t.Fatalf("SearchIDs(provider rejected) error = %v, want ErrRejected", err)
+	}
+	if strings.Contains(err.Error(), "query parse internals") {
+		t.Fatalf("SearchIDs(provider rejected) leaked provider body: %q", err.Error())
+	}
+}
+
 func TestOpenSearchClientSearchIDsUsesSearchAfterPagination(t *testing.T) {
 	requestCount := 0
 	transport := newRecordingOpenSearchTransport(t, func(r *http.Request, recorded recordedOpenSearchRequest) (int, string) {
@@ -238,6 +386,60 @@ func TestOpenSearchClientSearchIDsUsesSearchAfterPagination(t *testing.T) {
 	}
 	if got, want := strings.Join(ids, ","), "ponyville/node/applejack,ponyville/node/fluttershy,ponyville/node/twilight"; got != want {
 		t.Fatalf("searchIDs() = %s, want %s", got, want)
+	}
+	if requestCount != 2 {
+		t.Fatalf("requestCount = %d, want 2", requestCount)
+	}
+}
+
+func TestOpenSearchClientSearchIDsPaginatesPastDefaultPageSizeWithoutLowCap(t *testing.T) {
+	ids := make([]string, 1005)
+	for i := range ids {
+		ids[i] = fmt.Sprintf("ponyville/node/node-%04d", i)
+	}
+
+	requestCount := 0
+	transport := newRecordingOpenSearchTransport(t, func(r *http.Request, recorded recordedOpenSearchRequest) (int, string) {
+		requestCount++
+		if r.Method != http.MethodPost || r.URL.Path != "/chef/_search" {
+			t.Fatalf("request = %s %s, want POST /chef/_search", r.Method, r.URL.Path)
+		}
+		body := decodeJSONMap(t, recorded.Body)
+		if body["size"] != float64(openSearchSearchPageSize) {
+			t.Fatalf("request %d size = %v, want default page size %d", requestCount, body["size"], openSearchSearchPageSize)
+		}
+		switch requestCount {
+		case 1:
+			if _, ok := body["search_after"]; ok {
+				t.Fatalf("first search request search_after = %v, want omitted", body["search_after"])
+			}
+			return http.StatusOK, openSearchHitsResponse(t, ids[:openSearchSearchPageSize], 250000)
+		case 2:
+			searchAfter := body["search_after"].([]any)
+			if len(searchAfter) != 1 || searchAfter[0] != ids[openSearchSearchPageSize-1] {
+				t.Fatalf("second search_after = %v, want last first-page document id", searchAfter)
+			}
+			return http.StatusOK, openSearchHitsResponse(t, ids[openSearchSearchPageSize:], 250000)
+		default:
+			t.Fatalf("unexpected search request %d", requestCount)
+			return http.StatusInternalServerError, ""
+		}
+	})
+
+	client, err := NewOpenSearchClient("http://opensearch.local", WithOpenSearchTransport(transport))
+	if err != nil {
+		t.Fatalf("NewOpenSearchClient() error = %v", err)
+	}
+	got, err := client.SearchIDs(context.Background(), Query{
+		Organization: "ponyville",
+		Index:        "node",
+		Q:            "name:node-*",
+	})
+	if err != nil {
+		t.Fatalf("SearchIDs(large result) error = %v", err)
+	}
+	if len(got) != len(ids) || got[0] != ids[0] || got[len(got)-1] != ids[len(ids)-1] {
+		t.Fatalf("SearchIDs(large result) = len %d first/last %q/%q, want len %d first/last %q/%q", len(got), got[0], got[len(got)-1], len(ids), ids[0], ids[len(ids)-1])
 	}
 	if requestCount != 2 {
 		t.Fatalf("requestCount = %d, want 2", requestCount)
@@ -434,6 +636,31 @@ func decodeJSONMap(t *testing.T, raw string) map[string]any {
 		t.Fatalf("json.Unmarshal(%q) error = %v", raw, err)
 	}
 	return out
+}
+
+func openSearchHitsResponse(t *testing.T, ids []string, total int) string {
+	t.Helper()
+
+	hits := make([]map[string]any, 0, len(ids))
+	for _, id := range ids {
+		hits = append(hits, map[string]any{
+			"_id":  id,
+			"sort": []any{id},
+		})
+	}
+	raw, err := json.Marshal(map[string]any{
+		"hits": map[string]any{
+			"total": map[string]any{
+				"value":    total,
+				"relation": "gte",
+			},
+			"hits": hits,
+		},
+	})
+	if err != nil {
+		t.Fatalf("json.Marshal(OpenSearch hits response) error = %v", err)
+	}
+	return string(raw)
 }
 
 func requireJSONListContains(t *testing.T, raw any, want string) {

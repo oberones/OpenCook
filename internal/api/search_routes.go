@@ -306,6 +306,8 @@ func decodePartialSearchBody(w http.ResponseWriter, r *http.Request) (map[string
 	return selectors, true
 }
 
+// writeSearchError maps internal search errors to stable Chef-facing route
+// responses while keeping provider/parser details out of response bodies.
 func (s *server) writeSearchError(w http.ResponseWriter, err error, operation, indexName string) bool {
 	if err == nil {
 		return true
@@ -314,6 +316,11 @@ func (s *server) writeSearchError(w http.ResponseWriter, err error, operation, i
 	switch {
 	case errors.Is(err, search.ErrIndexNotFound):
 		writeSearchIndexNotFound(w, indexName)
+	case errors.Is(err, search.ErrInvalidQuery):
+		writeJSON(w, http.StatusBadRequest, apiError{
+			Error:   "invalid_search_query",
+			Message: "invalid search query",
+		})
 	case errors.Is(err, search.ErrUnavailable):
 		writeJSON(w, http.StatusServiceUnavailable, apiError{
 			Error:   "search_unavailable",
