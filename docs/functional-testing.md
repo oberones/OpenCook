@@ -10,7 +10,7 @@ The tests intentionally talk to OpenCook over HTTP with Chef-style signed reques
 scripts/functional-compose.sh
 ```
 
-The default flow builds the images, starts the stack, creates compatibility objects including encrypted-looking data bag items, restarts OpenCook, verifies rehydration through active OpenSearch-backed search, runs invalid-write/no-mutation checks, updates searchable fields and verifies old search terms disappear, restarts again, runs the operational admin/reindex/search-repair phases, restarts after repair, deletes the objects, restarts one more time, and verifies deletion persisted.
+The default flow builds the images, starts the stack, creates compatibility objects including encrypted-looking data bag items, restarts OpenCook, verifies rehydration through active OpenSearch-backed search, runs the targeted Lucene/query-string compatibility phase, runs invalid-write/no-mutation checks, updates searchable fields and verifies old search terms disappear, restarts again, reruns the query compatibility phase against updated persisted state, runs the operational admin/reindex/search-repair phases, restarts after repair, deletes the objects, restarts one more time, and verifies deletion persisted.
 
 By default the script removes containers and volumes on exit. Keep the stack for inspection with:
 
@@ -28,18 +28,25 @@ docker compose -p opencook-functional -f deploy/functional/docker-compose.yml do
 
 ```sh
 KEEP_STACK=1 scripts/functional-compose.sh create restart verify
+KEEP_STACK=1 scripts/functional-compose.sh query-compat
 KEEP_STACK=1 scripts/functional-compose.sh invalid restart verify
 KEEP_STACK=1 scripts/functional-compose.sh search-update verify-search-updated restart verify-search-updated
 KEEP_STACK=1 scripts/functional-compose.sh operational restart operational-verify
 KEEP_STACK=1 scripts/functional-compose.sh delete restart verify-deleted
 ```
 
-Supported phase names are `create`, `verify`, `invalid`, `search-update`, `verify-search-updated`, `operational`, `operational-verify`, `delete`, `verify-deleted`, and `restart`.
+Supported phase names are `create`, `verify`, `query-compat`, `invalid`, `search-update`, `verify-search-updated`, `operational`, `operational-verify`, `delete`, `verify-deleted`, and `restart`.
 
 To run just the OpenSearch-heavy compatibility phases after a stack already has created fixtures, use:
 
 ```sh
-KEEP_STACK=1 REBUILD=0 scripts/functional-compose.sh verify search-update verify-search-updated restart verify-search-updated
+KEEP_STACK=1 REBUILD=0 scripts/functional-compose.sh verify query-compat search-update verify-search-updated restart verify-search-updated query-compat
+```
+
+To run only the Lucene/query-string search compatibility phase against the current fixtures, use:
+
+```sh
+KEEP_STACK=1 REBUILD=0 scripts/functional-compose.sh query-compat
 ```
 
 To run only the operational admin/reindex/search-repair phases, use:
@@ -81,6 +88,7 @@ OPENCOOK_FUNCTIONAL_ACTOR_NAME=pivotal
 - Validator-authenticated bootstrap registration uses the generated `<org>-validator` key from organization creation to create normal clients through both explicit-org and configured default-org client routes.
 - Validator-created clients persist key material across restart, authenticate signed follow-up requests, retain default key metadata, appear in the `clients` group, expose their client ACL read side effect, and show up in client search rows.
 - Searchable clients, environments, nodes, roles, ordinary data bag items, and encrypted-looking data bag items are visible through active OpenSearch-backed search after OpenCook restarts.
+- The targeted `query-compat` phase covers representative grouped boolean, quoted phrase, escaped slash, wildcard field, wildcard value, range, full search, and partial search behavior against active PostgreSQL plus OpenSearch.
 - Encrypted-looking data bag partial search can select encrypted envelope fields and clear metadata without requiring a data bag secret.
 - Searchable environments, nodes, roles, ordinary data bag items, and encrypted-looking data bag items update OpenSearch-visible terms, removing old terms and matching new terms.
 - `opencook admin` can sign live HTTP admin requests from the test container to the OpenCook container over the shared Compose network.

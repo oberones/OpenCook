@@ -17,7 +17,7 @@ OpenCook is free and open source software released under the MIT License. Licens
 
 OpenCook is in active development and already provides a meaningful compatibility foundation for local development, experimentation, and integration work.
 
-Today, it should be viewed as an early server implementation rather than a production-ready drop-in replacement. Some subsystems still rely on in-memory state, and migration/cutover tooling, search edge-case coverage, and broader compatibility hardening are still in progress.
+Today, it should be viewed as an early server implementation rather than a production-ready drop-in replacement. Some subsystems still rely on in-memory state, and migration/cutover tooling, search object-family coverage beyond the implemented indexes, and broader compatibility hardening are still in progress.
 
 Org bootstrap can mint validator key material, and generated `<org>-validator` clients can now register normal clients through the stock client bootstrap routes.
 The first `opencook admin` operational CLI is live for signed admin inspection and live-safe identity/authz workflows, with offline-gated repair commands and OpenSearch reindex/consistency repair from PostgreSQL-backed state.
@@ -28,7 +28,7 @@ Encrypted data bag compatibility is now pinned as a server-opacity contract: Ope
 - Authentication and bootstrap: Chef request-signing verification, bootstrap users, organizations, clients, groups, containers, ACLs, actor key lifecycle, and validator-authenticated client registration.
 - Core objects: nodes, environments, roles, data bags, and encrypted-looking data bag payloads, with default-org and explicit-org routing where implemented.
 - Cookbook flows: sandboxes, signed checksum upload/download flows, cookbook artifacts, cookbook versions, cookbook read views, `universe`, and environment depsolver behavior.
-- Search and policy: built-in Chef search indexes with an in-memory fallback and active OpenSearch-backed mode when PostgreSQL plus OpenSearch are configured, encrypted data bag full/partial search plus reindex/repair coverage, and policy/policy-group compatibility routes.
+- Search and policy: built-in Chef search indexes with an in-memory fallback and active OpenSearch-backed mode when PostgreSQL plus OpenSearch are configured, widened Lucene/query-string compatibility for implemented indexes, encrypted data bag full/partial search plus reindex/repair coverage, and policy/policy-group compatibility routes.
 - Blob backends: in-memory, filesystem-backed, and S3-compatible storage for sandbox and cookbook content.
 - Operations: `opencook serve`, signed `opencook admin` workflows for users, organizations, keys, groups, containers, ACL inspection, and PostgreSQL-backed OpenSearch reindex/check/repair commands.
 

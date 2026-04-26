@@ -77,6 +77,7 @@ fi
 run_phase create
 restart_opencook
 run_phase verify
+run_phase query-compat
 run_phase invalid
 restart_opencook
 run_phase verify
@@ -84,6 +85,7 @@ run_phase search-update
 run_phase verify-search-updated
 restart_opencook
 run_phase verify-search-updated
+run_phase query-compat
 run_phase operational
 restart_opencook
 run_phase operational-verify

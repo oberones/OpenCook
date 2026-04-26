@@ -3,6 +3,7 @@ package search
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 
 	"github.com/oberones/OpenCook/internal/authn"
@@ -209,6 +210,47 @@ func TestMemoryIndexSearchSupportsEscapedSlashAndAndNotTerms(t *testing.T) {
 	}
 	if result.Documents[0].Name != "foo" {
 		t.Fatalf("escaped slash document name = %q, want %q", result.Documents[0].Name, "foo")
+	}
+}
+
+func TestMemoryIndexSearchReturnsStableSortedLargeResultSet(t *testing.T) {
+	state := newSearchTestState(t)
+	creator := authn.Principal{Type: "user", Name: "pivotal"}
+	for _, name := range []string{"zeta", "alpha", "kilo", "bravo", "hotel", "charlie", "india", "delta", "juliet", "echo", "foxtrot", "golf"} {
+		if _, err := state.CreateNode("ponyville", bootstrap.CreateNodeInput{
+			Creator: creator,
+			Payload: map[string]any{
+				"name":     name,
+				"run_list": []any{"base"},
+				"default": map[string]any{
+					"sequence": "050",
+				},
+				"normal": map[string]any{
+					"team": "fleet",
+				},
+			},
+		}); err != nil {
+			t.Fatalf("CreateNode(%s) error = %v", name, err)
+		}
+	}
+
+	index := NewMemoryIndex(state, "")
+	result, err := index.Search(context.Background(), Query{
+		Organization: "ponyville",
+		Index:        "node",
+		Q:            "(team:fleet OR recipe:missing) AND sequence:[001 TO 999]",
+	})
+	if err != nil {
+		t.Fatalf("Search(large ordered query) error = %v", err)
+	}
+
+	got := make([]string, 0, len(result.Documents))
+	for _, doc := range result.Documents {
+		got = append(got, doc.Name)
+	}
+	want := []string{"alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel", "india", "juliet", "kilo", "zeta"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("large ordered search names = %v, want %v", got, want)
 	}
 }
 

@@ -13,7 +13,9 @@ var (
 	ErrNotFound             = ErrOrganizationNotFound
 	ErrUnavailable          = errors.New("search backend unavailable")
 	ErrInvalidConfiguration = errors.New("search backend invalid configuration")
-	ErrRejected             = errors.New("search backend rejected request")
+	// ErrInvalidQuery marks Chef search query syntax that OpenCook can parse as invalid.
+	ErrInvalidQuery = errors.New("search query invalid")
+	ErrRejected     = errors.New("search backend rejected request")
 )
 
 type Status struct {
