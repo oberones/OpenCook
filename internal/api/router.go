@@ -195,7 +195,7 @@ func (s *server) handleRoot(w http.ResponseWriter, r *http.Request) {
 		"phase":         "compatibility-foundation",
 		"version":       s.deps.Version,
 		"compat_routes": s.deps.Compat.RouteCount(),
-		"next":          "plan operational admin plus OpenSearch reindex/repair tooling, with encrypted data bag compatibility as the main possible compatibility detour",
+		"next":          "plan broader Lucene/query-string search compatibility, with cookbook/policy/sandbox search coverage and migration/cutover tooling as follow-on buckets",
 	})
 }
 

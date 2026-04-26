@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/oberones/OpenCook/internal/authn"
 	"github.com/oberones/OpenCook/internal/bootstrap"
+	"github.com/oberones/OpenCook/internal/testfixtures"
 )
 
 func TestDocumentsFromBootstrapStateIncludesStartupSearchSurfaces(t *testing.T) {
@@ -167,6 +169,82 @@ func newSearchRebuildState(t *testing.T) *bootstrap.Service {
 		t.Fatalf("CreateDataBagItem() error = %v", err)
 	}
 	return state
+}
+
+// newEncryptedDataBagRebuildState layers the shared encrypted-looking fixture
+// onto the normal rebuild state so reindex/repair tests exercise the same
+// PostgreSQL-derived search document builder without introducing crypto logic.
+func newEncryptedDataBagRebuildState(t *testing.T) *bootstrap.Service {
+	t.Helper()
+
+	state := newSearchRebuildState(t)
+	creator := authn.Principal{Type: "user", Name: "pivotal"}
+	bagName := testfixtures.EncryptedDataBagName()
+	if _, err := state.CreateDataBag("ponyville", bootstrap.CreateDataBagInput{
+		Creator: creator,
+		Payload: map[string]any{"name": bagName},
+	}); err != nil {
+		t.Fatalf("CreateDataBag(%s) error = %v", bagName, err)
+	}
+	if _, err := state.CreateDataBagItem("ponyville", bagName, bootstrap.CreateDataBagItemInput{
+		Payload: testfixtures.EncryptedDataBagItem(),
+	}); err != nil {
+		t.Fatalf("CreateDataBagItem(%s/%s) error = %v", bagName, testfixtures.EncryptedDataBagItemID(), err)
+	}
+	return state
+}
+
+// requireEncryptedDataBagDocument finds the shared encrypted data bag document
+// and verifies the full row still carries the original opaque JSON under
+// raw_data instead of a decoded or reshaped representation.
+func requireEncryptedDataBagDocument(t *testing.T, docs []Document) Document {
+	t.Helper()
+
+	bagName := testfixtures.EncryptedDataBagName()
+	itemID := testfixtures.EncryptedDataBagItemID()
+	for _, doc := range docs {
+		if doc.Resource.Organization != "ponyville" || doc.Index != bagName || doc.Name != itemID {
+			continue
+		}
+		rawData, ok := doc.Object["raw_data"].(map[string]any)
+		if !ok {
+			t.Fatalf("encrypted document raw_data = %T(%v), want object", doc.Object["raw_data"], doc.Object["raw_data"])
+		}
+		if !reflect.DeepEqual(rawData, testfixtures.EncryptedDataBagItem()) {
+			t.Fatalf("encrypted document raw_data = %#v, want %#v", rawData, testfixtures.EncryptedDataBagItem())
+		}
+		return doc
+	}
+	t.Fatalf("docs = %v, want ponyville/%s/%s", docs, bagName, itemID)
+	return Document{}
+}
+
+// requireEncryptedDataBagSearchFields proves encrypted envelopes are indexed as
+// stored JSON fields and that raw_data-prefixed field names remain absent.
+func requireEncryptedDataBagSearchFields(t *testing.T, doc Document) {
+	t.Helper()
+
+	password := testfixtures.EncryptedDataBagItem()["password"].(map[string]any)
+	apiKey := testfixtures.EncryptedDataBagItem()["api_key"].(map[string]any)
+	requireFieldContains(t, doc.Fields, "password_encrypted_data", password["encrypted_data"].(string))
+	requireFieldContains(t, doc.Fields, "password_iv", password["iv"].(string))
+	requireFieldContains(t, doc.Fields, "api_key_auth_tag", apiKey["auth_tag"].(string))
+	requireFieldContains(t, doc.Fields, "environment", "production")
+	if _, ok := doc.Fields["raw_data_password_encrypted_data"]; ok {
+		t.Fatalf("encrypted document fields unexpectedly included raw_data-prefixed keys: %v", doc.Fields)
+	}
+}
+
+// encryptedDataBagSearchIndexName centralizes the fixture data bag name for
+// operational search tests that should not duplicate Chef-facing constants.
+func encryptedDataBagSearchIndexName() string {
+	return testfixtures.EncryptedDataBagName()
+}
+
+// encryptedDataBagSearchItemName centralizes the fixture item ID for reindex
+// and repair assertions that work with provider document IDs.
+func encryptedDataBagSearchItemName() string {
+	return testfixtures.EncryptedDataBagItemID()
 }
 
 func requireDocumentRef(t *testing.T, docs []Document, index, name string) {

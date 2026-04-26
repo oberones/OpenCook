@@ -21,14 +21,14 @@ Today, it should be viewed as an early server implementation rather than a produ
 
 Org bootstrap can mint validator key material, and generated `<org>-validator` clients can now register normal clients through the stock client bootstrap routes.
 The first `opencook admin` operational CLI is live for signed admin inspection and live-safe identity/authz workflows, with offline-gated repair commands and OpenSearch reindex/consistency repair from PostgreSQL-backed state.
-Data bag CRUD is live, but encrypted data bag compatibility is not yet an explicitly tracked/tested compatibility slice.
+Encrypted data bag compatibility is now pinned as a server-opacity contract: OpenCook stores, returns, searches, reindexes, and repairs encrypted-looking data bag item JSON without decrypting it or managing data bag secrets.
 
 ## Current Capabilities
 
 - Authentication and bootstrap: Chef request-signing verification, bootstrap users, organizations, clients, groups, containers, ACLs, actor key lifecycle, and validator-authenticated client registration.
-- Core objects: nodes, environments, roles, and data bags, with default-org and explicit-org routing where implemented.
+- Core objects: nodes, environments, roles, data bags, and encrypted-looking data bag payloads, with default-org and explicit-org routing where implemented.
 - Cookbook flows: sandboxes, signed checksum upload/download flows, cookbook artifacts, cookbook versions, cookbook read views, `universe`, and environment depsolver behavior.
-- Search and policy: built-in Chef search indexes with an in-memory fallback and active OpenSearch-backed mode when PostgreSQL plus OpenSearch are configured, partial search support, and policy/policy-group compatibility routes.
+- Search and policy: built-in Chef search indexes with an in-memory fallback and active OpenSearch-backed mode when PostgreSQL plus OpenSearch are configured, encrypted data bag full/partial search plus reindex/repair coverage, and policy/policy-group compatibility routes.
 - Blob backends: in-memory, filesystem-backed, and S3-compatible storage for sandbox and cookbook content.
 - Operations: `opencook serve`, signed `opencook admin` workflows for users, organizations, keys, groups, containers, ACL inspection, and PostgreSQL-backed OpenSearch reindex/check/repair commands.
 
