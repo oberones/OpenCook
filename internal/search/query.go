@@ -486,6 +486,9 @@ type queryParser struct {
 // parseOr parses disjunctions after higher-precedence AND expressions have
 // been collected.
 func (p *queryParser) parseOr() (queryNode, error) {
+	if p.peek().kind == queryTokenOr {
+		return nil, fmt.Errorf("%w: OR requires a left operand", ErrInvalidQuery)
+	}
 	children := make([]queryNode, 0, 2)
 	first, err := p.parseAnd()
 	if err != nil {
@@ -494,6 +497,10 @@ func (p *queryParser) parseOr() (queryNode, error) {
 	children = append(children, first)
 
 	for p.accept(queryTokenOr) {
+		switch p.peek().kind {
+		case queryTokenAnd, queryTokenOr, queryTokenRParen, queryTokenEOF:
+			return nil, fmt.Errorf("%w: OR requires a right operand", ErrInvalidQuery)
+		}
 		child, err := p.parseAnd()
 		if err != nil {
 			return nil, err
@@ -512,13 +519,21 @@ func (p *queryParser) parseAnd() (queryNode, error) {
 	positive := make([]queryNode, 0)
 	negated := make([]queryNode, 0)
 	processed := false
+	expectOperand := true
 
 	for {
 		switch p.peek().kind {
 		case queryTokenAnd:
+			if expectOperand {
+				return nil, fmt.Errorf("%w: AND requires a left operand", ErrInvalidQuery)
+			}
 			p.next()
+			expectOperand = true
 			continue
 		case queryTokenOr, queryTokenRParen, queryTokenEOF:
+			if expectOperand && processed {
+				return nil, fmt.Errorf("%w: AND requires a right operand", ErrInvalidQuery)
+			}
 			if !processed {
 				return matchNoneNode{}, nil
 			}
@@ -537,12 +552,13 @@ func (p *queryParser) parseAnd() (queryNode, error) {
 		}
 
 		processed = true
+		expectOperand = false
 		if isNegated {
 			negated = append(negated, child)
 		} else {
 			positive = append(positive, child)
 		}
-		if !p.accept(queryTokenAnd) {
+		if p.peek().kind != queryTokenAnd {
 			return andNode{children: positive, negated: negated}, nil
 		}
 	}
@@ -552,12 +568,20 @@ func (p *queryParser) parseAnd() (queryNode, error) {
 // primary term or parenthesized subexpression they modify.
 func (p *queryParser) parseUnary() (bool, queryNode, bool, error) {
 	negated := false
+	sawNegation := false
 	for p.peek().kind == queryTokenNot {
 		p.next()
 		negated = !negated
+		sawNegation = true
 	}
 
 	child, consumed, err := p.parsePrimary()
+	if err != nil {
+		return false, nil, consumed, err
+	}
+	if sawNegation && !consumed {
+		return false, nil, false, fmt.Errorf("%w: NOT requires an operand", ErrInvalidQuery)
+	}
 	return negated, child, consumed, err
 }
 

@@ -825,6 +825,23 @@ func TestSearchRoutesPinCurrentMethodAndPagingErrors(t *testing.T) {
 		t.Fatalf("invalid query status = %d, want %d, body = %s", invalidQueryRec.Code, http.StatusBadRequest, invalidQueryRec.Body.String())
 	}
 	assertAPIError(t, invalidQueryRec, "invalid_search_query")
+
+	for _, malformed := range []string{
+		"OR name:twilight",
+		"AND name:twilight",
+		"name:twilight OR",
+		"name:twilight AND",
+		"name:twilight OR AND recipe:web",
+		"name:twilight AND NOT",
+	} {
+		req := newSignedSearchRequest(t, http.MethodGet, searchPath("/search/node", malformed), "/search/node", nil)
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("malformed boolean query %q status = %d, want %d, body = %s", malformed, rec.Code, http.StatusBadRequest, rec.Body.String())
+		}
+		assertAPIError(t, rec, "invalid_search_query")
+	}
 }
 
 func TestSearchQueryEndpointReturnsNotFoundForUnknownOrganization(t *testing.T) {

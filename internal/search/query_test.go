@@ -122,6 +122,44 @@ func TestQueryPlanBaselineMatchesOpenSearchCompatibilityClause(t *testing.T) {
 	}
 }
 
+// TestQueryPlanRejectsMalformedBooleanOperators keeps typoed boolean queries
+// from silently broadening result sets in either memory or OpenSearch mode.
+func TestQueryPlanRejectsMalformedBooleanOperators(t *testing.T) {
+	fields := map[string][]string{
+		"name":   {"twilight"},
+		"role":   {"web"},
+		"recipe": {"base"},
+	}
+	tests := []string{
+		"OR name:twilight",
+		"AND name:twilight",
+		"name:twilight OR",
+		"name:twilight AND",
+		"name:twilight OR OR role:web",
+		"name:twilight AND AND role:web",
+		"name:twilight OR AND role:web",
+		"name:twilight AND OR role:web",
+		"NOT",
+		"name:twilight AND NOT",
+		"name:twilight OR NOT",
+	}
+
+	for _, query := range tests {
+		t.Run(query, func(t *testing.T) {
+			plan := CompileQuery(query)
+			if !errors.Is(plan.Err(), ErrInvalidQuery) {
+				t.Fatalf("CompileQuery(%q).Err() = %v, want ErrInvalidQuery", query, plan.Err())
+			}
+			if plan.MatchesFields(fields) {
+				t.Fatalf("CompileQuery(%q).MatchesFields() = true, want false", query)
+			}
+			if got := openSearchCompatibilityClauseMatches(Document{Fields: fields}, plan.OpenSearchQueryClause()); got {
+				t.Fatalf("OpenSearchQueryClause(%q) match = true, want false", query)
+			}
+		})
+	}
+}
+
 // TestQueryPlanSupportsGroupedBooleanPrecedence pins the Task 3 boolean
 // contract explicitly: parenthesized groups bind first, unary negation applies
 // to the following term/group, AND binds tighter than OR, and memory/OpenSearch
