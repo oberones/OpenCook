@@ -18,6 +18,8 @@ stale_doc_path="$org%2Fnode%2Ffunctional-stale-node"
 encrypted_bag="${OPENCOOK_FUNCTIONAL_ENCRYPTED_BAG:-encrypted_secrets}"
 encrypted_stale_doc_id="$org/$encrypted_bag/functional-stale-encrypted"
 encrypted_stale_doc_path="$org%2F$encrypted_bag%2Ffunctional-stale-encrypted"
+unsupported_stale_doc_id="$org/cookbooks/functional-search-cookbook"
+unsupported_stale_doc_path="$org%2Fcookbooks%2Ffunctional-search-cookbook"
 
 build_cli() {
   go build -trimpath -o "$cli" ./cmd/opencook
@@ -143,6 +145,39 @@ write_stale_encrypted_opensearch_document() {
 JSON
 }
 
+write_stale_unsupported_opensearch_document() {
+  curl -fsS -XPUT "$opensearch_url/chef/_doc/$unsupported_stale_doc_path?refresh=true" \
+    -H 'Content-Type: application/json' \
+    --data-binary @- >/tmp/opencook-stale-unsupported-opensearch.json <<JSON
+{
+  "document_id": "$unsupported_stale_doc_id",
+  "organization": "$org",
+  "index": "cookbooks",
+  "name": "functional-search-cookbook",
+  "resource_type": "cookbooks",
+  "resource_name": "functional-search-cookbook",
+  "compat_terms": [
+    "__org=$org",
+    "__index=cookbooks",
+    "name=functional-search-cookbook",
+    "__any=functional-search-cookbook"
+  ]
+}
+JSON
+}
+
+require_unsupported_search_admin_surfaces() {
+  local unsupported_index
+  for unsupported_index in cookbooks cookbook_artifacts policy policy_groups sandbox checksums; do
+    expect_exit 2 admin reindex --org "$org" --index "$unsupported_index" --no-drop --json >/tmp/opencook-admin-reindex-unsupported-"$unsupported_index".json
+    require_json_contains /tmp/opencook-admin-reindex-unsupported-"$unsupported_index".json 'search index not found'
+    expect_exit 2 admin search check --org "$org" --index "$unsupported_index" --json >/tmp/opencook-admin-search-check-unsupported-"$unsupported_index".json
+    require_json_contains /tmp/opencook-admin-search-check-unsupported-"$unsupported_index".json 'search index not found'
+    expect_exit 2 admin search repair --org "$org" --index "$unsupported_index" --yes --json >/tmp/opencook-admin-search-repair-unsupported-"$unsupported_index".json
+    require_json_contains /tmp/opencook-admin-search-repair-unsupported-"$unsupported_index".json 'search index not found'
+  done
+}
+
 run_operational_phase() {
   build_cli
 
@@ -177,6 +212,19 @@ run_operational_phase() {
   admin reindex --org "$org" --index "$encrypted_bag" --no-drop --json >/tmp/opencook-admin-encrypted-reindex.json
   require_json_contains /tmp/opencook-admin-encrypted-reindex.json '"upserted": 1'
 
+  echo "==> operational unsupported search admin surfaces"
+  require_unsupported_search_admin_surfaces
+  write_stale_unsupported_opensearch_document
+  expect_exit 3 admin search check --org "$org" --json >/tmp/opencook-admin-search-check-unsupported-drift.json
+  require_json_contains /tmp/opencook-admin-search-check-unsupported-drift.json "$unsupported_stale_doc_id"
+  require_json_contains /tmp/opencook-admin-search-check-unsupported-drift.json "$org/cookbooks"
+  expect_exit 3 admin search repair --org "$org" --dry-run --json >/tmp/opencook-admin-search-repair-unsupported-dry-run.json
+  require_json_contains /tmp/opencook-admin-search-repair-unsupported-dry-run.json '"skipped": 1'
+  admin search repair --org "$org" --yes --json >/tmp/opencook-admin-search-repair-unsupported.json
+  require_json_contains /tmp/opencook-admin-search-repair-unsupported.json '"deleted": 1'
+  admin search check --org "$org" --json >/tmp/opencook-admin-search-check-after-unsupported-cleanup.json
+  require_json_contains /tmp/opencook-admin-search-check-after-unsupported-cleanup.json '"clean": 1'
+
   echo "==> operational stale OpenSearch detection"
   write_stale_opensearch_document
   expect_exit 3 admin search check --org "$org" --index node --with-timing --json >/tmp/opencook-admin-search-check-drift.json
@@ -209,6 +257,7 @@ run_operational_verify_phase() {
   admin_json status >/tmp/opencook-admin-post-restart-status.json
   admin_with_key "$operational_key_path" users show "$admin_requestor" >/tmp/opencook-admin-post-restart-key.json
   require_json_contains /tmp/opencook-admin-post-restart-key.json "\"username\": \"$admin_requestor\""
+  require_unsupported_search_admin_surfaces
   admin search check --org "$org" --index node --json >/tmp/opencook-admin-post-restart-search.json
   require_json_contains /tmp/opencook-admin-post-restart-search.json '"clean": 1'
   admin search check --org "$org" --index "$encrypted_bag" --json >/tmp/opencook-admin-post-restart-encrypted-search.json

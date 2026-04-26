@@ -73,10 +73,11 @@ Status: in progress
 - route coverage now pins OpenSearch-backed full search, partial search, widened query planning through the shared AST, pagination/order, ACL filtering after provider matches, stale-ID ignoring, active status reporting, and stable `503 search_unavailable` degradation for provider failures
 - the functional Docker stack now proves active OpenSearch search lifecycle behavior across restart, representative query-string compatibility, update/stale-term removal, delete, and post-restart absence, including encrypted-looking data bag item coverage
 - `opencook admin` now provides OpenSearch reindex, consistency check, and consistency repair commands that rebuild and compare derived documents from PostgreSQL-backed authoritative state, with encrypted data bag index coverage and functional Docker coverage for stale-document detection, dry-run repair, actual repair, and post-restart clean verification
+- cookbook, cookbook-artifact, policy, policy-group, sandbox, and checksum-related state now has explicit negative compatibility coverage: these persisted object families remain absent from search index listings, return unsupported-index responses for full and partial search, are excluded from startup rebuild and mutation indexing, and are rejected by scoped admin reindex/check/repair commands while unscoped repair may delete stale unsupported provider documents
 - policyfile routes are now live for both default-org and explicit-org `/policies` and `/policy_groups`
 - policy revision storage, revision lookup, policy-group listing, policy-group assignment, and richer canonical payload round-tripping are implemented and now persist through PostgreSQL when configured
 - policy payload validation now covers more cookbook-lock and solution-dependency structure, while node policy refs remain compatibility-safe searchable fields instead of enforced foreign keys
-- richer OpenSearch capability/version negotiation and cookbook/policy/sandbox search coverage remain follow-on work; cookbook/policy/sandbox search coverage is the next recommended bucket
+- deeper API-version-specific object semantics are the next recommended bucket; richer OpenSearch capability/version negotiation and migration/cutover tooling remain follow-on operational buckets
 
 ## Milestone 6: Cookbook and Blob Workflows
 

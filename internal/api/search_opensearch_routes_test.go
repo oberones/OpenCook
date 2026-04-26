@@ -164,6 +164,88 @@ func TestActivePostgresOpenSearchRoutesHydratePersistedSearchResults(t *testing.
 	assertEncryptedDataBagPartialSearchRow(t, decodeSearchPayload(t, encryptedPartialRec), "/organizations/ponyville/data/"+secretBag+"/"+testfixtures.EncryptedDataBagItemID())
 }
 
+// TestActivePostgresOpenSearchUnsupportedObjectFamilyIndexesStayUnsupportedWithObjectsPresent
+// pins the same unsupported-index contract after persisted state is rehydrated
+// behind the active OpenSearch route adapter.
+func TestActivePostgresOpenSearchUnsupportedObjectFamilyIndexesStayUnsupportedWithObjectsPresent(t *testing.T) {
+	persisted := newActivePostgresBootstrapFixture(t, pgtest.NewState(pgtest.Seed{}))
+	persisted.createOrganizationWithValidator("ponyville")
+	seedUnsupportedSearchObjectFamilies(t, persisted.router)
+
+	restarted := newActivePostgresOpenSearchFixture(t, persisted.pgState, newAPIOpenSearchSearchTransport(t, map[string][]string{}), nil)
+	assertSearchIndexListingOnlyIncludesSupportedFamilies(t, restarted.router, "/search")
+	assertSearchIndexListingOnlyIncludesSupportedFamilies(t, restarted.router, "/organizations/ponyville/search")
+
+	for _, index := range unsupportedObjectFamilySearchIndexes() {
+		t.Run(index, func(t *testing.T) {
+			assertUnsupportedSearchIndex(t, restarted.router, http.MethodGet, searchPath("/search/"+index, "*:*"), "/search/"+index, nil, index)
+			assertUnsupportedSearchIndex(t, restarted.router, http.MethodPost, searchPath("/search/"+index, "name:*"), "/search/"+index, []byte(`{"name":["name"]}`), index)
+			assertUnsupportedSearchIndex(t, restarted.router, http.MethodGet, searchPath("/organizations/ponyville/search/"+index, "*:*"), "/organizations/ponyville/search/"+index, nil, index)
+			assertUnsupportedSearchIndex(t, restarted.router, http.MethodPost, searchPath("/organizations/ponyville/search/"+index, "name:*"), "/organizations/ponyville/search/"+index, []byte(`{"name":["name"]}`), index)
+		})
+	}
+}
+
+// TestActivePostgresOpenSearchIndirectFieldsRemainSearchableWithUnsupportedObjectsPresent
+// proves provider-backed search still treats cookbook/policy concepts as fields
+// on supported indexes after PostgreSQL rehydration, not as searchable joins.
+func TestActivePostgresOpenSearchIndirectFieldsRemainSearchableWithUnsupportedObjectsPresent(t *testing.T) {
+	persisted := newActivePostgresBootstrapFixture(t, pgtest.NewState(pgtest.Seed{}))
+	persisted.createOrganizationWithValidator("ponyville")
+	seedUnsupportedSearchObjectFamilies(t, persisted.router)
+	seedIndirectSearchFields(t, persisted.router)
+
+	transport := newAPIOpenSearchSearchTransport(t, map[string][]string{
+		apiOpenSearchQueryKey("ponyville", "node", "policy_name:delivery-app AND policy_group:prod-blue"): {
+			"ponyville/node/policy-node",
+		},
+		apiOpenSearchQueryKey("ponyville", "node", "recipe:*default AND role:indirect-web"): {
+			"ponyville/node/policy-node",
+		},
+		apiOpenSearchQueryKey("ponyville", "node", "policy_name:delivery-app OR policy_name:hidden-app"): {
+			"ponyville/node/policy-node",
+			"ponyville/node/hidden-node",
+		},
+		apiOpenSearchQueryKey("ponyville", "node", "policy_name:delivery-app"): {
+			"ponyville/node/policy-node",
+		},
+		apiOpenSearchQueryKey("ponyville", "environment", `searchcookbook:"= 1.0.0"`): {
+			"ponyville/environment/production",
+		},
+		apiOpenSearchQueryKey("ponyville", "role", "recipe:*default"): {
+			"ponyville/role/indirect-web",
+		},
+		apiOpenSearchQueryKey("ponyville", "searchbag", "marker:indirect"): {
+			"ponyville/searchbag/visible",
+		},
+	})
+	restarted := newActivePostgresOpenSearchFixture(t, persisted.pgState, transport, func(state *bootstrap.Service) authz.Authorizer {
+		return denyingSearchAuthorizer{
+			base: authz.NewACLAuthorizer(state),
+			denyRead: map[string]struct{}{
+				"node:hidden-node": {},
+			},
+		}
+	})
+
+	assertActiveOpenSearchFullRows(t, restarted.router, searchPath("/search/node", "policy_name:delivery-app AND policy_group:prod-blue"), "/search/node", []string{"policy-node"})
+	assertActiveOpenSearchFullRows(t, restarted.router, searchPath("/search/node", "recipe:*default AND role:indirect-web"), "/search/node", []string{"policy-node"})
+	assertActiveOpenSearchFullRows(t, restarted.router, searchPath("/search/environment", `searchcookbook:"= 1.0.0"`), "/search/environment", []string{"production"})
+	assertActiveOpenSearchFullRows(t, restarted.router, searchPath("/search/role", "recipe:*default"), "/search/role", []string{"indirect-web"})
+	assertActiveOpenSearchFullRows(t, restarted.router, searchPath("/search/searchbag", "marker:indirect"), "/search/searchbag", []string{"data_bag_item_searchbag_visible"})
+	assertActiveOpenSearchFullRows(t, restarted.router, searchPath("/search/node", "policy_name:delivery-app OR policy_name:hidden-app"), "/search/node", []string{"policy-node"})
+
+	assertActiveOpenSearchPartialData(t, restarted.router, searchPath("/search/node", "policy_name:delivery-app"), "/search/node", []byte(`{"policy_name":["policy_name"],"policy_group":["policy_group"],"run_list":["run_list"]}`), "/nodes/policy-node", map[string]any{
+		"policy_name":  "delivery-app",
+		"policy_group": "prod-blue",
+		"run_list":     []any{"recipe[searchcookbook::default]", "role[indirect-web]"},
+	})
+	assertActiveOpenSearchPartialData(t, restarted.router, searchPath("/search/searchbag", "marker:indirect"), "/search/searchbag", []byte(`{"marker":["marker"],"kind":["details","kind"]}`), "/data/searchbag/visible", map[string]any{
+		"marker": "indirect",
+		"kind":   "retained",
+	})
+}
+
 func TestActivePostgresOpenSearchFiltersDeniedIDsAfterHydration(t *testing.T) {
 	persisted := newActivePostgresBootstrapFixture(t, pgtest.NewState(pgtest.Seed{}))
 	seedActivePostgresOpenSearchState(t, persisted)
@@ -335,6 +417,31 @@ func TestActivePostgresOpenSearchMutationEventsDriveSearchResults(t *testing.T) 
 	assertActiveOpenSearchFullRows(t, fixture.router, searchPath("/search/ponies", "color:green"), "/search/ponies", []string{})
 }
 
+func TestActivePostgresOpenSearchUnsupportedObjectMutationsDoNotIndexDocuments(t *testing.T) {
+	transport := newStatefulAPIOpenSearchTransport(t)
+	client, err := search.NewOpenSearchClient("http://opensearch.example", search.WithOpenSearchTransport(transport))
+	if err != nil {
+		t.Fatalf("NewOpenSearchClient() error = %v", err)
+	}
+	fixture := newActivePostgresOpenSearchIndexingFixture(t, pgtest.NewState(pgtest.Seed{}), client, nil)
+	fixture.createOrganizationWithValidator("ponyville")
+	primeActiveOpenSearchCoreObjectIndexer(t, fixture.router)
+
+	wantDocs := transport.SnapshotDocuments()
+	wantMutations := transport.SnapshotMutationRequests()
+
+	sendActivePostgresPivotalJSON(t, fixture.router, http.MethodPut, "/cookbooks/unindexed/1.0.0", mustMarshalSandboxJSON(t, cookbookVersionPayload("unindexed", "1.0.0", "", nil)), http.StatusCreated)
+	sendActivePostgresPivotalJSON(t, fixture.router, http.MethodDelete, "/cookbooks/unindexed/1.0.0", nil, http.StatusOK)
+	sendActivePostgresPivotalJSON(t, fixture.router, http.MethodPut, "/cookbook_artifacts/unindexedartifact/1111111111111111111111111111111111111111", mustMarshalSandboxJSON(t, cookbookArtifactPayload("unindexedartifact", "1111111111111111111111111111111111111111", "1.0.0", "", nil)), http.StatusCreated)
+	sendActivePostgresPivotalJSON(t, fixture.router, http.MethodDelete, "/cookbook_artifacts/unindexedartifact/1111111111111111111111111111111111111111", nil, http.StatusOK)
+	sendActivePostgresPivotalJSON(t, fixture.router, http.MethodPut, "/policy_groups/dev/policies/appserver", mustMarshalPolicyJSON(t, minimalPolicyPayload("appserver", "1111111111111111111111111111111111111111")), http.StatusCreated)
+	sendActivePostgresPivotalJSON(t, fixture.router, http.MethodDelete, "/policy_groups/dev/policies/appserver", nil, http.StatusOK)
+	createAndCommitUnindexedSandbox(t, fixture.router)
+
+	transport.RequireDocuments(t, wantDocs)
+	transport.RequireMutationRequests(t, wantMutations)
+}
+
 func TestActivePostgresOpenSearchUnavailableRoutesUseStableErrors(t *testing.T) {
 	fixture := newActivePostgresBootstrapFixtureWithSearch(t, pgtest.NewState(pgtest.Seed{}), func(state *bootstrap.Service) search.Index {
 		return search.NewOpenSearchIndex(state, nil, "http://opensearch.example")
@@ -365,6 +472,20 @@ func TestActivePostgresOpenSearchUnavailableRoutesUseStableErrors(t *testing.T) 
 	openSearchStatus := statusPayload["dependencies"].(map[string]any)["opensearch"].(map[string]any)
 	if openSearchStatus["backend"] != "opensearch" || openSearchStatus["configured"] != true || openSearchStatus["message"] != "OpenSearch is configured but unavailable" {
 		t.Fatalf("opensearch status = %v, want configured unavailable wording", openSearchStatus)
+	}
+}
+
+func TestActivePostgresOpenSearchUnsupportedIndexesIgnoreUnavailableProvider(t *testing.T) {
+	persisted := newActivePostgresBootstrapFixture(t, pgtest.NewState(pgtest.Seed{}))
+	persisted.createOrganizationWithValidator("ponyville")
+	seedUnsupportedSearchObjectFamilies(t, persisted.router)
+
+	fixture := newActivePostgresOpenSearchFixture(t, persisted.pgState, unavailableAPIOpenSearchTransport{}, nil)
+	for _, index := range []string{"cookbooks", "cookbook_artifacts", "policy", "policy_groups", "sandbox", "checksums"} {
+		t.Run(index, func(t *testing.T) {
+			assertUnsupportedSearchIndex(t, fixture.router, http.MethodGet, searchPath("/search/"+index, "*:*"), "/search/"+index, nil, index)
+			assertUnsupportedSearchIndex(t, fixture.router, http.MethodPost, searchPath("/search/"+index, "name:*"), "/search/"+index, []byte(`{"name":["name"]}`), index)
+		})
 	}
 }
 
@@ -642,6 +763,55 @@ func sendActivePostgresPivotalJSON(t *testing.T, router http.Handler, method, pa
 	router.ServeHTTP(rec, req)
 	if rec.Code != want {
 		t.Fatalf("%s %s status = %d, want %d, body = %s", method, path, rec.Code, want, rec.Body.String())
+	}
+}
+
+func primeActiveOpenSearchCoreObjectIndexer(t *testing.T, router http.Handler) {
+	t.Helper()
+
+	sendActivePostgresPivotalJSON(t, router, http.MethodPost, "/environments", []byte(`{"name":"index-primer","json_class":"Chef::Environment","chef_type":"environment","description":"temporary index primer","cookbook_versions":{},"default_attributes":{},"override_attributes":{}}`), http.StatusCreated)
+	sendActivePostgresPivotalJSON(t, router, http.MethodDelete, "/environments/index-primer", nil, http.StatusOK)
+}
+
+func createAndCommitUnindexedSandbox(t *testing.T, router http.Handler) {
+	t.Helper()
+
+	content := []byte("unindexed sandbox content")
+	checksum := checksumHex(content)
+	createReq := newSignedJSONRequestAs(t, "pivotal", http.MethodPost, "/sandboxes", mustMarshalSandboxJSON(t, map[string]any{
+		"checksums": map[string]any{
+			checksum: nil,
+		},
+	}))
+	createRec := httptest.NewRecorder()
+	router.ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("create sandbox status = %d, want %d, body = %s", createRec.Code, http.StatusCreated, createRec.Body.String())
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(createRec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal(sandbox create) error = %v", err)
+	}
+	sandboxID := payload["sandbox_id"].(string)
+	checksums := payload["checksums"].(map[string]any)
+	checksumEntry := checksums[checksum].(map[string]any)
+	uploadURL := checksumEntry["url"].(string)
+
+	uploadReq := httptest.NewRequest(http.MethodPut, uploadURL, bytes.NewReader(content))
+	uploadReq.Header.Set("Content-Type", "application/octet-stream")
+	uploadReq.Header.Set("Content-MD5", checksumBase64(content))
+	uploadRec := httptest.NewRecorder()
+	router.ServeHTTP(uploadRec, uploadReq)
+	if uploadRec.Code != http.StatusNoContent {
+		t.Fatalf("upload sandbox checksum status = %d, want %d, body = %s", uploadRec.Code, http.StatusNoContent, uploadRec.Body.String())
+	}
+
+	commitReq := newSignedJSONRequestAs(t, "pivotal", http.MethodPut, "/sandboxes/"+sandboxID, mustMarshalSandboxJSON(t, map[string]any{"is_completed": true}))
+	commitRec := httptest.NewRecorder()
+	router.ServeHTTP(commitRec, commitReq)
+	if commitRec.Code != http.StatusOK {
+		t.Fatalf("commit sandbox status = %d, want %d, body = %s", commitRec.Code, http.StatusOK, commitRec.Body.String())
 	}
 }
 
@@ -1069,9 +1239,18 @@ func (i *failingAPIDocumentIndexer) requireSnapshot(t *testing.T, want failingAP
 }
 
 type statefulAPIOpenSearchTransport struct {
-	t    *testing.T
-	mu   sync.Mutex
-	docs map[string]map[string]any
+	t               *testing.T
+	mu              sync.Mutex
+	docs            map[string]map[string]any
+	bulkRequests    int
+	deleteRequests  int
+	refreshRequests int
+}
+
+type statefulAPIOpenSearchMutationSnapshot struct {
+	bulkRequests    int
+	deleteRequests  int
+	refreshRequests int
 }
 
 func newStatefulAPIOpenSearchTransport(t *testing.T) *statefulAPIOpenSearchTransport {
@@ -1080,6 +1259,30 @@ func newStatefulAPIOpenSearchTransport(t *testing.T) *statefulAPIOpenSearchTrans
 	return &statefulAPIOpenSearchTransport{
 		t:    t,
 		docs: make(map[string]map[string]any),
+	}
+}
+
+// SnapshotMutationRequests records provider writes so tests can prove
+// unsupported Chef object mutations do not enqueue OpenSearch work.
+func (tr *statefulAPIOpenSearchTransport) SnapshotMutationRequests() statefulAPIOpenSearchMutationSnapshot {
+	tr.mu.Lock()
+	defer tr.mu.Unlock()
+
+	return statefulAPIOpenSearchMutationSnapshot{
+		bulkRequests:    tr.bulkRequests,
+		deleteRequests:  tr.deleteRequests,
+		refreshRequests: tr.refreshRequests,
+	}
+}
+
+// RequireMutationRequests compares provider write counters and leaves search
+// query traffic out of the assertion so tests can keep using the fake provider.
+func (tr *statefulAPIOpenSearchTransport) RequireMutationRequests(t *testing.T, want statefulAPIOpenSearchMutationSnapshot) {
+	t.Helper()
+
+	got := tr.SnapshotMutationRequests()
+	if got != want {
+		t.Fatalf("OpenSearch mutation requests = %+v, want %+v", got, want)
 	}
 }
 
@@ -1114,6 +1317,7 @@ func (t *statefulAPIOpenSearchTransport) Do(req *http.Request) (*http.Response, 
 	case req.Method == http.MethodPut && req.URL.Path == "/chef/_mapping":
 		return apiOpenSearchJSONResponse(req, http.StatusOK, map[string]any{"acknowledged": true}), nil
 	case req.Method == http.MethodPost && req.URL.Path == "/chef/_refresh":
+		t.recordRefresh()
 		return apiOpenSearchJSONResponse(req, http.StatusOK, map[string]any{"refreshed": true}), nil
 	case req.Method == http.MethodDelete && strings.HasPrefix(req.URL.EscapedPath(), "/chef/_doc/"):
 		return t.handleDelete(req)
@@ -1144,6 +1348,7 @@ func (t *statefulAPIOpenSearchTransport) handleBulk(req *http.Request) (*http.Re
 
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	t.bulkRequests++
 	for i := 0; i < len(lines); i += 2 {
 		action := map[string]any{}
 		if err := json.Unmarshal([]byte(lines[i]), &action); err != nil {
@@ -1169,8 +1374,16 @@ func (t *statefulAPIOpenSearchTransport) handleDelete(req *http.Request) (*http.
 
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	t.deleteRequests++
 	delete(t.docs, id)
 	return apiOpenSearchJSONResponse(req, http.StatusOK, map[string]any{"result": "deleted"}), nil
+}
+
+func (t *statefulAPIOpenSearchTransport) recordRefresh() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	t.refreshRequests++
 }
 
 func (t *statefulAPIOpenSearchTransport) handleSearch(req *http.Request) (*http.Response, error) {
