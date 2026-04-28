@@ -84,10 +84,30 @@ OPENCOOK_FUNCTIONAL_ORG=ponyville
 OPENCOOK_FUNCTIONAL_ACTOR_NAME=pivotal
 ```
 
+## Provider Matrix
+
+The default flow validates the default OpenSearch image. To run the same flow
+against multiple provider images, set `OPENCOOK_FUNCTIONAL_OPENSEARCH_MATRIX`
+to a space-separated list. The wrapper runs each image in its own Compose
+project so volumes and provider state do not bleed across entries.
+
+```sh
+OPENCOOK_FUNCTIONAL_OPENSEARCH_MATRIX="opensearchproject/opensearch:3.5.0 opensearchproject/opensearch:2.19.3" scripts/functional-compose.sh
+```
+
+Matrix runs are intentionally opt-in because they rebuild and restart the full
+stack for every image. The package-level provider capability harness also
+exercises direct delete-by-query and fallback-delete behavior without requiring
+public images for hard-to-reproduce provider versions.
+
+This is the functional coverage side of the completed OpenSearch provider
+capability/version hardening bucket. Migration/cutover tooling remains out of
+scope for this harness until the next operational slice.
+
 ## What It Covers
 
 - OpenCook can boot with PostgreSQL and OpenSearch reachable on the Compose network.
-- `/_status` reports an active OpenSearch-backed search provider when PostgreSQL and `OPENCOOK_OPENSEARCH_URL` are configured.
+- `/_status` and `opencook admin status` report an active OpenSearch-backed search provider with discovered capability details such as search-after pagination, delete-by-query mode, and total-hit shape when PostgreSQL and `OPENCOOK_OPENSEARCH_URL` are configured.
 - Bootstrap auth works with a fixture RSA key and Chef request-signing headers.
 - Organization bootstrap rehydrates groups, containers, ACLs, and the validator client shape.
 - Validator-authenticated bootstrap registration uses the generated `<org>-validator` key from organization creation to create normal clients through both explicit-org and configured default-org client routes.
@@ -102,6 +122,7 @@ OPENCOOK_FUNCTIONAL_ACTOR_NAME=pivotal
 - Live-safe operational commands cover admin status, user/org creation, user key creation, a follow-up signed request with the generated key, group/container/ACL inspection, and complete org reindex.
 - Operational search consistency detects injected stale OpenSearch documents, including encrypted data bag index drift, dry-runs repair, repairs the stale documents, and verifies clean state after an OpenCook restart.
 - Operational reindex/check/repair rejects unsupported cookbook, cookbook-artifact, policy, policy-group, sandbox, and checksum indexes, and unscoped repair deletes stale unsupported provider documents without recreating unsupported search documents.
+- Package-level operational coverage exercises admin reindex/check/repair against both direct delete-by-query and legacy fallback-delete provider capability modes.
 - Deleted clients, environments, nodes, roles, ordinary data bag items, and encrypted-looking data bag items stop appearing in search after restart.
 - Environments, nodes, roles, data bags, policy groups, and policy revisions survive OpenCook restarts.
 - Filesystem-backed blob uploads survive restart and can be reused by a later sandbox.

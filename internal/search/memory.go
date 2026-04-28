@@ -27,9 +27,9 @@ func (i MemoryIndex) Name() string {
 }
 
 func (i MemoryIndex) Status() Status {
-	message := "search compatibility routes are backed by in-memory state"
+	message := "memory search fallback active; search compatibility routes are backed by in-memory state"
 	if i.target != "" {
-		message = "OPENCOOK_OPENSEARCH_URL is configured; memory search fallback remains active until OpenSearch indexing is activated"
+		message = "OPENCOOK_OPENSEARCH_URL is configured; memory search fallback active because PostgreSQL-backed OpenSearch indexing is not activated"
 	}
 
 	return Status{

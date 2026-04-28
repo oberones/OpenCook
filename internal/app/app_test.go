@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -342,6 +343,328 @@ func TestNewStatusReportsActivePostgresAndFilesystemBlob(t *testing.T) {
 	}
 	if blobStatus["backend"] != "filesystem" {
 		t.Fatalf("dependencies.blob.backend = %v, want %q", blobStatus["backend"], "filesystem")
+	}
+}
+
+func TestNewReportsDiscoveredOpenSearchProviderStatus(t *testing.T) {
+	tests := []struct {
+		name       string
+		root       string
+		headStatus int
+		wantParts  []string
+	}{
+		{
+			name:       "known opensearch",
+			headStatus: http.StatusNotFound,
+			root: `{
+				"name":"status-node",
+				"cluster_name":"status-cluster",
+				"version":{"distribution":"opensearch","number":"2.12.0","build_hash":"status"},
+				"tagline":"The OpenSearch Project: https://opensearch.org/"
+			}`,
+			wantParts: []string{"OpenSearch-backed search provider active", "opensearch 2.12.0", "search-after pagination", "delete-by-query", "object total hits"},
+		},
+		{
+			name:       "unknown compatible provider",
+			headStatus: http.StatusOK,
+			root: `{
+				"version":{"distribution":"galaxysearch","number":"99.1.2"},
+				"tagline":"compatible search"
+			}`,
+			wantParts: []string{"OpenSearch-compatible search provider active", "galaxysearch 99.1.2", "search-after pagination"},
+		},
+		{
+			name:       "degraded legacy provider",
+			headStatus: http.StatusOK,
+			root: `{
+				"version":{"number":"2.4.6"},
+				"tagline":"You Know, for Search"
+			}`,
+			wantParts: []string{"OpenSearch-compatible search provider active", "elasticsearch 2.4.6", "delete-by-query fallback required", "legacy total hits"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			state := pgtest.NewState(pgtest.Seed{})
+			db, cleanup, err := state.OpenDB()
+			if err != nil {
+				t.Fatalf("OpenDB() error = %v", err)
+			}
+			defer func() {
+				if err := cleanup(); err != nil {
+					t.Fatalf("cleanup() error = %v", err)
+				}
+			}()
+
+			previousPostgres := activatePostgresCookbookPersistence
+			activatePostgresCookbookPersistence = func(ctx context.Context, store *pg.Store) error {
+				return store.ActivateCookbookPersistenceWithDB(ctx, db)
+			}
+			defer func() {
+				activatePostgresCookbookPersistence = previousPostgres
+			}()
+
+			previousOpenSearchClient := newOpenSearchClient
+			newOpenSearchClient = func(raw string, _ ...search.OpenSearchOption) (*search.OpenSearchClient, error) {
+				return search.NewOpenSearchClient(raw, search.WithOpenSearchTransport(appStatusOpenSearchTransport{
+					t:          t,
+					root:       tt.root,
+					headStatus: tt.headStatus,
+				}))
+			}
+			defer func() {
+				newOpenSearchClient = previousOpenSearchClient
+			}()
+
+			app, err := New(config.Config{
+				ServiceName:   "opencook",
+				Environment:   "test",
+				ListenAddress: ":4000",
+				AuthSkew:      15 * time.Minute,
+				ReadTimeout:   5 * time.Second,
+				WriteTimeout:  5 * time.Second,
+				PostgresDSN:   "postgres://opensearch-status-test",
+				OpenSearchURL: "http://opensearch.example",
+			}, log.New(io.Discard, "", 0), version.Info{Version: "test"})
+			if err != nil {
+				t.Fatalf("New() error = %v", err)
+			}
+
+			req := httptest.NewRequest(http.MethodGet, "/_status", nil)
+			rec := httptest.NewRecorder()
+			app.server.Handler.ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("/_status status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+			}
+			var payload map[string]any
+			if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+				t.Fatalf("json.Unmarshal(/_status) error = %v", err)
+			}
+			openSearchStatus := payload["dependencies"].(map[string]any)["opensearch"].(map[string]any)
+			requireOpenSearchStatusShape(t, openSearchStatus)
+			if openSearchStatus["backend"] != "opensearch" || openSearchStatus["configured"] != true {
+				t.Fatalf("opensearch status = %v, want active opensearch backend", openSearchStatus)
+			}
+			message := openSearchStatus["message"].(string)
+			for _, want := range tt.wantParts {
+				if !strings.Contains(message, want) {
+					t.Fatalf("opensearch status message = %q, want %q", message, want)
+				}
+			}
+		})
+	}
+}
+
+func TestNewOpenSearchStartupActivatesInDiscoveryEnsureRebuildOrder(t *testing.T) {
+	tests := []struct {
+		name string
+		root string
+	}{
+		{
+			name: "known opensearch",
+			root: `{
+				"name":"startup-node",
+				"cluster_name":"startup-cluster",
+				"version":{"distribution":"opensearch","number":"2.12.0"},
+				"tagline":"The OpenSearch Project: https://opensearch.org/"
+			}`,
+		},
+		{
+			name: "compatible unknown provider",
+			root: `{
+				"name":"startup-node",
+				"cluster_name":"startup-cluster",
+				"version":{"distribution":"galaxysearch","number":"99.1.2"},
+				"tagline":"compatible search"
+			}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			state := pgtest.NewState(pgtest.Seed{
+				BootstrapCore: appOpenSearchStartupBootstrapCoreSeed(),
+				CoreObjects:   appOpenSearchStartupCoreObjectSeed(),
+			})
+			db, cleanup, err := state.OpenDB()
+			if err != nil {
+				t.Fatalf("OpenDB() error = %v", err)
+			}
+			defer func() {
+				if err := cleanup(); err != nil {
+					t.Fatalf("cleanup() error = %v", err)
+				}
+			}()
+
+			previousPostgres := activatePostgresCookbookPersistence
+			activatePostgresCookbookPersistence = func(ctx context.Context, store *pg.Store) error {
+				return store.ActivateCookbookPersistenceWithDB(ctx, db)
+			}
+			defer func() {
+				activatePostgresCookbookPersistence = previousPostgres
+			}()
+
+			transport := &recordingAppOpenSearchTransport{t: t, root: tt.root, headStatus: http.StatusOK}
+			previousOpenSearchClient := newOpenSearchClient
+			newOpenSearchClient = func(raw string, _ ...search.OpenSearchOption) (*search.OpenSearchClient, error) {
+				if raw != "http://opensearch.example" {
+					t.Fatalf("OpenSearchURL = %q, want configured endpoint", raw)
+				}
+				return search.NewOpenSearchClient(raw, search.WithOpenSearchTransport(transport))
+			}
+			defer func() {
+				newOpenSearchClient = previousOpenSearchClient
+			}()
+
+			app, err := New(config.Config{
+				ServiceName:   "opencook",
+				Environment:   "test",
+				ListenAddress: ":4000",
+				AuthSkew:      15 * time.Minute,
+				ReadTimeout:   5 * time.Second,
+				WriteTimeout:  5 * time.Second,
+				PostgresDSN:   "postgres://opensearch-startup-order-test",
+				OpenSearchURL: "http://opensearch.example",
+			}, log.New(io.Discard, "", 0), version.Info{Version: "test"})
+			if err != nil {
+				t.Fatalf("New() error = %v", err)
+			}
+
+			req := httptest.NewRequest(http.MethodGet, "/_status", nil)
+			rec := httptest.NewRecorder()
+			app.server.Handler.ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("/_status status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+			}
+
+			wantRequests := []string{
+				"GET /",
+				"HEAD /chef",
+				"GET /",
+				"HEAD /chef",
+				"GET /chef/_mapping",
+				"POST /chef/_delete_by_query?refresh=true",
+				"POST /_bulk",
+				"POST /chef/_refresh",
+			}
+			if got := transport.Requests(); !reflect.DeepEqual(got, wantRequests) {
+				t.Fatalf("OpenSearch startup requests = %v, want %v", got, wantRequests)
+			}
+
+			bulkBodies := transport.BulkBodies()
+			if len(bulkBodies) != 1 {
+				t.Fatalf("bulk request count = %d, want 1", len(bulkBodies))
+			}
+			for _, want := range []string{
+				`"_id":"ponyville/client/ponyville-validator"`,
+				`"_id":"ponyville/environment/_default"`,
+				`"_id":"ponyville/node/twilight"`,
+				`"_id":"ponyville/ponies/alice"`,
+			} {
+				if !strings.Contains(bulkBodies[0], want) {
+					t.Fatalf("startup bulk body missing %s: %s", want, bulkBodies[0])
+				}
+			}
+			for _, unwanted := range []string{
+				`"_id":"ponyville/policy/`,
+				`"_id":"ponyville/policy_group/`,
+				`"_id":"ponyville/sandbox/`,
+				`"_id":"ponyville/checksum/`,
+			} {
+				if strings.Contains(bulkBodies[0], unwanted) {
+					t.Fatalf("startup bulk body included unsupported document ID %q: %s", unwanted, bulkBodies[0])
+				}
+			}
+		})
+	}
+}
+
+func TestNewOpenSearchStartupFailuresDoNotFallBackToMemory(t *testing.T) {
+	tests := []struct {
+		name         string
+		root         string
+		rootStatus   int
+		headStatus   int
+		wantErr      error
+		wantContains string
+		wantRequests []string
+	}{
+		{
+			name:         "provider unavailable at discovery",
+			root:         "raw provider body from startup cluster secret=do-not-leak",
+			rootStatus:   http.StatusServiceUnavailable,
+			wantErr:      search.ErrUnavailable,
+			wantContains: "activate opensearch indexing: search backend unavailable",
+			wantRequests: []string{"GET /"},
+		},
+		{
+			name:         "required index capability rejected",
+			headStatus:   http.StatusForbidden,
+			wantErr:      search.ErrRejected,
+			wantContains: "activate opensearch indexing: search backend rejected request",
+			wantRequests: []string{"GET /", "HEAD /chef"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			state := pgtest.NewState(pgtest.Seed{})
+			db, cleanup, err := state.OpenDB()
+			if err != nil {
+				t.Fatalf("OpenDB() error = %v", err)
+			}
+			defer func() {
+				if err := cleanup(); err != nil {
+					t.Fatalf("cleanup() error = %v", err)
+				}
+			}()
+
+			previousPostgres := activatePostgresCookbookPersistence
+			activatePostgresCookbookPersistence = func(ctx context.Context, store *pg.Store) error {
+				return store.ActivateCookbookPersistenceWithDB(ctx, db)
+			}
+			defer func() {
+				activatePostgresCookbookPersistence = previousPostgres
+			}()
+
+			transport := &recordingAppOpenSearchTransport{
+				t:          t,
+				root:       tt.root,
+				rootStatus: tt.rootStatus,
+				headStatus: tt.headStatus,
+			}
+			previousOpenSearchClient := newOpenSearchClient
+			newOpenSearchClient = func(raw string, _ ...search.OpenSearchOption) (*search.OpenSearchClient, error) {
+				return search.NewOpenSearchClient(raw, search.WithOpenSearchTransport(transport))
+			}
+			defer func() {
+				newOpenSearchClient = previousOpenSearchClient
+			}()
+
+			_, err = New(config.Config{
+				ServiceName:   "opencook",
+				Environment:   "test",
+				ListenAddress: ":4000",
+				AuthSkew:      15 * time.Minute,
+				ReadTimeout:   5 * time.Second,
+				WriteTimeout:  5 * time.Second,
+				PostgresDSN:   "postgres://opensearch-startup-failure-test",
+				OpenSearchURL: "http://opensearch.example",
+			}, log.New(io.Discard, "", 0), version.Info{Version: "test"})
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("New() error = %v, want %v", err, tt.wantErr)
+			}
+			if got := err.Error(); !strings.Contains(got, tt.wantContains) {
+				t.Fatalf("New() error = %q, want to contain %q", got, tt.wantContains)
+			}
+			if strings.Contains(err.Error(), "raw provider body") {
+				t.Fatalf("New() error leaked provider body: %q", err.Error())
+			}
+			if got := transport.Requests(); !reflect.DeepEqual(got, tt.wantRequests) {
+				t.Fatalf("OpenSearch startup failure requests = %v, want %v", got, tt.wantRequests)
+			}
+		})
 	}
 }
 
@@ -726,6 +1049,234 @@ func TestNewStatusReportsDefaultInMemoryModeWithoutPostgres(t *testing.T) {
 	postgresStatus := dependencies["postgres"].(map[string]any)
 	if postgresStatus["configured"] != false {
 		t.Fatalf("dependencies.postgres.configured = %v, want false", postgresStatus["configured"])
+	}
+}
+
+type appStatusOpenSearchTransport struct {
+	t          *testing.T
+	root       string
+	headStatus int
+}
+
+func (t appStatusOpenSearchTransport) Do(req *http.Request) (*http.Response, error) {
+	switch {
+	case req.Method == http.MethodGet && req.URL.Path == "/":
+		return appStatusOpenSearchResponse(req, http.StatusOK, t.root), nil
+	case req.Method == http.MethodHead && req.URL.Path == "/chef":
+		status := t.headStatus
+		if status == 0 {
+			status = http.StatusOK
+		}
+		return appStatusOpenSearchResponse(req, status, ""), nil
+	case req.Method == http.MethodGet && req.URL.Path == "/chef/_mapping":
+		return appStatusOpenSearchResponse(req, http.StatusOK, `{"chef":{"mappings":{"_meta":{"opencook_mapping_version":1},"dynamic":true,"properties":{"document_id":{"type":"keyword"},"compat_terms":{"type":"keyword"}}}}}`), nil
+	case req.Method == http.MethodPut && (req.URL.Path == "/chef" || req.URL.Path == "/chef/_mapping"):
+		return appStatusOpenSearchResponse(req, http.StatusOK, `{"acknowledged":true}`), nil
+	case req.Method == http.MethodPost && req.URL.Path == "/chef/_delete_by_query":
+		return appStatusOpenSearchResponse(req, http.StatusOK, `{"deleted":0}`), nil
+	case req.Method == http.MethodPost && req.URL.Path == "/chef/_search":
+		return appStatusOpenSearchResponse(req, http.StatusOK, `{"hits":{"hits":[]}}`), nil
+	case req.Method == http.MethodPost && req.URL.Path == "/_bulk":
+		return appStatusOpenSearchResponse(req, http.StatusOK, `{"errors":false}`), nil
+	case req.Method == http.MethodPost && req.URL.Path == "/chef/_refresh":
+		return appStatusOpenSearchResponse(req, http.StatusOK, `{"_shards":{"successful":1}}`), nil
+	default:
+		t.t.Fatalf("OpenSearch status transport request = %s %s?%s", req.Method, req.URL.Path, req.URL.RawQuery)
+		return nil, nil
+	}
+}
+
+// appOpenSearchStartupBootstrapCoreSeed provides persisted identity state for
+// startup activation tests without issuing pre-activation bootstrap mutations.
+func appOpenSearchStartupBootstrapCoreSeed() bootstrap.BootstrapCoreState {
+	return bootstrap.BootstrapCoreState{
+		Orgs: map[string]bootstrap.BootstrapCoreOrganizationState{
+			"ponyville": {
+				Organization: bootstrap.Organization{
+					Name:     "ponyville",
+					FullName: "Ponyville",
+					OrgType:  "Business",
+					GUID:     "ponyville",
+				},
+				Clients: map[string]bootstrap.Client{
+					"ponyville-validator": {
+						Name:         "ponyville-validator",
+						ClientName:   "ponyville-validator",
+						Organization: "ponyville",
+						Validator:    true,
+					},
+				},
+			},
+		},
+	}
+}
+
+// appOpenSearchStartupCoreObjectSeed pairs supported search documents with
+// unsupported object families so startup rebuild coverage proves both paths.
+func appOpenSearchStartupCoreObjectSeed() bootstrap.CoreObjectState {
+	return bootstrap.CoreObjectState{
+		Orgs: map[string]bootstrap.CoreObjectOrganizationState{
+			"ponyville": {
+				Environments: map[string]bootstrap.Environment{
+					"_default": {
+						Name:               "_default",
+						Description:        "The default Chef environment",
+						CookbookVersions:   map[string]string{},
+						JSONClass:          "Chef::Environment",
+						ChefType:           "environment",
+						DefaultAttributes:  map[string]any{},
+						OverrideAttributes: map[string]any{},
+					},
+				},
+				Nodes: map[string]bootstrap.Node{
+					"twilight": {
+						Name:            "twilight",
+						JSONClass:       "Chef::Node",
+						ChefType:        "node",
+						ChefEnvironment: "_default",
+						Normal:          map[string]any{"team": "friendship"},
+						RunList:         []string{"recipe[startup::default]"},
+					},
+				},
+				DataBags: map[string]bootstrap.DataBag{
+					"ponies": {
+						Name:      "ponies",
+						JSONClass: "Chef::DataBag",
+						ChefType:  "data_bag",
+					},
+				},
+				DataBagItems: map[string]map[string]bootstrap.DataBagItem{
+					"ponies": {
+						"alice": {
+							ID:      "alice",
+							RawData: map[string]any{"id": "alice", "role": "operator"},
+						},
+					},
+				},
+				Sandboxes: map[string]bootstrap.Sandbox{
+					"startup-sandbox": {
+						ID:           "startup-sandbox",
+						Organization: "ponyville",
+						Checksums:    []string{"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+					},
+				},
+				Policies: map[string]map[string]bootstrap.PolicyRevision{
+					"startup-policy": {
+						"1111111111111111111111111111111111111111": {
+							Name:       "startup-policy",
+							RevisionID: "1111111111111111111111111111111111111111",
+							Payload: map[string]any{
+								"name":        "startup-policy",
+								"revision_id": "1111111111111111111111111111111111111111",
+							},
+						},
+					},
+				},
+				PolicyGroups: map[string]bootstrap.PolicyGroup{
+					"prod": {
+						Name:     "prod",
+						Policies: map[string]string{"startup-policy": "1111111111111111111111111111111111111111"},
+					},
+				},
+			},
+		},
+	}
+}
+
+type recordingAppOpenSearchTransport struct {
+	t          *testing.T
+	root       string
+	rootStatus int
+	headStatus int
+	requests   []string
+	bulkBodies []string
+}
+
+func (t *recordingAppOpenSearchTransport) Do(req *http.Request) (*http.Response, error) {
+	t.t.Helper()
+
+	var body []byte
+	if req.Body != nil {
+		var err error
+		body, err = io.ReadAll(req.Body)
+		if err != nil {
+			t.t.Fatalf("ReadAll(OpenSearch request) error = %v", err)
+		}
+	}
+	t.requests = append(t.requests, appOpenSearchRequestSignature(req))
+
+	switch {
+	case req.Method == http.MethodGet && req.URL.Path == "/":
+		status := t.rootStatus
+		if status == 0 {
+			status = http.StatusOK
+		}
+		root := t.root
+		if root == "" {
+			root = `{"version":{"distribution":"opensearch","number":"2.12.0"}}`
+		}
+		return appStatusOpenSearchResponse(req, status, root), nil
+	case req.Method == http.MethodHead && req.URL.Path == "/chef":
+		status := t.headStatus
+		if status == 0 {
+			status = http.StatusOK
+		}
+		return appStatusOpenSearchResponse(req, status, ""), nil
+	case req.Method == http.MethodGet && req.URL.Path == "/chef/_mapping":
+		return appStatusOpenSearchResponse(req, http.StatusOK, `{"chef":{"mappings":{"_meta":{"opencook_mapping_version":1},"dynamic":true,"properties":{"document_id":{"type":"keyword"},"compat_terms":{"type":"keyword"}}}}}`), nil
+	case req.Method == http.MethodPost && req.URL.Path == "/chef/_delete_by_query":
+		return appStatusOpenSearchResponse(req, http.StatusOK, `{"deleted":4}`), nil
+	case req.Method == http.MethodPost && req.URL.Path == "/_bulk":
+		t.bulkBodies = append(t.bulkBodies, string(body))
+		return appStatusOpenSearchResponse(req, http.StatusOK, `{"errors":false}`), nil
+	case req.Method == http.MethodPost && req.URL.Path == "/chef/_refresh":
+		return appStatusOpenSearchResponse(req, http.StatusOK, `{"_shards":{"successful":1}}`), nil
+	default:
+		t.t.Fatalf("OpenSearch startup transport request = %s %s?%s", req.Method, req.URL.Path, req.URL.RawQuery)
+		return nil, nil
+	}
+}
+
+func (t *recordingAppOpenSearchTransport) Requests() []string {
+	return append([]string(nil), t.requests...)
+}
+
+func (t *recordingAppOpenSearchTransport) BulkBodies() []string {
+	return append([]string(nil), t.bulkBodies...)
+}
+
+func appOpenSearchRequestSignature(req *http.Request) string {
+	signature := req.Method + " " + req.URL.Path
+	if req.URL.RawQuery != "" {
+		signature += "?" + req.URL.RawQuery
+	}
+	return signature
+}
+
+func appStatusOpenSearchResponse(req *http.Request, status int, body string) *http.Response {
+	return &http.Response{
+		StatusCode: status,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader(body)),
+		Request:    req,
+	}
+}
+
+func requireOpenSearchStatusShape(t *testing.T, status map[string]any) {
+	t.Helper()
+
+	wantKeys := map[string]struct{}{
+		"backend":    {},
+		"configured": {},
+		"message":    {},
+	}
+	if len(status) != len(wantKeys) {
+		t.Fatalf("opensearch status keys = %v, want backend/configured/message", status)
+	}
+	for key := range wantKeys {
+		if _, ok := status[key]; !ok {
+			t.Fatalf("opensearch status missing key %q: %v", key, status)
+		}
 	}
 }
 

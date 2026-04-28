@@ -5,6 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"sort"
 	"strings"
 	"testing"
 
@@ -112,6 +116,79 @@ func TestAdminReindexCommandScopesAndModes(t *testing.T) {
 			if strings.Contains(stderr.String(), "raw provider") {
 				t.Fatalf("stderr leaked provider internals: %q", stderr.String())
 			}
+		})
+	}
+}
+
+func TestAdminOperationalSearchCommandsUseProviderCapabilityModes(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		mode adminCapabilityProviderMode
+	}{
+		{name: "direct delete by query", mode: adminCapabilityDirectDeleteByQuery},
+		{name: "fallback delete", mode: adminCapabilityFallbackDelete},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			target := newAdminCapabilityOpenSearchTransport(t, tc.mode)
+			cmd, stdout, stderr := newAdminCapabilityOpenSearchCommand(t, adminReindexTestStore(), target)
+
+			if code := cmd.Run(context.Background(), []string{"admin", "reindex", "--org", "ponyville", "--complete"}); code != exitOK {
+				t.Fatalf("Run(reindex %s) exit = %d, want %d; stdout = %s stderr = %s", tc.name, code, exitOK, stdout.String(), stderr.String())
+			}
+			out := decodeAdminReindexOutput(t, stdout.String())
+			assertAdminReindexCount(t, out, "scanned", 4)
+			assertAdminReindexCount(t, out, "upserted", 4)
+			for _, id := range adminSupportedProviderIDs() {
+				if !target.hasDocument(id) {
+					t.Fatalf("%s provider docs missing %q after reindex: %v", tc.name, id, target.documentIDs())
+				}
+			}
+			switch tc.mode {
+			case adminCapabilityDirectDeleteByQuery:
+				if target.directDeleteByQueries != 1 || target.fallbackDeleteSearches != 0 {
+					t.Fatalf("direct mode delete paths = direct:%d fallback:%d, want direct only", target.directDeleteByQueries, target.fallbackDeleteSearches)
+				}
+			case adminCapabilityFallbackDelete:
+				if target.directDeleteByQueries != 0 || target.fallbackDeleteSearches == 0 {
+					t.Fatalf("fallback mode delete paths = direct:%d fallback:%d, want fallback search/delete path", target.directDeleteByQueries, target.fallbackDeleteSearches)
+				}
+			}
+
+			stdout.Reset()
+			stderr.Reset()
+			if code := cmd.Run(context.Background(), []string{"admin", "search", "check", "--org", "ponyville"}); code != exitOK {
+				t.Fatalf("Run(search check clean %s) exit = %d, want %d; stdout = %s stderr = %s", tc.name, code, exitOK, stdout.String(), stderr.String())
+			}
+			out = decodeAdminReindexOutput(t, stdout.String())
+			assertAdminReindexCount(t, out, "clean", 1)
+
+			target.forceDocument("ponyville/node/stale")
+			stdout.Reset()
+			stderr.Reset()
+			if code := cmd.Run(context.Background(), []string{"admin", "search", "check", "--org", "ponyville"}); code != exitPartial {
+				t.Fatalf("Run(search check stale %s) exit = %d, want %d; stdout = %s stderr = %s", tc.name, code, exitPartial, stdout.String(), stderr.String())
+			}
+			out = decodeAdminReindexOutput(t, stdout.String())
+			assertAdminReindexCount(t, out, "stale", 1)
+
+			stdout.Reset()
+			stderr.Reset()
+			if code := cmd.Run(context.Background(), []string{"admin", "search", "repair", "--org", "ponyville", "--yes"}); code != exitOK {
+				t.Fatalf("Run(search repair %s) exit = %d, want %d; stdout = %s stderr = %s", tc.name, code, exitOK, stdout.String(), stderr.String())
+			}
+			out = decodeAdminReindexOutput(t, stdout.String())
+			assertAdminReindexCount(t, out, "deleted", 1)
+			if target.hasDocument("ponyville/node/stale") {
+				t.Fatalf("%s provider still has stale node after repair: %v", tc.name, target.documentIDs())
+			}
+
+			stdout.Reset()
+			stderr.Reset()
+			if code := cmd.Run(context.Background(), []string{"admin", "search", "check", "--org", "ponyville"}); code != exitOK {
+				t.Fatalf("Run(search check after repair %s) exit = %d, want %d; stdout = %s stderr = %s", tc.name, code, exitOK, stdout.String(), stderr.String())
+			}
+			out = decodeAdminReindexOutput(t, stdout.String())
+			assertAdminReindexCount(t, out, "clean", 1)
 		})
 	}
 }
@@ -607,6 +684,405 @@ func (t *fakeAdminReindexTarget) upsertedDocuments() []search.Document {
 		docs = append(docs, batch...)
 	}
 	return docs
+}
+
+type adminCapabilityProviderMode string
+
+const (
+	adminCapabilityDirectDeleteByQuery adminCapabilityProviderMode = "direct"
+	adminCapabilityFallbackDelete      adminCapabilityProviderMode = "fallback"
+)
+
+type adminCapabilityOpenSearchTransport struct {
+	t                      *testing.T
+	mode                   adminCapabilityProviderMode
+	docs                   map[string]map[string]any
+	directDeleteByQueries  int
+	fallbackDeleteSearches int
+}
+
+func newAdminCapabilityOpenSearchTransport(t *testing.T, mode adminCapabilityProviderMode) *adminCapabilityOpenSearchTransport {
+	t.Helper()
+	return &adminCapabilityOpenSearchTransport{
+		t:    t,
+		mode: mode,
+		docs: map[string]map[string]any{},
+	}
+}
+
+func newAdminCapabilityOpenSearchCommand(t *testing.T, store *fakeOfflineStore, transport *adminCapabilityOpenSearchTransport) (*command, *strings.Builder, *strings.Builder) {
+	t.Helper()
+	stdout := &strings.Builder{}
+	stderr := &strings.Builder{}
+	cmd := newCommand(stdout, stderr)
+	cmd.load = func() (config.Config, error) {
+		t.Fatal("unexpected server config load")
+		return config.Config{}, nil
+	}
+	cmd.loadAdminConfig = func() admin.Config {
+		t.Fatal("unexpected admin config load")
+		return admin.Config{}
+	}
+	cmd.loadOffline = func() (config.Config, error) {
+		return config.Config{
+			PostgresDSN:   "postgres://capability-test",
+			OpenSearchURL: "http://opensearch.test",
+		}, nil
+	}
+	cmd.newOfflineStore = func(_ context.Context, dsn string) (adminOfflineStore, func() error, error) {
+		if dsn != "postgres://capability-test" {
+			t.Fatalf("dsn = %q, want postgres://capability-test", dsn)
+		}
+		return store, nil, nil
+	}
+	cmd.newReindexTarget = func(raw string) (search.ReindexTarget, error) {
+		return adminCapabilityOpenSearchClient(t, raw, transport)
+	}
+	cmd.newSearchTarget = func(raw string) (search.ConsistencyTarget, error) {
+		return adminCapabilityOpenSearchClient(t, raw, transport)
+	}
+	return cmd, stdout, stderr
+}
+
+func adminCapabilityOpenSearchClient(t *testing.T, raw string, transport *adminCapabilityOpenSearchTransport) (*search.OpenSearchClient, error) {
+	t.Helper()
+	if raw != "http://opensearch.test" {
+		t.Fatalf("opensearch URL = %q, want http://opensearch.test", raw)
+	}
+	return search.NewOpenSearchClient(raw, search.WithOpenSearchTransport(transport))
+}
+
+func (t *adminCapabilityOpenSearchTransport) Do(req *http.Request) (*http.Response, error) {
+	t.t.Helper()
+
+	var body []byte
+	if req.Body != nil {
+		var err error
+		body, err = io.ReadAll(req.Body)
+		if err != nil {
+			t.t.Fatalf("ReadAll(OpenSearch request) error = %v", err)
+		}
+	}
+
+	switch {
+	case req.Method == http.MethodGet && req.URL.Path == "/":
+		return t.jsonResponse(req, http.StatusOK, t.rootResponse()), nil
+	case req.Method == http.MethodHead && req.URL.Path == "/chef":
+		return t.response(req, http.StatusOK, ""), nil
+	case req.Method == http.MethodGet && req.URL.Path == "/chef/_mapping":
+		return t.jsonResponse(req, http.StatusOK, map[string]any{
+			"chef": map[string]any{
+				"mappings": map[string]any{
+					"_meta":   map[string]any{"opencook_mapping_version": 1},
+					"dynamic": true,
+					"properties": map[string]any{
+						"document_id":  map[string]any{"type": "keyword"},
+						"compat_terms": map[string]any{"type": "keyword"},
+					},
+				},
+			},
+		}), nil
+	case req.Method == http.MethodPost && req.URL.Path == "/chef/_delete_by_query":
+		return t.handleDeleteByQuery(req, body), nil
+	case req.Method == http.MethodPost && req.URL.Path == "/chef/_search":
+		return t.handleSearch(req, body), nil
+	case req.Method == http.MethodPost && req.URL.Path == "/_bulk":
+		t.handleBulk(body)
+		return t.jsonResponse(req, http.StatusOK, map[string]any{"errors": false}), nil
+	case req.Method == http.MethodDelete && strings.HasPrefix(req.URL.Path, "/chef/_doc/"):
+		id := adminCapabilityDocumentIDFromPath(t.t, req.URL)
+		delete(t.docs, id)
+		return t.jsonResponse(req, http.StatusOK, map[string]any{"result": "deleted"}), nil
+	case req.Method == http.MethodPost && req.URL.Path == "/chef/_refresh":
+		return t.jsonResponse(req, http.StatusOK, map[string]any{"_shards": map[string]any{"successful": 1}}), nil
+	default:
+		t.t.Fatalf("OpenSearch capability transport request = %s %s?%s body=%s", req.Method, req.URL.Path, req.URL.RawQuery, string(body))
+		return nil, nil
+	}
+}
+
+func (t *adminCapabilityOpenSearchTransport) rootResponse() map[string]any {
+	if t.mode == adminCapabilityFallbackDelete {
+		return map[string]any{
+			"name": "legacy-node",
+			"version": map[string]any{
+				"number": "2.4.6",
+			},
+			"tagline": "You Know, for Search",
+		}
+	}
+	return map[string]any{
+		"name": "opensearch-node",
+		"version": map[string]any{
+			"distribution": "opensearch",
+			"number":       "2.12.0",
+		},
+		"tagline": "The OpenSearch Project: https://opensearch.org/",
+	}
+}
+
+func (t *adminCapabilityOpenSearchTransport) handleDeleteByQuery(req *http.Request, body []byte) *http.Response {
+	if t.mode == adminCapabilityFallbackDelete {
+		t.t.Fatalf("fallback provider used direct delete-by-query: %s", string(body))
+	}
+	t.directDeleteByQueries++
+	org, index := adminCapabilityScopeFromBody(t.t, body)
+	deleted := t.deleteScope(org, index)
+	return t.jsonResponse(req, http.StatusOK, map[string]any{"deleted": deleted})
+}
+
+func (t *adminCapabilityOpenSearchTransport) handleSearch(req *http.Request, body []byte) *http.Response {
+	org, index := adminCapabilityScopeFromBody(t.t, body)
+	if adminCapabilityBodyUsesDeleteScope(t.t, body) {
+		t.fallbackDeleteSearches++
+	}
+
+	ids := t.matchingIDs(org, index)
+	sort.Strings(ids)
+	ids = adminCapabilityApplySearchAfterAndSize(t.t, ids, body)
+
+	hits := make([]any, 0, len(ids))
+	for _, id := range ids {
+		hits = append(hits, map[string]any{
+			"_id":  id,
+			"sort": []any{id},
+		})
+	}
+	total := any(map[string]any{"value": len(ids)})
+	if t.mode == adminCapabilityFallbackDelete {
+		total = len(ids)
+	}
+	return t.jsonResponse(req, http.StatusOK, map[string]any{
+		"hits": map[string]any{
+			"total": total,
+			"hits":  hits,
+		},
+	})
+}
+
+func (t *adminCapabilityOpenSearchTransport) handleBulk(body []byte) {
+	lines := strings.Split(strings.TrimSpace(string(body)), "\n")
+	if len(lines)%2 != 0 {
+		t.t.Fatalf("bulk body has odd line count: %s", string(body))
+	}
+	for i := 0; i < len(lines); i += 2 {
+		var action map[string]map[string]any
+		if err := json.Unmarshal([]byte(lines[i]), &action); err != nil {
+			t.t.Fatalf("json.Unmarshal(bulk action %q) error = %v", lines[i], err)
+		}
+		indexAction, ok := action["index"]
+		if !ok {
+			t.t.Fatalf("bulk action = %v, want index action", action)
+		}
+		id, ok := indexAction["_id"].(string)
+		if !ok || id == "" {
+			t.t.Fatalf("bulk action _id = %v, want string", indexAction["_id"])
+		}
+		var source map[string]any
+		if err := json.Unmarshal([]byte(lines[i+1]), &source); err != nil {
+			t.t.Fatalf("json.Unmarshal(bulk source %q) error = %v", lines[i+1], err)
+		}
+		source["document_id"] = id
+		t.docs[id] = source
+	}
+}
+
+func (t *adminCapabilityOpenSearchTransport) deleteScope(org, index string) int {
+	deleted := 0
+	for _, id := range t.matchingIDs(org, index) {
+		delete(t.docs, id)
+		deleted++
+	}
+	return deleted
+}
+
+func (t *adminCapabilityOpenSearchTransport) matchingIDs(org, index string) []string {
+	ids := make([]string, 0, len(t.docs))
+	for id, source := range t.docs {
+		if !adminCapabilityDocumentMatchesScope(id, source, org, index) {
+			continue
+		}
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+func (t *adminCapabilityOpenSearchTransport) forceDocument(id string) {
+	org, index, name, ok := adminCapabilitySplitDocumentID(id)
+	if !ok {
+		t.t.Fatalf("invalid forced document ID %q", id)
+	}
+	t.docs[id] = map[string]any{
+		"document_id":   id,
+		"organization":  org,
+		"index":         index,
+		"name":          name,
+		"resource_type": index,
+		"resource_name": name,
+		"compat_terms": []any{
+			"__org=" + org,
+			"__index=" + index,
+			"name=" + name,
+			"__any=" + name,
+		},
+	}
+}
+
+func (t *adminCapabilityOpenSearchTransport) hasDocument(id string) bool {
+	_, ok := t.docs[id]
+	return ok
+}
+
+func (t *adminCapabilityOpenSearchTransport) documentIDs() []string {
+	ids := make([]string, 0, len(t.docs))
+	for id := range t.docs {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+func (t *adminCapabilityOpenSearchTransport) jsonResponse(req *http.Request, status int, payload any) *http.Response {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		t.t.Fatalf("json.Marshal(OpenSearch response) error = %v", err)
+	}
+	return t.response(req, status, string(data))
+}
+
+func (t *adminCapabilityOpenSearchTransport) response(req *http.Request, status int, body string) *http.Response {
+	return &http.Response{
+		StatusCode: status,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader(body)),
+		Request:    req,
+	}
+}
+
+func adminCapabilityDocumentIDFromPath(t *testing.T, u *url.URL) string {
+	t.Helper()
+	escaped := strings.TrimPrefix(u.EscapedPath(), "/chef/_doc/")
+	id, err := url.PathUnescape(escaped)
+	if err != nil {
+		t.Fatalf("PathUnescape(%q) error = %v", escaped, err)
+	}
+	return id
+}
+
+func adminCapabilityScopeFromBody(t *testing.T, body []byte) (string, string) {
+	t.Helper()
+	var payload any
+	if len(strings.TrimSpace(string(body))) > 0 {
+		if err := json.Unmarshal(body, &payload); err != nil {
+			t.Fatalf("json.Unmarshal(OpenSearch request %s) error = %v", string(body), err)
+		}
+	}
+
+	org := adminCapabilityFirstTerm(payload, "organization")
+	index := adminCapabilityFirstTerm(payload, "index")
+	for _, term := range adminCapabilityTerms(payload, "compat_terms") {
+		switch {
+		case strings.HasPrefix(term, "__org="):
+			org = strings.TrimPrefix(term, "__org=")
+		case strings.HasPrefix(term, "__index="):
+			index = strings.TrimPrefix(term, "__index=")
+		}
+	}
+	return org, index
+}
+
+func adminCapabilityBodyUsesDeleteScope(t *testing.T, body []byte) bool {
+	t.Helper()
+	var payload any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("json.Unmarshal(OpenSearch request %s) error = %v", string(body), err)
+	}
+	return adminCapabilityFirstTerm(payload, "organization") != "" || adminCapabilityFirstTerm(payload, "index") != ""
+}
+
+func adminCapabilityApplySearchAfterAndSize(t *testing.T, ids []string, body []byte) []string {
+	t.Helper()
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("json.Unmarshal(OpenSearch search request %s) error = %v", string(body), err)
+	}
+	if rawAfter, ok := payload["search_after"].([]any); ok && len(rawAfter) > 0 {
+		after := fmt.Sprint(rawAfter[0])
+		next := ids[:0]
+		for _, id := range ids {
+			if id > after {
+				next = append(next, id)
+			}
+		}
+		ids = next
+	}
+	if rawSize, ok := payload["size"].(float64); ok {
+		size := int(rawSize)
+		if size >= 0 && size < len(ids) {
+			return ids[:size]
+		}
+	}
+	return ids
+}
+
+func adminCapabilityFirstTerm(payload any, field string) string {
+	terms := adminCapabilityTerms(payload, field)
+	if len(terms) == 0 {
+		return ""
+	}
+	return terms[0]
+}
+
+func adminCapabilityTerms(payload any, field string) []string {
+	switch value := payload.(type) {
+	case map[string]any:
+		var out []string
+		if term, ok := value["term"].(map[string]any); ok {
+			if raw, ok := term[field]; ok {
+				out = append(out, fmt.Sprint(raw))
+			}
+		}
+		for _, child := range value {
+			out = append(out, adminCapabilityTerms(child, field)...)
+		}
+		return out
+	case []any:
+		var out []string
+		for _, child := range value {
+			out = append(out, adminCapabilityTerms(child, field)...)
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+func adminCapabilityDocumentMatchesScope(id string, source map[string]any, org, index string) bool {
+	idOrg, idIndex, _, _ := adminCapabilitySplitDocumentID(id)
+	sourceOrg := strings.TrimSpace(fmt.Sprint(source["organization"]))
+	sourceIndex := strings.TrimSpace(fmt.Sprint(source["index"]))
+	if sourceOrg == "" {
+		sourceOrg = idOrg
+	}
+	if sourceIndex == "" {
+		sourceIndex = idIndex
+	}
+	if org != "" && sourceOrg != org {
+		return false
+	}
+	if index != "" && sourceIndex != index {
+		return false
+	}
+	return true
+}
+
+func adminCapabilitySplitDocumentID(id string) (string, string, string, bool) {
+	parts := strings.Split(strings.TrimSpace(id), "/")
+	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
+		return "", "", "", false
+	}
+	return parts[0], parts[1], parts[2], true
 }
 
 // requireAdminEncryptedDataBagDocument verifies the admin command rebuilt the

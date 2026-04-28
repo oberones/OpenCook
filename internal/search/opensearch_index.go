@@ -29,7 +29,8 @@ func (i *OpenSearchIndex) Status() Status {
 	if i == nil || i.state == nil || i.client == nil {
 		return OpenSearchUnavailableStatus()
 	}
-	return OpenSearchActiveStatus()
+	info, ok := i.client.ProviderInfo()
+	return OpenSearchProviderStatus(info, ok)
 }
 
 func (i *OpenSearchIndex) Indexes(_ context.Context, org string) ([]string, error) {

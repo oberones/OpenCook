@@ -59,23 +59,29 @@ func TestRebuildOpenSearchIndexDeletesStaleDocumentsAndUpsertsCurrentState(t *te
 			}
 			return http.StatusOK, ""
 		case 3:
-			if r.Method != http.MethodPut || r.URL.Path != "/chef/_mapping" {
-				t.Fatalf("request 3 = %s %s, want PUT /chef/_mapping", r.Method, r.URL.Path)
+			if r.Method != http.MethodGet || r.URL.Path != "/chef/_mapping" {
+				t.Fatalf("request 3 = %s %s, want GET /chef/_mapping", r.Method, r.URL.Path)
 			}
-			body := decodeJSONMap(t, recorded.Body)
-			properties := body["properties"].(map[string]any)
-			documentID := properties["document_id"].(map[string]any)
-			if documentID["type"] != "keyword" {
-				t.Fatalf("mapping body = %v, want keyword document_id", body)
-			}
-			compatTerms := properties[openSearchCompatTermsField].(map[string]any)
-			if compatTerms["type"] != "keyword" {
-				t.Fatalf("mapping body = %v, want keyword compat_terms", body)
-			}
-			return http.StatusOK, `{"acknowledged":true}`
+			return http.StatusOK, openSearchMappingResponse(t, openSearchLegacyChefMapping())
 		case 4:
+			if r.Method != http.MethodPut || r.URL.Path != "/chef/_mapping" {
+				t.Fatalf("request 4 = %s %s, want PUT /chef/_mapping", r.Method, r.URL.Path)
+			}
+			requireOpenSearchChefMappingDescriptor(t, decodeJSONMap(t, recorded.Body))
+			return http.StatusOK, `{"acknowledged":true}`
+		case 5:
+			if r.Method != http.MethodGet || r.URL.Path != "/" {
+				t.Fatalf("request 5 = %s %s, want delete-by-query discovery GET /", r.Method, r.URL.Path)
+			}
+			return http.StatusOK, `{"version":{"distribution":"opensearch"}}`
+		case 6:
+			if r.Method != http.MethodHead || r.URL.Path != "/chef" {
+				t.Fatalf("request 6 = %s %s, want delete-by-query discovery HEAD /chef", r.Method, r.URL.Path)
+			}
+			return http.StatusOK, ""
+		case 7:
 			if r.Method != http.MethodPost || r.URL.Path != "/chef/_delete_by_query" || r.URL.RawQuery != "refresh=true" {
-				t.Fatalf("request 4 = %s %s?%s, want POST /chef/_delete_by_query?refresh=true", r.Method, r.URL.Path, r.URL.RawQuery)
+				t.Fatalf("request 7 = %s %s?%s, want POST /chef/_delete_by_query?refresh=true", r.Method, r.URL.Path, r.URL.RawQuery)
 			}
 			body := decodeJSONMap(t, recorded.Body)
 			query := body["query"].(map[string]any)
@@ -83,9 +89,9 @@ func TestRebuildOpenSearchIndexDeletesStaleDocumentsAndUpsertsCurrentState(t *te
 				t.Fatalf("delete-by-query body = %v, want match_all stale-document cleanup", body)
 			}
 			return http.StatusOK, `{"deleted": 99}`
-		case 5:
+		case 8:
 			if r.Method != http.MethodPost || r.URL.Path != "/_bulk" {
-				t.Fatalf("request 5 = %s %s, want POST /_bulk", r.Method, r.URL.Path)
+				t.Fatalf("request 8 = %s %s, want POST /_bulk", r.Method, r.URL.Path)
 			}
 			for _, want := range []string{
 				`"_id":"ponyville/client/ponyville-validator"`,
@@ -101,9 +107,9 @@ func TestRebuildOpenSearchIndexDeletesStaleDocumentsAndUpsertsCurrentState(t *te
 				t.Fatalf("bulk body unexpectedly included stale document: %s", recorded.Body)
 			}
 			return http.StatusOK, `{"errors":false}`
-		case 6:
+		case 9:
 			if r.Method != http.MethodPost || r.URL.Path != "/chef/_refresh" {
-				t.Fatalf("request 6 = %s %s, want POST /chef/_refresh", r.Method, r.URL.Path)
+				t.Fatalf("request 9 = %s %s, want POST /chef/_refresh", r.Method, r.URL.Path)
 			}
 			return http.StatusOK, `{"_shards":{"successful":1}}`
 		default:
@@ -119,8 +125,8 @@ func TestRebuildOpenSearchIndexDeletesStaleDocumentsAndUpsertsCurrentState(t *te
 	if err := RebuildOpenSearchIndex(context.Background(), client, state); err != nil {
 		t.Fatalf("RebuildOpenSearchIndex() error = %v", err)
 	}
-	if got := len(transport.Requests()); got != 6 {
-		t.Fatalf("request count = %d, want 6", got)
+	if got := len(transport.Requests()); got != 9 {
+		t.Fatalf("request count = %d, want 9", got)
 	}
 }
 
