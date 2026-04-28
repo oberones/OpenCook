@@ -407,8 +407,14 @@ func requireOperationalStatus(t *testing.T, client *functionalClient) {
 		t.Fatalf("blob status = %v, want filesystem configured", blob)
 	}
 	search := asMap(t, deps["opensearch"])
-	if search["backend"] != "opensearch" || search["configured"] != true || !strings.Contains(strings.ToLower(fmt.Sprint(search["message"])), "active") {
+	message := strings.ToLower(fmt.Sprint(search["message"]))
+	if search["backend"] != "opensearch" || search["configured"] != true || !strings.Contains(message, "active") {
 		t.Fatalf("opensearch status = %v, want active OpenSearch-backed search provider", search)
+	}
+	for _, want := range []string{"search provider active", "search-after pagination", "delete-by-query", "total hits"} {
+		if !strings.Contains(message, want) {
+			t.Fatalf("opensearch status message = %q, want provider capability detail %q", search["message"], want)
+		}
 	}
 }
 

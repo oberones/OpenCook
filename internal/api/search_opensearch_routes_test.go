@@ -164,6 +164,41 @@ func TestActivePostgresOpenSearchRoutesHydratePersistedSearchResults(t *testing.
 	assertEncryptedDataBagPartialSearchRow(t, decodeSearchPayload(t, encryptedPartialRec), "/organizations/ponyville/data/"+secretBag+"/"+testfixtures.EncryptedDataBagItemID())
 }
 
+// TestActivePostgresOpenSearchRoutesIgnoreProviderSources proves the provider
+// remains an ID index: route payloads are hydrated from PostgreSQL, not from
+// arbitrary provider-side _source documents returned with matching hits.
+func TestActivePostgresOpenSearchRoutesIgnoreProviderSources(t *testing.T) {
+	persisted := newActivePostgresBootstrapFixture(t, pgtest.NewState(pgtest.Seed{}))
+	seedActivePostgresOpenSearchState(t, persisted)
+
+	transport := newAPIOpenSearchSearchTransportWithSources(t, map[string][]string{
+		apiOpenSearchQueryKey("ponyville", "node", "name:twi*"): {
+			"ponyville/node/twilight",
+		},
+	}, map[string]map[string]any{
+		"ponyville/node/twilight": {
+			"name":          []string{"provider-spoof"},
+			"chef_type":     "provider_doc",
+			"provider_only": "must-not-leak",
+		},
+	})
+	restarted := newActivePostgresOpenSearchFixture(t, persisted.pgState, transport, nil)
+
+	rec := performActiveOpenSearchRequest(t, restarted.router, http.MethodGet, searchPath("/search/node", "name:twi*"), "/search/node", nil)
+	payload := decodeSearchPayload(t, rec)
+	rows := payload["rows"].([]any)
+	if payload["total"] != float64(1) || len(rows) != 1 {
+		t.Fatalf("provider-source search payload = %v, want one hydrated row", payload)
+	}
+	row := rows[0].(map[string]any)
+	if row["name"] != "twilight" || row["chef_type"] != "node" {
+		t.Fatalf("provider-source search row = %v, want hydrated PostgreSQL node", row)
+	}
+	if _, ok := row["provider_only"]; ok {
+		t.Fatalf("provider-source search row leaked provider-only field: %v", row)
+	}
+}
+
 // TestActivePostgresOpenSearchUnsupportedObjectFamilyIndexesStayUnsupportedWithObjectsPresent
 // pins the same unsupported-index contract after persisted state is rehydrated
 // behind the active OpenSearch route adapter.
@@ -931,16 +966,24 @@ func apiOpenSearchQueryKey(org, index, query string) string {
 }
 
 type apiOpenSearchSearchTransport struct {
-	t   *testing.T
-	ids map[string][]string
+	t       *testing.T
+	ids     map[string][]string
+	sources map[string]map[string]any
 }
 
 func newAPIOpenSearchSearchTransport(t *testing.T, ids map[string][]string) *apiOpenSearchSearchTransport {
 	t.Helper()
 
+	return newAPIOpenSearchSearchTransportWithSources(t, ids, nil)
+}
+
+func newAPIOpenSearchSearchTransportWithSources(t *testing.T, ids map[string][]string, sources map[string]map[string]any) *apiOpenSearchSearchTransport {
+	t.Helper()
+
 	return &apiOpenSearchSearchTransport{
-		t:   t,
-		ids: ids,
+		t:       t,
+		ids:     ids,
+		sources: sources,
 	}
 }
 
@@ -964,9 +1007,13 @@ func (t *apiOpenSearchSearchTransport) Do(req *http.Request) (*http.Response, er
 		t.t.Fatalf("no fake OpenSearch IDs for org=%q index=%q query=%q body=%s", org, index, query, string(body))
 	}
 
-	hits := make([]map[string]string, 0, len(ids))
+	hits := make([]map[string]any, 0, len(ids))
 	for _, id := range ids {
-		hits = append(hits, map[string]string{"_id": id})
+		hit := map[string]any{"_id": id}
+		if source, ok := t.sources[id]; ok {
+			hit["_source"] = source
+		}
+		hits = append(hits, hit)
 	}
 	raw, err := json.Marshal(map[string]any{
 		"hits": map[string]any{

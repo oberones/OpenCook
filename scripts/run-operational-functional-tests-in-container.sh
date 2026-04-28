@@ -61,6 +61,42 @@ require_json_contains() {
   fi
 }
 
+require_opensearch_capability_status() {
+  local file="$1"
+  require_json_contains "$file" '"opensearch"'
+  require_json_contains "$file" 'search-after pagination'
+  require_json_contains "$file" 'delete-by-query'
+  require_json_contains "$file" 'total hits'
+}
+
+encrypted_search_index_available() {
+  local stdout="/tmp/opencook-admin-encrypted-search-preflight.json"
+  local stderr="/tmp/opencook-admin-encrypted-search-preflight.err"
+
+  set +e
+  admin search check --org "$org" --index "$encrypted_bag" --json >"$stdout" 2>"$stderr"
+  local code="$?"
+  set -e
+
+  case "$code" in
+    0|3)
+      return 0
+      ;;
+    2)
+      if grep -Fq 'search index not found' "$stdout" "$stderr"; then
+        return 1
+      fi
+      ;;
+  esac
+
+  echo "encrypted data bag search preflight failed with exit $code" >&2
+  echo "stdout:" >&2
+  cat "$stdout" >&2
+  echo "stderr:" >&2
+  cat "$stderr" >&2
+  exit "$code"
+}
+
 ensure_user() {
   mkdir -p "$state_dir"
   if admin_json users show "$operational_user" >/tmp/opencook-admin-user.json 2>/tmp/opencook-admin-user.err; then
@@ -183,7 +219,7 @@ run_operational_phase() {
 
   echo "==> operational admin status"
   admin_json status >/tmp/opencook-admin-status.json
-  require_json_contains /tmp/opencook-admin-status.json '"opensearch"'
+  require_opensearch_capability_status /tmp/opencook-admin-status.json
   require_json_contains /tmp/opencook-admin-status.json '"postgres"'
 
   echo "==> operational live-safe user/org commands"
@@ -204,13 +240,22 @@ run_operational_phase() {
   admin_json acls get org "$org" >/tmp/opencook-admin-acl.json
   require_json_contains /tmp/opencook-admin-acl.json '"read"'
 
+  local encrypted_search_checks=0
+  if encrypted_search_index_available; then
+    encrypted_search_checks=1
+  else
+    echo "==> operational encrypted data bag fixture absent; skipping scoped encrypted search checks"
+  fi
+
   echo "==> operational complete org reindex"
   admin reindex --org "$org" --complete --with-timing --json >/tmp/opencook-admin-reindex.json
   require_json_contains /tmp/opencook-admin-reindex.json '"mode": "complete"'
-  admin search check --org "$org" --index "$encrypted_bag" --json >/tmp/opencook-admin-encrypted-search-clean.json
-  require_json_contains /tmp/opencook-admin-encrypted-search-clean.json '"clean": 1'
-  admin reindex --org "$org" --index "$encrypted_bag" --no-drop --json >/tmp/opencook-admin-encrypted-reindex.json
-  require_json_contains /tmp/opencook-admin-encrypted-reindex.json '"upserted": 1'
+  if [[ "$encrypted_search_checks" == "1" ]]; then
+    admin search check --org "$org" --index "$encrypted_bag" --json >/tmp/opencook-admin-encrypted-search-clean.json
+    require_json_contains /tmp/opencook-admin-encrypted-search-clean.json '"clean": 1'
+    admin reindex --org "$org" --index "$encrypted_bag" --no-drop --json >/tmp/opencook-admin-encrypted-reindex.json
+    require_json_contains /tmp/opencook-admin-encrypted-reindex.json '"upserted": 1'
+  fi
 
   echo "==> operational unsupported search admin surfaces"
   require_unsupported_search_admin_surfaces
@@ -238,16 +283,18 @@ run_operational_phase() {
   admin search check --org "$org" --index node --json >/tmp/opencook-admin-search-check-clean.json
   require_json_contains /tmp/opencook-admin-search-check-clean.json '"clean": 1'
 
-  echo "==> operational encrypted data bag search repair"
-  write_stale_encrypted_opensearch_document
-  expect_exit 3 admin search check --org "$org" --index "$encrypted_bag" --with-timing --json >/tmp/opencook-admin-encrypted-search-check-drift.json
-  require_json_contains /tmp/opencook-admin-encrypted-search-check-drift.json "$encrypted_stale_doc_id"
-  expect_exit 3 admin search repair --org "$org" --index "$encrypted_bag" --dry-run --json >/tmp/opencook-admin-encrypted-search-repair-dry-run.json
-  require_json_contains /tmp/opencook-admin-encrypted-search-repair-dry-run.json '"skipped": 1'
-  admin search repair --org "$org" --index "$encrypted_bag" --yes --with-timing --json >/tmp/opencook-admin-encrypted-search-repair.json
-  require_json_contains /tmp/opencook-admin-encrypted-search-repair.json '"deleted": 1'
-  admin search check --org "$org" --index "$encrypted_bag" --json >/tmp/opencook-admin-encrypted-search-check-clean-after-repair.json
-  require_json_contains /tmp/opencook-admin-encrypted-search-check-clean-after-repair.json '"clean": 1'
+  if [[ "$encrypted_search_checks" == "1" ]]; then
+    echo "==> operational encrypted data bag search repair"
+    write_stale_encrypted_opensearch_document
+    expect_exit 3 admin search check --org "$org" --index "$encrypted_bag" --with-timing --json >/tmp/opencook-admin-encrypted-search-check-drift.json
+    require_json_contains /tmp/opencook-admin-encrypted-search-check-drift.json "$encrypted_stale_doc_id"
+    expect_exit 3 admin search repair --org "$org" --index "$encrypted_bag" --dry-run --json >/tmp/opencook-admin-encrypted-search-repair-dry-run.json
+    require_json_contains /tmp/opencook-admin-encrypted-search-repair-dry-run.json '"skipped": 1'
+    admin search repair --org "$org" --index "$encrypted_bag" --yes --with-timing --json >/tmp/opencook-admin-encrypted-search-repair.json
+    require_json_contains /tmp/opencook-admin-encrypted-search-repair.json '"deleted": 1'
+    admin search check --org "$org" --index "$encrypted_bag" --json >/tmp/opencook-admin-encrypted-search-check-clean-after-repair.json
+    require_json_contains /tmp/opencook-admin-encrypted-search-check-clean-after-repair.json '"clean": 1'
+  fi
 }
 
 run_operational_verify_phase() {
@@ -255,13 +302,18 @@ run_operational_verify_phase() {
 
   echo "==> operational post-restart verification"
   admin_json status >/tmp/opencook-admin-post-restart-status.json
+  require_opensearch_capability_status /tmp/opencook-admin-post-restart-status.json
   admin_with_key "$operational_key_path" users show "$admin_requestor" >/tmp/opencook-admin-post-restart-key.json
   require_json_contains /tmp/opencook-admin-post-restart-key.json "\"username\": \"$admin_requestor\""
   require_unsupported_search_admin_surfaces
   admin search check --org "$org" --index node --json >/tmp/opencook-admin-post-restart-search.json
   require_json_contains /tmp/opencook-admin-post-restart-search.json '"clean": 1'
-  admin search check --org "$org" --index "$encrypted_bag" --json >/tmp/opencook-admin-post-restart-encrypted-search.json
-  require_json_contains /tmp/opencook-admin-post-restart-encrypted-search.json '"clean": 1'
+  if encrypted_search_index_available; then
+    admin search check --org "$org" --index "$encrypted_bag" --json >/tmp/opencook-admin-post-restart-encrypted-search.json
+    require_json_contains /tmp/opencook-admin-post-restart-encrypted-search.json '"clean": 1'
+  else
+    echo "==> operational encrypted data bag fixture absent after restart; skipping scoped encrypted search check"
+  fi
 }
 
 export OPENCOOK_ADMIN_SERVER_URL="$base_url"

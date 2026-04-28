@@ -122,6 +122,37 @@ func TestAdminUsersAndOrganizationsCommandsUseLiveHTTPPaths(t *testing.T) {
 	}
 }
 
+func TestAdminStatusSurfacesOpenSearchProviderWording(t *testing.T) {
+	cmd, stdout, stderr := newTestCommand(t)
+	fake := &fakeAdminClient{response: map[string]any{
+		"dependencies": map[string]any{
+			"opensearch": map[string]any{
+				"backend":    "opensearch",
+				"configured": true,
+				"message":    "OpenSearch-backed search provider active (opensearch 2.12.0; search-after pagination, delete-by-query, object total hits)",
+			},
+		},
+	}}
+	cmd.loadAdminConfig = func() admin.Config {
+		return admin.Config{ServerURL: "http://opencook.test", RequestorName: "pivotal", PrivateKeyPath: "redacted.pem"}
+	}
+	cmd.newAdmin = func(admin.Config) (adminJSONClient, error) {
+		return fake, nil
+	}
+
+	if code := cmd.Run(context.Background(), []string{"admin", "status"}); code != exitOK {
+		t.Fatalf("Run(admin status) exit = %d, want %d; stderr = %s", code, exitOK, stderr.String())
+	}
+	if len(fake.calls) != 1 || fake.calls[0].method != http.MethodGet || fake.calls[0].path != "/_status" {
+		t.Fatalf("admin status call = %+v, want GET /_status", fake.calls)
+	}
+	for _, want := range []string{"opensearch 2.12.0", "search-after pagination", "delete-by-query"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("admin status stdout = %q, want %q", stdout.String(), want)
+		}
+	}
+}
+
 func TestAdminKeyCommandsUseLiveHTTPPaths(t *testing.T) {
 	publicKeyPath := filepath.Join(t.TempDir(), "actor.pub")
 	if err := os.WriteFile(publicKeyPath, []byte("PUBLIC KEY\n"), 0o600); err != nil {
