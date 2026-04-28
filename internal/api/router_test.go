@@ -3481,6 +3481,217 @@ func TestUsersEndpointHidesInternalVerifierErrors(t *testing.T) {
 	}
 }
 
+func TestAuthnFailuresAreLoggedWithSafeRequestMetadata(t *testing.T) {
+	var logs bytes.Buffer
+	router := newTestRouterWithOverrides(t, config.Config{
+		ServiceName: "opencook",
+		Environment: "test",
+		AuthSkew:    15 * time.Minute,
+	}, log.New(&logs, "", 0), nil)
+	req := httptest.NewRequest(http.MethodGet, "/organizations/ponyville/clients", nil)
+	applySignedHeaders(t, req, "silent-bob", "", http.MethodGet, "/organizations/ponyville/clients", nil, signDescription{
+		Version:   "1.3",
+		Algorithm: "sha256",
+	}, "2026-04-02T15:04:05Z")
+	req.Header.Set(serverAPIVersionHeader, "2")
+	authChunk := req.Header.Get("X-Ops-Authorization-1")
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusUnauthorized, rec.Body.String())
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if payload["error"] != "bad_signature" {
+		t.Fatalf("error = %v, want %q", payload["error"], "bad_signature")
+	}
+
+	logOutput := logs.String()
+	for _, want := range []string{
+		`route="org-clients"`,
+		`method="GET"`,
+		`path="/organizations/ponyville/clients"`,
+		`org="ponyville"`,
+		`requestor="silent-bob"`,
+		`sign="algorithm=sha256;version=1.3"`,
+		`server_api_version="2"`,
+		`error="bad_signature"`,
+		`message="signature verification failed"`,
+	} {
+		if !strings.Contains(logOutput, want) {
+			t.Fatalf("logs = %q, want to contain %q", logOutput, want)
+		}
+	}
+
+	if strings.Contains(logOutput, authChunk) {
+		t.Fatalf("logs leaked authorization header chunk: %q", logOutput)
+	}
+	if strings.Contains(logOutput, `server_hashed_path=`) {
+		t.Fatalf("logs unexpectedly included legacy hashed path for v1.3 request: %q", logOutput)
+	}
+}
+
+func TestLegacyAuthnFailuresLogServerComputedHashedPath(t *testing.T) {
+	var logs bytes.Buffer
+	router := newTestRouterWithOverrides(t, config.Config{
+		ServiceName: "opencook",
+		Environment: "test",
+		AuthSkew:    15 * time.Minute,
+	}, log.New(&logs, "", 0), nil)
+	req := httptest.NewRequest(http.MethodPost, "/organizations/ponyville/clients", nil)
+	applySignedHeaders(t, req, "silent-bob", "", http.MethodPost, "/organizations/ponyville/clientz", nil, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusUnauthorized, rec.Body.String())
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if payload["error"] != "bad_signature" {
+		t.Fatalf("error = %v, want %q", payload["error"], "bad_signature")
+	}
+
+	serverHashedPath, ok := authn.LegacyHashedPathDebugValue("algorithm=sha1;version=1.1;", "/organizations/ponyville/clients")
+	if !ok {
+		t.Fatal("expected legacy hashed path for server request path")
+	}
+	signedHashedPath, ok := authn.LegacyHashedPathDebugValue("algorithm=sha1;version=1.1;", "/organizations/ponyville/clientz")
+	if !ok {
+		t.Fatal("expected legacy hashed path for signed request path")
+	}
+
+	logOutput := logs.String()
+	for _, want := range []string{
+		`route="org-clients"`,
+		`method="POST"`,
+		`path="/organizations/ponyville/clients"`,
+		`org="ponyville"`,
+		`requestor="silent-bob"`,
+		`sign="algorithm=sha1;version=1.1;"`,
+		`server_api_version="0"`,
+		`server_hashed_path="` + serverHashedPath + `"`,
+		`error="bad_signature"`,
+		`message="signature verification failed"`,
+	} {
+		if !strings.Contains(logOutput, want) {
+			t.Fatalf("logs = %q, want to contain %q", logOutput, want)
+		}
+	}
+	if strings.Contains(logOutput, `server_hashed_path="`+signedHashedPath+`"`) {
+		t.Fatalf("logs used signed request path hash instead of server path hash: %q", logOutput)
+	}
+}
+
+func TestAuthzDenialsAreLoggedWithSafeRequestMetadata(t *testing.T) {
+	var logs bytes.Buffer
+	router := newTestRouterWithOverrides(t, config.Config{
+		ServiceName: "opencook",
+		Environment: "test",
+		AuthSkew:    15 * time.Minute,
+	}, log.New(&logs, "", 0), nil)
+
+	createClientBody := []byte(`{"name":"twilight","create_key":true}`)
+	createClientReq := httptest.NewRequest(http.MethodPost, "/organizations/ponyville/clients", bytes.NewReader(createClientBody))
+	applySignedHeaders(t, createClientReq, "silent-bob", "", http.MethodPost, "/organizations/ponyville/clients", createClientBody, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:05Z")
+	createClientRec := httptest.NewRecorder()
+	router.ServeHTTP(createClientRec, createClientReq)
+	if createClientRec.Code != http.StatusCreated {
+		t.Fatalf("create client status = %d, want %d, body = %s", createClientRec.Code, http.StatusCreated, createClientRec.Body.String())
+	}
+
+	client := newSignedClientRequestorFromClientCreateResponse(t, "ponyville", "twilight", createClientRec)
+
+	createNode := nodePayloadExpectation{
+		Name:            "rainbow",
+		ChefEnvironment: "_default",
+		Override:        map[string]any{},
+		Normal:          map[string]any{},
+		Default:         map[string]any{},
+		Automatic: map[string]any{
+			"fqdn": "rainbow",
+		},
+		RunList: []string{},
+	}
+	createNodeBody := mustMarshalAPIVersionNodePayload(t, createNode)
+	createNodeReq := httptest.NewRequest(http.MethodPost, "/organizations/ponyville/nodes", bytes.NewReader(createNodeBody))
+	applySignedHeaders(t, createNodeReq, "silent-bob", "", http.MethodPost, "/organizations/ponyville/nodes", createNodeBody, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, "2026-04-02T15:04:10Z")
+	createNodeRec := httptest.NewRecorder()
+	router.ServeHTTP(createNodeRec, createNodeReq)
+	if createNodeRec.Code != http.StatusCreated {
+		t.Fatalf("create node status = %d, want %d, body = %s", createNodeRec.Code, http.StatusCreated, createNodeRec.Body.String())
+	}
+
+	updateNode := nodePayloadExpectation{
+		Name:            "rainbow",
+		ChefEnvironment: "_default",
+		Override:        map[string]any{},
+		Normal: map[string]any{
+			"role": "rogue",
+		},
+		Default: map[string]any{},
+		Automatic: map[string]any{
+			"fqdn": "rainbow",
+		},
+		RunList: []string{},
+	}
+	updateNodeBody := mustMarshalAPIVersionNodePayload(t, updateNode)
+	updateNodeReq := client.newSignedJSONRequestWithSigning(t, http.MethodPut, "/organizations/ponyville/nodes/rainbow", updateNodeBody, signDescription{
+		Version:   "1.3",
+		Algorithm: "sha256",
+	}, "2")
+	updateNodeRec := httptest.NewRecorder()
+	router.ServeHTTP(updateNodeRec, updateNodeReq)
+	if updateNodeRec.Code != http.StatusForbidden {
+		t.Fatalf("update foreign node status = %d, want %d, body = %s", updateNodeRec.Code, http.StatusForbidden, updateNodeRec.Body.String())
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(updateNodeRec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if payload["error"] != "forbidden" {
+		t.Fatalf("error = %v, want %q", payload["error"], "forbidden")
+	}
+
+	logOutput := logs.String()
+	for _, want := range []string{
+		`route="org-nodes-routes"`,
+		`method="PUT"`,
+		`path="/organizations/ponyville/nodes/rainbow"`,
+		`requestor_type="client"`,
+		`requestor="twilight"`,
+		`requestor_org="ponyville"`,
+		`subject_org="ponyville"`,
+		`action="update"`,
+		`resource_type="node"`,
+		`resource_name="rainbow"`,
+		`resource_org="ponyville"`,
+	} {
+		if !strings.Contains(logOutput, want) {
+			t.Fatalf("logs = %q, want to contain %q", logOutput, want)
+		}
+	}
+}
+
 func TestUserACLRouteHandlesMissingBootstrap(t *testing.T) {
 	router := newTestRouterWithoutBootstrap(t)
 	req := httptest.NewRequest(http.MethodGet, "/users/silent-bob/_acl", nil)
@@ -3993,24 +4204,27 @@ func manufactureSignedHeaders(t *testing.T, privateKey *rsa.PrivateKey, userID, 
 }
 
 func canonicalString(method, path, contentHash, timestamp, userID, serverAPIVersion string, sign signDescription) string {
+	canonicalPath := canonicalRequestPath(path)
+	canonicalUserID := canonicalUserID(userID, sign)
+
 	if sign.Version == "1.3" {
 		return strings.Join([]string{
 			"Method:" + strings.ToUpper(method),
-			"Path:" + path,
+			"Path:" + canonicalPath,
 			"X-Ops-Content-Hash:" + contentHash,
 			"X-Ops-Sign:version=1.3",
 			"X-Ops-Timestamp:" + timestamp,
-			"X-Ops-UserId:" + userID,
+			"X-Ops-UserId:" + canonicalUserID,
 			"X-Ops-Server-API-Version:" + serverAPIVersion,
 		}, "\n")
 	}
 
 	return strings.Join([]string{
 		"Method:" + strings.ToUpper(method),
-		"Hashed Path:" + hashPath(path, sign),
+		"Hashed Path:" + hashPath(canonicalPath, sign),
 		"X-Ops-Content-Hash:" + contentHash,
 		"X-Ops-Timestamp:" + timestamp,
-		"X-Ops-UserId:" + userID,
+		"X-Ops-UserId:" + canonicalUserID,
 	}, "\n")
 }
 
@@ -4026,6 +4240,49 @@ func hashBody(body []byte, sign signDescription) string {
 
 func hashPath(path string, sign signDescription) string {
 	return hashBody([]byte(path), sign)
+}
+
+func canonicalRequestPath(path string) string {
+	if path == "" {
+		return "/"
+	}
+
+	path = collapseRepeatedSlashes(path)
+	if len(path) > 1 && strings.HasSuffix(path, "/") {
+		path = strings.TrimSuffix(path, "/")
+	}
+	return path
+}
+
+func collapseRepeatedSlashes(path string) string {
+	if !strings.Contains(path, "//") {
+		return path
+	}
+
+	var b strings.Builder
+	b.Grow(len(path))
+	lastSlash := false
+	for i := 0; i < len(path); i++ {
+		if path[i] == '/' {
+			if lastSlash {
+				continue
+			}
+			lastSlash = true
+		} else {
+			lastSlash = false
+		}
+		b.WriteByte(path[i])
+	}
+
+	return b.String()
+}
+
+func canonicalUserID(userID string, sign signDescription) string {
+	if sign.Version == "1.1" {
+		return hashBody([]byte(userID), signDescription{Algorithm: sign.Algorithm})
+	}
+
+	return userID
 }
 
 func signRequest(t *testing.T, privateKey *rsa.PrivateKey, stringToSign string, sign signDescription) []byte {

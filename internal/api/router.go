@@ -45,7 +45,10 @@ type server struct {
 
 type contextKey string
 
-const authenticatedRequestorContextKey contextKey = "authenticated_requestor"
+const (
+	authenticatedRequestorContextKey contextKey = "authenticated_requestor"
+	authenticatedRouteIDContextKey   contextKey = "authenticated_route_id"
+)
 
 func NewRouter(deps Dependencies) http.Handler {
 	if deps.Now == nil {
@@ -521,14 +524,61 @@ func (s *server) withAuthn(routeID string, next http.HandlerFunc) http.HandlerFu
 			ServerAPIVersion: r.Header.Get("X-Ops-Server-API-Version"),
 		})
 		if verifyErr != nil {
+			s.logAuthnFailure(routeID, r, verifyErr)
 			s.writeAuthnFailure(w, verifyErr)
 			return
 		}
 
 		ctx := context.WithValue(r.Context(), authenticatedRequestorContextKey, result.Principal)
+		ctx = context.WithValue(ctx, authenticatedRouteIDContextKey, routeID)
 		w.Header().Set("X-OpenCook-Authn-Route", routeID)
 		next(w, r.WithContext(ctx))
 	}
+}
+
+func (s *server) logAuthnFailure(routeID string, r *http.Request, err error) {
+	var authErr *authn.Error
+	if !errors.As(err, &authErr) {
+		return
+	}
+
+	sign := strings.TrimSpace(r.Header.Get("X-Ops-Sign"))
+	serverAPIVersion := strings.TrimSpace(r.Header.Get(serverAPIVersionHeader))
+	if serverAPIVersion == "" {
+		serverAPIVersion = "0"
+	}
+
+	if serverHashedPath, ok := authn.LegacyHashedPathDebugValue(sign, r.URL.Path); ok {
+		s.logf(
+			"authn failure route=%q method=%q path=%q org=%q requestor=%q sign=%q server_api_version=%q server_hashed_path=%q error=%q headers=%v message=%q",
+			routeID,
+			r.Method,
+			r.URL.Path,
+			s.authnOrganization(r),
+			strings.TrimSpace(r.Header.Get("X-Ops-Userid")),
+			sign,
+			serverAPIVersion,
+			serverHashedPath,
+			authErr.Kind,
+			authErr.Headers,
+			authErr.Message,
+		)
+		return
+	}
+
+	s.logf(
+		"authn failure route=%q method=%q path=%q org=%q requestor=%q sign=%q server_api_version=%q error=%q headers=%v message=%q",
+		routeID,
+		r.Method,
+		r.URL.Path,
+		s.authnOrganization(r),
+		strings.TrimSpace(r.Header.Get("X-Ops-Userid")),
+		sign,
+		serverAPIVersion,
+		authErr.Kind,
+		authErr.Headers,
+		authErr.Message,
+	)
 }
 
 func (s *server) writeAuthnFailure(w http.ResponseWriter, err error) {
@@ -553,6 +603,12 @@ func requestorFromContext(ctx context.Context) (authn.Principal, bool) {
 	value := ctx.Value(authenticatedRequestorContextKey)
 	requestor, ok := value.(authn.Principal)
 	return requestor, ok
+}
+
+func routeIDFromContext(ctx context.Context) (string, bool) {
+	value := ctx.Value(authenticatedRouteIDContextKey)
+	routeID, ok := value.(string)
+	return routeID, ok
 }
 
 func flattenHeaders(header http.Header) map[string]string {

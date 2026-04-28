@@ -96,6 +96,51 @@ func TestChefVerifierVerifyVersion11LegacyRequest(t *testing.T) {
 	}
 }
 
+func TestChefVerifierVerifyVersion11CanonicalizesPathAndUserID(t *testing.T) {
+	privateKey := mustParsePrivateKey(t)
+	store := NewMemoryKeyStore()
+	if err := store.Put(Key{
+		ID: "default",
+		Principal: Principal{
+			Type:         "user",
+			Name:         "silent-bob",
+			Organization: "ponyville",
+		},
+		PublicKey: &privateKey.PublicKey,
+	}); err != nil {
+		t.Fatalf("store.Put() error = %v", err)
+	}
+
+	timestamp := "2026-04-02T15:04:05Z"
+	body := []byte(`{"bar":"baz"}`)
+
+	verifier := NewChefVerifier(store, Options{
+		AllowedClockSkew: durationPtr(15 * time.Minute),
+		Now: func() time.Time {
+			return mustParseTime(t, timestamp).Add(30 * time.Second)
+		},
+	})
+
+	req := RequestContext{
+		Method:       "POST",
+		Path:         "/organizations/ponyville/nodes",
+		Body:         body,
+		Organization: "ponyville",
+		Headers: manufactureSignedHeaders(t, privateKey, "silent-bob", "POST", "/organizations//ponyville/nodes/", body, signDescription{
+			Version:   "1.1",
+			Algorithm: "sha1",
+		}, timestamp, defaultServerAPIVersion),
+	}
+
+	result, err := verifier.Verify(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Verify() error = %v", err)
+	}
+	if !result.Authenticated {
+		t.Fatal("Verify() returned unauthenticated result")
+	}
+}
+
 func TestChefVerifierVerifyVersion13Request(t *testing.T) {
 	privateKey := mustParsePrivateKey(t)
 	store := NewMemoryKeyStore()

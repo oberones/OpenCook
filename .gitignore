@@ -3,4 +3,5 @@ coverage.out
 dist/
 .DS_Store
 .env
+.local
 

@@ -264,6 +264,9 @@ func (s *server) authnOrganization(r *http.Request) string {
 	if org != "" {
 		return org
 	}
+	if org, ok := explicitOrganizationFromPath(r.URL.Path); ok {
+		return org
+	}
 	if !isDefaultOrgScopedPath(r.URL.Path) {
 		return ""
 	}
@@ -403,4 +406,23 @@ func isDefaultOrgScopedPath(path string) bool {
 		isDefaultOrgCookbookPath(path) ||
 		isDefaultOrgDataPath(path) ||
 		isDefaultOrgPolicyPath(path)
+}
+
+func explicitOrganizationFromPath(path string) (string, bool) {
+	const prefix = "/organizations/"
+	if !strings.HasPrefix(path, prefix) {
+		return "", false
+	}
+
+	remainder := strings.TrimPrefix(path, prefix)
+	if remainder == "" {
+		return "", false
+	}
+
+	org, _, _ := strings.Cut(remainder, "/")
+	org = strings.TrimSpace(org)
+	if org == "" {
+		return "", false
+	}
+	return org, true
 }

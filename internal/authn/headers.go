@@ -270,6 +270,63 @@ func hashBase64(data []byte, sign signDescription) string {
 	return base64.StdEncoding.EncodeToString(sum[:])
 }
 
+func canonicalRequestPath(path string) string {
+	if path == "" {
+		return "/"
+	}
+
+	path = collapseRepeatedSlashes(path)
+	if len(path) > 1 && strings.HasSuffix(path, "/") {
+		path = strings.TrimSuffix(path, "/")
+	}
+	return path
+}
+
+func collapseRepeatedSlashes(path string) string {
+	if !strings.Contains(path, "//") {
+		return path
+	}
+
+	var b strings.Builder
+	b.Grow(len(path))
+	lastSlash := false
+	for i := 0; i < len(path); i++ {
+		if path[i] == '/' {
+			if lastSlash {
+				continue
+			}
+			lastSlash = true
+		} else {
+			lastSlash = false
+		}
+		b.WriteByte(path[i])
+	}
+
+	return b.String()
+}
+
+func canonicalUserID(userID string, sign signDescription) string {
+	if sign.Version == "1.1" {
+		return hashBase64([]byte(userID), signDescription{Algorithm: sign.Algorithm})
+	}
+
+	return userID
+}
+
+// LegacyHashedPathDebugValue returns the server-side hashed path used by
+// legacy Chef signing versions for safe authn failure diagnostics.
+func LegacyHashedPathDebugValue(rawSign, path string) (string, bool) {
+	sign, err := parseSignDescription(rawSign)
+	if err != nil {
+		return "", false
+	}
+	if sign.Version == "1.3" {
+		return "", false
+	}
+
+	return hashBase64([]byte(canonicalRequestPath(path)), signDescription{Algorithm: sign.Algorithm}), true
+}
+
 func canonicalHeaderName(key string) string {
 	switch strings.ToLower(key) {
 	case "x-ops-sign":
