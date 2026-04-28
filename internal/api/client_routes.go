@@ -53,7 +53,7 @@ func (s *server) handleClientGet(w http.ResponseWriter, r *http.Request, state *
 		return
 	}
 
-	writeJSON(w, http.StatusOK, clientResponseObject(client))
+	writeJSON(w, http.StatusOK, clientResponseObject(client, serverAPIVersionFromContext(r).Version))
 }
 
 func (s *server) handleClientHead(w http.ResponseWriter, r *http.Request, state *bootstrap.Service, org, basePath string) {
@@ -136,7 +136,8 @@ func (s *server) handleClientPost(w http.ResponseWriter, r *http.Request, state 
 		Validator  bool   `json:"validator"`
 		Admin      bool   `json:"admin"`
 		PublicKey  string `json:"public_key"`
-		CreateKey  bool   `json:"create_key"`
+		CreateKey  *bool  `json:"create_key"`
+		PrivateKey *bool  `json:"private_key"`
 	}
 	if !decodeJSON(w, r, &payload) {
 		return
@@ -148,7 +149,17 @@ func (s *server) handleClientPost(w http.ResponseWriter, r *http.Request, state 
 		})
 		return
 	}
-	if payload.CreateKey && strings.TrimSpace(payload.PublicKey) != "" {
+	apiVersion := serverAPIVersionFromContext(r).Version
+	requestsGeneratedKey := payload.CreateKey != nil && *payload.CreateKey
+	hasPublicKey := strings.TrimSpace(payload.PublicKey) != ""
+	if apiVersion > 0 && payload.PrivateKey != nil && *payload.PrivateKey {
+		writeJSON(w, http.StatusBadRequest, apiError{
+			Error:   "invalid_request",
+			Message: "private_key is not accepted on this API version",
+		})
+		return
+	}
+	if requestsGeneratedKey && hasPublicKey {
 		writeJSON(w, http.StatusBadRequest, apiError{
 			Error:   "invalid_request",
 			Message: "public_key and create_key cannot both be set",
@@ -162,10 +173,11 @@ func (s *server) handleClientPost(w http.ResponseWriter, r *http.Request, state 
 	}
 
 	client, keyMaterial, err := state.CreateClient(org, bootstrap.CreateClientInput{
-		Name:      name,
-		Validator: payload.Validator,
-		Admin:     payload.Admin,
-		PublicKey: payload.PublicKey,
+		Name:             name,
+		Validator:        payload.Validator,
+		Admin:            payload.Admin,
+		PublicKey:        payload.PublicKey,
+		CreateDefaultKey: apiVersion == 0 || requestsGeneratedKey,
 	})
 	if !s.writeBootstrapError(w, err) {
 		return
@@ -174,10 +186,13 @@ func (s *server) handleClientPost(w http.ResponseWriter, r *http.Request, state 
 	response := map[string]any{
 		"uri": clientURLForResponse(org, client.Name, basePath),
 	}
-	if keyMaterial != nil && keyMaterial.PrivateKeyPEM != "" {
+	if apiVersion == 0 && keyMaterial != nil && keyMaterial.PrivateKeyPEM != "" {
 		response["private_key"] = keyMaterial.PrivateKeyPEM
 	}
-	if keyMaterial != nil && (payload.CreateKey || strings.TrimSpace(payload.PublicKey) != "") {
+	if apiVersion == 0 && keyMaterial != nil && keyMaterial.PublicKeyPEM != "" {
+		response["public_key"] = keyMaterial.PublicKeyPEM
+	}
+	if keyMaterial != nil && (apiVersion > 0 || requestsGeneratedKey || hasPublicKey) {
 		response["chef_key"] = clientFacingKeyMaterial(*keyMaterial, clientKeyBasePath(org, client.Name, basePath))
 	}
 	writeJSON(w, http.StatusCreated, response)
@@ -237,6 +252,61 @@ func (s *server) handleClientDelete(w http.ResponseWriter, r *http.Request, stat
 	})
 }
 
+func (s *server) handleClientPut(w http.ResponseWriter, r *http.Request, state *bootstrap.Service, org, basePath string) {
+	name, ok := pathTail(r.URL.Path, basePath+"/")
+	if !ok {
+		writeJSON(w, http.StatusNotFound, apiError{
+			Error:   "not_found",
+			Message: "route not found in scaffold router",
+		})
+		return
+	}
+
+	if _, exists := state.GetClient(org, name); !exists {
+		writeJSON(w, http.StatusNotFound, apiError{
+			Error:   "not_found",
+			Message: "client not found",
+		})
+		return
+	}
+
+	if !s.authorizeRequest(w, r, authz.ActionUpdate, authz.Resource{
+		Type:         "client",
+		Name:         name,
+		Organization: org,
+	}) {
+		return
+	}
+
+	var payload struct {
+		Validator  *bool   `json:"validator"`
+		Admin      *bool   `json:"admin"`
+		PublicKey  *string `json:"public_key"`
+		CreateKey  *bool   `json:"create_key"`
+		PrivateKey *bool   `json:"private_key"`
+	}
+	if !decodeJSON(w, r, &payload) {
+		return
+	}
+	if serverAPIVersionFromContext(r).Version > 0 && (payload.PublicKey != nil || payload.CreateKey != nil || payload.PrivateKey != nil) {
+		writeJSON(w, http.StatusBadRequest, apiError{
+			Error:   "invalid_request",
+			Message: "key mutation fields must be managed through the keys endpoint",
+		})
+		return
+	}
+
+	client, _, err := state.UpdateClient(org, name, bootstrap.UpdateClientInput{
+		Validator: payload.Validator,
+		Admin:     payload.Admin,
+		PublicKey: payload.PublicKey,
+	})
+	if !s.writeBootstrapError(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, clientResponseObject(client, serverAPIVersionFromContext(r).Version))
+}
+
 func (s *server) resolveClientRoute(w http.ResponseWriter, r *http.Request) (string, string, bool) {
 	org := strings.TrimSpace(r.PathValue("org"))
 	if org != "" {
@@ -255,7 +325,7 @@ func (s *server) resolveClientRoute(w http.ResponseWriter, r *http.Request) (str
 	return org, "/clients", true
 }
 
-func clientResponseObject(client bootstrap.Client) map[string]any {
+func clientResponseObject(client bootstrap.Client, apiVersion int) map[string]any {
 	response := map[string]any{
 		"name":       client.Name,
 		"clientname": client.ClientName,
@@ -264,7 +334,7 @@ func clientResponseObject(client bootstrap.Client) map[string]any {
 		"orgname":    client.Organization,
 		"validator":  client.Validator,
 	}
-	if strings.TrimSpace(client.PublicKey) != "" {
+	if apiVersion == 0 && strings.TrimSpace(client.PublicKey) != "" {
 		response["public_key"] = client.PublicKey
 	}
 	return response

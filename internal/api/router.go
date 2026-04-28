@@ -65,6 +65,8 @@ func NewRouter(deps Dependencies) http.Handler {
 	mux.HandleFunc("/_status", srv.handleStatus)
 	mux.HandleFunc("/healthz", srv.handleHealth)
 	mux.HandleFunc("/readyz", srv.handleReady)
+	mux.HandleFunc("/server_api_version", srv.withServerAPIVersion(srv.handleServerAPIVersion))
+	mux.HandleFunc("/server_api_version/", srv.withServerAPIVersion(srv.handleServerAPIVersion))
 	mux.HandleFunc("/internal/contracts/routes", srv.handleRouteContract)
 	mux.HandleFunc("/internal/authn/capabilities", srv.handleAuthnCapabilities)
 	mux.HandleFunc("/_blob/checksums/{checksum}", srv.handleBlobChecksumUpload)
@@ -276,17 +278,7 @@ func (s *server) handleUsers(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		writeJSON(w, http.StatusOK, map[string]any{
-			"username":       user.Username,
-			"display_name":   user.DisplayName,
-			"email":          user.Email,
-			"first_name":     user.FirstName,
-			"last_name":      user.LastName,
-			"requestor":      requestor,
-			"uri":            "/users/" + name,
-			"authn_status":   "verified",
-			"storage_status": "memory-bootstrap",
-		})
+		writeJSON(w, http.StatusOK, userResponseObject(state, user, requestor, serverAPIVersionFromContext(r).Version))
 	case http.MethodPost:
 		if !matchesCollectionPath(r.URL.Path, "/users") {
 			writeJSON(w, http.StatusNotFound, apiError{
@@ -307,14 +299,91 @@ func (s *server) handleUsers(w http.ResponseWriter, r *http.Request) {
 			FirstName   string `json:"first_name"`
 			LastName    string `json:"last_name"`
 			PublicKey   string `json:"public_key"`
-			CreateKey   bool   `json:"create_key"`
+			CreateKey   *bool  `json:"create_key"`
+			PrivateKey  *bool  `json:"private_key"`
 		}
 		if !decodeJSON(w, r, &payload) {
 			return
 		}
+		apiVersion := serverAPIVersionFromContext(r).Version
+		requestsGeneratedKey := payload.CreateKey != nil && *payload.CreateKey
+		hasPublicKey := strings.TrimSpace(payload.PublicKey) != ""
+		if apiVersion > 0 && payload.PrivateKey != nil && *payload.PrivateKey {
+			writeJSON(w, http.StatusBadRequest, apiError{
+				Error:   "invalid_request",
+				Message: "private_key is not accepted on this API version",
+			})
+			return
+		}
+		if requestsGeneratedKey && hasPublicKey {
+			writeJSON(w, http.StatusBadRequest, apiError{
+				Error:   "invalid_request",
+				Message: "public_key and create_key cannot both be set",
+			})
+			return
+		}
 
 		user, keyMaterial, err := state.CreateUser(bootstrap.CreateUserInput{
-			Username:    payload.Username,
+			Username:         payload.Username,
+			DisplayName:      payload.DisplayName,
+			Email:            payload.Email,
+			FirstName:        payload.FirstName,
+			LastName:         payload.LastName,
+			PublicKey:        payload.PublicKey,
+			CreateDefaultKey: apiVersion == 0 || requestsGeneratedKey,
+		})
+		if !s.writeBootstrapError(w, err) {
+			return
+		}
+
+		response := map[string]any{
+			"uri": "/users/" + user.Username,
+		}
+		if apiVersion == 0 && keyMaterial != nil && keyMaterial.PrivateKeyPEM != "" {
+			response["private_key"] = keyMaterial.PrivateKeyPEM
+		}
+		if apiVersion == 0 && keyMaterial != nil && keyMaterial.PublicKeyPEM != "" {
+			response["public_key"] = keyMaterial.PublicKeyPEM
+		}
+		if keyMaterial != nil && (apiVersion > 0 || requestsGeneratedKey) {
+			response["chef_key"] = keyMaterial
+		}
+		writeJSON(w, http.StatusCreated, response)
+	case http.MethodPut:
+		name := strings.TrimPrefix(r.URL.Path, "/users/")
+		if name == "" || strings.Contains(name, "/") {
+			writeJSON(w, http.StatusNotFound, apiError{
+				Error:   "not_found",
+				Message: "route not found in scaffold router",
+			})
+			return
+		}
+		if !s.authorizeRequest(w, r, authz.ActionUpdate, authz.Resource{Type: "user", Name: name}) {
+			return
+		}
+
+		var payload struct {
+			DisplayName *string `json:"display_name"`
+			Email       *string `json:"email"`
+			FirstName   *string `json:"first_name"`
+			LastName    *string `json:"last_name"`
+			PublicKey   *string `json:"public_key"`
+			CreateKey   *bool   `json:"create_key"`
+			PrivateKey  *bool   `json:"private_key"`
+		}
+		if !decodeJSON(w, r, &payload) {
+			return
+		}
+		if serverAPIVersionFromContext(r).Version > 0 && (payload.PublicKey != nil || payload.CreateKey != nil || payload.PrivateKey != nil) {
+			writeJSON(w, http.StatusBadRequest, apiError{
+				Error:   "invalid_request",
+				Message: "key mutation fields must be managed through the keys endpoint",
+			})
+			return
+		}
+
+		user, _, err := state.UpdateUser(bootstrap.UpdateUserInput{
+			Username:    name,
 			DisplayName: payload.DisplayName,
 			Email:       payload.Email,
 			FirstName:   payload.FirstName,
@@ -324,17 +393,7 @@ func (s *server) handleUsers(w http.ResponseWriter, r *http.Request) {
 		if !s.writeBootstrapError(w, err) {
 			return
 		}
-
-		response := map[string]any{
-			"uri": "/users/" + user.Username,
-		}
-		if keyMaterial != nil && keyMaterial.PrivateKeyPEM != "" {
-			response["private_key"] = keyMaterial.PrivateKeyPEM
-		}
-		if payload.CreateKey && keyMaterial != nil {
-			response["chef_key"] = keyMaterial
-		}
-		writeJSON(w, http.StatusCreated, response)
+		writeJSON(w, http.StatusOK, userResponseObject(state, user, requestor, serverAPIVersionFromContext(r).Version))
 	default:
 		writeJSON(w, http.StatusNotImplemented, map[string]any{
 			"error":   "not_implemented",
@@ -343,6 +402,26 @@ func (s *server) handleUsers(w http.ResponseWriter, r *http.Request) {
 			"path":    r.URL.Path,
 		})
 	}
+}
+
+func userResponseObject(state *bootstrap.Service, user bootstrap.User, requestor authn.Principal, apiVersion int) map[string]any {
+	response := map[string]any{
+		"username":       user.Username,
+		"display_name":   user.DisplayName,
+		"email":          user.Email,
+		"first_name":     user.FirstName,
+		"last_name":      user.LastName,
+		"requestor":      requestor,
+		"uri":            "/users/" + user.Username,
+		"authn_status":   "verified",
+		"storage_status": "memory-bootstrap",
+	}
+	if apiVersion == 0 {
+		if key, _, ok := state.GetUserKey(user.Username, "default"); ok && strings.TrimSpace(key.PublicKeyPEM) != "" {
+			response["public_key"] = key.PublicKeyPEM
+		}
+	}
+	return response
 }
 
 func (s *server) handleClients(w http.ResponseWriter, r *http.Request) {
@@ -374,6 +453,8 @@ func (s *server) handleClients(w http.ResponseWriter, r *http.Request) {
 		s.handleClientHead(w, r, state, org, basePath)
 	case http.MethodPost:
 		s.handleClientPost(w, r, state, org, basePath)
+	case http.MethodPut:
+		s.handleClientPut(w, r, state, org, basePath)
 	case http.MethodDelete:
 		s.handleClientDelete(w, r, state, org, basePath)
 	default:
@@ -404,6 +485,11 @@ func (s *server) handleNotImplemented(surface compat.Surface, pattern string) ht
 
 func (s *server) withAuthn(routeID string, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		r, ok := s.validateServerAPIVersion(w, r)
+		if !ok {
+			return
+		}
+
 		bodyReader := http.MaxBytesReader(w, r.Body, s.authRequestBodyLimit())
 		body, err := io.ReadAll(bodyReader)
 		if err != nil {
@@ -482,7 +568,7 @@ func flattenHeaders(header http.Header) map[string]string {
 
 func isImplementedPattern(pattern string) bool {
 	switch pattern {
-	case "/_blob/checksums/{checksum}", "/_blob/checksums/{checksum}/", "/users", "/users/", "/users/{name}/keys", "/users/{name}/keys/", "/organizations", "/organizations/", "/clients", "/clients/", "/clients/{name}/keys", "/clients/{name}/keys/", "/cookbooks", "/cookbooks/", "/cookbooks/_latest", "/cookbooks/_latest/", "/cookbooks/_recipes", "/cookbooks/_recipes/", "/cookbooks/{name}", "/cookbooks/{name}/", "/cookbooks/{name}/{version}", "/cookbooks/{name}/{version}/", "/cookbook_artifacts", "/cookbook_artifacts/", "/cookbook_artifacts/{name}", "/cookbook_artifacts/{name}/", "/cookbook_artifacts/{name}/{identifier}", "/cookbook_artifacts/{name}/{identifier}/", "/universe", "/universe/", "/data", "/data/", "/organizations/{org}/data", "/organizations/{org}/data/", "/organizations/{org}/cookbooks", "/organizations/{org}/cookbooks/", "/organizations/{org}/cookbooks/_latest", "/organizations/{org}/cookbooks/_latest/", "/organizations/{org}/cookbooks/_recipes", "/organizations/{org}/cookbooks/_recipes/", "/organizations/{org}/cookbooks/{name}", "/organizations/{org}/cookbooks/{name}/", "/organizations/{org}/cookbooks/{name}/{version}", "/organizations/{org}/cookbooks/{name}/{version}/", "/organizations/{org}/cookbook_artifacts", "/organizations/{org}/cookbook_artifacts/", "/organizations/{org}/cookbook_artifacts/{name}", "/organizations/{org}/cookbook_artifacts/{name}/", "/organizations/{org}/cookbook_artifacts/{name}/{identifier}", "/organizations/{org}/cookbook_artifacts/{name}/{identifier}/", "/organizations/{org}/universe", "/organizations/{org}/universe/", "/environments", "/environments/", "/environments/{name}/cookbooks", "/environments/{name}/cookbooks/", "/environments/{name}/cookbooks/{cookbook}", "/environments/{name}/cookbook_versions", "/environments/{name}/cookbook_versions/", "/environments/{name}/nodes", "/environments/{name}/nodes/", "/environments/{name}/roles/{role}", "/environments/{name}/roles/{role}/", "/environments/{name}/recipes", "/environments/{name}/recipes/", "/organizations/{org}/environments", "/organizations/{org}/environments/", "/organizations/{org}/environments/{name}/cookbooks", "/organizations/{org}/environments/{name}/cookbooks/", "/organizations/{org}/environments/{name}/cookbooks/{cookbook}", "/organizations/{org}/environments/{name}/cookbook_versions", "/organizations/{org}/environments/{name}/cookbook_versions/", "/organizations/{org}/environments/{name}/nodes", "/organizations/{org}/environments/{name}/nodes/", "/organizations/{org}/environments/{name}/roles/{role}", "/organizations/{org}/environments/{name}/roles/{role}/", "/organizations/{org}/environments/{name}/recipes", "/organizations/{org}/environments/{name}/recipes/", "/nodes", "/nodes/", "/organizations/{org}/nodes", "/organizations/{org}/nodes/", "/policies", "/policies/", "/policies/{name}", "/policies/{name}/", "/policies/{name}/revisions", "/policies/{name}/revisions/", "/policies/{name}/revisions/{revision}", "/policies/{name}/revisions/{revision}/", "/policy_groups", "/policy_groups/", "/policy_groups/{group}", "/policy_groups/{group}/", "/policy_groups/{group}/policies/{name}", "/policy_groups/{group}/policies/{name}/", "/organizations/{org}/policies", "/organizations/{org}/policies/", "/organizations/{org}/policies/{name}", "/organizations/{org}/policies/{name}/", "/organizations/{org}/policies/{name}/revisions", "/organizations/{org}/policies/{name}/revisions/", "/organizations/{org}/policies/{name}/revisions/{revision}", "/organizations/{org}/policies/{name}/revisions/{revision}/", "/organizations/{org}/policy_groups", "/organizations/{org}/policy_groups/", "/organizations/{org}/policy_groups/{group}", "/organizations/{org}/policy_groups/{group}/", "/organizations/{org}/policy_groups/{group}/policies/{name}", "/organizations/{org}/policy_groups/{group}/policies/{name}/", "/search", "/search/", "/search/{index}", "/search/{index}/", "/organizations/{org}/search", "/organizations/{org}/search/", "/organizations/{org}/search/{index}", "/organizations/{org}/search/{index}/", "/sandboxes", "/sandboxes/", "/sandboxes/{id}", "/sandboxes/{id}/", "/organizations/{org}/sandboxes", "/organizations/{org}/sandboxes/", "/organizations/{org}/sandboxes/{id}", "/organizations/{org}/sandboxes/{id}/", "/roles", "/roles/", "/roles/{name}/environments", "/roles/{name}/environments/", "/roles/{name}/environments/{environment}", "/roles/{name}/environments/{environment}/", "/organizations/{org}/roles", "/organizations/{org}/roles/", "/organizations/{org}/roles/{name}/environments", "/organizations/{org}/roles/{name}/environments/", "/organizations/{org}/roles/{name}/environments/{environment}", "/organizations/{org}/roles/{name}/environments/{environment}/", "/organizations/{org}/clients", "/organizations/{org}/clients/", "/organizations/{org}/clients/{name}/keys", "/organizations/{org}/clients/{name}/keys/":
+	case "/server_api_version", "/server_api_version/", "/_blob/checksums/{checksum}", "/_blob/checksums/{checksum}/", "/users", "/users/", "/users/{name}/keys", "/users/{name}/keys/", "/organizations", "/organizations/", "/clients", "/clients/", "/clients/{name}/keys", "/clients/{name}/keys/", "/cookbooks", "/cookbooks/", "/cookbooks/_latest", "/cookbooks/_latest/", "/cookbooks/_recipes", "/cookbooks/_recipes/", "/cookbooks/{name}", "/cookbooks/{name}/", "/cookbooks/{name}/{version}", "/cookbooks/{name}/{version}/", "/cookbook_artifacts", "/cookbook_artifacts/", "/cookbook_artifacts/{name}", "/cookbook_artifacts/{name}/", "/cookbook_artifacts/{name}/{identifier}", "/cookbook_artifacts/{name}/{identifier}/", "/universe", "/universe/", "/data", "/data/", "/organizations/{org}/data", "/organizations/{org}/data/", "/organizations/{org}/cookbooks", "/organizations/{org}/cookbooks/", "/organizations/{org}/cookbooks/_latest", "/organizations/{org}/cookbooks/_latest/", "/organizations/{org}/cookbooks/_recipes", "/organizations/{org}/cookbooks/_recipes/", "/organizations/{org}/cookbooks/{name}", "/organizations/{org}/cookbooks/{name}/", "/organizations/{org}/cookbooks/{name}/{version}", "/organizations/{org}/cookbooks/{name}/{version}/", "/organizations/{org}/cookbook_artifacts", "/organizations/{org}/cookbook_artifacts/", "/organizations/{org}/cookbook_artifacts/{name}", "/organizations/{org}/cookbook_artifacts/{name}/", "/organizations/{org}/cookbook_artifacts/{name}/{identifier}", "/organizations/{org}/cookbook_artifacts/{name}/{identifier}/", "/organizations/{org}/universe", "/organizations/{org}/universe/", "/environments", "/environments/", "/environments/{name}/cookbooks", "/environments/{name}/cookbooks/", "/environments/{name}/cookbooks/{cookbook}", "/environments/{name}/cookbook_versions", "/environments/{name}/cookbook_versions/", "/environments/{name}/nodes", "/environments/{name}/nodes/", "/environments/{name}/roles/{role}", "/environments/{name}/roles/{role}/", "/environments/{name}/recipes", "/environments/{name}/recipes/", "/organizations/{org}/environments", "/organizations/{org}/environments/", "/organizations/{org}/environments/{name}/cookbooks", "/organizations/{org}/environments/{name}/cookbooks/", "/organizations/{org}/environments/{name}/cookbooks/{cookbook}", "/organizations/{org}/environments/{name}/cookbook_versions", "/organizations/{org}/environments/{name}/cookbook_versions/", "/organizations/{org}/environments/{name}/nodes", "/organizations/{org}/environments/{name}/nodes/", "/organizations/{org}/environments/{name}/roles/{role}", "/organizations/{org}/environments/{name}/roles/{role}/", "/organizations/{org}/environments/{name}/recipes", "/organizations/{org}/environments/{name}/recipes/", "/nodes", "/nodes/", "/organizations/{org}/nodes", "/organizations/{org}/nodes/", "/policies", "/policies/", "/policies/{name}", "/policies/{name}/", "/policies/{name}/revisions", "/policies/{name}/revisions/", "/policies/{name}/revisions/{revision}", "/policies/{name}/revisions/{revision}/", "/policy_groups", "/policy_groups/", "/policy_groups/{group}", "/policy_groups/{group}/", "/policy_groups/{group}/policies/{name}", "/policy_groups/{group}/policies/{name}/", "/organizations/{org}/policies", "/organizations/{org}/policies/", "/organizations/{org}/policies/{name}", "/organizations/{org}/policies/{name}/", "/organizations/{org}/policies/{name}/revisions", "/organizations/{org}/policies/{name}/revisions/", "/organizations/{org}/policies/{name}/revisions/{revision}", "/organizations/{org}/policies/{name}/revisions/{revision}/", "/organizations/{org}/policy_groups", "/organizations/{org}/policy_groups/", "/organizations/{org}/policy_groups/{group}", "/organizations/{org}/policy_groups/{group}/", "/organizations/{org}/policy_groups/{group}/policies/{name}", "/organizations/{org}/policy_groups/{group}/policies/{name}/", "/search", "/search/", "/search/{index}", "/search/{index}/", "/organizations/{org}/search", "/organizations/{org}/search/", "/organizations/{org}/search/{index}", "/organizations/{org}/search/{index}/", "/sandboxes", "/sandboxes/", "/sandboxes/{id}", "/sandboxes/{id}/", "/organizations/{org}/sandboxes", "/organizations/{org}/sandboxes/", "/organizations/{org}/sandboxes/{id}", "/organizations/{org}/sandboxes/{id}/", "/roles", "/roles/", "/roles/{name}/environments", "/roles/{name}/environments/", "/roles/{name}/environments/{environment}", "/roles/{name}/environments/{environment}/", "/organizations/{org}/roles", "/organizations/{org}/roles/", "/organizations/{org}/roles/{name}/environments", "/organizations/{org}/roles/{name}/environments/", "/organizations/{org}/roles/{name}/environments/{environment}", "/organizations/{org}/roles/{name}/environments/{environment}/", "/organizations/{org}/clients", "/organizations/{org}/clients/", "/organizations/{org}/clients/{name}/keys", "/organizations/{org}/clients/{name}/keys/":
 		return true
 	default:
 		return false

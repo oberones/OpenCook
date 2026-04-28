@@ -14,8 +14,22 @@ func newSignedJSONRequest(t *testing.T, method, path string, body []byte) *http.
 
 func newSignedJSONRequestAs(t *testing.T, userID, method, path string, body []byte) *http.Request {
 	t.Helper()
+	return newSignedJSONRequestAsWithServerAPIVersion(t, userID, method, path, body, "")
+}
+
+func newSignedJSONRequestWithServerAPIVersion(t *testing.T, method, path string, body []byte, serverAPIVersion string) *http.Request {
+	t.Helper()
+	return newSignedJSONRequestAsWithServerAPIVersion(t, "silent-bob", method, path, body, serverAPIVersion)
+}
+
+func newSignedJSONRequestAsWithServerAPIVersion(t *testing.T, userID, method, path string, body []byte, serverAPIVersion string) *http.Request {
+	t.Helper()
 
 	var reader *bytes.Reader
+	bodyForSignature := body
+	if bodyForSignature == nil {
+		bodyForSignature = []byte{}
+	}
 	if body == nil {
 		reader = bytes.NewReader(nil)
 	} else {
@@ -23,9 +37,21 @@ func newSignedJSONRequestAs(t *testing.T, userID, method, path string, body []by
 	}
 
 	req := httptest.NewRequest(method, path, reader)
-	applySignedHeaders(t, req, userID, "", method, path, body, signDescription{
+	for key, value := range manufactureSignedHeaders(t, mustParsePrivateKey(t), userID, method, path, bodyForSignature, signDescription{
 		Version:   "1.1",
 		Algorithm: "sha1",
-	}, "2026-04-02T15:04:05Z")
+	}, "2026-04-02T15:04:05Z", defaultServerAPIVersionForTest(serverAPIVersion)) {
+		req.Header.Set(key, value)
+	}
+	if serverAPIVersion != "" {
+		req.Header.Set(serverAPIVersionHeader, serverAPIVersion)
+	}
 	return req
+}
+
+func defaultServerAPIVersionForTest(serverAPIVersion string) string {
+	if serverAPIVersion == "" {
+		return "0"
+	}
+	return serverAPIVersion
 }
