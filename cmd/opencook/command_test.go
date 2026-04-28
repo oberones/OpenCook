@@ -179,6 +179,7 @@ func newTestCommand(t *testing.T) (*command, *bytes.Buffer, *bytes.Buffer) {
 	stdout := &bytes.Buffer{}
 	stderr := &bytes.Buffer{}
 	cmd := &command{
+		stdin:  strings.NewReader(""),
 		stdout: stdout,
 		stderr: stderr,
 		build: version.Info{

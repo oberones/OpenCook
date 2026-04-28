@@ -607,6 +607,89 @@ func TestAdminGeneratedPrivateKeyHandling(t *testing.T) {
 	})
 }
 
+func TestAdminOrganizationCreateValidatorKeyOverwriteConfirmation(t *testing.T) {
+	t.Run("cancel keeps existing file and skips request", func(t *testing.T) {
+		cmd, _, stderr := newTestCommand(t)
+		cmd.stdin = strings.NewReader("n\n")
+
+		validatorKeyPath := filepath.Join(t.TempDir(), "ponyville-validator.pem")
+		if err := os.WriteFile(validatorKeyPath, []byte("OLD-KEY\n"), 0o600); err != nil {
+			t.Fatalf("WriteFile(existing validator key) error = %v", err)
+		}
+
+		fake := &fakeAdminClient{response: map[string]any{"private_key": "NEW-KEY\n"}}
+		cmd.loadAdminConfig = func() admin.Config {
+			return admin.Config{ServerURL: "http://opencook.test", RequestorName: "pivotal", PrivateKeyPath: "redacted.pem"}
+		}
+		cmd.newAdmin = func(admin.Config) (adminJSONClient, error) {
+			return fake, nil
+		}
+
+		code := cmd.Run(context.Background(), []string{"admin", "orgs", "create", "ponyville", "--full-name", "Ponyville", "--validator-key-out", validatorKeyPath})
+		if code != exitUsage {
+			t.Fatalf("Run(admin orgs create cancel overwrite) exit = %d, want %d", code, exitUsage)
+		}
+		if len(fake.calls) != 0 {
+			t.Fatalf("admin calls = %d, want 0", len(fake.calls))
+		}
+		data, err := os.ReadFile(validatorKeyPath)
+		if err != nil {
+			t.Fatalf("ReadFile(existing validator key) error = %v", err)
+		}
+		if string(data) != "OLD-KEY\n" {
+			t.Fatalf("validator key file = %q, want preserved content", string(data))
+		}
+		if !strings.Contains(stderr.String(), "already exists and will be overwritten") {
+			t.Fatalf("stderr = %q, want overwrite warning", stderr.String())
+		}
+		if !strings.Contains(stderr.String(), "organization creation canceled") {
+			t.Fatalf("stderr = %q, want cancellation message", stderr.String())
+		}
+	})
+
+	t.Run("confirmed overwrite replaces existing file", func(t *testing.T) {
+		cmd, stdout, stderr := newTestCommand(t)
+		cmd.stdin = strings.NewReader("y\n")
+
+		validatorKeyPath := filepath.Join(t.TempDir(), "ponyville-validator.pem")
+		if err := os.WriteFile(validatorKeyPath, []byte("OLD-KEY\n"), 0o600); err != nil {
+			t.Fatalf("WriteFile(existing validator key) error = %v", err)
+		}
+
+		fake := &fakeAdminClient{response: map[string]any{"uri": "/organizations/ponyville", "private_key": "NEW-KEY\n"}}
+		cmd.loadAdminConfig = func() admin.Config {
+			return admin.Config{ServerURL: "http://opencook.test", RequestorName: "pivotal", PrivateKeyPath: "redacted.pem"}
+		}
+		cmd.newAdmin = func(admin.Config) (adminJSONClient, error) {
+			return fake, nil
+		}
+
+		code := cmd.Run(context.Background(), []string{"admin", "orgs", "create", "ponyville", "--full-name", "Ponyville", "--validator-key-out", validatorKeyPath})
+		if code != exitOK {
+			t.Fatalf("Run(admin orgs create confirm overwrite) exit = %d, want %d; stderr = %s", code, exitOK, stderr.String())
+		}
+		if len(fake.calls) != 1 {
+			t.Fatalf("admin calls = %d, want 1", len(fake.calls))
+		}
+		data, err := os.ReadFile(validatorKeyPath)
+		if err != nil {
+			t.Fatalf("ReadFile(overwritten validator key) error = %v", err)
+		}
+		if string(data) != "NEW-KEY\n" {
+			t.Fatalf("validator key file = %q, want NEW-KEY", string(data))
+		}
+		if !strings.Contains(stderr.String(), "already exists and will be overwritten") {
+			t.Fatalf("stderr = %q, want overwrite warning", stderr.String())
+		}
+		if !strings.Contains(stderr.String(), "private key written to "+validatorKeyPath) {
+			t.Fatalf("stderr = %q, want file write confirmation", stderr.String())
+		}
+		if strings.Contains(stdout.String(), "NEW-KEY") {
+			t.Fatalf("stdout leaked private key after overwrite: %q", stdout.String())
+		}
+	})
+}
+
 func TestAdminKeyDeleteRequiresConfirmation(t *testing.T) {
 	cmd, _, stderr := newTestCommand(t)
 	fake := &fakeAdminClient{response: map[string]any{"ok": true}}
