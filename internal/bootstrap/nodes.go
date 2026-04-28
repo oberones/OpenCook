@@ -438,6 +438,11 @@ func cloneValue(value any) any {
 }
 
 func copyNode(node Node) Node {
+	var runList []string
+	if node.RunList != nil {
+		runList = append([]string{}, node.RunList...)
+	}
+
 	return Node{
 		Name:            node.Name,
 		JSONClass:       node.JSONClass,
@@ -447,7 +452,7 @@ func copyNode(node Node) Node {
 		Normal:          cloneMap(node.Normal),
 		Default:         cloneMap(node.Default),
 		Automatic:       cloneMap(node.Automatic),
-		RunList:         append([]string(nil), node.RunList...),
+		RunList:         runList,
 		PolicyName:      node.PolicyName,
 		PolicyGroup:     node.PolicyGroup,
 	}

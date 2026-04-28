@@ -151,24 +151,27 @@ func requestUserID(headers map[string]string) string {
 }
 
 func canonicalStringToSign(req parsedRequest) string {
+	canonicalPath := canonicalRequestPath(req.Path)
+	canonicalUserID := canonicalUserID(req.UserID, req.Sign)
+
 	if req.Sign.Version == "1.3" {
 		return strings.Join([]string{
 			"Method:" + req.Method,
-			"Path:" + req.Path,
+			"Path:" + canonicalPath,
 			"X-Ops-Content-Hash:" + req.ContentHash,
 			"X-Ops-Sign:version=1.3",
 			"X-Ops-Timestamp:" + req.TimestampRaw,
-			"X-Ops-UserId:" + req.UserID,
+			"X-Ops-UserId:" + canonicalUserID,
 			"X-Ops-Server-API-Version:" + req.ServerAPIVersion,
 		}, "\n")
 	}
 
 	return strings.Join([]string{
 		"Method:" + req.Method,
-		"Hashed Path:" + hashBase64([]byte(req.Path), signDescription{Algorithm: req.Sign.Algorithm}),
+		"Hashed Path:" + hashBase64([]byte(canonicalPath), signDescription{Algorithm: req.Sign.Algorithm}),
 		"X-Ops-Content-Hash:" + req.ContentHash,
 		"X-Ops-Timestamp:" + req.TimestampRaw,
-		"X-Ops-UserId:" + req.UserID,
+		"X-Ops-UserId:" + canonicalUserID,
 	}, "\n")
 }
 
