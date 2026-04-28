@@ -85,6 +85,67 @@ curl http://127.0.0.1:4000/readyz
 curl http://127.0.0.1:4000/_status
 ```
 
+## Quickstart: Docker Compose
+
+For a turnkey local stack with PostgreSQL persistence, filesystem-backed blobs,
+and OpenSearch-backed search, use the root Compose file:
+
+```bash
+docker compose up --build -d
+```
+
+If `.local/bootstrap_private.pem` and `.local/bootstrap_public.pem` do not
+already exist, the stack generates them on startup and reuses them on later
+`docker compose up` runs:
+
+- `.local/bootstrap_private.pem`
+- `.local/bootstrap_public.pem`
+
+Check that OpenCook is healthy:
+
+```bash
+curl http://127.0.0.1:4000/readyz
+curl http://127.0.0.1:4000/_status
+```
+
+The `opencook` container is preconfigured so you can run admin commands directly
+inside it with the generated bootstrap identity:
+
+```bash
+docker compose exec opencook opencook admin --json status
+docker compose exec opencook opencook admin orgs create ponyville --full-name "Ponyville" --validator-key-out /var/lib/opencook/bootstrap/ponyville-validator.pem
+```
+
+If you also want to run the admin CLI from your host and have built
+`bin/opencook` locally, point it at the generated private key:
+
+```bash
+export OPENCOOK_ADMIN_SERVER_URL=http://127.0.0.1:4000
+export OPENCOOK_ADMIN_REQUESTOR_NAME=pivotal
+export OPENCOOK_ADMIN_REQUESTOR_TYPE=user
+export OPENCOOK_ADMIN_PRIVATE_KEY_PATH="$PWD/.local/bootstrap_private.pem"
+export OPENCOOK_ADMIN_DEFAULT_ORG=ponyville
+
+bin/opencook admin --json status
+```
+
+Shut the stack down but keep PostgreSQL, OpenSearch, and blob data:
+
+```bash
+docker compose down
+```
+
+Remove the containers and the named volumes backing PostgreSQL, OpenSearch, and
+blob storage:
+
+```bash
+docker compose down -v
+```
+
+The root `compose.yml` is the user-facing reference stack. The existing
+`deploy/functional/docker-compose.yml` and `scripts/functional-compose.sh`
+remain the black-box functional test harness.
+
 ## Quickstart: PostgreSQL And OpenSearch
 
 Use this path when you want durable OpenCook state and active provider-backed search. The example below runs PostgreSQL and OpenSearch as external local containers while OpenCook runs from your checked-out source tree.
