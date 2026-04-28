@@ -631,14 +631,18 @@ func requireFunctionalActorAPIVersionKeyBehavior(t *testing.T, client *functiona
 	requireFunctionalPublicKey(t, userV0, "API v0 user read")
 	userV1 := asMap(t, v1.expectJSON(t, http.MethodGet, "/users/"+cfg.actorName, nil, http.StatusOK).JSON)
 	requireFunctionalNoPublicKey(t, userV1, "API v1 user read")
-	requireFunctionalKeyListPublicKey(t, asSlice(t, v1.expectJSON(t, http.MethodGet, "/users/"+cfg.actorName+"/keys", nil, http.StatusOK).JSON), "API v1 user keys")
+	requireFunctionalKeyListDefault(t, asSlice(t, v1.expectJSON(t, http.MethodGet, "/users/"+cfg.actorName+"/keys", nil, http.StatusOK).JSON), "API v1 user keys", "/users/"+cfg.actorName+"/keys/default")
+	userKey := asMap(t, v1.expectJSON(t, http.MethodGet, "/users/"+cfg.actorName+"/keys/default", nil, http.StatusOK).JSON)
+	requireFunctionalPublicKey(t, userKey, "API v1 user key detail")
 
 	clientPath := "/organizations/" + cfg.org + "/clients/" + validatorBootstrapClientName
 	clientV0 := asMap(t, v0.expectJSON(t, http.MethodGet, clientPath, nil, http.StatusOK).JSON)
 	requireFunctionalPublicKey(t, clientV0, "API v0 client read")
 	clientV1 := asMap(t, v1.expectJSON(t, http.MethodGet, clientPath, nil, http.StatusOK).JSON)
 	requireFunctionalNoPublicKey(t, clientV1, "API v1 client read")
-	requireFunctionalKeyListPublicKey(t, asSlice(t, v1.expectJSON(t, http.MethodGet, clientPath+"/keys", nil, http.StatusOK).JSON), "API v1 client keys")
+	requireFunctionalKeyListDefault(t, asSlice(t, v1.expectJSON(t, http.MethodGet, clientPath+"/keys", nil, http.StatusOK).JSON), "API v1 client keys", clientPath+"/keys/default")
+	clientKey := asMap(t, v1.expectJSON(t, http.MethodGet, clientPath+"/keys/default", nil, http.StatusOK).JSON)
+	requireFunctionalPublicKey(t, clientKey, "API v1 client key detail")
 }
 
 func requireFunctionalCookbookAPIVersionFileShapes(t *testing.T, client *functionalClient, cfg functionalConfig) {
@@ -825,7 +829,7 @@ func requireFunctionalNoPublicKey(t *testing.T, payload map[string]any, label st
 	}
 }
 
-func requireFunctionalKeyListPublicKey(t *testing.T, keys []any, label string) {
+func requireFunctionalKeyListDefault(t *testing.T, keys []any, label, wantURI string) {
 	t.Helper()
 
 	if len(keys) == 0 {
@@ -833,11 +837,11 @@ func requireFunctionalKeyListPublicKey(t *testing.T, keys []any, label string) {
 	}
 	for _, raw := range keys {
 		key := asMap(t, raw)
-		if publicKey, ok := key["public_key"].(string); ok && strings.Contains(publicKey, "BEGIN PUBLIC KEY") {
+		if key["name"] == "default" && key["uri"] == wantURI && key["expired"] == false {
 			return
 		}
 	}
-	t.Fatalf("%s = %v, want a key with PEM public_key", label, keys)
+	t.Fatalf("%s = %v, want default key metadata with uri %q", label, keys, wantURI)
 }
 
 func requireFunctionalCookbookSegmentFile(t *testing.T, payload map[string]any, segment, path, checksum string) map[string]any {
