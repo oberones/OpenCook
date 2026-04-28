@@ -374,13 +374,13 @@ func TestNewReportsDiscoveredOpenSearchProviderStatus(t *testing.T) {
 			wantParts: []string{"OpenSearch-compatible search provider active", "galaxysearch 99.1.2", "search-after pagination"},
 		},
 		{
-			name:       "degraded legacy provider",
+			name:       "elasticsearch six legacy total hits",
 			headStatus: http.StatusOK,
 			root: `{
-				"version":{"number":"2.4.6"},
+				"version":{"number":"6.8.23"},
 				"tagline":"You Know, for Search"
 			}`,
-			wantParts: []string{"OpenSearch-compatible search provider active", "elasticsearch 2.4.6", "delete-by-query fallback required", "legacy total hits"},
+			wantParts: []string{"OpenSearch-compatible search provider active", "elasticsearch 6.8.23", "search-after pagination", "delete-by-query", "legacy total hits"},
 		},
 	}
 
@@ -603,6 +603,14 @@ func TestNewOpenSearchStartupFailuresDoNotFallBackToMemory(t *testing.T) {
 			headStatus:   http.StatusForbidden,
 			wantErr:      search.ErrRejected,
 			wantContains: "activate opensearch indexing: search backend rejected request",
+			wantRequests: []string{"GET /", "HEAD /chef"},
+		},
+		{
+			name:         "provider lacks required search after pagination",
+			root:         `{"version":{"number":"2.4.6"},"tagline":"You Know, for Search"}`,
+			headStatus:   http.StatusOK,
+			wantErr:      search.ErrInvalidConfiguration,
+			wantContains: "activate opensearch indexing: search backend invalid configuration: provider elasticsearch 2.4.6 does not support required search_after pagination",
 			wantRequests: []string{"GET /", "HEAD /chef"},
 		},
 	}

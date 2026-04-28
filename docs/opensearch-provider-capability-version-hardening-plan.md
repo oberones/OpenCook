@@ -115,9 +115,9 @@ Discovery behavior:
 
 - `GET /{endpoint-prefix}` parses provider identity from the root payload.
 - `HEAD /{endpoint-prefix}/chef` accepts `200` or `404` as a working index-existence capability; `404` is valid because the activation flow may create the index later.
-- OpenSearch and Elasticsearch root payloads are recognized; unknown future providers are accepted when the required root and index-existence requests behave correctly.
+- OpenSearch and Elasticsearch root payloads are recognized; unknown future providers are accepted when the required root, index-existence, and inferred capability checks behave correctly.
 - Elasticsearch versions before 7 are marked as not returning total-hits object responses by default.
-- Elasticsearch versions before 5 are marked as needing delete-by-query fallback by default.
+- Elasticsearch versions before 5 are rejected as unsupported because OpenCook's search and safe fallback-delete paths require `search_after` pagination.
 - Failed discovery does not cache partial provider details.
 - Discovery errors are classified through the existing OpenSearch error model and do not leak raw provider bodies or cluster details.
 
@@ -196,7 +196,7 @@ Delete behavior:
 
 - Direct `POST /chef/_delete_by_query?refresh=true` remains the active path when provider discovery reports delete-by-query support.
 - `OpenSearchClient.DeleteByQuery` now discovers provider capabilities before delete-by-query if no cached discovery snapshot exists.
-- Legacy providers discovered as requiring delete-by-query fallback now search the target scope and delete matching document IDs one by one.
+- Providers discovered as requiring delete-by-query fallback now search the target scope and delete matching document IDs one by one only when `search_after` pagination is available.
 - Direct unsupported responses (`404`, `405`, or `501`) fall back to search plus per-document delete instead of failing the operation.
 - Retryable direct delete-by-query failures (`429` or `5xx`) still classify as provider unavailable and do not fall back.
 - Fallback scope searches preserve the direct delete-by-query filter semantics:
@@ -262,7 +262,7 @@ Functional behavior:
 - The default functional path remains unchanged when no matrix is configured.
 - Package-level operational coverage now runs admin reindex/check/repair through a real `OpenSearchClient` and fake capability-mode provider for:
   - direct delete-by-query
-  - legacy delete-by-query fallback
+  - safe search-after-backed delete fallback after direct delete-by-query is unsupported
 - Encrypted data bag functional and operational reindex/check/repair coverage remains intact and fixture-gated where appropriate.
 
 ## Task Breakdown

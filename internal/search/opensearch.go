@@ -458,6 +458,9 @@ func (c *OpenSearchClient) deleteByQueryFallbackRequired(ctx context.Context) (b
 }
 
 func (c *OpenSearchClient) deleteByQueryFallback(ctx context.Context, org, index string) error {
+	if info, ok := c.ProviderInfo(); ok && !info.Capabilities.SearchAfterPagination {
+		return fmt.Errorf("%w: provider %s delete-by-query fallback requires search_after pagination", ErrInvalidConfiguration, openSearchProviderIdentity(info))
+	}
 	return c.deleteByQueryFallbackWithPageSize(ctx, org, index, openSearchSearchPageSize)
 }
 

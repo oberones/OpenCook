@@ -122,7 +122,7 @@ scope for this harness until the next operational slice.
 - Live-safe operational commands cover admin status, user/org creation, user key creation, a follow-up signed request with the generated key, group/container/ACL inspection, and complete org reindex.
 - Operational search consistency detects injected stale OpenSearch documents, including encrypted data bag index drift, dry-runs repair, repairs the stale documents, and verifies clean state after an OpenCook restart.
 - Operational reindex/check/repair rejects unsupported cookbook, cookbook-artifact, policy, policy-group, sandbox, and checksum indexes, and unscoped repair deletes stale unsupported provider documents without recreating unsupported search documents.
-- Package-level operational coverage exercises admin reindex/check/repair against both direct delete-by-query and legacy fallback-delete provider capability modes.
+- Package-level operational coverage exercises admin reindex/check/repair against both direct delete-by-query and safe search-after-backed fallback-delete provider capability modes.
 - Deleted clients, environments, nodes, roles, ordinary data bag items, and encrypted-looking data bag items stop appearing in search after restart.
 - Environments, nodes, roles, data bags, policy groups, and policy revisions survive OpenCook restarts.
 - Filesystem-backed blob uploads survive restart and can be reused by a later sandbox.

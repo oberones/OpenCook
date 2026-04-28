@@ -70,6 +70,9 @@ func (c *OpenSearchClient) DiscoverProvider(ctx context.Context) (OpenSearchProv
 		return OpenSearchProviderInfo{}, err
 	}
 	info.Capabilities = inferOpenSearchCapabilities(info)
+	if err := validateOpenSearchCapabilities(info); err != nil {
+		return OpenSearchProviderInfo{}, err
+	}
 	c.setProviderInfo(info)
 	return info, nil
 }
@@ -163,12 +166,41 @@ func inferOpenSearchCapabilities(info OpenSearchProviderInfo) OpenSearchCapabili
 		if info.Major < 7 {
 			caps.TotalHitsObjectResponses = false
 		}
-		if info.Major > 0 && info.Major < 5 {
+		if info.Major < 5 {
+			caps.SearchAfterPagination = false
 			caps.DeleteByQuery = false
-			caps.DeleteByQueryFallbackRequired = true
 		}
 	}
 	return caps
+}
+
+// validateOpenSearchCapabilities rejects providers that cannot satisfy the
+// shared search contract before OpenCook advertises active OpenSearch mode.
+func validateOpenSearchCapabilities(info OpenSearchProviderInfo) error {
+	caps := info.Capabilities
+	identity := openSearchProviderIdentity(info)
+	if !caps.SearchAfterPagination {
+		return fmt.Errorf("%w: provider %s does not support required search_after pagination", ErrInvalidConfiguration, identity)
+	}
+	if !caps.DeleteByQuery && !caps.DeleteByQueryFallbackRequired {
+		return fmt.Errorf("%w: provider %s does not support delete-by-query or a safe fallback", ErrInvalidConfiguration, identity)
+	}
+	if caps.DeleteByQueryFallbackRequired && !caps.SearchAfterPagination {
+		return fmt.Errorf("%w: provider %s delete-by-query fallback requires search_after pagination", ErrInvalidConfiguration, identity)
+	}
+	return nil
+}
+
+func openSearchProviderIdentity(info OpenSearchProviderInfo) string {
+	provider := strings.TrimSpace(info.Distribution)
+	if provider == "" {
+		provider = "unknown"
+	}
+	version := strings.TrimSpace(info.Version)
+	if version == "" {
+		return provider
+	}
+	return provider + " " + version
 }
 
 func openSearchProviderStatusMessage(info OpenSearchProviderInfo, known bool) string {
