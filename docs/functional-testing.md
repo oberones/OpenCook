@@ -55,6 +55,11 @@ To run only the operational admin/reindex/search-repair phases, use:
 KEEP_STACK=1 REBUILD=0 scripts/functional-compose.sh operational restart operational-verify
 ```
 
+The operational phases can run against a fresh stack for live-safe admin command
+coverage. The encrypted data bag scoped reindex/repair checks only run when the
+`create` phase fixture is already present; otherwise the harness skips those
+fixture-dependent checks with an explicit message.
+
 ## Remote Docker
 
 The Compose stack does not rely on bind mounts, so it can run against a remote Docker daemon as long as your Docker client can send the build context.
