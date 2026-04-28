@@ -122,7 +122,7 @@ func TestAPIVersionNodeOmittedFieldsDefaultOnExplicitOrgAlias(t *testing.T) {
 		Normal:          map[string]any{},
 		Default:         map[string]any{},
 		Automatic:       map[string]any{},
-		RunListNull:     true,
+		RunList:         []string{},
 	})
 	if _, ok := payload["policy_name"]; ok {
 		t.Fatalf("minimal node unexpectedly included policy_name: %v", payload)

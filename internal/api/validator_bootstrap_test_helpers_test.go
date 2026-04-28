@@ -105,6 +105,15 @@ func (r signedClientRequestor) newSignedJSONRequest(t *testing.T, method, path s
 func (r signedClientRequestor) newSignedJSONRequestWithServerAPIVersion(t *testing.T, method, path string, body []byte, serverAPIVersion string) *http.Request {
 	t.Helper()
 
+	return r.newSignedJSONRequestWithSigning(t, method, path, body, signDescription{
+		Version:   "1.1",
+		Algorithm: "sha1",
+	}, serverAPIVersion)
+}
+
+func (r signedClientRequestor) newSignedJSONRequestWithSigning(t *testing.T, method, path string, body []byte, sign signDescription, serverAPIVersion string) *http.Request {
+	t.Helper()
+
 	if r.PrivateKey == nil {
 		t.Fatalf("signed client requestor %s/%s is missing private key", r.Organization, r.ClientName)
 	}
@@ -113,10 +122,7 @@ func (r signedClientRequestor) newSignedJSONRequestWithServerAPIVersion(t *testi
 	}
 
 	req := httptest.NewRequest(method, path, bytes.NewReader(body))
-	for key, value := range manufactureSignedHeaders(t, r.PrivateKey, r.ClientName, method, path, body, signDescription{
-		Version:   "1.1",
-		Algorithm: "sha1",
-	}, "2026-04-02T15:04:05Z", serverAPIVersion) {
+	for key, value := range manufactureSignedHeaders(t, r.PrivateKey, r.ClientName, method, path, body, sign, "2026-04-02T15:04:05Z", defaultServerAPIVersionForTest(serverAPIVersion)) {
 		req.Header.Set(key, value)
 	}
 	if serverAPIVersion != "" {

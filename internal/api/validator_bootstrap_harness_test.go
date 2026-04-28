@@ -58,6 +58,132 @@ func TestValidatorBootstrapHarnessBuildsRegisteredClientSignerFromCreateResponse
 	}
 }
 
+func TestValidatorBootstrapHarnessSupportsRegisteredClientV13NodeLifecycle(t *testing.T) {
+	router := newTestRouter(t)
+	validator := createOrganizationAndCaptureValidator(t, router, "canterlot")
+
+	createClientBody := []byte(`{"name":"testnode2"}`)
+	createClientReq := validator.newSignedJSONRequestWithSigning(t, http.MethodPost, "/organizations/canterlot/clients", createClientBody, signDescription{
+		Version:   "1.3",
+		Algorithm: "sha256",
+	}, "0")
+	createClientRec := httptest.NewRecorder()
+	router.ServeHTTP(createClientRec, createClientReq)
+	if createClientRec.Code != http.StatusCreated {
+		t.Fatalf("validator create client status = %d, want %d, body = %s", createClientRec.Code, http.StatusCreated, createClientRec.Body.String())
+	}
+
+	client := newSignedClientRequestorFromClientCreateResponse(t, "canterlot", "testnode2", createClientRec)
+
+	getReq := client.newSignedJSONRequestWithSigning(t, http.MethodGet, "/organizations/canterlot/nodes/testnode2", nil, signDescription{
+		Version:   "1.3",
+		Algorithm: "sha256",
+	}, "2")
+	getRec := httptest.NewRecorder()
+	router.ServeHTTP(getRec, getReq)
+	if getRec.Code != http.StatusNotFound {
+		t.Fatalf("registered client missing node read status = %d, want %d, body = %s", getRec.Code, http.StatusNotFound, getRec.Body.String())
+	}
+
+	createNode := nodePayloadExpectation{
+		Name:            "testnode2",
+		ChefEnvironment: "_default",
+		Override:        map[string]any{},
+		Normal:          map[string]any{},
+		Default:         map[string]any{},
+		Automatic: map[string]any{
+			"fqdn":     "testnode2",
+			"hostname": "testnode2",
+		},
+		RunList: []string{},
+	}
+	createNodeBody := mustMarshalAPIVersionNodePayload(t, createNode)
+	createNodeReq := client.newSignedJSONRequestWithSigning(t, http.MethodPost, "/organizations/canterlot/nodes", createNodeBody, signDescription{
+		Version:   "1.3",
+		Algorithm: "sha256",
+	}, "2")
+	createNodeRec := httptest.NewRecorder()
+	router.ServeHTTP(createNodeRec, createNodeReq)
+	if createNodeRec.Code != http.StatusCreated {
+		t.Fatalf("registered client create node status = %d, want %d, body = %s", createNodeRec.Code, http.StatusCreated, createNodeRec.Body.String())
+	}
+
+	updateNode := nodePayloadExpectation{
+		Name:            "testnode2",
+		ChefEnvironment: "_default",
+		Override:        map[string]any{},
+		Normal: map[string]any{
+			"team": "friendship",
+		},
+		Default: map[string]any{},
+		Automatic: map[string]any{
+			"fqdn":     "testnode2",
+			"hostname": "testnode2",
+			"platform": "linux",
+		},
+		RunList: []string{},
+	}
+	updateNodeBody := mustMarshalAPIVersionNodePayload(t, updateNode)
+	updateNodeReq := client.newSignedJSONRequestWithSigning(t, http.MethodPut, "/organizations/canterlot/nodes/testnode2", updateNodeBody, signDescription{
+		Version:   "1.3",
+		Algorithm: "sha256",
+	}, "2")
+	updateNodeRec := httptest.NewRecorder()
+	router.ServeHTTP(updateNodeRec, updateNodeReq)
+	if updateNodeRec.Code != http.StatusOK {
+		t.Fatalf("registered client update node status = %d, want %d, body = %s", updateNodeRec.Code, http.StatusOK, updateNodeRec.Body.String())
+	}
+
+	updatePayload := mustDecodeObject(t, updateNodeRec)
+	if updatePayload["name"] != "testnode2" {
+		t.Fatalf("updated node name = %v, want %q", updatePayload["name"], "testnode2")
+	}
+	assertMapFieldEqual(t, updatePayload, "normal", updateNode.Normal)
+	assertMapFieldEqual(t, updatePayload, "automatic", updateNode.Automatic)
+}
+
+func TestValidatorBootstrapHarnessAuthenticatesExplicitOrgUnknownReportingRoute(t *testing.T) {
+	router := newTestRouter(t)
+	validator := createOrganizationAndCaptureValidator(t, router, "canterlot")
+
+	createClientBody := []byte(`{"name":"testnode2"}`)
+	createClientReq := validator.newSignedJSONRequest(t, http.MethodPost, "/organizations/canterlot/clients", createClientBody)
+	createClientRec := httptest.NewRecorder()
+	router.ServeHTTP(createClientRec, createClientReq)
+	if createClientRec.Code != http.StatusCreated {
+		t.Fatalf("validator create client status = %d, want %d, body = %s", createClientRec.Code, http.StatusCreated, createClientRec.Body.String())
+	}
+
+	client := newSignedClientRequestorFromClientCreateResponse(t, "canterlot", "testnode2", createClientRec)
+	reportReq := client.newSignedJSONRequest(t, http.MethodPost, "/organizations/canterlot/reports/nodes/testnode2/runs", []byte(`{"action":"start"}`))
+	reportRec := httptest.NewRecorder()
+	router.ServeHTTP(reportRec, reportReq)
+	if reportRec.Code != http.StatusNotFound {
+		t.Fatalf("report route status = %d, want %d, body = %s", reportRec.Code, http.StatusNotFound, reportRec.Body.String())
+	}
+}
+
+func TestValidatorBootstrapHarnessAuthenticatesExplicitOrgUnknownRequiredRecipeRoute(t *testing.T) {
+	router := newTestRouter(t)
+	validator := createOrganizationAndCaptureValidator(t, router, "canterlot")
+
+	createClientBody := []byte(`{"name":"testnode2"}`)
+	createClientReq := validator.newSignedJSONRequest(t, http.MethodPost, "/organizations/canterlot/clients", createClientBody)
+	createClientRec := httptest.NewRecorder()
+	router.ServeHTTP(createClientRec, createClientReq)
+	if createClientRec.Code != http.StatusCreated {
+		t.Fatalf("validator create client status = %d, want %d, body = %s", createClientRec.Code, http.StatusCreated, createClientRec.Body.String())
+	}
+
+	client := newSignedClientRequestorFromClientCreateResponse(t, "canterlot", "testnode2", createClientRec)
+	requiredRecipeReq := client.newSignedJSONRequest(t, http.MethodGet, "/organizations/canterlot/required_recipe", nil)
+	requiredRecipeRec := httptest.NewRecorder()
+	router.ServeHTTP(requiredRecipeRec, requiredRecipeReq)
+	if requiredRecipeRec.Code != http.StatusNotFound {
+		t.Fatalf("required_recipe route status = %d, want %d, body = %s", requiredRecipeRec.Code, http.StatusNotFound, requiredRecipeRec.Body.String())
+	}
+}
+
 func TestActivePostgresValidatorBootstrapHarnessRehydratesValidatorKey(t *testing.T) {
 	fixture := newActivePostgresBootstrapFixture(t, pgtest.NewState(pgtest.Seed{}))
 	validator := fixture.createOrganizationWithValidator("canterlot")

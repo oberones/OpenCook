@@ -358,6 +358,25 @@ func (s *server) authorizeRequest(w http.ResponseWriter, r *http.Request, action
 		return false
 	}
 	if !allowed {
+		routeID, _ := routeIDFromContext(r.Context())
+		subjectOrg := requestor.Organization
+		if subjectOrg == "" {
+			subjectOrg = resource.Organization
+		}
+		s.logf(
+			"authz denied route=%q method=%q path=%q requestor_type=%q requestor=%q requestor_org=%q subject_org=%q action=%q resource_type=%q resource_name=%q resource_org=%q",
+			routeID,
+			r.Method,
+			r.URL.Path,
+			requestor.Type,
+			requestor.Name,
+			requestor.Organization,
+			subjectOrg,
+			action,
+			resource.Type,
+			resource.Name,
+			resource.Organization,
+		)
 		writeJSON(w, http.StatusForbidden, apiError{
 			Error:   "forbidden",
 			Message: "requestor is not authorized for this resource",

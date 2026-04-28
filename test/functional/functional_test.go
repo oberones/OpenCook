@@ -6,6 +6,7 @@ import (
 	"crypto/md5"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha1"
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
@@ -14,6 +15,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"io"
+	"math/big"
 	"net/http"
 	"net/url"
 	"os"
@@ -45,6 +47,7 @@ const (
 	functionalUnsupportedArtifactVersion = "1.0.1"
 	validatorBootstrapClientName         = "functional-bootstrap-client"
 	validatorDefaultBootstrapClientName  = "functional-default-bootstrap-client"
+	validatorBadSignatureClientName      = "functional-legacy-bad-signature-client"
 	validatorBootstrapClientKeyStateFile = "validator_bootstrap_client_private.pem"
 	validatorDefaultClientKeyStateFile   = "validator_default_bootstrap_client_private.pem"
 	validatorKeyStateFile                = "validator_private.pem"
@@ -67,6 +70,9 @@ type functionalClient struct {
 	actorName        string
 	serverAPIVersion string
 	privateKey       *rsa.PrivateKey
+	signVersion      string
+	signAlgorithm    string
+	signPathOverride string
 }
 
 type apiResponse struct {
@@ -177,12 +183,28 @@ func newFunctionalClientFromPrivateKey(baseURL *url.URL, actorName string, priva
 		actorName:        actorName,
 		serverAPIVersion: "1",
 		privateKey:       privateKey,
+		signVersion:      "1.3",
+		signAlgorithm:    "sha256",
 	}
 }
 
 func (c *functionalClient) withServerAPIVersion(version string) *functionalClient {
 	clone := *c
 	clone.serverAPIVersion = version
+	return &clone
+}
+
+func (c *functionalClient) withLegacySign() *functionalClient {
+	clone := *c
+	clone.signVersion = "1.1"
+	clone.signAlgorithm = "sha1"
+	clone.signPathOverride = ""
+	return &clone
+}
+
+func (c *functionalClient) withSignPathOverride(path string) *functionalClient {
+	clone := *c
+	clone.signPathOverride = path
 	return &clone
 }
 
@@ -216,6 +238,7 @@ func runCreatePhase(t *testing.T, client *functionalClient, cfg functionalConfig
 func runVerifyPhase(t *testing.T, client *functionalClient, cfg functionalConfig) {
 	requireOperationalStatus(t, client)
 	requireOrganizationBootstrap(t, client, cfg.org)
+	requireLegacyValidatorSignedRead(t, cfg)
 	requireValidatorBootstrapRegisteredClient(t, client, cfg)
 
 	orgPayload := asMap(t, client.expectJSON(t, http.MethodGet, "/organizations/"+cfg.org, nil, http.StatusOK).JSON)
@@ -314,6 +337,7 @@ func runInvalidPhase(t *testing.T, client *functionalClient, cfg functionalConfi
 	badEncrypted["id"] = "wrong-encrypted-id"
 	badEncrypted["environment"] = "functional-invalid-encrypted"
 	client.expectJSON(t, http.MethodPut, encryptedPath, badEncrypted, http.StatusBadRequest)
+	requireValidatorLegacyPathMismatchBadSignature(t, client, cfg)
 
 	afterNode := asMap(t, client.expectJSON(t, http.MethodGet, "/nodes/twilight", nil, http.StatusOK).JSON)
 	if afterNode["name"] != beforeNode["name"] || afterNode["chef_environment"] != beforeNode["chef_environment"] {
@@ -1082,7 +1106,7 @@ func ensureValidatorBootstrapRegistration(t *testing.T, admin *functionalClient,
 	writeStateFile(t, cfg.stateDir, validatorKeyStateFile, validatorPrivateKeyPEM)
 
 	validator := newFunctionalClientFromPrivateKey(admin.baseURL, cfg.org+"-validator", parsePrivateKeyPEM(t, "validator private key", validatorPrivateKeyPEM))
-	ensureValidatorRegisteredClient(t, admin, validator, cfg, validatorRegistrationSpec{
+	ensureValidatorRegisteredClient(t, admin, validator.withLegacySign(), cfg, validatorRegistrationSpec{
 		name:             validatorBootstrapClientName,
 		createPath:       "/organizations/" + cfg.org + "/clients",
 		selfReadPath:     "/organizations/" + cfg.org + "/clients/" + validatorBootstrapClientName,
@@ -1172,6 +1196,17 @@ func requireValidatorBootstrapRegisteredClient(t *testing.T, admin *functionalCl
 	}
 }
 
+func requireLegacyValidatorSignedRead(t *testing.T, cfg functionalConfig) {
+	t.Helper()
+
+	validatorPrivateKeyPEM := strings.TrimSpace(readStateFile(t, cfg.stateDir, validatorKeyStateFile))
+	validator := newFunctionalClientFromPrivateKey(cfg.baseURL, cfg.org+"-validator", parsePrivateKeyPEM(t, "validator private key", validatorPrivateKeyPEM)).withLegacySign()
+	containerPayload := asMap(t, validator.expectJSON(t, http.MethodGet, "/organizations/"+cfg.org+"/containers/data", nil, http.StatusOK).JSON)
+	if containerPayload["containername"] != "data" {
+		t.Fatalf("legacy validator container read payload = %v, want data container", containerPayload)
+	}
+}
+
 func requireValidatorBootstrapRegisteredClientWithClient(t *testing.T, admin, client *functionalClient, org string, spec validatorRegistrationSpec) {
 	t.Helper()
 
@@ -1212,6 +1247,25 @@ func requireValidatorBootstrapRegisteredClientWithClient(t *testing.T, admin, cl
 
 	searchPayload := asMap(t, admin.expectJSON(t, http.MethodGet, spec.searchPath, nil, http.StatusOK).JSON)
 	requireRows(t, searchPayload, 1)
+}
+
+func requireValidatorLegacyPathMismatchBadSignature(t *testing.T, admin *functionalClient, cfg functionalConfig) {
+	t.Helper()
+
+	validatorPrivateKeyPEM := strings.TrimSpace(readStateFile(t, cfg.stateDir, validatorKeyStateFile))
+	validator := newFunctionalClientFromPrivateKey(cfg.baseURL, cfg.org+"-validator", parsePrivateKeyPEM(t, "validator private key", validatorPrivateKeyPEM)).
+		withLegacySign().
+		withSignPathOverride("/organizations/" + cfg.org + "/clientz")
+
+	resp := validator.expectJSON(t, http.MethodPost, "/organizations/"+cfg.org+"/clients", map[string]any{
+		"name":       validatorBadSignatureClientName,
+		"create_key": true,
+	}, http.StatusUnauthorized)
+	payload := asMap(t, resp.JSON)
+	if payload["error"] != "bad_signature" {
+		t.Fatalf("legacy path-mismatch error = %v, want bad_signature: %v", payload["error"], payload)
+	}
+	admin.expectJSON(t, http.MethodGet, "/organizations/"+cfg.org+"/clients/"+validatorBadSignatureClientName, nil, http.StatusNotFound)
 }
 
 func validatorPrivateKeyFromBootstrapPayload(t *testing.T, cfg functionalConfig, payload map[string]any) string {
@@ -1736,36 +1790,63 @@ func (c *functionalClient) sign(req *http.Request, body []byte) error {
 		body = []byte{}
 	}
 
-	contentSum := sha256.Sum256(body)
-	contentHash := base64.StdEncoding.EncodeToString(contentSum[:])
 	timestamp := time.Now().UTC().Format(time.RFC3339)
-	signPath := req.URL.Path
+	signPath := c.signPathOverride
 	if signPath == "" {
-		signPath = "/"
+		signPath = req.URL.Path
+	}
+	signPath = canonicalSignPath(signPath)
+
+	contentHash := hashBase64(body, c.signAlgorithm)
+	canonicalUserID := canonicalSignedUserID(c.actorName, c.signVersion, c.signAlgorithm)
+
+	var (
+		stringToSign string
+		signature    []byte
+		err          error
+	)
+	switch c.signVersion {
+	case "1.3":
+		stringToSign = strings.Join([]string{
+			"Method:" + strings.ToUpper(req.Method),
+			"Path:" + signPath,
+			"X-Ops-Content-Hash:" + contentHash,
+			"X-Ops-Sign:version=1.3",
+			"X-Ops-Timestamp:" + timestamp,
+			"X-Ops-UserId:" + canonicalUserID,
+			"X-Ops-Server-API-Version:" + c.serverAPIVersion,
+		}, "\n")
+
+		signatureSum := sha256.Sum256([]byte(stringToSign))
+		signature, err = rsa.SignPKCS1v15(rand.Reader, c.privateKey, crypto.SHA256, signatureSum[:])
+		if err != nil {
+			return err
+		}
+		req.Header.Set("X-Ops-Sign", "algorithm=sha256;version=1.3")
+		req.Header.Set("X-Ops-Server-API-Version", c.serverAPIVersion)
+	case "1.1":
+		stringToSign = strings.Join([]string{
+			"Method:" + strings.ToUpper(req.Method),
+			"Hashed Path:" + hashBase64([]byte(signPath), c.signAlgorithm),
+			"X-Ops-Content-Hash:" + contentHash,
+			"X-Ops-Timestamp:" + timestamp,
+			"X-Ops-UserId:" + canonicalUserID,
+		}, "\n")
+
+		signature, err = legacyPrivateEncrypt(c.privateKey, []byte(stringToSign))
+		if err != nil {
+			return err
+		}
+		req.Header.Set("X-Ops-Sign", "algorithm=sha1;version=1.1;")
+		req.Header.Del("X-Ops-Server-API-Version")
+	default:
+		return fmt.Errorf("unsupported sign version %q", c.signVersion)
 	}
 
-	stringToSign := strings.Join([]string{
-		"Method:" + strings.ToUpper(req.Method),
-		"Path:" + signPath,
-		"X-Ops-Content-Hash:" + contentHash,
-		"X-Ops-Sign:version=1.3",
-		"X-Ops-Timestamp:" + timestamp,
-		"X-Ops-UserId:" + c.actorName,
-		"X-Ops-Server-API-Version:" + c.serverAPIVersion,
-	}, "\n")
-
-	signatureSum := sha256.Sum256([]byte(stringToSign))
-	signature, err := rsa.SignPKCS1v15(rand.Reader, c.privateKey, crypto.SHA256, signatureSum[:])
-	if err != nil {
-		return err
-	}
 	signatureBase64 := base64.StdEncoding.EncodeToString(signature)
-
-	req.Header.Set("X-Ops-Sign", "algorithm=sha256;version=1.3")
 	req.Header.Set("X-Ops-Userid", c.actorName)
 	req.Header.Set("X-Ops-Timestamp", timestamp)
 	req.Header.Set("X-Ops-Content-Hash", contentHash)
-	req.Header.Set("X-Ops-Server-API-Version", c.serverAPIVersion)
 	for index, chunk := range splitBase64(signatureBase64, 60) {
 		req.Header.Set(fmt.Sprintf("X-Ops-Authorization-%d", index+1), chunk)
 	}
@@ -1938,6 +2019,89 @@ func checksumHex(body []byte) string {
 func checksumBase64(body []byte) string {
 	sum := md5.Sum(body)
 	return base64.StdEncoding.EncodeToString(sum[:])
+}
+
+func canonicalSignPath(path string) string {
+	if path == "" {
+		return "/"
+	}
+
+	path = collapseRepeatedSlashes(path)
+	if len(path) > 1 && strings.HasSuffix(path, "/") {
+		path = strings.TrimSuffix(path, "/")
+	}
+	return path
+}
+
+func collapseRepeatedSlashes(path string) string {
+	if !strings.Contains(path, "//") {
+		return path
+	}
+
+	var b strings.Builder
+	b.Grow(len(path))
+	lastSlash := false
+	for i := 0; i < len(path); i++ {
+		if path[i] == '/' {
+			if lastSlash {
+				continue
+			}
+			lastSlash = true
+		} else {
+			lastSlash = false
+		}
+		b.WriteByte(path[i])
+	}
+
+	return b.String()
+}
+
+func canonicalSignedUserID(userID, signVersion, signAlgorithm string) string {
+	if signVersion == "1.1" {
+		return hashBase64([]byte(userID), signAlgorithm)
+	}
+
+	return userID
+}
+
+func hashBase64(data []byte, algorithm string) string {
+	if algorithm == "sha256" {
+		sum := sha256.Sum256(data)
+		return base64.StdEncoding.EncodeToString(sum[:])
+	}
+
+	sum := sha1.Sum(data)
+	return base64.StdEncoding.EncodeToString(sum[:])
+}
+
+func legacyPrivateEncrypt(privateKey *rsa.PrivateKey, msg []byte) ([]byte, error) {
+	k := privateKey.Size()
+	if len(msg) > k-11 {
+		return nil, rsa.ErrMessageTooLong
+	}
+
+	em := make([]byte, k)
+	em[0] = 0x00
+	em[1] = 0x01
+	for i := 2; i < k-len(msg)-1; i++ {
+		em[i] = 0xff
+	}
+	em[k-len(msg)-1] = 0x00
+	copy(em[k-len(msg):], msg)
+
+	m := new(big.Int).SetBytes(em)
+	c := new(big.Int).Exp(m, privateKey.D, privateKey.N)
+	return leftPad(c.Bytes(), k), nil
+}
+
+func leftPad(in []byte, size int) []byte {
+	if len(in) >= size {
+		return in
+	}
+
+	out := make([]byte, size)
+	copy(out[size-len(in):], in)
+	return out
 }
 
 func splitBase64(encoded string, width int) []string {
