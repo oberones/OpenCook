@@ -43,10 +43,13 @@ func TestCommandDefaultsToServe(t *testing.T) {
 	if !loaded || !served {
 		t.Fatalf("loaded/served = %t/%t, want true/true", loaded, served)
 	}
+	if !strings.Contains(stdout.String(), "Initializing OpenCook Server") {
+		t.Fatalf("stdout = %q, want startup banner", stdout.String())
+	}
 }
 
 func TestCommandServeAliasUsesServerPath(t *testing.T) {
-	cmd, _, stderr := newTestCommand(t)
+	cmd, stdout, stderr := newTestCommand(t)
 
 	var served bool
 	cmd.load = func() (config.Config, error) {
@@ -62,6 +65,9 @@ func TestCommandServeAliasUsesServerPath(t *testing.T) {
 	}
 	if !served {
 		t.Fatal("serve alias did not invoke server path")
+	}
+	if !strings.Contains(stdout.String(), "Open Source Infrastructure, Served Hot") {
+		t.Fatalf("stdout = %q, want startup banner", stdout.String())
 	}
 }
 

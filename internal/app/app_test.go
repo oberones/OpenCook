@@ -222,6 +222,60 @@ func TestNewReturnsOpenSearchActivationFailure(t *testing.T) {
 	}
 }
 
+func TestStartupSummaryReportsConnectedIntegrations(t *testing.T) {
+	summary := formatStartupSummary(
+		pg.Status{Message: "PostgreSQL cookbook, bootstrap core, and core object persistence active"},
+		true,
+		search.Status{Message: "OpenSearch-backed search provider active (opensearch 3.5.0; search-after pagination, delete-by-query, object total hits)"},
+		true,
+	)
+
+	if !strings.Contains(summary, "PostgreSQL: connected - PostgreSQL cookbook, bootstrap core, and core object persistence active") {
+		t.Fatalf("summary = %q, want connected postgres status", summary)
+	}
+	if !strings.Contains(summary, "OpenSearch: connected - OpenSearch-backed search provider active") {
+		t.Fatalf("summary = %q, want connected opensearch status", summary)
+	}
+	if strings.Contains(summary, "all data will be lost on restart") {
+		t.Fatalf("summary = %q, do not want in-memory warning when postgres is connected", summary)
+	}
+}
+
+func TestStartupSummaryWarnsWhenPersistenceIsInMemory(t *testing.T) {
+	summary := formatStartupSummary(
+		pg.Status{Message: "set OPENCOOK_POSTGRES_DSN to configure persistence"},
+		false,
+		search.Status{Message: "set OPENCOOK_OPENSEARCH_URL to configure search"},
+		false,
+	)
+
+	if !strings.Contains(summary, "PostgreSQL: not connected - set OPENCOOK_POSTGRES_DSN to configure persistence") {
+		t.Fatalf("summary = %q, want disconnected postgres status", summary)
+	}
+	if !strings.Contains(summary, "OpenSearch: not connected - set OPENCOOK_OPENSEARCH_URL to configure search") {
+		t.Fatalf("summary = %q, want disconnected opensearch status", summary)
+	}
+	if !strings.Contains(summary, "Reminder: OpenCook is running with in-memory persistence; all data will be lost on restart") {
+		t.Fatalf("summary = %q, want in-memory warning", summary)
+	}
+}
+
+func TestStartupSummaryDoesNotWarnWhenOnlyOpenSearchIsUnavailable(t *testing.T) {
+	summary := formatStartupSummary(
+		pg.Status{Message: "PostgreSQL cookbook, bootstrap core, and core object persistence active"},
+		true,
+		search.Status{Message: "memory search fallback active; search compatibility routes are backed by in-memory state"},
+		false,
+	)
+
+	if !strings.Contains(summary, "OpenSearch: not connected - memory search fallback active; search compatibility routes are backed by in-memory state") {
+		t.Fatalf("summary = %q, want opensearch fallback status", summary)
+	}
+	if strings.Contains(summary, "all data will be lost on restart") {
+		t.Fatalf("summary = %q, do not want in-memory persistence warning when postgres is connected", summary)
+	}
+}
+
 func TestSeedCookbookOrganizationsFromPostgresIsIdempotentAndPreservesFullName(t *testing.T) {
 	state := pgtest.NewState(pgtest.Seed{
 		Organizations: []pg.CookbookOrganizationRecord{

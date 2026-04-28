@@ -24,9 +24,13 @@ import (
 )
 
 type Application struct {
-	cfg    config.Config
-	logger *log.Logger
-	server *http.Server
+	cfg                 config.Config
+	logger              *log.Logger
+	server              *http.Server
+	postgresStatus      pg.Status
+	searchStatus        search.Status
+	postgresConnected   bool
+	openSearchConnected bool
 }
 
 var activatePostgresCookbookPersistence = func(ctx context.Context, store *pg.Store) error {
@@ -139,9 +143,13 @@ func New(cfg config.Config, logger *log.Logger, build version.Info) (*Applicatio
 	}
 
 	return &Application{
-		cfg:    cfg,
-		logger: logger,
-		server: server,
+		cfg:                 cfg,
+		logger:              logger,
+		server:              server,
+		postgresStatus:      postgresStore.Status(),
+		searchStatus:        searchIndex.Status(),
+		postgresConnected:   postgresStore.CookbookPersistenceActive() && postgresStore.BootstrapCorePersistenceActive() && postgresStore.CoreObjectPersistenceActive(),
+		openSearchConnected: activeSearchIndex != nil,
 	}, nil
 }
 
@@ -291,6 +299,31 @@ func randomBytes(size int) ([]byte, error) {
 		return nil, err
 	}
 	return bytes, nil
+}
+
+func (a *Application) StartupSummary() string {
+	if a == nil {
+		return ""
+	}
+	return formatStartupSummary(a.postgresStatus, a.postgresConnected, a.searchStatus, a.openSearchConnected)
+}
+
+func formatStartupSummary(postgresStatus pg.Status, postgresConnected bool, searchStatus search.Status, openSearchConnected bool) string {
+	var out strings.Builder
+	out.WriteString("External integrations:\n")
+	fmt.Fprintf(&out, "  PostgreSQL: %s - %s\n", integrationConnectionState(postgresConnected), strings.TrimSpace(postgresStatus.Message))
+	fmt.Fprintf(&out, "  OpenSearch: %s - %s\n", integrationConnectionState(openSearchConnected), strings.TrimSpace(searchStatus.Message))
+	if !postgresConnected {
+		out.WriteString("  Reminder: OpenCook is running with in-memory persistence; all data will be lost on restart\n")
+	}
+	return out.String()
+}
+
+func integrationConnectionState(connected bool) string {
+	if connected {
+		return "connected"
+	}
+	return "not connected"
 }
 
 func (a *Application) Run(ctx context.Context) error {
