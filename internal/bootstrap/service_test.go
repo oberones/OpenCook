@@ -3,6 +3,7 @@ package bootstrap
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 
 	"github.com/oberones/OpenCook/internal/authn"
@@ -212,6 +213,48 @@ func TestDeleteClientFailsBeforeMutatingStateWhenKeyDeletionFails(t *testing.T) 
 	}
 }
 
+func TestUpdateClientRefreshesGeneratedACLWhenValidatorFlagChanges(t *testing.T) {
+	service := newServiceWithClientForUpdateACLTest(t, false)
+
+	assertClientACL(t, service, "twilight", defaultClientACL("pivotal", "twilight"))
+	client, _, err := service.UpdateClient("ponyville", "twilight", UpdateClientInput{Validator: boolPtr(true)})
+	if err != nil {
+		t.Fatalf("UpdateClient(validator=true) error = %v", err)
+	}
+	if !client.Validator {
+		t.Fatalf("updated client validator = false, want true")
+	}
+	assertClientACL(t, service, "twilight", defaultClientACL("pivotal"))
+
+	client, _, err = service.UpdateClient("ponyville", "twilight", UpdateClientInput{Validator: boolPtr(false)})
+	if err != nil {
+		t.Fatalf("UpdateClient(validator=false) error = %v", err)
+	}
+	if client.Validator {
+		t.Fatalf("updated client validator = true, want false")
+	}
+	assertClientACL(t, service, "twilight", defaultClientACL("pivotal", "twilight"))
+}
+
+func TestUpdateClientPreservesCustomACLWhenValidatorFlagChanges(t *testing.T) {
+	service := newServiceWithClientForUpdateACLTest(t, false)
+	customACL := defaultClientACL("pivotal", "twilight")
+	customACL.Read.Actors = append(customACL.Read.Actors, "custom-reader")
+
+	service.mu.Lock()
+	service.orgs["ponyville"].acls[clientACLKey("twilight")] = customACL
+	service.mu.Unlock()
+
+	client, _, err := service.UpdateClient("ponyville", "twilight", UpdateClientInput{Validator: boolPtr(true)})
+	if err != nil {
+		t.Fatalf("UpdateClient(validator=true) error = %v", err)
+	}
+	if !client.Validator {
+		t.Fatalf("updated client validator = false, want true")
+	}
+	assertClientACL(t, service, "twilight", customACL)
+}
+
 func TestAddUserToGroupAddsMembershipToAuthzResolution(t *testing.T) {
 	service := NewService(authn.NewMemoryKeyStore(), Options{SuperuserName: "pivotal"})
 	publicKeyPEM := mustGeneratePublicKeyPEM(t)
@@ -257,6 +300,48 @@ func TestAddUserToGroupAddsMembershipToAuthzResolution(t *testing.T) {
 	if !contains(groups, "users") {
 		t.Fatalf("GroupsFor() = %v, want users membership", groups)
 	}
+}
+
+func newServiceWithClientForUpdateACLTest(t *testing.T, validator bool) *Service {
+	t.Helper()
+
+	service := NewService(authn.NewMemoryKeyStore(), Options{SuperuserName: "pivotal"})
+	if _, _, _, err := service.CreateOrganization(CreateOrganizationInput{
+		Name:     "ponyville",
+		FullName: "Ponyville",
+	}); err != nil {
+		t.Fatalf("CreateOrganization() error = %v", err)
+	}
+	if _, _, err := service.CreateClient("ponyville", CreateClientInput{
+		Name:      "twilight",
+		Validator: validator,
+	}); err != nil {
+		t.Fatalf("CreateClient() error = %v", err)
+	}
+	return service
+}
+
+func assertClientACL(t *testing.T, service *Service, clientName string, want authz.ACL) {
+	t.Helper()
+
+	acl, ok, err := service.ResolveACL(context.Background(), authz.Resource{
+		Type:         "client",
+		Name:         clientName,
+		Organization: "ponyville",
+	})
+	if err != nil {
+		t.Fatalf("ResolveACL(client/%s) error = %v", clientName, err)
+	}
+	if !ok {
+		t.Fatalf("ResolveACL(client/%s) ok = false, want true", clientName)
+	}
+	if !reflect.DeepEqual(acl, want) {
+		t.Fatalf("ResolveACL(client/%s) = %#v, want %#v", clientName, acl, want)
+	}
+}
+
+func boolPtr(value bool) *bool {
+	return &value
 }
 
 func TestAddUserToGroupRejectsMissingMembersAndScopes(t *testing.T) {
