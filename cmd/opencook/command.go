@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"os"
 
 	"github.com/oberones/OpenCook/internal/admin"
 	"github.com/oberones/OpenCook/internal/app"
@@ -22,6 +23,7 @@ const (
 )
 
 type command struct {
+	stdin            io.Reader
 	stdout           io.Writer
 	stderr           io.Writer
 	build            version.Info
@@ -37,6 +39,7 @@ type command struct {
 
 func newCommand(stdout, stderr io.Writer) *command {
 	return &command{
+		stdin:           os.Stdin,
 		stdout:          stdout,
 		stderr:          stderr,
 		build:           version.Current(),

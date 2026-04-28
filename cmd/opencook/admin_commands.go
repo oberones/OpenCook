@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"flag"
@@ -14,6 +15,11 @@ import (
 
 type adminJSONClient interface {
 	DoJSON(context.Context, string, string, any, any) error
+}
+
+type adminOutputOptions struct {
+	privateKeyOut       string
+	overwritePrivateKey bool
 }
 
 func (c *command) runAdminCommand(ctx context.Context, args []string) int {
@@ -59,6 +65,19 @@ func (c *command) runAdminCommand(ctx context.Context, args []string) int {
 	}
 	if adminCommandIsOffline(rest) {
 		return c.runAdminOfflineCommand(ctx, rest)
+	}
+
+	if (rest[0] == "orgs" || rest[0] == "organizations") && len(rest) > 1 && rest[1] == "create" {
+		payload, output, code, ok := c.prepareAdminOrganizationCreate(rest[2:])
+		if !ok {
+			return code
+		}
+		client, err := c.newAdmin(cfg)
+		if err != nil {
+			fmt.Fprintf(c.stderr, "admin client: %v\n", err)
+			return exitDependencyUnavailable
+		}
+		return c.adminDoWithOutputOptions(ctx, client, http.MethodPost, "/organizations", payload, output)
 	}
 
 	client, err := c.newAdmin(cfg)
@@ -316,8 +335,16 @@ func (c *command) runAdminACLs(ctx context.Context, client adminJSONClient, args
 }
 
 func (c *command) runAdminOrganizationCreate(ctx context.Context, client adminJSONClient, args []string) int {
+	payload, output, code, ok := c.prepareAdminOrganizationCreate(args)
+	if !ok {
+		return code
+	}
+	return c.adminDoWithOutputOptions(ctx, client, http.MethodPost, "/organizations", payload, output)
+}
+
+func (c *command) prepareAdminOrganizationCreate(args []string) (map[string]any, adminOutputOptions, int, bool) {
 	if len(args) == 0 {
-		return c.adminUsageError("usage: opencook admin orgs create ORG --full-name NAME [flags]\n\n")
+		return nil, adminOutputOptions{}, c.adminUsageError("usage: opencook admin orgs create ORG --full-name NAME [flags]\n\n"), false
 	}
 
 	name := args[0]
@@ -328,21 +355,27 @@ func (c *command) runAdminOrganizationCreate(ctx context.Context, client adminJS
 	associationUser := fs.String("association-user", "", "reserved for a later membership slice")
 	validatorKeyOut := fs.String("validator-key-out", "", "write generated validator private key to PATH, or - for stdout")
 	if err := fs.Parse(args[1:]); err != nil {
-		return c.adminFlagError("admin orgs create", err)
+		return nil, adminOutputOptions{}, c.adminFlagError("admin orgs create", err), false
 	}
 	if fs.NArg() != 0 {
-		return c.adminUsageError("admin orgs create received unexpected arguments: %v\n\n", fs.Args())
+		return nil, adminOutputOptions{}, c.adminUsageError("admin orgs create received unexpected arguments: %v\n\n", fs.Args()), false
 	}
 	if *associationUser != "" {
-		return c.adminUsageError("admin orgs create --association-user is not exposed by the live HTTP route yet; sign as the desired owning requestor\n\n")
+		return nil, adminOutputOptions{}, c.adminUsageError("admin orgs create --association-user is not exposed by the live HTTP route yet; sign as the desired owning requestor\n\n"), false
 	}
+	output := adminOutputOptions{privateKeyOut: *validatorKeyOut}
+	overwriteValidatorKey, code := c.confirmAdminFileOverwrite(*validatorKeyOut, "validator key file", "organization creation canceled")
+	if code != exitOK {
+		return nil, adminOutputOptions{}, code, false
+	}
+	output.overwritePrivateKey = overwriteValidatorKey
 
 	payload := map[string]any{
 		"name":      name,
 		"full_name": *fullName,
 		"org_type":  *orgType,
 	}
-	return c.adminDo(ctx, client, http.MethodPost, "/organizations", payload, *validatorKeyOut)
+	return payload, output, exitOK, true
 }
 
 func (c *command) runAdminClients(ctx context.Context, client adminJSONClient, args []string) int {
@@ -476,25 +509,29 @@ func (c *command) runAdminKeyDelete(ctx context.Context, client adminJSONClient,
 }
 
 func (c *command) adminDo(ctx context.Context, client adminJSONClient, method, path string, payload any, privateKeyOut string) int {
+	return c.adminDoWithOutputOptions(ctx, client, method, path, payload, adminOutputOptions{privateKeyOut: privateKeyOut})
+}
+
+func (c *command) adminDoWithOutputOptions(ctx context.Context, client adminJSONClient, method, path string, payload any, output adminOutputOptions) int {
 	var out any
 	if err := client.DoJSON(ctx, method, path, payload, &out); err != nil {
 		fmt.Fprintf(c.stderr, "admin request: %v\n", err)
 		return exitDependencyUnavailable
 	}
-	if err := c.writeAdminOutput(out, privateKeyOut); err != nil {
+	if err := c.writeAdminOutput(out, output); err != nil {
 		fmt.Fprintf(c.stderr, "write admin output: %v\n", err)
 		return exitDependencyUnavailable
 	}
 	return exitOK
 }
 
-func (c *command) writeAdminOutput(out any, privateKeyOut string) error {
+func (c *command) writeAdminOutput(out any, output adminOutputOptions) error {
 	privateKey, hasPrivateKey := findPrivateKey(out)
 	if !hasPrivateKey {
 		return writePrettyJSON(c.stdout, out)
 	}
 
-	switch privateKeyOut {
+	switch output.privateKeyOut {
 	case "":
 		fmt.Fprintln(c.stderr, "private key omitted; use --private-key-out PATH or --private-key-out - to print it")
 		return writePrettyJSON(c.stdout, redactPrivateKeys(out))
@@ -508,12 +545,52 @@ func (c *command) writeAdminOutput(out any, privateKeyOut string) error {
 		}
 		return nil
 	default:
-		if err := writePrivateKeyFile(privateKeyOut, privateKey); err != nil {
+		if err := writePrivateKeyFile(output.privateKeyOut, privateKey, output.overwritePrivateKey); err != nil {
 			return err
 		}
-		fmt.Fprintf(c.stderr, "private key written to %s\n", privateKeyOut)
+		fmt.Fprintf(c.stderr, "private key written to %s\n", output.privateKeyOut)
 		return writePrettyJSON(c.stdout, redactPrivateKeys(out))
 	}
+}
+
+func (c *command) confirmAdminFileOverwrite(path, label, cancelMessage string) (bool, int) {
+	path = strings.TrimSpace(path)
+	if path == "" || path == "-" {
+		return false, exitOK
+	}
+	if _, err := os.Stat(path); err != nil {
+		if os.IsNotExist(err) {
+			return false, exitOK
+		}
+		fmt.Fprintf(c.stderr, "check %s: %v\n", label, err)
+		return false, exitDependencyUnavailable
+	}
+
+	fmt.Fprintf(c.stderr, "warning: %s %s already exists and will be overwritten\n", label, path)
+	fmt.Fprintf(c.stderr, "Proceed? [y/N]: ")
+	confirmed, err := c.readYesNo()
+	fmt.Fprintln(c.stderr)
+	if err != nil {
+		fmt.Fprintf(c.stderr, "read confirmation: %v\n", err)
+		return false, exitDependencyUnavailable
+	}
+	if !confirmed {
+		fmt.Fprintln(c.stderr, cancelMessage)
+		return false, exitUsage
+	}
+	return true, exitOK
+}
+
+func (c *command) readYesNo() (bool, error) {
+	if c.stdin == nil {
+		return false, nil
+	}
+	answer, err := bufio.NewReader(c.stdin).ReadString('\n')
+	if err != nil && err != io.EOF {
+		return false, err
+	}
+	answer = strings.ToLower(strings.TrimSpace(answer))
+	return answer == "y" || answer == "yes", nil
 }
 
 func readOptionalPublicKey(path string) (string, error) {
@@ -528,8 +605,14 @@ func readOptionalPublicKey(path string) (string, error) {
 	return string(data), nil
 }
 
-func writePrivateKeyFile(path, privateKey string) error {
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+func writePrivateKeyFile(path, privateKey string, overwrite bool) error {
+	flags := os.O_WRONLY | os.O_CREATE
+	if overwrite {
+		flags |= os.O_TRUNC
+	} else {
+		flags |= os.O_EXCL
+	}
+	file, err := os.OpenFile(path, flags, 0o600)
 	if err != nil {
 		return err
 	}
