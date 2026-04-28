@@ -61,6 +61,14 @@ require_json_contains() {
   fi
 }
 
+require_opensearch_capability_status() {
+  local file="$1"
+  require_json_contains "$file" '"opensearch"'
+  require_json_contains "$file" 'search-after pagination'
+  require_json_contains "$file" 'delete-by-query'
+  require_json_contains "$file" 'total hits'
+}
+
 encrypted_search_index_available() {
   local stdout="/tmp/opencook-admin-encrypted-search-preflight.json"
   local stderr="/tmp/opencook-admin-encrypted-search-preflight.err"
@@ -211,7 +219,7 @@ run_operational_phase() {
 
   echo "==> operational admin status"
   admin_json status >/tmp/opencook-admin-status.json
-  require_json_contains /tmp/opencook-admin-status.json '"opensearch"'
+  require_opensearch_capability_status /tmp/opencook-admin-status.json
   require_json_contains /tmp/opencook-admin-status.json '"postgres"'
 
   echo "==> operational live-safe user/org commands"
@@ -294,6 +302,7 @@ run_operational_verify_phase() {
 
   echo "==> operational post-restart verification"
   admin_json status >/tmp/opencook-admin-post-restart-status.json
+  require_opensearch_capability_status /tmp/opencook-admin-post-restart-status.json
   admin_with_key "$operational_key_path" users show "$admin_requestor" >/tmp/opencook-admin-post-restart-key.json
   require_json_contains /tmp/opencook-admin-post-restart-key.json "\"username\": \"$admin_requestor\""
   require_unsupported_search_admin_surfaces

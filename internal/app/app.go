@@ -33,16 +33,21 @@ var activatePostgresCookbookPersistence = func(ctx context.Context, store *pg.St
 	return store.ActivateCookbookPersistence(ctx)
 }
 
+var newOpenSearchClient = search.NewOpenSearchClient
+
 var activateOpenSearchIndexing = func(ctx context.Context, cfg config.Config, store *pg.Store, state *bootstrap.Service, client *search.OpenSearchClient) (search.Index, error) {
 	if strings.TrimSpace(cfg.OpenSearchURL) == "" || store == nil || !store.BootstrapCorePersistenceActive() || !store.CoreObjectPersistenceActive() {
 		return nil, nil
 	}
 	if client == nil {
 		var err error
-		client, err = search.NewOpenSearchClient(cfg.OpenSearchURL)
+		client, err = newOpenSearchClient(cfg.OpenSearchURL)
 		if err != nil {
 			return nil, err
 		}
+	}
+	if _, err := client.DiscoverProvider(ctx); err != nil {
+		return nil, err
 	}
 	if err := search.RebuildOpenSearchIndex(ctx, client, state); err != nil {
 		return nil, err
@@ -182,7 +187,7 @@ func activeOpenSearchDocumentIndexer(cfg config.Config, postgresStore *pg.Store)
 	if strings.TrimSpace(cfg.OpenSearchURL) == "" || postgresStore == nil || !postgresStore.BootstrapCorePersistenceActive() || !postgresStore.CoreObjectPersistenceActive() {
 		return nil, nil
 	}
-	return search.NewOpenSearchClient(cfg.OpenSearchURL)
+	return newOpenSearchClient(cfg.OpenSearchURL)
 }
 
 func resolveCookbookBackend(postgresStore *pg.Store) string {
