@@ -167,6 +167,9 @@ func (c *command) runAdminUserCreate(ctx context.Context, client adminJSONClient
 		"email":        *email,
 		"public_key":   publicKey,
 	}
+	if publicKey == "" && (*privateKeyOut != "" || *keyName == "default") {
+		payload["create_key"] = true
+	}
 	return c.adminDo(ctx, client, http.MethodPost, "/users", payload, *privateKeyOut)
 }
 

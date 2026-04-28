@@ -54,7 +54,8 @@ Status: in progress
 - creator-aware node ACLs now allow clients to manage their own node objects
 - PostgreSQL-backed persistence for nodes, environments, roles, data bags/items, policies, policy groups, sandbox metadata, checksum references, and object ACLs is now live when PostgreSQL is configured, with restart/rehydration coverage for route reads, search-facing state, and depsolver-visible state
 - invalid writes and failed persistence writes now have no-mutation/rollback coverage across the active PostgreSQL path and the bootstrap object-store seam
-- the rest of the object surface still needs follow-on compatibility slices where upstream behavior is not yet pinned, especially deeper API-version edge cases
+- API-version-specific object semantics are now pinned for `/server_api_version`, v0/v1 actor and client key behavior, v0/v2 cookbook and artifact file shapes, nodes, roles, environments, data bags, policies, sandboxes, OpenSearch-facing node policy fields, default-org/explicit-org aliases, invalid-version precedence, and active PostgreSQL restart/rehydration
+- the rest of the object surface still needs follow-on compatibility slices where upstream behavior is not yet pinned, especially broader depsolver and linked-object edge cases
 
 ## Milestone 5: Search Compatibility
 
@@ -77,7 +78,8 @@ Status: in progress
 - policyfile routes are now live for both default-org and explicit-org `/policies` and `/policy_groups`
 - policy revision storage, revision lookup, policy-group listing, policy-group assignment, and richer canonical payload round-tripping are implemented and now persist through PostgreSQL when configured
 - policy payload validation now covers more cookbook-lock and solution-dependency structure, while node policy refs remain compatibility-safe searchable fields instead of enforced foreign keys
-- deeper API-version-specific object semantics are the next recommended bucket; richer OpenSearch capability/version negotiation and migration/cutover tooling remain follow-on operational buckets
+- Docker functional coverage now also sends v0, v1, and v2 API-version headers through representative object and OpenSearch-backed search flows after PostgreSQL restart/rehydration
+- richer OpenSearch capability/version negotiation is the next recommended bucket; migration/cutover tooling remains the next operational follow-on bucket
 
 ## Milestone 6: Cookbook and Blob Workflows
 

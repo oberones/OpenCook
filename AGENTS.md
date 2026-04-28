@@ -56,6 +56,7 @@ Implemented so far:
 - PostgreSQL-backed bootstrap core persistence for users, organizations, clients, user/client keys, groups, containers, and ACL documents, with in-memory fallback behavior when PostgreSQL is not configured
 - PostgreSQL-backed core object API persistence for nodes, environments, roles, data bags/items, policy revisions/groups/assignments, sandbox metadata/checksum references, and object ACLs, with in-memory fallback behavior when PostgreSQL is not configured
 - the first `opencook admin` operational CLI, including signed HTTP-backed user/org/key/group/container/ACL inspection and live-safe management flows, offline-gated direct PostgreSQL repair commands, and OpenSearch reindex/check/repair from PostgreSQL-backed state
+- API-version-specific object semantics for implemented Chef-facing surfaces, including live `/server_api_version`, invalid-version precedence, signed-header verification, v0/v1 user and client key behavior, v0/v2 cookbook and cookbook-artifact file shapes, v0/v1/v2 nodes, roles, environments, data bags, policies, sandboxes, OpenSearch-facing node policy fields, active PostgreSQL restart/rehydration, and Docker functional coverage
 - the first environment slice:
   - `_default` environment bootstrap
   - list
@@ -290,6 +291,7 @@ Current architectural reality:
 - data bag CRUD and encrypted data bag payload opacity are now explicitly pinned as tested compatibility slices
 - PostgreSQL is active for cookbook metadata, bootstrap core state, and implemented core object API state; OpenSearch-backed search is active for the implemented Chef search indexes when PostgreSQL and `OPENCOOK_OPENSEARCH_URL` are configured, with the memory adapter preserved as the no-OpenSearch fallback and unsupported cookbook/policy/sandbox/checksum object families pinned as non-searchable
 - the blob layer now has in-memory, filesystem-backed, and S3-compatible compatibility implementations for sandbox checksum uploads/downloads and cookbook file URLs, and the S3-compatible path now includes request-construction parity, configurable timeout/retry plus `Retry-After` behavior, transport/status classification, malformed-endpoint and missing-credential diagnostics, and provider-backed `blob_unavailable` degradation on the current sandbox/cookbook flows
+- API-version negotiation and version-sensitive object payload behavior are now compatibility-pinned for the implemented Chef surfaces; do not reopen those shapes without upstream pedant evidence
 
 Do not mistake the no-OpenSearch memory fallback, partial operational tooling, or future unimplemented surfaces for the final persistence architecture.
 
@@ -331,7 +333,7 @@ Rules we have been following:
 - preserve endpoint shape before redesigning internals
 - preserve Chef header auth semantics before optimizing auth code
 - preserve Bifrost-like ACL behavior before simplifying authorization models
-- preserve API-version-sensitive actor key behavior before refactoring key flows
+- preserve pinned API-version negotiation and version-sensitive object semantics before refactoring route payloads or key flows
 - prefer explicit compatibility shims over “cleaner” breaking behavior
 
 Important current conventions:
@@ -448,11 +450,10 @@ When you start a new compatibility slice:
 
 These areas are still intentionally incomplete:
 
-- deeper API-version-specific semantics beyond the current actor-key surface
 - deeper OpenSearch provider capability/version behavior
 - remaining core Chef object compatibility beyond the currently pinned nodes, environments, roles, data bags, policies, and sandbox flows
 - deeper node and environment compatibility such as cookbook constraint edge cases and linked object behavior
 - deeper role compatibility beyond the current normalization and linked-environment read behavior
 - operational parity and migration tooling
 
-The next likely major slice is deeper API-version-specific object semantics, with OpenSearch provider capability/version hardening and migration/cutover tooling remaining the next operational follow-on buckets.
+The next likely major slice is OpenSearch provider capability/version hardening, with migration/cutover tooling remaining the next operational follow-on bucket.
