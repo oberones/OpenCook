@@ -180,6 +180,12 @@ func newFunctionalClientFromPrivateKey(baseURL *url.URL, actorName string, priva
 	}
 }
 
+func (c *functionalClient) withServerAPIVersion(version string) *functionalClient {
+	clone := *c
+	clone.serverAPIVersion = version
+	return &clone
+}
+
 func runCreatePhase(t *testing.T, client *functionalClient, cfg functionalConfig) {
 	requireOperationalStatus(t, client)
 	orgPayload := ensureOrganization(t, client, cfg.org)
@@ -263,6 +269,7 @@ func runVerifyPhase(t *testing.T, client *functionalClient, cfg functionalConfig
 	commitPendingSandboxIfNeeded(t, client, cfg)
 	requireSandboxBlobReuse(t, client, cfg.org)
 	requireFunctionalUnsupportedSearchFixtures(t, client, cfg)
+	requireFunctionalAPIVersionCoverage(t, client, cfg)
 }
 
 func runQueryCompatibilityPhase(t *testing.T, client *functionalClient, cfg functionalConfig) {
@@ -578,6 +585,174 @@ func requireFunctionalUnsupportedSearchFixtures(t *testing.T, client *functional
 	requireFunctionalUnsupportedSearchContract(t, client, cfg)
 }
 
+// requireFunctionalAPIVersionCoverage exercises representative versioned
+// surfaces against the same PostgreSQL/OpenSearch-backed stack used by the
+// functional restart phases.
+func requireFunctionalAPIVersionCoverage(t *testing.T, client *functionalClient, cfg functionalConfig) {
+	t.Helper()
+
+	requireFunctionalServerAPIVersionDiscovery(t, client)
+	requireFunctionalActorAPIVersionKeyBehavior(t, client, cfg)
+	requireFunctionalCookbookAPIVersionFileShapes(t, client, cfg)
+	requireFunctionalObjectAPIVersionReads(t, client, cfg)
+	requireFunctionalSearchAPIVersionFields(t, client, cfg)
+	requireFunctionalSandboxAPIVersionLifecycle(t, client, cfg)
+}
+
+func requireFunctionalServerAPIVersionDiscovery(t *testing.T, client *functionalClient) {
+	t.Helper()
+
+	discovery := asMap(t, client.expectUnsignedJSON(t, "/server_api_version", http.StatusOK).JSON)
+	if discovery["min_api_version"] != float64(0) || discovery["max_api_version"] != float64(2) {
+		t.Fatalf("/server_api_version = %v, want min 0 max 2", discovery)
+	}
+
+	resp, err := client.unsignedRequest(http.MethodGet, "/server_api_version", nil, map[string]string{
+		"X-Ops-Server-API-Version": "3",
+	})
+	if err != nil {
+		t.Fatalf("GET /server_api_version with invalid version failed: %v", err)
+	}
+	requireStatus(t, resp, http.StatusNotAcceptable)
+	decodeJSONBody(t, &resp)
+	requireFunctionalInvalidAPIVersionPayload(t, asMap(t, resp.JSON), "3")
+
+	signedInvalid := client.withServerAPIVersion("3").expectJSON(t, http.MethodGet, "/nodes/twilight", nil, http.StatusNotAcceptable)
+	requireFunctionalInvalidAPIVersionPayload(t, asMap(t, signedInvalid.JSON), "3")
+}
+
+func requireFunctionalActorAPIVersionKeyBehavior(t *testing.T, client *functionalClient, cfg functionalConfig) {
+	t.Helper()
+
+	v0 := client.withServerAPIVersion("0")
+	v1 := client.withServerAPIVersion("1")
+
+	userV0 := asMap(t, v0.expectJSON(t, http.MethodGet, "/users/"+cfg.actorName, nil, http.StatusOK).JSON)
+	requireFunctionalPublicKey(t, userV0, "API v0 user read")
+	userV1 := asMap(t, v1.expectJSON(t, http.MethodGet, "/users/"+cfg.actorName, nil, http.StatusOK).JSON)
+	requireFunctionalNoPublicKey(t, userV1, "API v1 user read")
+	requireFunctionalKeyListPublicKey(t, asSlice(t, v1.expectJSON(t, http.MethodGet, "/users/"+cfg.actorName+"/keys", nil, http.StatusOK).JSON), "API v1 user keys")
+
+	clientPath := "/organizations/" + cfg.org + "/clients/" + validatorBootstrapClientName
+	clientV0 := asMap(t, v0.expectJSON(t, http.MethodGet, clientPath, nil, http.StatusOK).JSON)
+	requireFunctionalPublicKey(t, clientV0, "API v0 client read")
+	clientV1 := asMap(t, v1.expectJSON(t, http.MethodGet, clientPath, nil, http.StatusOK).JSON)
+	requireFunctionalNoPublicKey(t, clientV1, "API v1 client read")
+	requireFunctionalKeyListPublicKey(t, asSlice(t, v1.expectJSON(t, http.MethodGet, clientPath+"/keys", nil, http.StatusOK).JSON), "API v1 client keys")
+}
+
+func requireFunctionalCookbookAPIVersionFileShapes(t *testing.T, client *functionalClient, cfg functionalConfig) {
+	t.Helper()
+
+	path := "/organizations/" + cfg.org + "/cookbooks/" + functionalUnsupportedCookbookName + "/" + functionalUnsupportedCookbookVersion
+	checksum := checksumHex(sandboxBlob)
+
+	legacy := asMap(t, client.withServerAPIVersion("0").expectJSON(t, http.MethodGet, path, nil, http.StatusOK).JSON)
+	if _, ok := legacy["all_files"]; ok {
+		t.Fatalf("API v0 cookbook unexpectedly included all_files: %v", legacy)
+	}
+	legacyFile := requireFunctionalCookbookSegmentFile(t, legacy, "recipes", "recipes/default.rb", checksum)
+	if _, ok := legacyFile["url"].(string); !ok {
+		t.Fatalf("API v0 cookbook recipe url = %T, want string (%v)", legacyFile["url"], legacyFile)
+	}
+
+	v2 := asMap(t, client.withServerAPIVersion("2").expectJSON(t, http.MethodGet, path, nil, http.StatusOK).JSON)
+	for _, segment := range functionalLegacyCookbookSegments() {
+		if _, ok := v2[segment]; ok {
+			t.Fatalf("API v2 cookbook unexpectedly included legacy segment %q: %v", segment, v2)
+		}
+	}
+	v2File := requireFunctionalCookbookSegmentFile(t, v2, "all_files", "recipes/default.rb", checksum)
+	downloadURL, ok := v2File["url"].(string)
+	if !ok {
+		t.Fatalf("API v2 cookbook file url = %T, want string (%v)", v2File["url"], v2File)
+	}
+	download := client.doUnsigned(t, http.MethodGet, downloadURL, nil, nil, http.StatusOK)
+	if !bytes.Equal(download.Body, sandboxBlob) {
+		t.Fatalf("API v2 cookbook download body = %q, want sandbox blob", download.Body)
+	}
+}
+
+func requireFunctionalObjectAPIVersionReads(t *testing.T, client *functionalClient, cfg functionalConfig) {
+	t.Helper()
+
+	for _, version := range []string{"0", "1", "2"} {
+		versioned := client.withServerAPIVersion(version)
+
+		env := asMap(t, versioned.expectJSON(t, http.MethodGet, "/environments/production", nil, http.StatusOK).JSON)
+		if env["name"] != "production" {
+			t.Fatalf("API v%s environment = %v, want production", version, env)
+		}
+		role := asMap(t, versioned.expectJSON(t, http.MethodGet, "/organizations/"+cfg.org+"/roles/web", nil, http.StatusOK).JSON)
+		if role["name"] != "web" {
+			t.Fatalf("API v%s role = %v, want web", version, role)
+		}
+		node := asMap(t, versioned.expectJSON(t, http.MethodGet, "/nodes/twilight", nil, http.StatusOK).JSON)
+		if node["name"] != "twilight" || node["chef_environment"] != "production" {
+			t.Fatalf("API v%s node = %v, want twilight in production", version, node)
+		}
+		item := asMap(t, versioned.expectJSON(t, http.MethodGet, "/organizations/"+cfg.org+"/data/ponies/twilight", nil, http.StatusOK).JSON)
+		if item["id"] != "twilight" || item["kind"] != "unicorn" {
+			t.Fatalf("API v%s data bag item = %v, want twilight unicorn", version, item)
+		}
+		revision := asMap(t, versioned.expectJSON(t, http.MethodGet, "/policies/"+policyName+"/revisions/"+policyRevisionID, nil, http.StatusOK).JSON)
+		if revision["name"] != policyName || revision["revision_id"] != policyRevisionID {
+			t.Fatalf("API v%s policy revision = %v, want %s/%s", version, revision, policyName, policyRevisionID)
+		}
+		assignment := asMap(t, versioned.expectJSON(t, http.MethodGet, "/organizations/"+cfg.org+"/policy_groups/"+policyGroupName+"/policies/"+policyName, nil, http.StatusOK).JSON)
+		if assignment["revision_id"] != policyRevisionID {
+			t.Fatalf("API v%s policy assignment = %v, want revision %s", version, assignment, policyRevisionID)
+		}
+	}
+}
+
+func requireFunctionalSearchAPIVersionFields(t *testing.T, client *functionalClient, cfg functionalConfig) {
+	t.Helper()
+
+	for _, version := range []string{"0", "1", "2"} {
+		versioned := client.withServerAPIVersion(version)
+		path := searchQueryPath("/organizations/"+cfg.org+"/search/node", "policy_name:"+policyName+" AND policy_group:"+policyGroupName)
+		requireSearchRows(t, versioned, path, 1)
+		partial := requirePartialSearchRows(t, versioned, path, map[string][]string{
+			"policy_name":  {"policy_name"},
+			"policy_group": {"policy_group"},
+		}, 1)
+		data := asMap(t, asMap(t, searchRows(t, partial)[0])["data"])
+		if data["policy_name"] != policyName || data["policy_group"] != policyGroupName {
+			t.Fatalf("API v%s search partial data = %v, want %s/%s", version, data, policyName, policyGroupName)
+		}
+	}
+}
+
+func requireFunctionalSandboxAPIVersionLifecycle(t *testing.T, client *functionalClient, cfg functionalConfig) {
+	t.Helper()
+
+	for _, version := range []string{"0", "1", "2"} {
+		versioned := client.withServerAPIVersion(version)
+		body := []byte("functional api-version sandbox " + version + "\n")
+		checksum := checksumHex(body)
+		create := asMap(t, versioned.expectJSON(t, http.MethodPost, "/organizations/"+cfg.org+"/sandboxes", map[string]any{
+			"checksums": map[string]any{checksum: nil},
+		}, http.StatusCreated).JSON)
+		sandboxID, uploadURL := requireFunctionalSandboxCreatePayload(t, create, checksum, cfg.org)
+		if uploadURL != "" {
+			upload := client.doUnsigned(t, http.MethodPut, uploadURL, body, map[string]string{
+				"Content-Type": "application/x-binary",
+				"Content-MD5":  checksumBase64(body),
+			}, http.StatusNoContent)
+			if len(upload.Body) != 0 {
+				t.Fatalf("API v%s sandbox upload body = %q, want empty", version, upload.Body)
+			}
+		}
+		commit := asMap(t, versioned.expectJSON(t, http.MethodPut, "/organizations/"+cfg.org+"/sandboxes/"+sandboxID, map[string]any{
+			"is_completed": true,
+		}, http.StatusOK).JSON)
+		if commit["guid"] != sandboxID || commit["is_completed"] != true || !containsString(jsonStringSlice(t, commit["checksums"]), checksum) {
+			t.Fatalf("API v%s sandbox commit = %v, want completed %s with checksum %s", version, commit, sandboxID, checksum)
+		}
+	}
+}
+
 func requireFunctionalUnsupportedSearchContract(t *testing.T, client *functionalClient, cfg functionalConfig) {
 	t.Helper()
 
@@ -616,6 +791,120 @@ func unsupportedFunctionalSearchIndexes() []string {
 		"sandboxes",
 		"checksum",
 		"checksums",
+	}
+}
+
+func requireFunctionalInvalidAPIVersionPayload(t *testing.T, payload map[string]any, requested string) {
+	t.Helper()
+
+	if payload["error"] != "invalid-x-ops-server-api-version" {
+		t.Fatalf("invalid API-version error = %v, want invalid-x-ops-server-api-version", payload["error"])
+	}
+	if payload["message"] != "Specified version "+requested+" not supported" {
+		t.Fatalf("invalid API-version message = %v, want requested version %s", payload["message"], requested)
+	}
+	if payload["min_version"] != float64(0) || payload["max_version"] != float64(2) {
+		t.Fatalf("invalid API-version bounds = %v, want 0..2", payload)
+	}
+}
+
+func requireFunctionalPublicKey(t *testing.T, payload map[string]any, label string) {
+	t.Helper()
+
+	publicKey, ok := payload["public_key"].(string)
+	if !ok || !strings.Contains(publicKey, "BEGIN PUBLIC KEY") {
+		t.Fatalf("%s public_key = %T/%v, want PEM public key", label, payload["public_key"], payload["public_key"])
+	}
+}
+
+func requireFunctionalNoPublicKey(t *testing.T, payload map[string]any, label string) {
+	t.Helper()
+
+	if _, ok := payload["public_key"]; ok {
+		t.Fatalf("%s unexpectedly included top-level public_key: %v", label, payload)
+	}
+}
+
+func requireFunctionalKeyListPublicKey(t *testing.T, keys []any, label string) {
+	t.Helper()
+
+	if len(keys) == 0 {
+		t.Fatalf("%s = %v, want at least one key", label, keys)
+	}
+	for _, raw := range keys {
+		key := asMap(t, raw)
+		if publicKey, ok := key["public_key"].(string); ok && strings.Contains(publicKey, "BEGIN PUBLIC KEY") {
+			return
+		}
+	}
+	t.Fatalf("%s = %v, want a key with PEM public_key", label, keys)
+}
+
+func requireFunctionalCookbookSegmentFile(t *testing.T, payload map[string]any, segment, path, checksum string) map[string]any {
+	t.Helper()
+
+	rawFiles := asSlice(t, payload[segment])
+	for _, raw := range rawFiles {
+		file := asMap(t, raw)
+		if file["path"] == path {
+			if file["checksum"] != checksum {
+				t.Fatalf("%s file checksum = %v, want %s", segment, file["checksum"], checksum)
+			}
+			return file
+		}
+	}
+	t.Fatalf("%s missing path %q in %v", segment, path, rawFiles)
+	return nil
+}
+
+func functionalLegacyCookbookSegments() []string {
+	return []string{"recipes", "files", "templates", "attributes", "definitions", "libraries", "providers", "resources", "root_files"}
+}
+
+func requireFunctionalSandboxCreatePayload(t *testing.T, payload map[string]any, checksum, org string) (string, string) {
+	t.Helper()
+
+	sandboxID, ok := payload["sandbox_id"].(string)
+	if !ok || sandboxID == "" {
+		t.Fatalf("sandbox_id = %T/%v, want non-empty string", payload["sandbox_id"], payload["sandbox_id"])
+	}
+	uri, ok := payload["uri"].(string)
+	if !ok || !strings.HasSuffix(uri, "/organizations/"+org+"/sandboxes/"+sandboxID) {
+		t.Fatalf("sandbox uri = %T/%v, want org-scoped sandbox URI ending in %s", payload["uri"], payload["uri"], sandboxID)
+	}
+	entry := asMap(t, asMap(t, payload["checksums"])[checksum])
+	switch entry["needs_upload"] {
+	case true:
+		uploadURL, ok := entry["url"].(string)
+		if !ok || uploadURL == "" {
+			t.Fatalf("sandbox upload url = %T/%v, want non-empty string", entry["url"], entry["url"])
+		}
+		requireFunctionalSandboxUploadURL(t, uploadURL, checksum, org, sandboxID)
+		return sandboxID, uploadURL
+	case false:
+		if _, ok := entry["url"]; ok {
+			t.Fatalf("reused sandbox checksum included upload URL: %v", entry)
+		}
+		return sandboxID, ""
+	default:
+		t.Fatalf("sandbox needs_upload = %T/%v, want boolean", entry["needs_upload"], entry["needs_upload"])
+	}
+	return sandboxID, ""
+}
+
+func requireFunctionalSandboxUploadURL(t *testing.T, rawURL, checksum, org, sandboxID string) {
+	t.Helper()
+
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		t.Fatalf("parse sandbox upload URL %q: %v", rawURL, err)
+	}
+	if !strings.HasSuffix(parsed.Path, "/_blob/checksums/"+checksum) {
+		t.Fatalf("sandbox upload path = %q, want checksum %s", parsed.Path, checksum)
+	}
+	values := parsed.Query()
+	if values.Get("org") != org || values.Get("sandbox_id") != sandboxID || values.Get("expires") == "" || values.Get("signature") == "" {
+		t.Fatalf("sandbox upload query = %v, want org/sandbox_id/expires/signature", values)
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"reflect"
 	"regexp"
 	"sort"
 	"strings"
@@ -125,12 +126,22 @@ type KeyRecord struct {
 }
 
 type CreateUserInput struct {
+	Username         string
+	DisplayName      string
+	Email            string
+	FirstName        string
+	LastName         string
+	PublicKey        string
+	CreateDefaultKey bool
+}
+
+type UpdateUserInput struct {
 	Username    string
-	DisplayName string
-	Email       string
-	FirstName   string
-	LastName    string
-	PublicKey   string
+	DisplayName *string
+	Email       *string
+	FirstName   *string
+	LastName    *string
+	PublicKey   *string
 }
 
 type CreateOrganizationInput struct {
@@ -141,10 +152,17 @@ type CreateOrganizationInput struct {
 }
 
 type CreateClientInput struct {
-	Name      string
-	Validator bool
-	Admin     bool
-	PublicKey string
+	Name             string
+	Validator        bool
+	Admin            bool
+	PublicKey        string
+	CreateDefaultKey bool
+}
+
+type UpdateClientInput struct {
+	Validator *bool
+	Admin     *bool
+	PublicKey *string
 }
 
 type CreateKeyInput struct {
@@ -439,12 +457,16 @@ func (s *Service) CreateUser(input CreateUserInput) (User, *KeyMaterial, error) 
 	}
 
 	previous := s.snapshotBootstrapCoreLocked()
-	keyMaterial, err := s.keyMaterialForPrincipalLocked(authn.Principal{
-		Type: "user",
-		Name: username,
-	}, input.PublicKey)
-	if err != nil {
-		return User{}, nil, err
+	var keyMaterial *KeyMaterial
+	if input.CreateDefaultKey || strings.TrimSpace(input.PublicKey) != "" {
+		var err error
+		keyMaterial, err = s.keyMaterialForPrincipalLocked(authn.Principal{
+			Type: "user",
+			Name: username,
+		}, input.PublicKey)
+		if err != nil {
+			return User{}, nil, err
+		}
 	}
 
 	user := User{
@@ -457,6 +479,58 @@ func (s *Service) CreateUser(input CreateUserInput) (User, *KeyMaterial, error) 
 	s.users[username] = user
 	s.userACLs[username] = defaultUserACL(s.superuserName, username)
 
+	if err := s.finishBootstrapCoreMutationLocked(previous); err != nil {
+		return User{}, nil, err
+	}
+	return user, keyMaterial, nil
+}
+
+// UpdateUser applies actor metadata changes while keeping default-key mutation
+// explicit for the API-version gate in the HTTP layer.
+func (s *Service) UpdateUser(input UpdateUserInput) (User, *KeyMaterial, error) {
+	username := strings.TrimSpace(input.Username)
+	if username == "" {
+		return User{}, nil, fmt.Errorf("%w: username is required", ErrInvalidInput)
+	}
+	if !validNamePattern.MatchString(username) {
+		return User{}, nil, fmt.Errorf("%w: username contains invalid characters", ErrInvalidInput)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	user, exists := s.users[username]
+	if !exists {
+		return User{}, nil, ErrNotFound
+	}
+
+	previous := s.snapshotBootstrapCoreLocked()
+	if input.DisplayName != nil {
+		user.DisplayName = fallback(*input.DisplayName, username)
+	}
+	if input.Email != nil {
+		user.Email = strings.TrimSpace(*input.Email)
+	}
+	if input.FirstName != nil {
+		user.FirstName = fallback(*input.FirstName, username)
+	}
+	if input.LastName != nil {
+		user.LastName = fallback(*input.LastName, username)
+	}
+
+	var keyMaterial *KeyMaterial
+	if input.PublicKey != nil {
+		var err error
+		keyMaterial, err = s.keyMaterialForPrincipalLocked(authn.Principal{
+			Type: "user",
+			Name: username,
+		}, *input.PublicKey)
+		if err != nil {
+			return User{}, nil, err
+		}
+	}
+
+	s.users[username] = user
 	if err := s.finishBootstrapCoreMutationLocked(previous); err != nil {
 		return User{}, nil, err
 	}
@@ -774,13 +848,22 @@ func (s *Service) CreateClient(orgName string, input CreateClientInput) (Client,
 	}
 
 	previous := s.snapshotBootstrapCoreLocked()
-	keyMaterial, err := s.keyMaterialForPrincipalLocked(authn.Principal{
-		Type:         "client",
-		Name:         name,
-		Organization: orgName,
-	}, input.PublicKey)
-	if err != nil {
-		return Client{}, nil, err
+	var keyMaterial *KeyMaterial
+	if input.CreateDefaultKey || strings.TrimSpace(input.PublicKey) != "" {
+		var err error
+		keyMaterial, err = s.keyMaterialForPrincipalLocked(authn.Principal{
+			Type:         "client",
+			Name:         name,
+			Organization: orgName,
+		}, input.PublicKey)
+		if err != nil {
+			return Client{}, nil, err
+		}
+	}
+
+	publicKey := ""
+	if keyMaterial != nil {
+		publicKey = keyMaterial.PublicKeyPEM
 	}
 
 	client := Client{
@@ -789,21 +872,74 @@ func (s *Service) CreateClient(orgName string, input CreateClientInput) (Client,
 		Organization: orgName,
 		Validator:    input.Validator,
 		Admin:        input.Admin,
-		PublicKey:    keyMaterial.PublicKeyPEM,
+		PublicKey:    publicKey,
 		URI:          "/organizations/" + orgName + "/clients/" + name,
 	}
 	org.clients[name] = client
-	if input.Validator {
-		org.acls[clientACLKey(name)] = defaultClientACL(s.superuserName)
-	} else {
-		org.acls[clientACLKey(name)] = defaultClientACL(s.superuserName, name)
-	}
+	org.acls[clientACLKey(name)] = generatedClientACL(s.superuserName, name, input.Validator)
 
 	group := org.groups["clients"]
 	group.Clients = uniqueSorted(append(group.Clients, name))
 	group.Actors = uniqueSorted(append(group.Users, group.Clients...))
 	org.groups["clients"] = group
 
+	if err := s.finishBootstrapCoreMutationLocked(previous); err != nil {
+		return Client{}, nil, err
+	}
+	return client, keyMaterial, nil
+}
+
+// UpdateClient applies mutable client metadata and, when explicitly requested
+// by legacy API v0 routes, replaces the client's default verifier key.
+func (s *Service) UpdateClient(orgName, clientName string, input UpdateClientInput) (Client, *KeyMaterial, error) {
+	name := strings.TrimSpace(clientName)
+	if name == "" {
+		return Client{}, nil, fmt.Errorf("%w: name is required", ErrInvalidInput)
+	}
+	if !validNamePattern.MatchString(name) {
+		return Client{}, nil, fmt.Errorf("%w: name contains invalid characters", ErrInvalidInput)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	org, ok := s.orgs[orgName]
+	if !ok {
+		return Client{}, nil, ErrNotFound
+	}
+	client, ok := org.clients[name]
+	if !ok {
+		return Client{}, nil, ErrNotFound
+	}
+
+	previous := s.snapshotBootstrapCoreLocked()
+	if input.Validator != nil {
+		if client.Validator != *input.Validator {
+			if acl, ok := org.acls[clientACLKey(name)]; ok && isGeneratedClientACL(acl, s.superuserName, name) {
+				org.acls[clientACLKey(name)] = generatedClientACL(s.superuserName, name, *input.Validator)
+			}
+		}
+		client.Validator = *input.Validator
+	}
+	if input.Admin != nil {
+		client.Admin = *input.Admin
+	}
+
+	var keyMaterial *KeyMaterial
+	if input.PublicKey != nil {
+		var err error
+		keyMaterial, err = s.keyMaterialForPrincipalLocked(authn.Principal{
+			Type:         "client",
+			Name:         name,
+			Organization: orgName,
+		}, *input.PublicKey)
+		if err != nil {
+			return Client{}, nil, err
+		}
+		client.PublicKey = keyMaterial.PublicKeyPEM
+	}
+
+	org.clients[name] = client
 	if err := s.finishBootstrapCoreMutationLocked(previous); err != nil {
 		return Client{}, nil, err
 	}
@@ -1510,6 +1646,22 @@ func defaultClientACL(superuserName string, actors ...string) authz.ACL {
 		Delete: authz.Permission{Actors: aclActors, Groups: []string{"admins", "users"}},
 		Grant:  authz.Permission{Actors: aclActors, Groups: []string{"admins"}},
 	}
+}
+
+// generatedClientACL returns the create-time ACL shape for a validator or
+// normal client so updates can keep generated ACLs consistent with role flips.
+func generatedClientACL(superuserName, clientName string, validator bool) authz.ACL {
+	if validator {
+		return defaultClientACL(superuserName)
+	}
+	return defaultClientACL(superuserName, clientName)
+}
+
+// isGeneratedClientACL only recognizes ACLs that still match one of the
+// default client shapes; customized ACL documents must survive metadata edits.
+func isGeneratedClientACL(acl authz.ACL, superuserName, clientName string) bool {
+	return reflect.DeepEqual(acl, defaultClientACL(superuserName)) ||
+		reflect.DeepEqual(acl, defaultClientACL(superuserName, clientName))
 }
 
 func generateRSAKeyPair() (string, string, *rsa.PublicKey, error) {
