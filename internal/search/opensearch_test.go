@@ -145,35 +145,6 @@ func TestOpenSearchClientDiscoverProviderInfersVersionedCapabilities(t *testing.
 			headStatus: http.StatusOK,
 		},
 		{
-			name: "legacy elasticsearch requires delete-by-query fallback",
-			root: `{
-				"version":{"number":"2.4.6","build_hash":"es2"},
-				"tagline":"You Know, for Search"
-			}`,
-			want: OpenSearchProviderInfo{
-				Distribution:  "elasticsearch",
-				Version:       "2.4.6",
-				VersionParsed: true,
-				Major:         2,
-				Minor:         4,
-				Patch:         6,
-				Tagline:       "You Know, for Search",
-				BuildHash:     "es2",
-			},
-			wantCaps: OpenSearchCapabilities{
-				IndexExistsChecks:             true,
-				CreateIndex:                   true,
-				PutMapping:                    true,
-				BulkIndexing:                  true,
-				SearchIDs:                     true,
-				SearchAfterPagination:         true,
-				Refresh:                       true,
-				DeleteDocument:                true,
-				DeleteByQueryFallbackRequired: true,
-			},
-			headStatus: http.StatusOK,
-		},
-		{
 			name: "unknown future provider keeps required capabilities enabled",
 			root: `{
 				"version":{
@@ -279,6 +250,21 @@ func TestOpenSearchClientDiscoverProviderFailuresAreClassifiedAndRedacted(t *tes
 				}
 			},
 			wantErr: ErrRejected,
+		},
+		{
+			name: "legacy elasticsearch without search after is rejected",
+			handler: func(r *http.Request, _ recordedOpenSearchRequest) (int, string) {
+				switch {
+				case r.Method == http.MethodGet && r.URL.Path == "/":
+					return http.StatusOK, `{"version":{"number":"2.4.6","build_hash":"es2"},"tagline":"You Know, for Search"}`
+				case r.Method == http.MethodHead && r.URL.Path == "/chef":
+					return http.StatusOK, ""
+				default:
+					t.Fatalf("unexpected discovery request %s %s", r.Method, r.URL.String())
+					return 0, ""
+				}
+			},
+			wantErr: ErrInvalidConfiguration,
 		},
 	}
 
@@ -1360,24 +1346,14 @@ func TestOpenSearchClientRefreshAndDeleteRequestShapes(t *testing.T) {
 	requireTermFilter(t, boolQuery["filter"], "index", "node")
 }
 
-func TestOpenSearchClientDeleteByQueryFallsBackWhenDiscoveryRequiresIt(t *testing.T) {
+func TestOpenSearchClientDeleteByQueryFallsBackWhenCachedCapabilitiesRequireIt(t *testing.T) {
 	requestCount := 0
 	transport := newRecordingOpenSearchTransport(t, func(r *http.Request, recorded recordedOpenSearchRequest) (int, string) {
 		requestCount++
 		switch requestCount {
 		case 1:
-			if r.Method != http.MethodGet || r.URL.Path != "/" {
-				t.Fatalf("request 1 = %s %s, want GET /", r.Method, r.URL.Path)
-			}
-			return http.StatusOK, `{"version":{"number":"2.4.6"},"tagline":"You Know, for Search"}`
-		case 2:
-			if r.Method != http.MethodHead || r.URL.Path != "/chef" {
-				t.Fatalf("request 2 = %s %s, want HEAD /chef", r.Method, r.URL.Path)
-			}
-			return http.StatusOK, ""
-		case 3:
 			if r.Method != http.MethodPost || r.URL.Path != "/chef/_search" {
-				t.Fatalf("request 3 = %s %s, want fallback POST /chef/_search", r.Method, r.URL.Path)
+				t.Fatalf("request 1 = %s %s, want fallback POST /chef/_search", r.Method, r.URL.Path)
 			}
 			body := decodeJSONMap(t, recorded.Body)
 			if body["_source"] != false || body["size"] != float64(openSearchSearchPageSize) {
@@ -1390,19 +1366,19 @@ func TestOpenSearchClientDeleteByQueryFallsBackWhenDiscoveryRequiresIt(t *testin
 				`{"_id":"ponyville/node/applejack","sort":["ponyville/node/applejack"]},` +
 				`{"_id":"ponyville/node/twilight","sort":["ponyville/node/twilight"]}` +
 				`]}}`
-		case 4:
+		case 2:
 			if r.Method != http.MethodDelete || r.URL.EscapedPath() != "/chef/_doc/ponyville%2Fnode%2Fapplejack" {
-				t.Fatalf("request 4 = %s %s escaped=%s, want delete applejack", r.Method, r.URL.Path, r.URL.EscapedPath())
+				t.Fatalf("request 2 = %s %s escaped=%s, want delete applejack", r.Method, r.URL.Path, r.URL.EscapedPath())
 			}
 			return http.StatusOK, `{"result":"deleted"}`
-		case 5:
+		case 3:
 			if r.Method != http.MethodDelete || r.URL.EscapedPath() != "/chef/_doc/ponyville%2Fnode%2Ftwilight" {
-				t.Fatalf("request 5 = %s %s escaped=%s, want delete twilight", r.Method, r.URL.Path, r.URL.EscapedPath())
+				t.Fatalf("request 3 = %s %s escaped=%s, want delete twilight", r.Method, r.URL.Path, r.URL.EscapedPath())
 			}
 			return http.StatusOK, `{"result":"deleted"}`
-		case 6:
+		case 4:
 			if r.Method != http.MethodPost || r.URL.Path != "/chef/_refresh" {
-				t.Fatalf("request 6 = %s %s, want POST /chef/_refresh", r.Method, r.URL.Path)
+				t.Fatalf("request 4 = %s %s, want POST /chef/_refresh", r.Method, r.URL.Path)
 			}
 			return http.StatusOK, `{"refreshed":true}`
 		default:
@@ -1414,12 +1390,48 @@ func TestOpenSearchClientDeleteByQueryFallsBackWhenDiscoveryRequiresIt(t *testin
 	if err != nil {
 		t.Fatalf("NewOpenSearchClient() error = %v", err)
 	}
+	client.setProviderInfo(OpenSearchProviderInfo{
+		Distribution: "opensearch",
+		Version:      "fallback-mode",
+		Capabilities: OpenSearchCapabilities{
+			SearchAfterPagination:         true,
+			DeleteDocument:                true,
+			DeleteByQueryFallbackRequired: true,
+			Refresh:                       true,
+		},
+	})
 
 	if err := client.DeleteByQuery(context.Background(), "ponyville", "node"); err != nil {
 		t.Fatalf("DeleteByQuery(fallback) error = %v", err)
 	}
-	if requestCount != 6 {
-		t.Fatalf("requestCount = %d, want 6", requestCount)
+	if requestCount != 4 {
+		t.Fatalf("requestCount = %d, want 4", requestCount)
+	}
+}
+
+func TestOpenSearchClientDeleteByQueryRejectsFallbackWithoutSearchAfter(t *testing.T) {
+	transport := newRecordingOpenSearchTransport(t, func(r *http.Request, _ recordedOpenSearchRequest) (int, string) {
+		t.Fatalf("unexpected provider request after unsupported cached capabilities: %s %s", r.Method, r.URL.String())
+		return 0, ""
+	})
+	client, err := NewOpenSearchClient("http://opensearch.local", WithOpenSearchTransport(transport))
+	if err != nil {
+		t.Fatalf("NewOpenSearchClient() error = %v", err)
+	}
+	client.setProviderInfo(OpenSearchProviderInfo{
+		Distribution: "elasticsearch",
+		Version:      "2.4.6",
+		Capabilities: OpenSearchCapabilities{
+			DeleteDocument: true,
+		},
+	})
+
+	err = client.DeleteByQuery(context.Background(), "ponyville", "node")
+	if !errors.Is(err, ErrInvalidConfiguration) {
+		t.Fatalf("DeleteByQuery(unsupported fallback) error = %v, want ErrInvalidConfiguration", err)
+	}
+	if !strings.Contains(err.Error(), "search_after pagination") {
+		t.Fatalf("DeleteByQuery(unsupported fallback) error = %q, want search_after context", err.Error())
 	}
 }
 
@@ -1799,8 +1811,8 @@ func TestOpenSearchStatusVariants(t *testing.T) {
 	}
 
 	degraded := OpenSearchProviderStatus(OpenSearchProviderInfo{
-		Distribution: "elasticsearch",
-		Version:      "2.4.6",
+		Distribution: "opensearch",
+		Version:      "fallback-mode",
 		Capabilities: OpenSearchCapabilities{
 			SearchAfterPagination:         true,
 			DeleteByQueryFallbackRequired: true,

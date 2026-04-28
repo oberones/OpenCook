@@ -804,11 +804,12 @@ func (t *adminCapabilityOpenSearchTransport) Do(req *http.Request) (*http.Respon
 func (t *adminCapabilityOpenSearchTransport) rootResponse() map[string]any {
 	if t.mode == adminCapabilityFallbackDelete {
 		return map[string]any{
-			"name": "legacy-node",
+			"name": "fallback-node",
 			"version": map[string]any{
-				"number": "2.4.6",
+				"distribution": "opensearch",
+				"number":       "2.12.0",
 			},
-			"tagline": "You Know, for Search",
+			"tagline": "The OpenSearch Project: https://opensearch.org/",
 		}
 	}
 	return map[string]any{
@@ -823,7 +824,7 @@ func (t *adminCapabilityOpenSearchTransport) rootResponse() map[string]any {
 
 func (t *adminCapabilityOpenSearchTransport) handleDeleteByQuery(req *http.Request, body []byte) *http.Response {
 	if t.mode == adminCapabilityFallbackDelete {
-		t.t.Fatalf("fallback provider used direct delete-by-query: %s", string(body))
+		return t.jsonResponse(req, http.StatusMethodNotAllowed, map[string]any{"error": "delete-by-query disabled in test provider"})
 	}
 	t.directDeleteByQueries++
 	org, index := adminCapabilityScopeFromBody(t.t, body)
