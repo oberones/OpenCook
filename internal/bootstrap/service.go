@@ -10,6 +10,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"reflect"
 	"regexp"
 	"sort"
 	"strings"
@@ -875,11 +876,7 @@ func (s *Service) CreateClient(orgName string, input CreateClientInput) (Client,
 		URI:          "/organizations/" + orgName + "/clients/" + name,
 	}
 	org.clients[name] = client
-	if input.Validator {
-		org.acls[clientACLKey(name)] = defaultClientACL(s.superuserName)
-	} else {
-		org.acls[clientACLKey(name)] = defaultClientACL(s.superuserName, name)
-	}
+	org.acls[clientACLKey(name)] = generatedClientACL(s.superuserName, name, input.Validator)
 
 	group := org.groups["clients"]
 	group.Clients = uniqueSorted(append(group.Clients, name))
@@ -917,6 +914,11 @@ func (s *Service) UpdateClient(orgName, clientName string, input UpdateClientInp
 
 	previous := s.snapshotBootstrapCoreLocked()
 	if input.Validator != nil {
+		if client.Validator != *input.Validator {
+			if acl, ok := org.acls[clientACLKey(name)]; ok && isGeneratedClientACL(acl, s.superuserName, name) {
+				org.acls[clientACLKey(name)] = generatedClientACL(s.superuserName, name, *input.Validator)
+			}
+		}
 		client.Validator = *input.Validator
 	}
 	if input.Admin != nil {
@@ -1644,6 +1646,22 @@ func defaultClientACL(superuserName string, actors ...string) authz.ACL {
 		Delete: authz.Permission{Actors: aclActors, Groups: []string{"admins", "users"}},
 		Grant:  authz.Permission{Actors: aclActors, Groups: []string{"admins"}},
 	}
+}
+
+// generatedClientACL returns the create-time ACL shape for a validator or
+// normal client so updates can keep generated ACLs consistent with role flips.
+func generatedClientACL(superuserName, clientName string, validator bool) authz.ACL {
+	if validator {
+		return defaultClientACL(superuserName)
+	}
+	return defaultClientACL(superuserName, clientName)
+}
+
+// isGeneratedClientACL only recognizes ACLs that still match one of the
+// default client shapes; customized ACL documents must survive metadata edits.
+func isGeneratedClientACL(acl authz.ACL, superuserName, clientName string) bool {
+	return reflect.DeepEqual(acl, defaultClientACL(superuserName)) ||
+		reflect.DeepEqual(acl, defaultClientACL(superuserName, clientName))
 }
 
 func generateRSAKeyPair() (string, string, *rsa.PublicKey, error) {
