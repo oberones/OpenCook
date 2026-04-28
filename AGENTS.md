@@ -260,7 +260,7 @@ Implemented so far:
   - raw-item data bag partial search rows
   - encrypted-looking data bag full/partial search and OpenSearch reindex/check/repair coverage without server-side secrets
   - broader Lucene/query-string compatibility for the implemented indexes, including grouped booleans, precedence, unary negation, quoted phrases, escaped punctuation, wildcard field/value matching, existence checks, ranges, invalid-query shaping, deterministic paging/order, and partial search
-  - active OpenSearch-backed mode when PostgreSQL and `OPENCOOK_OPENSEARCH_URL` are configured, including startup rebuild from persisted state, successful mutation upserts/deletes, stale-ID ignoring after PostgreSQL hydration, ACL filtering after provider matches, provider-unavailable `503 search_unavailable` degradation, truthful status reporting, Docker functional coverage for restart/query-compatibility/update/delete lifecycle behavior including encrypted data bag items, and operational reindex/check/repair coverage
+  - active OpenSearch-backed mode when PostgreSQL and `OPENCOOK_OPENSEARCH_URL` are configured, including startup rebuild from persisted state, successful mutation upserts/deletes, stale-ID ignoring after PostgreSQL hydration, ACL filtering after provider matches, provider-unavailable `503 search_unavailable` degradation, provider discovery/version/capability status reporting, versioned mapping lifecycle, direct/fallback delete-by-query behavior, redacted provider failures, startup activation hardening, Docker functional coverage for restart/query-compatibility/update/delete/provider-capability lifecycle behavior including encrypted data bag items, and operational reindex/check/repair coverage
   - cookbook, cookbook-artifact, policy, policy-group, sandbox, and checksum-related state is explicitly pinned as not publicly searchable through Chef search indexes; those families stay absent from `/search` listings, return unsupported-index responses for full and partial search, are excluded from rebuild/mutation indexing, and are rejected by scoped admin reindex/check/repair while stale unsupported provider docs may be deleted by unscoped repair
 - the first data bag slice:
   - `/data`
@@ -289,7 +289,7 @@ Current architectural reality:
 - org bootstrap returns validator key material, and generated `<org>-validator` clients can now register normal clients through the stock bootstrap routes
 - the first `opencook admin` operational surface is live, but full `chef-server-ctl` parity, backup/restore, service management, migration/cutover tooling, and online direct PostgreSQL mutation remain future work
 - data bag CRUD and encrypted data bag payload opacity are now explicitly pinned as tested compatibility slices
-- PostgreSQL is active for cookbook metadata, bootstrap core state, and implemented core object API state; OpenSearch-backed search is active for the implemented Chef search indexes when PostgreSQL and `OPENCOOK_OPENSEARCH_URL` are configured, with the memory adapter preserved as the no-OpenSearch fallback and unsupported cookbook/policy/sandbox/checksum object families pinned as non-searchable
+- PostgreSQL is active for cookbook metadata, bootstrap core state, and implemented core object API state; OpenSearch-backed search is active for the implemented Chef search indexes when PostgreSQL and `OPENCOOK_OPENSEARCH_URL` are configured, with provider discovery/capability reporting, versioned mapping management, direct/fallback delete coverage, the memory adapter preserved as the no-OpenSearch fallback, and unsupported cookbook/policy/sandbox/checksum object families pinned as non-searchable
 - the blob layer now has in-memory, filesystem-backed, and S3-compatible compatibility implementations for sandbox checksum uploads/downloads and cookbook file URLs, and the S3-compatible path now includes request-construction parity, configurable timeout/retry plus `Retry-After` behavior, transport/status classification, malformed-endpoint and missing-credential diagnostics, and provider-backed `blob_unavailable` degradation on the current sandbox/cookbook flows
 - API-version negotiation and version-sensitive object payload behavior are now compatibility-pinned for the implemented Chef surfaces; do not reopen those shapes without upstream pedant evidence
 
@@ -320,7 +320,7 @@ High-level package roles:
 - `internal/store/pg`
   - active PostgreSQL-backed cookbook, bootstrap core, and implemented core object API persistence
 - `internal/search`
-  - memory fallback plus active OpenSearch-backed compatibility search/indexing for implemented Chef-searchable object families, with explicit guardrails against invented cookbook/policy/sandbox/checksum indexes
+  - memory fallback plus active OpenSearch-backed compatibility search/indexing for implemented Chef-searchable object families, provider capability/version discovery, versioned mapping management, direct/fallback delete behavior, and explicit guardrails against invented cookbook/policy/sandbox/checksum indexes
 - `internal/blob`
   - current in-memory, filesystem-backed, and S3-compatible provider-backed blob storage for sandbox and cookbook content
 
@@ -450,10 +450,9 @@ When you start a new compatibility slice:
 
 These areas are still intentionally incomplete:
 
-- deeper OpenSearch provider capability/version behavior
 - remaining core Chef object compatibility beyond the currently pinned nodes, environments, roles, data bags, policies, and sandbox flows
 - deeper node and environment compatibility such as cookbook constraint edge cases and linked object behavior
 - deeper role compatibility beyond the current normalization and linked-environment read behavior
-- operational parity and migration tooling
+- operational parity, migration/cutover tooling, backup/restore, and deployment runbooks
 
-The next likely major slice is OpenSearch provider capability/version hardening, with migration/cutover tooling remaining the next operational follow-on bucket.
+The next likely major slice is migration/cutover tooling, with deployment-test-discovered compatibility gaps taking priority if they prove higher risk.

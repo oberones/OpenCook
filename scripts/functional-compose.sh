@@ -13,6 +13,19 @@ compose_with_tests() {
 	docker compose -p "$project_name" -f "$compose_file" --profile test "$@"
 }
 
+if [[ -n "${OPENCOOK_FUNCTIONAL_OPENSEARCH_MATRIX:-}" && "${OPENCOOK_FUNCTIONAL_MATRIX_CHILD:-0}" != "1" ]]; then
+  for image in $OPENCOOK_FUNCTIONAL_OPENSEARCH_MATRIX; do
+    safe_image="$(printf '%s' "$image" | tr -cs '[:alnum:]' '-' | tr '[:upper:]' '[:lower:]' | sed 's/^-//;s/-$//')"
+    if [[ -z "$safe_image" ]]; then
+      safe_image="provider"
+    fi
+    echo
+    echo "==> functional OpenSearch provider image: $image"
+    COMPOSE_PROJECT_NAME="${project_name}-${safe_image}" OPENSEARCH_IMAGE="$image" OPENCOOK_FUNCTIONAL_MATRIX_CHILD=1 "$0" "$@"
+  done
+  exit 0
+fi
+
 cleanup() {
   if [[ "${KEEP_STACK:-0}" != "1" ]]; then
     compose down -v --remove-orphans
