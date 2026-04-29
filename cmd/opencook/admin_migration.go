@@ -781,8 +781,9 @@ func buildAdminMigrationBackupInspect(bundlePath string, opts *adminMigrationFla
 	return out
 }
 
-// adminMigrationInspectBackupBundle loads manifest.json and checks every
-// recorded payload size plus SHA-256 digest against the local bundle bytes.
+// adminMigrationInspectBackupBundle loads manifest.json, checks every recorded
+// payload size plus SHA-256 digest, and requires the fixed payloads that restore
+// consumes later so a trimmed manifest cannot bypass integrity validation.
 func adminMigrationInspectBackupBundle(bundlePath string) (adminMigrationBackupManifest, []adminMigrationFinding, error) {
 	manifestPath := filepath.Join(bundlePath, adminMigrationBackupManifestPath)
 	rawManifest, err := os.ReadFile(manifestPath)
@@ -797,9 +798,19 @@ func adminMigrationInspectBackupBundle(bundlePath string) (adminMigrationBackupM
 		return manifest, []adminMigrationFinding{adminMigrationBackupInspectFinding("backup_manifest_unsupported_format", "backup manifest format version is not supported")}, fmt.Errorf("unsupported backup format %q", manifest.FormatVersion)
 	}
 	var findings []adminMigrationFinding
+	manifestPayloads := map[string]struct{}{}
 	for _, payload := range manifest.Payloads {
+		relativePath, err := adminMigrationNormalizeBackupPayloadPath(payload.Path)
+		if err == nil {
+			manifestPayloads[relativePath] = struct{}{}
+		}
 		if err := adminMigrationInspectBackupPayload(bundlePath, payload); err != nil {
 			findings = append(findings, adminMigrationBackupInspectFinding("backup_payload_integrity_failed", "backup payload "+payload.Path+" failed integrity validation"))
+		}
+	}
+	for _, path := range adminMigrationRequiredRestorePayloadPaths() {
+		if _, ok := manifestPayloads[path]; !ok {
+			findings = append(findings, adminMigrationBackupInspectFinding("backup_required_payload_missing", "backup manifest is missing required restore payload "+path))
 		}
 	}
 	if len(findings) > 0 {
@@ -808,12 +819,33 @@ func adminMigrationInspectBackupBundle(bundlePath string) (adminMigrationBackupM
 	return manifest, nil, nil
 }
 
+// adminMigrationRequiredRestorePayloadPaths lists payloads that restore reads by
+// fixed path after the manifest gate succeeds.
+func adminMigrationRequiredRestorePayloadPaths() []string {
+	return []string{
+		adminMigrationBackupBootstrapPath,
+		adminMigrationBackupObjectsPath,
+		adminMigrationBackupCookbooksPath,
+		adminMigrationBackupBlobsPath,
+	}
+}
+
+// adminMigrationNormalizeBackupPayloadPath canonicalizes manifest paths before
+// integrity checks and required-payload matching.
+func adminMigrationNormalizeBackupPayloadPath(path string) (string, error) {
+	relativePath := filepath.Clean(strings.TrimSpace(path))
+	if relativePath == "." || filepath.IsAbs(relativePath) || relativePath == ".." || strings.HasPrefix(relativePath, ".."+string(os.PathSeparator)) {
+		return "", fmt.Errorf("invalid backup payload path %q", path)
+	}
+	return filepath.ToSlash(relativePath), nil
+}
+
 // adminMigrationInspectBackupPayload validates one manifest payload while
 // rejecting absolute paths or traversal attempts inside the portable bundle.
 func adminMigrationInspectBackupPayload(bundlePath string, payload adminMigrationBackupPayload) error {
-	relativePath := filepath.Clean(strings.TrimSpace(payload.Path))
-	if relativePath == "." || filepath.IsAbs(relativePath) || relativePath == ".." || strings.HasPrefix(relativePath, ".."+string(os.PathSeparator)) {
-		return fmt.Errorf("invalid backup payload path %q", payload.Path)
+	relativePath, err := adminMigrationNormalizeBackupPayloadPath(payload.Path)
+	if err != nil {
+		return err
 	}
 	data, err := os.ReadFile(filepath.Join(bundlePath, relativePath))
 	if err != nil {
