@@ -621,6 +621,42 @@ func TestAdminMigrationBackupCreateWritesAndInspectValidatesBundle(t *testing.T)
 	requireAdminMigrationFinding(t, requireAdminMigrationArray(t, tamperedOut, "findings"), "backup_payload_integrity_failed")
 }
 
+func TestAdminMigrationInspectBackupBundleRequiresRestorePayloads(t *testing.T) {
+	bundlePath := writeAdminMigrationRestoreTestBundle(t)
+	manifest := mustReadAdminMigrationBackupManifest(t, bundlePath)
+	filteredPayloads := make([]adminMigrationBackupPayload, 0, len(manifest.Payloads))
+	for _, payload := range manifest.Payloads {
+		if payload.Path == adminMigrationBackupCookbooksPath {
+			continue
+		}
+		filteredPayloads = append(filteredPayloads, payload)
+	}
+	manifest.Payloads = filteredPayloads
+	rawManifest, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		t.Fatalf("MarshalIndent(manifest) error = %v", err)
+	}
+	rawManifest = append(rawManifest, '\n')
+	if err := os.WriteFile(filepath.Join(bundlePath, adminMigrationBackupManifestPath), rawManifest, 0o644); err != nil {
+		t.Fatalf("WriteFile(manifest without cookbooks payload) error = %v", err)
+	}
+
+	_, findings, err := adminMigrationInspectBackupBundle(bundlePath)
+	if err == nil {
+		t.Fatalf("adminMigrationInspectBackupBundle() error = nil, want missing required payload")
+	}
+	foundMissingPayload := false
+	for _, finding := range findings {
+		if finding.Code == "backup_required_payload_missing" {
+			foundMissingPayload = true
+			break
+		}
+	}
+	if !foundMissingPayload {
+		t.Fatalf("findings = %#v, want backup_required_payload_missing", findings)
+	}
+}
+
 func TestAdminMigrationBackupCreateRefusesMissingOrUnavailableBlobs(t *testing.T) {
 	for _, tc := range []struct {
 		name         string
