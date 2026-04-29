@@ -1205,7 +1205,12 @@ func (c *command) applyAdminMigrationRestore(ctx context.Context, cfg config.Con
 	if !ok {
 		return out
 	}
-	targetDependency, targetFindings := adminMigrationRestoreTargetDependency(adminMigrationInventoryFromState(previousBootstrap, previousCore, nil, ""), manifest.Inventory)
+	targetCookbookInventory, err := adminMigrationRestoreTargetCookbookInventory(store, previousBootstrap, previousCore, manifest.Inventory)
+	if err != nil {
+		adminMigrationMarkError(&out, "postgres_cookbooks_unavailable", "restore target cookbook state could not be loaded", "restore_target")
+		return out
+	}
+	targetDependency, targetFindings := adminMigrationRestoreTargetDependency(adminMigrationInventoryFromState(previousBootstrap, previousCore, targetCookbookInventory, ""), manifest.Inventory)
 	if targetDependency.Status == "error" {
 		adminMigrationMarkDependency(&out, targetDependency)
 		for _, finding := range targetFindings {
@@ -1289,6 +1294,25 @@ func adminMigrationLoadRestoreTargetSnapshots(out *adminMigrationCLIOutput, stor
 		return bootstrap.BootstrapCoreState{}, bootstrap.CoreObjectState{}, false
 	}
 	return bootstrapState, coreObjectState, true
+}
+
+// adminMigrationRestoreTargetCookbookInventory includes cookbook rows in the
+// final apply-time emptiness check so restore retries do not start from a
+// target that already contains partially imported cookbook metadata.
+func adminMigrationRestoreTargetCookbookInventory(store adminOfflineStore, bootstrapState bootstrap.BootstrapCoreState, coreObjectState bootstrap.CoreObjectState, expected adminMigrationInventory) (map[string]adminMigrationCookbookInventory, error) {
+	loader, ok := store.(adminMigrationCookbookInventoryLoader)
+	if !ok {
+		return nil, nil
+	}
+	orgSet := map[string]struct{}{}
+	for _, orgName := range adminMigrationOrgNames(bootstrapState, coreObjectState, nil, "") {
+		orgSet[orgName] = struct{}{}
+	}
+	for _, orgName := range adminMigrationInventoryOrgNames(expected) {
+		orgSet[orgName] = struct{}{}
+	}
+	orgNames := adminMigrationSortedStringSet(orgSet)
+	return loader.LoadCookbookInventory(orgNames)
 }
 
 // adminMigrationRestoreBundleBlobs restores copied blob bytes and verifies

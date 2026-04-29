@@ -902,6 +902,81 @@ func TestAdminMigrationRestoreApplyRestoresStateAndRecommendsReindex(t *testing.
 	}
 }
 
+func TestAdminMigrationRestoreApplyRefusesCookbookOnlyTargetState(t *testing.T) {
+	bundlePath, _ := writeAdminMigrationRestoreTestBundleWithBlobAndCookbook(t)
+	targetStore := &fakeMigrationInventoryStore{
+		fakeOfflineStore: &fakeOfflineStore{
+			bootstrap: bootstrap.BootstrapCoreState{},
+			objects:   bootstrap.CoreObjectState{},
+		},
+		cookbookInventory: map[string]adminMigrationCookbookInventory{"ponyville": {Versions: 1}},
+		cookbookExport:    adminMigrationCookbookExport{Orgs: map[string]adminMigrationCookbookOrgExport{}},
+	}
+	cmd, stdout, stderr := newTestCommand(t)
+	cmd.newBlobStore = func(config.Config) (blob.Store, error) {
+		return fakeMigrationBlobStore{
+			status: blob.Status{Backend: "memory-compat", Configured: true, Message: "test blob backend"},
+		}, nil
+	}
+	cmd.loadOffline = func() (config.Config, error) {
+		return config.Config{PostgresDSN: "postgres://opencook", BlobBackend: "memory"}, nil
+	}
+	cmd.newOfflineStore = func(context.Context, string) (adminOfflineStore, func() error, error) {
+		return targetStore, nil, nil
+	}
+
+	code := cmd.Run(context.Background(), []string{"admin", "migration", "restore", "apply", bundlePath, "--offline", "--yes", "--json"})
+	if code != exitDependencyUnavailable {
+		t.Fatalf("Run(migration restore apply cookbook-only target) exit = %d, want %d; stdout = %s stderr = %s", code, exitDependencyUnavailable, stdout.String(), stderr.String())
+	}
+	out := decodeAdminMigrationOutput(t, stdout.String())
+	requireAdminMigrationDependency(t, requireAdminMigrationArray(t, out, "dependencies"), "restore_target", "error")
+	requireAdminMigrationFinding(t, requireAdminMigrationArray(t, out, "findings"), "restore_target_not_empty")
+	if targetStore.restoredCookbooks.Orgs != nil {
+		t.Fatalf("restore should not import cookbooks into non-empty target: %#v", targetStore.restoredCookbooks)
+	}
+}
+
+func TestPostgresAdminOfflineStoreRestoreCookbookExportRollsBackPartialCookbooks(t *testing.T) {
+	errArtifact := errors.New("artifact conflict")
+	cookbookStore := &fakeMigrationCookbookStore{
+		artifactErr:       errArtifact,
+		artifactErrForID:  "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		artifactDeleteErr: nil,
+	}
+	store := postgresAdminOfflineStore{cookbooks: cookbookStore}
+	bootstrapState, _ := adminMigrationHealthyStates(t)
+	export := adminMigrationCookbookExport{Orgs: map[string]adminMigrationCookbookOrgExport{
+		"ponyville": {
+			Versions: []bootstrap.CookbookVersion{{
+				Name:         "app-1.2.3",
+				CookbookName: "app",
+				Version:      "1.2.3",
+			}},
+			Artifacts: []bootstrap.CookbookArtifact{{
+				Name:       "artifact-app",
+				Identifier: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+				Version:    "1.2.3",
+			}, {
+				Name:       "artifact-app",
+				Identifier: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+				Version:    "1.2.4",
+			}},
+		},
+	}}
+
+	err := store.RestoreCookbookExport(bootstrapState, export)
+	if !errors.Is(err, errArtifact) {
+		t.Fatalf("RestoreCookbookExport() error = %v, want artifact conflict", err)
+	}
+	if got, want := cookbookStore.deletedArtifacts, []string{"ponyville/artifact-app/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}; !sameAdminStrings(got, want) {
+		t.Fatalf("deleted artifacts = %v, want %v", got, want)
+	}
+	if got, want := cookbookStore.deletedVersions, []string{"ponyville/app/1.2.3"}; !sameAdminStrings(got, want) {
+		t.Fatalf("deleted versions = %v, want %v", got, want)
+	}
+}
+
 func TestAdminMigrationRestoreApplyDryRunDoesNotMutate(t *testing.T) {
 	bundlePath, _ := writeAdminMigrationRestoreTestBundleWithBlobAndCookbook(t)
 	targetStore := &fakeMigrationInventoryStore{
@@ -1428,6 +1503,83 @@ func (s *fakeMigrationInventoryStore) RestoreCookbookExport(_ bootstrap.Bootstra
 	}
 	s.restoredCookbooks = export
 	return nil
+}
+
+type fakeMigrationCookbookStore struct {
+	artifactErr       error
+	artifactErrForID  string
+	artifactDeleteErr error
+	versionDeleteErr  error
+	deletedArtifacts  []string
+	deletedVersions   []string
+}
+
+func (s *fakeMigrationCookbookStore) EnsureOrganization(bootstrap.Organization) {}
+
+func (s *fakeMigrationCookbookStore) HasCookbookVersion(string, string, string) (bool, bool) {
+	return false, true
+}
+
+func (s *fakeMigrationCookbookStore) ListCookbookArtifacts(string) (map[string][]bootstrap.CookbookArtifact, bool) {
+	return nil, true
+}
+
+func (s *fakeMigrationCookbookStore) ListCookbookArtifactsByName(string, string) ([]bootstrap.CookbookArtifact, bool, bool) {
+	return nil, true, false
+}
+
+func (s *fakeMigrationCookbookStore) GetCookbookArtifact(string, string, string) (bootstrap.CookbookArtifact, bool, bool) {
+	return bootstrap.CookbookArtifact{}, true, false
+}
+
+func (s *fakeMigrationCookbookStore) CreateCookbookArtifact(orgName string, artifact bootstrap.CookbookArtifact) (bootstrap.CookbookArtifact, error) {
+	if s.artifactErr != nil && artifact.Identifier == s.artifactErrForID {
+		return bootstrap.CookbookArtifact{}, s.artifactErr
+	}
+	return artifact, nil
+}
+
+func (s *fakeMigrationCookbookStore) DeleteCookbookArtifactWithReleasedChecksums(orgName, name, identifier string) (bootstrap.CookbookArtifact, []string, error) {
+	if s.artifactDeleteErr != nil {
+		return bootstrap.CookbookArtifact{}, nil, s.artifactDeleteErr
+	}
+	s.deletedArtifacts = append(s.deletedArtifacts, orgName+"/"+name+"/"+identifier)
+	return bootstrap.CookbookArtifact{Name: name, Identifier: identifier}, nil, nil
+}
+
+func (s *fakeMigrationCookbookStore) ListCookbookVersions(string) (map[string][]bootstrap.CookbookVersionRef, bool) {
+	return nil, true
+}
+
+func (s *fakeMigrationCookbookStore) ListCookbookVersionsByName(string, string) ([]bootstrap.CookbookVersionRef, bool, bool) {
+	return nil, true, false
+}
+
+func (s *fakeMigrationCookbookStore) ListCookbookVersionModelsByName(string, string) ([]bootstrap.CookbookVersion, bool, bool) {
+	return nil, true, false
+}
+
+func (s *fakeMigrationCookbookStore) GetCookbookVersion(string, string, string) (bootstrap.CookbookVersion, bool, bool) {
+	return bootstrap.CookbookVersion{}, true, false
+}
+
+func (s *fakeMigrationCookbookStore) UpsertCookbookVersionWithReleasedChecksums(orgName string, version bootstrap.CookbookVersion, force bool) (bootstrap.CookbookVersion, []string, bool, error) {
+	return version, nil, true, nil
+}
+
+func (s *fakeMigrationCookbookStore) DeleteCookbookVersionWithReleasedChecksums(orgName, name, version string) (bootstrap.CookbookVersion, []string, error) {
+	if s.versionDeleteErr != nil {
+		return bootstrap.CookbookVersion{}, nil, s.versionDeleteErr
+	}
+	s.deletedVersions = append(s.deletedVersions, orgName+"/"+name+"/"+version)
+	return bootstrap.CookbookVersion{CookbookName: name, Version: version}, nil, nil
+}
+
+func (s *fakeMigrationCookbookStore) DeleteCookbookChecksumReferencesFromRemaining(map[string]struct{}) {
+}
+
+func (s *fakeMigrationCookbookStore) CookbookChecksumReferenced(string) bool {
+	return false
 }
 
 type fakeMigrationRehearsalClient struct {
