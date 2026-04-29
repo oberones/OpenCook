@@ -22,11 +22,13 @@ The durable deployment path is now PostgreSQL plus provider-backed blob storage,
 - Built-in Chef search indexes for clients, environments, nodes, roles, and data bags, with memory fallback and active OpenSearch-backed mode when PostgreSQL and OpenSearch are configured.
 - Blob storage backends for in-memory, local filesystem, and S3-compatible providers.
 - `opencook admin` workflows for signed live inspection/management, offline-gated repair commands, and PostgreSQL-backed OpenSearch reindex/check/repair.
+- First migration/cutover tooling for OpenCook targets, including preflight validation, logical backup create/inspect, offline restore preflight/apply, source artifact inventory, restored-target reindex, and cutover rehearsal.
 
 ## Current Limitations
 
 - OpenCook is not production-ready yet.
-- Migration/cutover tooling, backup/restore, broader `chef-server-ctl` parity, metrics, and service-management hardening are still in progress.
+- Broader `chef-server-ctl` parity, metrics, and service-management hardening are still in progress.
+- The first migration tooling supports OpenCook-to-OpenCook logical backup/restore and read-only Chef Server source inventory. Full live Chef Infra Server import/sync remains follow-on work.
 - Some Chef object edge cases and less common compatibility surfaces still need additional pedant-backed hardening.
 - OpenSearch is intentionally a derived index. PostgreSQL is the source of truth.
 - Public search indexes are limited to Chef-supported object families that OpenCook has implemented: clients, environments, nodes, roles, and data bags. Cookbook, cookbook-artifact, policy, policy-group, sandbox, and checksum state is intentionally not exposed as public Chef search indexes.
@@ -277,6 +279,7 @@ The first `opencook admin` CLI supports:
 - group, container, and ACL inspection
 - offline-gated membership and ACL repair commands
 - OpenSearch reindex/check/repair from PostgreSQL-backed state
+- migration preflight, backup create/inspect, restore preflight/apply, source inventory, and cutover rehearsal
 
 Show command help:
 
@@ -284,6 +287,22 @@ Show command help:
 bin/opencook help
 bin/opencook admin help
 bin/opencook admin reindex help
+bin/opencook admin migration help
+```
+
+The first supported migration path is a logical OpenCook backup/restore drill
+with PostgreSQL-backed state, provider-backed blobs, derived OpenSearch rebuild,
+and live restored-target rehearsal. Run restore, reindex, and rehearsal commands
+with `OPENCOOK_*` and `OPENCOOK_ADMIN_*` settings pointed at the restore target:
+
+```bash
+bin/opencook admin migration preflight --all-orgs --json
+bin/opencook admin migration backup create --output .local/opencook-backup --offline --yes --json
+bin/opencook admin migration backup inspect .local/opencook-backup --json
+bin/opencook admin migration restore preflight .local/opencook-backup --offline --json
+bin/opencook admin migration restore apply .local/opencook-backup --offline --yes --json
+bin/opencook admin reindex --all-orgs --complete --json
+bin/opencook admin migration cutover rehearse --manifest .local/opencook-backup/manifest.json --json
 ```
 
 ## Testing

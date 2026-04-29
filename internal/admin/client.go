@@ -28,6 +28,14 @@ type Client struct {
 	now     func() time.Time
 }
 
+// RawResponse carries the minimal response data admin tooling needs when it
+// follows non-JSON signed blob URLs during migration validation.
+type RawResponse struct {
+	StatusCode int
+	Header     http.Header
+	Body       []byte
+}
+
 type Option func(*Client)
 
 func WithHTTPDoer(doer HTTPDoer) Option {
@@ -122,6 +130,36 @@ func (c *Client) DoJSON(ctx context.Context, method, path string, in, out any) e
 	return nil
 }
 
+// DoUnsigned performs an unsigned request for server-generated signed URLs,
+// such as cookbook and sandbox blob download links returned by Chef APIs.
+func (c *Client) DoUnsigned(ctx context.Context, method, rawURL string) (RawResponse, error) {
+	if c == nil {
+		return RawResponse{}, errorf(CodeInvalidConfiguration, "admin client is not configured")
+	}
+	target, err := c.resolveUnsigned(rawURL)
+	if err != nil {
+		return RawResponse{}, err
+	}
+	req, err := http.NewRequestWithContext(ctx, strings.ToUpper(method), target.String(), nil)
+	if err != nil {
+		return RawResponse{}, errorf(CodeInvalidConfiguration, "request URL is invalid")
+	}
+	req.Header.Set("Accept", "*/*")
+	resp, err := c.doer.Do(req)
+	if err != nil {
+		return RawResponse{}, errorf(CodeRequestFailed, "%s %s request failed", strings.ToUpper(method), safePath(rawURL))
+	}
+	defer resp.Body.Close()
+	payload, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return RawResponse{}, errorf(CodeRequestFailed, "%s %s response read failed", strings.ToUpper(method), safePath(rawURL))
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return RawResponse{}, errorf(CodeRequestFailed, "%s %s returned HTTP %d", strings.ToUpper(method), safePath(rawURL), resp.StatusCode)
+	}
+	return RawResponse{StatusCode: resp.StatusCode, Header: resp.Header.Clone(), Body: payload}, nil
+}
+
 func (c *Client) NewJSONRequest(ctx context.Context, method, path string, body []byte) (*http.Request, error) {
 	if c == nil {
 		return nil, errorf(CodeInvalidConfiguration, "admin client is not configured")
@@ -173,6 +211,26 @@ func (c *Client) resolve(path string) (*url.URL, error) {
 		ref.Path = "/" + strings.TrimPrefix(ref.Path, "/")
 	}
 	return c.baseURL.ResolveReference(ref), nil
+}
+
+// resolveUnsigned accepts absolute URLs because signed blob links are returned
+// as complete URLs, while still supporting relative paths in tests and tooling.
+func (c *Client) resolveUnsigned(rawURL string) (*url.URL, error) {
+	raw := strings.TrimSpace(rawURL)
+	if raw == "" {
+		return nil, errorf(CodeInvalidConfiguration, "request URL is required")
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return nil, errorf(CodeInvalidConfiguration, "request URL is invalid")
+	}
+	if parsed.IsAbs() {
+		if parsed.Scheme != "http" && parsed.Scheme != "https" {
+			return nil, errorf(CodeInvalidConfiguration, "request URL must use http or https")
+		}
+		return parsed, nil
+	}
+	return c.resolve(raw)
 }
 
 func normalizeConfig(cfg Config) Config {

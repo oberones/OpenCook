@@ -10,7 +10,9 @@ The tests intentionally talk to OpenCook over HTTP with Chef-style signed reques
 scripts/functional-compose.sh
 ```
 
-The default flow builds the images, starts the stack, creates compatibility objects including encrypted-looking data bag items, restarts OpenCook, verifies rehydration through active OpenSearch-backed search, runs the targeted Lucene/query-string compatibility phase, runs invalid-write/no-mutation checks, updates searchable fields and verifies old search terms disappear, restarts again, reruns the query compatibility phase against updated persisted state, runs the operational admin/reindex/search-repair phases, restarts after repair, deletes the objects, restarts one more time, and verifies deletion persisted.
+The default flow builds the images, starts the stack, creates compatibility objects including encrypted-looking data bag items, restarts OpenCook, verifies rehydration through active OpenSearch-backed search, runs the targeted Lucene/query-string compatibility phase, runs invalid-write/no-mutation checks, updates searchable fields and verifies old search terms disappear, restarts again, reruns the query compatibility phase against updated persisted state, runs the operational admin/reindex/search-repair phases, restarts after repair, runs migration preflight plus backup create/inspect against the active stack, deletes the objects, restarts one more time, and verifies deletion persisted.
+
+Successful default and targeted runs end with a `functional tests passed successfully` footer so CI and humans can distinguish a clean finish from an abrupt final phase log.
 
 By default the script removes containers and volumes on exit. Keep the stack for inspection with:
 
@@ -32,10 +34,11 @@ KEEP_STACK=1 scripts/functional-compose.sh query-compat
 KEEP_STACK=1 scripts/functional-compose.sh invalid restart verify
 KEEP_STACK=1 scripts/functional-compose.sh search-update verify-search-updated restart verify-search-updated
 KEEP_STACK=1 scripts/functional-compose.sh operational restart operational-verify
+KEEP_STACK=1 scripts/functional-compose.sh migration-preflight migration-backup migration-backup-inspect
 KEEP_STACK=1 scripts/functional-compose.sh delete restart verify-deleted
 ```
 
-Supported phase names are `create`, `verify`, `query-compat`, `invalid`, `search-update`, `verify-search-updated`, `operational`, `operational-verify`, `delete`, `verify-deleted`, and `restart`.
+Supported phase names are `create`, `verify`, `query-compat`, `invalid`, `search-update`, `verify-search-updated`, `operational`, `operational-verify`, `migration-preflight`, `migration-backup`, `migration-backup-inspect`, `migration-restore-preflight`, `migration-restore`, `migration-reindex`, `migration-rehearsal`, `migration-all`, `delete`, `verify-deleted`, and `restart`.
 
 To run just the OpenSearch-heavy compatibility phases after a stack already has created fixtures, use:
 
@@ -54,6 +57,29 @@ To run only the operational admin/reindex/search-repair phases, use:
 ```sh
 KEEP_STACK=1 REBUILD=0 scripts/functional-compose.sh operational restart operational-verify
 ```
+
+To run the heavier backup/restore/reindex/cutover rehearsal drill, first create
+fixtures and a backup, then restore into the harness-managed fresh PostgreSQL
+database and filesystem blob target:
+
+```sh
+KEEP_STACK=1 scripts/functional-compose.sh create restart verify operational migration-all
+```
+
+For an already-created stack with an existing migration backup, individual
+restore phases can be run as:
+
+```sh
+KEEP_STACK=1 scripts/functional-compose.sh migration-restore-preflight migration-restore migration-reindex migration-rehearsal
+```
+
+Set `REBUILD=0` only when the functional image is already built from the
+current source tree. The functional test image intentionally bakes the scripts
+into `/src` instead of bind-mounting the checkout, which keeps remote Docker
+support working but means local script or Go changes need a rebuild before the
+container can see them. The `migration-reindex` and `migration-rehearsal`
+phases reuse the existing backup bundle and will restore it into the harness
+restore database first when that database is missing or empty.
 
 The operational phases can run against a fresh stack for live-safe admin command
 coverage. The encrypted data bag scoped reindex/repair checks only run when the
@@ -101,8 +127,9 @@ exercises direct delete-by-query and fallback-delete behavior without requiring
 public images for hard-to-reproduce provider versions.
 
 This is the functional coverage side of the completed OpenSearch provider
-capability/version hardening bucket. Migration/cutover tooling remains out of
-scope for this harness until the next operational slice.
+capability/version hardening bucket. The harness also includes migration/cutover
+phases for preflight, backup, restore, restored-target reindex, and cutover
+rehearsal coverage.
 
 ## What It Covers
 
@@ -123,6 +150,9 @@ scope for this harness until the next operational slice.
 - Operational search consistency detects injected stale OpenSearch documents, including encrypted data bag index drift, dry-runs repair, repairs the stale documents, and verifies clean state after an OpenCook restart.
 - Operational reindex/check/repair rejects unsupported cookbook, cookbook-artifact, policy, policy-group, sandbox, and checksum indexes, and unscoped repair deletes stale unsupported provider documents without recreating unsupported search documents.
 - Package-level operational coverage exercises admin reindex/check/repair against both direct delete-by-query and safe search-after-backed fallback-delete provider capability modes.
+- Migration preflight validates the active PostgreSQL, filesystem blob, and OpenSearch stack through `opencook admin migration preflight`.
+- Migration backup create/inspect produces a logical OpenCook backup bundle from PostgreSQL-backed state and filesystem-backed blobs, then verifies manifest and payload integrity without provider connections.
+- Opt-in migration restore phases reset a fresh PostgreSQL database, restore metadata and copied blob bytes into a separate filesystem blob target, rebuild OpenSearch from restored PostgreSQL state, and run cutover rehearsal against a temporary restored OpenCook server.
 - Deleted clients, environments, nodes, roles, ordinary data bag items, and encrypted-looking data bag items stop appearing in search after restart.
 - Environments, nodes, roles, data bags, policy groups, and policy revisions survive OpenCook restarts.
 - Filesystem-backed blob uploads survive restart and can be reused by a later sandbox.
