@@ -2,6 +2,7 @@ package blob
 
 import (
 	"context"
+	"sort"
 	"strings"
 	"sync"
 )
@@ -81,6 +82,20 @@ func (s *MemoryStore) Exists(_ context.Context, key string) (bool, error) {
 
 	_, ok := s.objects[strings.TrimSpace(key)]
 	return ok, nil
+}
+
+// List returns the in-memory checksum keys for local migration tests and
+// memory-backed development runs without exposing mutable object internals.
+func (s *MemoryStore) List(_ context.Context) ([]string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	keys := make([]string, 0, len(s.objects))
+	for key := range s.objects {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys, nil
 }
 
 func (s *MemoryStore) Delete(_ context.Context, key string) error {

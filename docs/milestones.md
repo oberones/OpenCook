@@ -80,7 +80,7 @@ Status: in progress
 - policy payload validation now covers more cookbook-lock and solution-dependency structure, while node policy refs remain compatibility-safe searchable fields instead of enforced foreign keys
 - Docker functional coverage now also sends v0, v1, and v2 API-version headers through representative object and OpenSearch-backed search flows after PostgreSQL restart/rehydration
 - OpenSearch provider capability/version hardening is now pinned with provider discovery, truthful status/admin capability wording, versioned mapping lifecycle, direct and fallback delete-by-query behavior, provider response/failure redaction, startup activation hardening, and opt-in provider matrix coverage
-- migration/cutover tooling is the next recommended operational bucket unless deployment testing identifies a higher-risk compatibility gap
+- first migration/cutover tooling is now complete for OpenCook-to-OpenCook logical backup/restore, source artifact inventory, restored-target reindex, and cutover rehearsal; broader `chef-server-ctl` parity plus health, metrics, and service-management hardening is the next recommended operational bucket unless deployment testing identifies a higher-risk compatibility gap
 
 ## Milestone 6: Cookbook and Blob Workflows
 
@@ -221,7 +221,9 @@ Status: in progress
 - OpenSearch reindex, consistency check, and repair commands can rebuild and compare derived documents from PostgreSQL-backed state, including encrypted data bag indexes
 - functional Docker coverage now proves admin status, live-safe user/org/key operations, group/container/ACL inspection, complete org reindex, encrypted data bag scoped reindex/check/repair, stale OpenSearch detection, dry-run repair, repair, and post-restart verification
 - OpenSearch provider capability details are visible through status/admin status and functional coverage, with package-level direct and fallback delete provider-mode coverage for admin reindex/check/repair
+- migration/cutover tooling now provides redacted preflight checks, OpenCook logical backup create/inspect, offline restore preflight/apply, read-only Chef Server source artifact inventory, restored-target complete reindex, and live cutover rehearsal against a temporary restored OpenCook target
+- functional Docker coverage now also exercises migration preflight, backup create/inspect, restore into a fresh PostgreSQL/blob target, complete reindex from restored state, and cutover rehearsal with a clear success footer
 - add full Chef-style documentation for admin and operational workflows, even if the final implementation lands as CLI, API, or a mixed path
-- add health, metrics, backup, and migration/cutover commands beyond the first reindex/repair slice
-- define migration path from existing Chef Infra Server installs
-- rehearse shadow traffic and cutover workflows
+- add broader `chef-server-ctl`-style parity, health, metrics, and service-management commands beyond the first admin/migration slices
+- expand source import/sync beyond read-only inventory for existing Chef Infra Server installs
+- deepen shadow-read and deployment cutover runbooks with production-scale rehearsal guidance

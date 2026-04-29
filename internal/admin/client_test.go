@@ -137,6 +137,47 @@ func TestClientDoJSONSignsRequestAndDecodesResponse(t *testing.T) {
 	}
 }
 
+func TestClientDoUnsignedFollowsSignedBlobURLWithoutChefHeaders(t *testing.T) {
+	privateKey := mustGeneratePrivateKey(t)
+	transport := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.Method != http.MethodGet {
+			t.Fatalf("method = %s, want GET", req.Method)
+		}
+		if req.URL.String() != "http://opencook.local/_blob/checksums/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?signature=secret" {
+			t.Fatalf("url = %s, want signed blob URL", req.URL.String())
+		}
+		if got := req.Header.Get("Accept"); got != "*/*" {
+			t.Fatalf("Accept = %q, want */*", got)
+		}
+		for key := range req.Header {
+			if strings.HasPrefix(key, "X-Ops-") {
+				t.Fatalf("unexpected Chef signing header %s on unsigned download", key)
+			}
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader("cookbook bytes")),
+			Header:     make(http.Header),
+		}, nil
+	})
+	client, err := NewClient(Config{
+		ServerURL:     "http://opencook.local",
+		RequestorName: "pivotal",
+		RequestorType: "user",
+	}, WithPrivateKey(privateKey), WithHTTPDoer(transport))
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+
+	resp, err := client.DoUnsigned(context.Background(), http.MethodGet, "http://opencook.local/_blob/checksums/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?signature=secret")
+	if err != nil {
+		t.Fatalf("DoUnsigned() error = %v", err)
+	}
+	if resp.StatusCode != http.StatusOK || string(resp.Body) != "cookbook bytes" {
+		t.Fatalf("DoUnsigned() = status %d body %q, want 200 cookbook bytes", resp.StatusCode, resp.Body)
+	}
+}
+
 func TestClientReadsPrivateKeyFromPath(t *testing.T) {
 	privateKey := mustGeneratePrivateKey(t)
 	path := writePrivateKey(t, privateKey)

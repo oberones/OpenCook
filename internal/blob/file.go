@@ -3,9 +3,11 @@ package blob
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -111,6 +113,30 @@ func (s *FileStore) Exists(_ context.Context, key string) (bool, error) {
 		return false, nil
 	}
 	return false, err
+}
+
+// List returns the flat checksum keys currently present in the filesystem
+// backend, giving migration tooling a safe way to report orphan candidates.
+func (s *FileStore) List(_ context.Context) ([]string, error) {
+	entries, err := os.ReadDir(s.root)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	keys := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry.Type()&fs.ModeType != 0 {
+			continue
+		}
+		name := entry.Name()
+		if _, err := normalizeObjectKey(name); err == nil {
+			keys = append(keys, name)
+		}
+	}
+	sort.Strings(keys)
+	return keys, nil
 }
 
 func (s *FileStore) Delete(_ context.Context, key string) error {

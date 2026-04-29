@@ -287,7 +287,7 @@ Current architectural reality:
 - bootstrap core identity/authz state can now be persisted in PostgreSQL and rehydrated into the existing bootstrap service and verifier key cache
 - implemented core object API state can now be persisted in PostgreSQL and rehydrated into the existing bootstrap service, search-facing state, depsolver-visible state, sandbox checksum references, and object ACLs
 - org bootstrap returns validator key material, and generated `<org>-validator` clients can now register normal clients through the stock bootstrap routes
-- the first `opencook admin` operational surface is live, but full `chef-server-ctl` parity, backup/restore, service management, migration/cutover tooling, and online direct PostgreSQL mutation remain future work
+- the first `opencook admin` operational surface is live, including OpenCook-to-OpenCook migration preflight, logical backup/restore, source artifact inventory, restored-target reindex, and cutover rehearsal; full `chef-server-ctl` parity, service management, observability, live Chef Infra Server import/sync, and online direct PostgreSQL mutation remain future work
 - data bag CRUD and encrypted data bag payload opacity are now explicitly pinned as tested compatibility slices
 - PostgreSQL is active for cookbook metadata, bootstrap core state, and implemented core object API state; OpenSearch-backed search is active for the implemented Chef search indexes when PostgreSQL and `OPENCOOK_OPENSEARCH_URL` are configured, with provider discovery/capability reporting, versioned mapping management, direct/fallback delete coverage, the memory adapter preserved as the no-OpenSearch fallback, and unsupported cookbook/policy/sandbox/checksum object families pinned as non-searchable
 - the blob layer now has in-memory, filesystem-backed, and S3-compatible compatibility implementations for sandbox checksum uploads/downloads and cookbook file URLs, and the S3-compatible path now includes request-construction parity, configurable timeout/retry plus `Retry-After` behavior, transport/status classification, malformed-endpoint and missing-credential diagnostics, and provider-backed `blob_unavailable` degradation on the current sandbox/cookbook flows
@@ -453,6 +453,6 @@ These areas are still intentionally incomplete:
 - remaining core Chef object compatibility beyond the currently pinned nodes, environments, roles, data bags, policies, and sandbox flows
 - deeper node and environment compatibility such as cookbook constraint edge cases and linked object behavior
 - deeper role compatibility beyond the current normalization and linked-environment read behavior
-- operational parity, migration/cutover tooling, backup/restore, and deployment runbooks
+- broader `chef-server-ctl`-style operational parity, service management, observability, live Chef Infra Server import/sync, and deployment runbooks
 
-The next likely major slice is migration/cutover tooling, with deployment-test-discovered compatibility gaps taking priority if they prove higher risk.
+The next likely major slice is broader `chef-server-ctl`-style operational parity plus health, metrics, and service-management hardening, with deployment-test-discovered Chef compatibility gaps taking priority if they prove higher risk.
