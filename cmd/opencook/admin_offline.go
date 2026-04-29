@@ -25,6 +25,16 @@ type postgresAdminOfflineStore struct {
 	cookbooks bootstrap.CookbookStore
 }
 
+type restoredCookbookVersion struct {
+	organization string
+	version      bootstrap.CookbookVersion
+}
+
+type restoredCookbookArtifact struct {
+	organization string
+	artifact     bootstrap.CookbookArtifact
+}
+
 func (s postgresAdminOfflineStore) LoadBootstrapCore() (bootstrap.BootstrapCoreState, error) {
 	return s.bootstrap.LoadBootstrapCore()
 }
@@ -111,6 +121,8 @@ func (s postgresAdminOfflineStore) RestoreCookbookExport(state bootstrap.Bootstr
 		return fmt.Errorf("cookbook store is not available")
 	}
 	registrar, _ := s.cookbooks.(interface{ EnsureOrganization(bootstrap.Organization) })
+	var restoredVersions []restoredCookbookVersion
+	var restoredArtifacts []restoredCookbookArtifact
 	for _, orgName := range adminMigrationSortedMapKeys(export.Orgs) {
 		if registrar != nil {
 			org := state.Orgs[orgName].Organization
@@ -122,14 +134,46 @@ func (s postgresAdminOfflineStore) RestoreCookbookExport(state bootstrap.Bootstr
 		orgExport := export.Orgs[orgName]
 		for _, version := range orgExport.Versions {
 			if _, _, _, err := s.cookbooks.UpsertCookbookVersionWithReleasedChecksums(orgName, version, true); err != nil {
+				if rollbackErr := s.rollbackRestoredCookbooks(restoredVersions, restoredArtifacts); rollbackErr != nil {
+					return fmt.Errorf("restore cookbook version %s/%s/%s: %w; rollback cookbook metadata: %v", orgName, version.CookbookName, version.Version, err, rollbackErr)
+				}
 				return fmt.Errorf("restore cookbook version %s/%s/%s: %w", orgName, version.CookbookName, version.Version, err)
 			}
+			restoredVersions = append(restoredVersions, restoredCookbookVersion{organization: orgName, version: version})
 		}
 		for _, artifact := range orgExport.Artifacts {
 			if _, err := s.cookbooks.CreateCookbookArtifact(orgName, artifact); err != nil {
+				if rollbackErr := s.rollbackRestoredCookbooks(restoredVersions, restoredArtifacts); rollbackErr != nil {
+					return fmt.Errorf("restore cookbook artifact %s/%s/%s: %w; rollback cookbook metadata: %v", orgName, artifact.Name, artifact.Identifier, err, rollbackErr)
+				}
 				return fmt.Errorf("restore cookbook artifact %s/%s/%s: %w", orgName, artifact.Name, artifact.Identifier, err)
 			}
+			restoredArtifacts = append(restoredArtifacts, restoredCookbookArtifact{organization: orgName, artifact: artifact})
 		}
+	}
+	return nil
+}
+
+// rollbackRestoredCookbooks removes cookbook metadata successfully imported
+// earlier in the same restore attempt so a failed restore can be retried against
+// a clean target instead of leaving partial cookbook rows behind.
+func (s postgresAdminOfflineStore) rollbackRestoredCookbooks(versions []restoredCookbookVersion, artifacts []restoredCookbookArtifact) error {
+	var rollbackErrs []string
+	for idx := len(artifacts) - 1; idx >= 0; idx-- {
+		artifact := artifacts[idx]
+		if _, _, err := s.cookbooks.DeleteCookbookArtifactWithReleasedChecksums(artifact.organization, artifact.artifact.Name, artifact.artifact.Identifier); err != nil && !errors.Is(err, bootstrap.ErrNotFound) {
+			rollbackErrs = append(rollbackErrs, err.Error())
+		}
+	}
+	for idx := len(versions) - 1; idx >= 0; idx-- {
+		version := versions[idx]
+		cookbookName := adminMigrationCookbookRouteName(version.version)
+		if _, _, err := s.cookbooks.DeleteCookbookVersionWithReleasedChecksums(version.organization, cookbookName, version.version.Version); err != nil && !errors.Is(err, bootstrap.ErrNotFound) {
+			rollbackErrs = append(rollbackErrs, err.Error())
+		}
+	}
+	if len(rollbackErrs) > 0 {
+		return errors.New(strings.Join(rollbackErrs, "; "))
 	}
 	return nil
 }
