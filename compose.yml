@@ -1,0 +1,116 @@
+services:
+  bootstrap-keys:
+    build:
+      context: ./deploy/compose/bootstrap-keys
+    network_mode: none
+    volumes:
+      - ${OPENCOOK_LOCAL_STATE_DIR:-./.local}:/workspace/.local
+
+  postgres:
+    image: ${POSTGRES_IMAGE:-postgres:17-alpine}
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: opencook
+      POSTGRES_PASSWORD: opencook
+      POSTGRES_DB: opencook
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U opencook -d opencook"]
+      interval: 5s
+      timeout: 3s
+      retries: 24
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    # Uncomment for direct host access during debugging:
+    # ports:
+    #   - "5432:5432"
+    networks:
+      - opencook
+
+  opensearch:
+    image: ${OPENSEARCH_IMAGE:-opensearchproject/opensearch:3.5.0}
+    restart: unless-stopped
+    environment:
+      discovery.type: single-node
+      DISABLE_INSTALL_DEMO_CONFIG: "true"
+      DISABLE_SECURITY_PLUGIN: "true"
+      OPENSEARCH_JAVA_OPTS: -Xms512m -Xmx512m
+      bootstrap.memory_lock: "true"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9200 >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+    volumes:
+      - opensearch-data:/usr/share/opensearch/data
+    # Uncomment for direct host access during debugging:
+    # ports:
+    #   - "9200:9200"
+    networks:
+      - opencook
+
+  opencook:
+    build:
+      context: .
+      target: runtime
+      args:
+        VERSION: ${OPENCOOK_IMAGE_VERSION:-compose}
+        COMMIT: ${OPENCOOK_IMAGE_COMMIT:-local}
+        BUILT_AT: ${OPENCOOK_IMAGE_BUILT_AT:-unknown}
+    restart: unless-stopped
+    environment:
+      OPENCOOK_SERVICE_NAME: opencook
+      OPENCOOK_ENV: compose
+      OPENCOOK_LISTEN_ADDRESS: :4000
+      OPENCOOK_DEFAULT_ORGANIZATION: ${OPENCOOK_DEFAULT_ORGANIZATION:-ponyville}
+      OPENCOOK_BOOTSTRAP_MODE: "true"
+      OPENCOOK_BOOTSTRAP_REQUESTOR_NAME: ${OPENCOOK_BOOTSTRAP_REQUESTOR_NAME:-pivotal}
+      OPENCOOK_BOOTSTRAP_REQUESTOR_TYPE: user
+      OPENCOOK_BOOTSTRAP_REQUESTOR_KEY_ID: ${OPENCOOK_BOOTSTRAP_REQUESTOR_KEY_ID:-default}
+      OPENCOOK_BOOTSTRAP_PUBLIC_KEY_PATH: /var/lib/opencook/bootstrap/bootstrap_public.pem
+      OPENCOOK_POSTGRES_DSN: postgres://opencook:opencook@postgres:5432/opencook?sslmode=disable
+      OPENCOOK_OPENSEARCH_URL: http://opensearch:9200
+      OPENCOOK_BLOB_BACKEND: filesystem
+      OPENCOOK_BLOB_STORAGE_URL: file:///var/lib/opencook/blobs
+      OPENCOOK_AUTH_SKEW: 15m
+      OPENCOOK_MAX_AUTH_BODY_BYTES: "10485760"
+      OPENCOOK_MAX_BLOB_UPLOAD_BYTES: "10485760"
+      OPENCOOK_ADMIN_SERVER_URL: http://127.0.0.1:4000
+      OPENCOOK_ADMIN_REQUESTOR_NAME: ${OPENCOOK_BOOTSTRAP_REQUESTOR_NAME:-pivotal}
+      OPENCOOK_ADMIN_REQUESTOR_TYPE: user
+      OPENCOOK_ADMIN_PRIVATE_KEY_PATH: /var/lib/opencook/bootstrap/bootstrap_private.pem
+      OPENCOOK_ADMIN_DEFAULT_ORG: ${OPENCOOK_DEFAULT_ORGANIZATION:-ponyville}
+    depends_on:
+      bootstrap-keys:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      opensearch:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:4000/readyz >/dev/null"]
+      interval: 5s
+      timeout: 3s
+      start_period: 10s
+      retries: 24
+    ports:
+      - "${OPENCOOK_PORT:-4000}:4000"
+    volumes:
+      - ${OPENCOOK_LOCAL_STATE_DIR:-./.local}:/var/lib/opencook/bootstrap
+      - opencook-blobs:/var/lib/opencook/blobs
+    networks:
+      - opencook
+
+networks:
+  opencook:
+
+volumes:
+  postgres-data:
+  opensearch-data:
+  opencook-blobs:
