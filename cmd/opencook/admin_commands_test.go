@@ -840,12 +840,14 @@ func (f *fakeAdminClient) DoJSON(_ context.Context, method, path string, in, out
 }
 
 type fakeOfflineStore struct {
-	bootstrap      bootstrap.BootstrapCoreState
-	objects        bootstrap.CoreObjectState
-	loadErr        error
-	saveErr        error
-	bootstrapSaves int
-	objectSaves    int
+	bootstrap        bootstrap.BootstrapCoreState
+	objects          bootstrap.CoreObjectState
+	loadErr          error
+	saveErr          error
+	bootstrapSaveErr error
+	objectSaveErr    error
+	bootstrapSaves   int
+	objectSaves      int
 }
 
 func (s *fakeOfflineStore) LoadBootstrapCore() (bootstrap.BootstrapCoreState, error) {
@@ -856,6 +858,9 @@ func (s *fakeOfflineStore) LoadBootstrapCore() (bootstrap.BootstrapCoreState, er
 }
 
 func (s *fakeOfflineStore) SaveBootstrapCore(state bootstrap.BootstrapCoreState) error {
+	if s.bootstrapSaveErr != nil {
+		return s.bootstrapSaveErr
+	}
 	if s.saveErr != nil {
 		return s.saveErr
 	}
@@ -872,6 +877,9 @@ func (s *fakeOfflineStore) LoadCoreObjects() (bootstrap.CoreObjectState, error) 
 }
 
 func (s *fakeOfflineStore) SaveCoreObjects(state bootstrap.CoreObjectState) error {
+	if s.objectSaveErr != nil {
+		return s.objectSaveErr
+	}
 	if s.saveErr != nil {
 		return s.saveErr
 	}

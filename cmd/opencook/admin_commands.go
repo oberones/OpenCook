@@ -22,6 +22,8 @@ type adminOutputOptions struct {
 	overwritePrivateKey bool
 }
 
+// runAdminCommand dispatches operator-facing admin commands before falling back
+// to signed HTTP workflows for live-safe Chef-compatible surfaces.
 func (c *command) runAdminCommand(ctx context.Context, args []string) int {
 	if len(args) == 0 {
 		c.printAdminUsage(c.stderr)
@@ -30,6 +32,9 @@ func (c *command) runAdminCommand(ctx context.Context, args []string) int {
 	if len(args) == 1 && (args[0] == "help" || args[0] == "-h" || args[0] == "--help") {
 		c.printAdminUsage(c.stdout)
 		return exitOK
+	}
+	if len(args) > 0 && args[0] == "migration" {
+		return c.runAdminMigration(ctx, args[1:], false)
 	}
 	if len(args) > 0 && args[0] == "reindex" {
 		return c.runAdminReindex(ctx, args[1:], false)
@@ -56,6 +61,9 @@ func (c *command) runAdminCommand(ctx context.Context, args []string) int {
 	if len(rest) == 0 {
 		c.printAdminUsage(c.stderr)
 		return exitUsage
+	}
+	if rest[0] == "migration" {
+		return c.runAdminMigration(ctx, rest[1:], *jsonOutput)
 	}
 	if rest[0] == "reindex" {
 		return c.runAdminReindex(ctx, rest[1:], *jsonOutput)
@@ -701,6 +709,8 @@ func (c *command) adminUsageError(format string, args ...any) int {
 	return exitUsage
 }
 
+// printAdminUsage writes the top-level admin help, including operational
+// commands that bypass live Chef-facing API routes.
 func (c *command) printAdminUsage(w io.Writer) {
 	fmt.Fprint(w, `Usage:
   opencook admin [flags] status
@@ -741,6 +751,13 @@ func (c *command) printAdminUsage(w io.Writer) {
   opencook admin reindex --all-orgs [--complete|--drop|--no-drop] [--dry-run] [--with-timing] [--json]
   opencook admin search check [--org ORG|--all-orgs] [--index INDEX] [--with-timing] [--json]
   opencook admin search repair [--org ORG|--all-orgs] [--index INDEX] [--dry-run|--yes] [--with-timing] [--json]
+  opencook admin migration preflight [--org ORG|--all-orgs] [--json] [--with-timing]
+  opencook admin migration backup create --output PATH --offline [--dry-run|--yes] [--json] [--with-timing]
+  opencook admin migration backup inspect PATH [--json]
+  opencook admin migration restore preflight PATH --offline [--json] [--with-timing]
+  opencook admin migration restore apply PATH --offline [--dry-run|--yes] [--json] [--with-timing]
+  opencook admin migration source inventory PATH [--json] [--with-timing]
+  opencook admin migration cutover rehearse --manifest PATH [--server-url URL] [--json] [--with-timing]
 
 Admin flags:
   --server-url URL
@@ -750,6 +767,11 @@ Admin flags:
   --default-org ORG
   --server-api-version VERSION
   --json
+  --requestor-name NAME
+  --requestor-type user|client
+  --private-key PATH
+  --default-org ORG
+  --server-api-version VERSION
 
 Offline flags:
   --offline

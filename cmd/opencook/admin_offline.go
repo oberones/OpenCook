@@ -22,6 +22,7 @@ type adminOfflineStore interface {
 type postgresAdminOfflineStore struct {
 	bootstrap bootstrap.BootstrapCoreStore
 	objects   bootstrap.CoreObjectStore
+	cookbooks bootstrap.CookbookStore
 }
 
 func (s postgresAdminOfflineStore) LoadBootstrapCore() (bootstrap.BootstrapCoreState, error) {
@@ -40,6 +41,101 @@ func (s postgresAdminOfflineStore) SaveCoreObjects(state bootstrap.CoreObjectSta
 	return s.objects.SaveCoreObjects(state)
 }
 
+// LoadCookbookInventory reads cookbook and artifact metadata through the same
+// activated cookbook store used by the app, without touching blob contents.
+func (s postgresAdminOfflineStore) LoadCookbookInventory(orgNames []string) (map[string]adminMigrationCookbookInventory, error) {
+	out := make(map[string]adminMigrationCookbookInventory, len(orgNames))
+	if s.cookbooks == nil {
+		return out, nil
+	}
+	for _, orgName := range orgNames {
+		inventory := adminMigrationCookbookInventory{}
+		if versions, ok := s.cookbooks.ListCookbookVersions(orgName); ok {
+			for cookbookName, refs := range versions {
+				inventory.Versions += len(refs)
+				models, _, _ := s.cookbooks.ListCookbookVersionModelsByName(orgName, cookbookName)
+				for _, model := range models {
+					checksums := adminMigrationCookbookFileChecksums(model.AllFiles)
+					inventory.ChecksumReferences += len(checksums)
+					inventory.Checksums = append(inventory.Checksums, checksums...)
+				}
+			}
+		}
+		if artifacts, ok := s.cookbooks.ListCookbookArtifacts(orgName); ok {
+			for _, items := range artifacts {
+				inventory.Artifacts += len(items)
+				for _, item := range items {
+					checksums := adminMigrationCookbookFileChecksums(item.AllFiles)
+					inventory.ChecksumReferences += len(checksums)
+					inventory.Checksums = append(inventory.Checksums, checksums...)
+				}
+			}
+		}
+		out[orgName] = inventory
+	}
+	return out, nil
+}
+
+// LoadCookbookExport returns logical cookbook metadata for backup bundles
+// without reading provider-backed blob bytes.
+func (s postgresAdminOfflineStore) LoadCookbookExport(orgNames []string) (adminMigrationCookbookExport, error) {
+	out := adminMigrationCookbookExport{Orgs: make(map[string]adminMigrationCookbookOrgExport, len(orgNames))}
+	if s.cookbooks == nil {
+		return out, nil
+	}
+	for _, orgName := range orgNames {
+		orgExport := adminMigrationCookbookOrgExport{}
+		if versions, ok := s.cookbooks.ListCookbookVersions(orgName); ok {
+			for cookbookName := range versions {
+				models, _, _ := s.cookbooks.ListCookbookVersionModelsByName(orgName, cookbookName)
+				orgExport.Versions = append(orgExport.Versions, models...)
+			}
+		}
+		if artifacts, ok := s.cookbooks.ListCookbookArtifacts(orgName); ok {
+			for _, items := range artifacts {
+				orgExport.Artifacts = append(orgExport.Artifacts, items...)
+			}
+		}
+		out.Orgs[orgName] = adminMigrationSortedCookbookExportOrg(orgExport)
+	}
+	return out, nil
+}
+
+// RestoreCookbookExport imports logical cookbook metadata after blob content
+// has been restored or verified by migration restore apply.
+func (s postgresAdminOfflineStore) RestoreCookbookExport(state bootstrap.BootstrapCoreState, export adminMigrationCookbookExport) error {
+	if s.cookbooks == nil {
+		if adminMigrationCookbookExportCount(export) == 0 {
+			return nil
+		}
+		return fmt.Errorf("cookbook store is not available")
+	}
+	registrar, _ := s.cookbooks.(interface{ EnsureOrganization(bootstrap.Organization) })
+	for _, orgName := range adminMigrationSortedMapKeys(export.Orgs) {
+		if registrar != nil {
+			org := state.Orgs[orgName].Organization
+			if strings.TrimSpace(org.Name) == "" {
+				org = bootstrap.Organization{Name: orgName, FullName: orgName}
+			}
+			registrar.EnsureOrganization(org)
+		}
+		orgExport := export.Orgs[orgName]
+		for _, version := range orgExport.Versions {
+			if _, _, _, err := s.cookbooks.UpsertCookbookVersionWithReleasedChecksums(orgName, version, true); err != nil {
+				return fmt.Errorf("restore cookbook version %s/%s/%s: %w", orgName, version.CookbookName, version.Version, err)
+			}
+		}
+		for _, artifact := range orgExport.Artifacts {
+			if _, err := s.cookbooks.CreateCookbookArtifact(orgName, artifact); err != nil {
+				return fmt.Errorf("restore cookbook artifact %s/%s/%s: %w", orgName, artifact.Name, artifact.Identifier, err)
+			}
+		}
+	}
+	return nil
+}
+
+// newPostgresAdminOfflineStore activates all PostgreSQL-backed persistence
+// families needed by offline admin and migration tooling.
 func newPostgresAdminOfflineStore(ctx context.Context, dsn string) (adminOfflineStore, func() error, error) {
 	dsn = strings.TrimSpace(dsn)
 	if dsn == "" {
@@ -52,6 +148,7 @@ func newPostgresAdminOfflineStore(ctx context.Context, dsn string) (adminOffline
 	return postgresAdminOfflineStore{
 		bootstrap: store.BootstrapCore(),
 		objects:   store.CoreObjects(),
+		cookbooks: store.CookbookStore(),
 	}, store.Close, nil
 }
 
