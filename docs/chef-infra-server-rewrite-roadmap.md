@@ -33,13 +33,14 @@ This roadmap is based on a review of the upstream Chef Infra Server repository a
 
 ## Current Progress Snapshot
 
-As of 2026-04-26, OpenCook has moved past pure scaffolding and into the first compatibility slices:
+As of 2026-04-29, OpenCook has moved past pure scaffolding and into the first compatibility and operational hardening slices:
 
 - Chef request signing verification is implemented in Go and enforced on the first authenticated routes
 - user, organization, client, group, container, key, and ACL bootstrap core flows are working and can now persist through PostgreSQL when configured
 - org bootstrap creates validator clients with default key material
 - generated `<org>-validator` clients can now register normal clients through the stock default-org and explicit-org client bootstrap routes
 - actor key lifecycle now supports list, create, update, delete, and expiration-aware authentication behavior
+- the first migration/cutover tooling slice is now live with redacted preflight checks, OpenCook logical backup create/inspect, offline restore preflight/apply, read-only Chef Server source artifact inventory, restored-target complete reindex, cutover rehearsal, and Docker functional coverage
 - the core object API persistence slice is now live with PostgreSQL-backed durability for nodes, environments, roles, data bags/items, policy revisions/groups/assignments, sandbox metadata/checksum references, and object ACLs when PostgreSQL is configured, while preserving the existing in-memory fallback
 - the adjacent environment slice is now live with `_default`, list/get/head/create/update/delete, and rename-capable `PUT`
 - environment-scoped node listing is implemented via `/environments/{name}/nodes`
@@ -185,9 +186,9 @@ As of 2026-04-26, OpenCook has moved past pure scaffolding and into the first co
 
 Current focus:
 
-- plan migration/cutover tooling now that PostgreSQL persistence, provider-backed blobs, validator bootstrap, core object persistence, encrypted data bag compatibility, operational admin/reindex/repair tooling, broader Lucene/query-string compatibility, cookbook/policy/sandbox/checksum negative search compatibility, API-version-specific object semantics, and OpenSearch provider capability/version hardening are pinned
-- preserve the completed API-version, search-route, unsupported-index, encrypted-data-bag, and PostgreSQL-source-of-truth contracts while designing operational migration helpers
-- treat deployment-test compatibility gaps as interrupt-worthy if they are higher-risk than migration/cutover tooling
+- plan broader `chef-server-ctl`-style operational parity plus health, metrics, and service-management hardening now that PostgreSQL persistence, provider-backed blobs, validator bootstrap, core object persistence, encrypted data bag compatibility, operational admin/reindex/repair tooling, migration/cutover tooling, broader Lucene/query-string compatibility, cookbook/policy/sandbox/checksum negative search compatibility, API-version-specific object semantics, and OpenSearch provider capability/version hardening are pinned
+- preserve the completed API-version, search-route, unsupported-index, encrypted-data-bag, provider capability, migration/cutover, and PostgreSQL-source-of-truth contracts while designing the next operational helpers
+- treat deployment-test compatibility gaps as interrupt-worthy if they are higher-risk than operational parity hardening
 
 ## What Exists Upstream
 
@@ -384,7 +385,7 @@ These should become regression tests for OpenCook.
 - Metrics compatible with Prometheus/OpenTelemetry
 - Structured logs with request IDs
 - Admin tooling for org/user/group/container/ACL management plus reindex, consistency checks, and data repair
-- Current status: the first `opencook admin` surface is live, with signed HTTP-backed user/org/key/group/container/ACL inspection workflows, offline-gated direct PostgreSQL repair commands, OpenSearch reindex/check/repair from PostgreSQL-backed state including encrypted data bag indexes, unsupported-index rejection for cookbook/policy/sandbox/checksum scopes, JSON/human output modes, destructive-command confirmation gates, and Docker functional coverage against PostgreSQL plus OpenSearch
+- Current status: the first `opencook admin` surface is live, with signed HTTP-backed user/org/key/group/container/ACL inspection workflows, offline-gated direct PostgreSQL repair commands, OpenSearch reindex/check/repair from PostgreSQL-backed state including encrypted data bag indexes, unsupported-index rejection for cookbook/policy/sandbox/checksum scopes, JSON/human output modes, destructive-command confirmation gates, OpenCook-to-OpenCook migration preflight/backup/restore/reindex/rehearsal tooling, read-only Chef Server source artifact inventory, and Docker functional coverage against PostgreSQL plus OpenSearch
 
 ## PostgreSQL Modernization Workstream
 
@@ -584,7 +585,7 @@ Deliverables:
 - admin commands/APIs
 - chef-server-ctl-style admin flows for orgs, users, groups, containers, and ACLs
 - full Chef-style documentation for admin and operational workflows, with the final CLI/API packaging left open for now
-- backup/restore guidance
+- backup/restore guidance and first OpenCook logical backup/restore tooling
 - observability package
 - rolling upgrade docs
 - performance and scale reports
@@ -600,7 +601,7 @@ Deliverables:
 
 - import/sync tooling from existing Chef Infra Server
 - dual-write or shadow-read strategy if needed
-- cutover runbook
+- first cutover rehearsal/runbook tooling for restored OpenCook targets
 - rollback runbook
 
 Exit criteria:
@@ -682,13 +683,13 @@ Exit criteria:
 
 ## Recommended Next Step
 
-Plan and implement migration/cutover tooling now that PostgreSQL persistence, provider-backed blobs, validator bootstrap, core object persistence, encrypted data bag compatibility, operational admin/reindex/repair tooling, broader Lucene/query-string compatibility, cookbook/policy/sandbox/checksum negative search compatibility, API-version-specific object semantics, and OpenSearch provider capability/version hardening are pinned.
+Plan and implement broader `chef-server-ctl`-style operational parity plus health, metrics, and service-management hardening now that PostgreSQL persistence, provider-backed blobs, validator bootstrap, core object persistence, encrypted data bag compatibility, operational admin/reindex/repair tooling, first migration/cutover tooling, broader Lucene/query-string compatibility, cookbook/policy/sandbox/checksum negative search compatibility, API-version-specific object semantics, and OpenSearch provider capability/version hardening are pinned.
 
 The recommended next bucket should:
 
-1. Inventory the practical migration paths from existing Chef Infra Server installations, including export/import inputs, object families, credentials, cookbook blobs, and search/index rebuild requirements.
-2. Add dry-run validation and reporting helpers that can compare source data, PostgreSQL-backed OpenCook state, blob availability, auth/key material, and derived OpenSearch consistency without changing Chef-facing API routes.
-3. Design backup/restore and rollback-safe operational commands with explicit offline/online safety gates, structured JSON output, destructive confirmation, and redacted provider/database errors.
-4. Document shadow-traffic, rehearsal, and cutover runbooks, while preserving the completed API-version, search-route, unsupported-index, encrypted-data-bag, provider capability, and PostgreSQL-source-of-truth contracts unless deployment testing exposes a higher-risk compatibility gap.
+1. Inventory the remaining `chef-server-ctl` workflows operators expect for service status, start/stop/restart, configuration validation, log discovery, backup/runbook discovery, and safe operational diagnostics.
+2. Harden `/status`, `/readyz`, admin status, and process/service health reporting into an operator-friendly contract without changing existing payload keys or Chef-facing route behavior.
+3. Add metrics and structured operational signals that are safe for Prometheus/OpenTelemetry-style scraping and do not leak keys, DSNs, provider credentials, or signed URLs.
+4. Document service-management and operational runbooks that compose with the completed migration/cutover tooling, while preserving the completed API-version, search-route, unsupported-index, encrypted-data-bag, provider capability, migration/cutover, and PostgreSQL-source-of-truth contracts unless deployment testing exposes a higher-risk compatibility gap.
 
-That sequence builds on the completed identity, cookbook/blob, core object, validator bootstrap, active OpenSearch, operational tooling, encrypted data bag, Lucene/query-string, API-version, cookbook/policy/sandbox search, and provider capability contracts without reopening their Chef-facing behavior.
+That sequence builds on the completed identity, cookbook/blob, core object, validator bootstrap, active OpenSearch, operational tooling, migration/cutover, encrypted data bag, Lucene/query-string, API-version, cookbook/policy/sandbox search, and provider capability contracts without reopening their Chef-facing behavior.

@@ -42,6 +42,12 @@ type Checker interface {
 	Exists(context.Context, string) (bool, error)
 }
 
+// Lister is an optional safe inventory capability for local/provider adapters
+// that can enumerate checksum keys without mutating blob contents.
+type Lister interface {
+	List(context.Context) ([]string, error)
+}
+
 type Deleter interface {
 	Delete(context.Context, string) error
 }

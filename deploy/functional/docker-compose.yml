@@ -106,6 +106,14 @@ services:
       OPENCOOK_ADMIN_DEFAULT_ORG: ${OPENCOOK_FUNCTIONAL_ORG:-ponyville}
       OPENCOOK_POSTGRES_DSN: postgres://opencook:opencook@postgres:5432/opencook?sslmode=disable
       OPENCOOK_OPENSEARCH_URL: http://opensearch:9200
+      OPENCOOK_BLOB_BACKEND: filesystem
+      OPENCOOK_BLOB_STORAGE_URL: file:///var/lib/opencook/blobs
+      OPENCOOK_FUNCTIONAL_RESTORE_POSTGRES_ADMIN_DSN: postgres://opencook:opencook@postgres:5432/postgres?sslmode=disable
+      OPENCOOK_FUNCTIONAL_RESTORE_POSTGRES_DSN: postgres://opencook:opencook@postgres:5432/opencook_restore?sslmode=disable
+      OPENCOOK_FUNCTIONAL_RESTORE_DB: opencook_restore
+      OPENCOOK_FUNCTIONAL_RESTORE_BLOB_STORAGE_URL: file:///var/lib/opencook-functional/restore-blobs
+      OPENCOOK_FUNCTIONAL_RESTORE_SERVER_URL: http://127.0.0.1:4400
+      OPENCOOK_FUNCTIONAL_RESTORE_LISTEN_ADDRESS: 127.0.0.1:4400
       OPENCOOK_BOOTSTRAP_REQUESTOR_NAME: ${OPENCOOK_FUNCTIONAL_ACTOR_NAME:-pivotal}
       OPENCOOK_BOOTSTRAP_REQUESTOR_TYPE: user
       GOCACHE: /tmp/opencook-go-cache
@@ -114,6 +122,7 @@ services:
         condition: service_healthy
     volumes:
       - functional-state:/var/lib/opencook-functional
+      - opencook-blobs:/var/lib/opencook/blobs:ro
     networks:
       - opencook-functional
 

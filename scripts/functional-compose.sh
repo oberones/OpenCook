@@ -23,6 +23,8 @@ if [[ -n "${OPENCOOK_FUNCTIONAL_OPENSEARCH_MATRIX:-}" && "${OPENCOOK_FUNCTIONAL_
     echo "==> functional OpenSearch provider image: $image"
     COMPOSE_PROJECT_NAME="${project_name}-${safe_image}" OPENSEARCH_IMAGE="$image" OPENCOOK_FUNCTIONAL_MATRIX_CHILD=1 "$0" "$@"
   done
+  echo
+  echo "==> functional OpenSearch provider matrix passed successfully"
   exit 0
 fi
 
@@ -59,6 +61,15 @@ restart_opencook() {
   wait_for_opencook
 }
 
+print_success() {
+  echo
+  if [[ "$#" -gt 0 ]]; then
+    echo "==> functional tests passed successfully for phases: $*"
+  else
+    echo "==> functional tests passed successfully"
+  fi
+}
+
 trap cleanup EXIT
 
 if [[ "${PULL:-0}" == "1" ]]; then
@@ -84,6 +95,7 @@ if [[ "$#" -gt 0 ]]; then
       run_phase "$phase"
     fi
   done
+  print_success "$@"
   exit 0
 fi
 
@@ -102,6 +114,10 @@ run_phase query-compat
 run_phase operational
 restart_opencook
 run_phase operational-verify
+run_phase migration-preflight
+run_phase migration-backup
+run_phase migration-backup-inspect
 run_phase delete
 restart_opencook
 run_phase verify-deleted
+print_success

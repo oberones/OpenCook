@@ -9,6 +9,7 @@ import (
 
 	"github.com/oberones/OpenCook/internal/admin"
 	"github.com/oberones/OpenCook/internal/app"
+	"github.com/oberones/OpenCook/internal/blob"
 	"github.com/oberones/OpenCook/internal/config"
 	"github.com/oberones/OpenCook/internal/search"
 	"github.com/oberones/OpenCook/internal/version"
@@ -32,6 +33,7 @@ type command struct {
 	loadOffline      func() (config.Config, error)
 	newAdmin         func(admin.Config) (adminJSONClient, error)
 	newOfflineStore  func(context.Context, string) (adminOfflineStore, func() error, error)
+	newBlobStore     func(config.Config) (blob.Store, error)
 	newReindexTarget func(string) (search.ReindexTarget, error)
 	newSearchTarget  func(string) (search.ConsistencyTarget, error)
 	runServer        func(context.Context, config.Config, *log.Logger, version.Info) error
@@ -50,6 +52,7 @@ func newCommand(stdout, stderr io.Writer) *command {
 			return admin.NewClient(cfg)
 		},
 		newOfflineStore: newPostgresAdminOfflineStore,
+		newBlobStore:    blob.NewStore,
 		newReindexTarget: func(raw string) (search.ReindexTarget, error) {
 			return search.NewOpenSearchClient(raw)
 		},

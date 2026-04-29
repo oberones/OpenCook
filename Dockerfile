@@ -37,7 +37,7 @@ HEALTHCHECK --interval=5s --timeout=3s --start-period=10s --retries=24 \
 ENTRYPOINT ["/usr/local/bin/opencook"]
 
 FROM ${GO_IMAGE} AS functional-tests
-RUN apk add --no-cache bash curl ca-certificates
+RUN apk add --no-cache bash curl ca-certificates postgresql-client
 
 WORKDIR /src
 COPY go.mod go.sum ./
