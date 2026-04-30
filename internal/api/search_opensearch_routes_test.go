@@ -505,7 +505,7 @@ func TestActivePostgresOpenSearchUnavailableRoutesUseStableErrors(t *testing.T) 
 		t.Fatalf("json.Unmarshal(/_status) error = %v", err)
 	}
 	openSearchStatus := statusPayload["dependencies"].(map[string]any)["opensearch"].(map[string]any)
-	if openSearchStatus["backend"] != "opensearch" || openSearchStatus["configured"] != true || openSearchStatus["message"] != "OpenSearch is configured but unavailable" {
+	if openSearchStatus["backend"] != "opensearch" || openSearchStatus["configured"] != true || openSearchStatus["message"] != "OpenSearch is configured but unavailable; search routes cannot reach the provider" {
 		t.Fatalf("opensearch status = %v, want configured unavailable wording", openSearchStatus)
 	}
 }

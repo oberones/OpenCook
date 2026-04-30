@@ -42,6 +42,21 @@ func (c *command) runAdminCommand(ctx context.Context, args []string) int {
 	if len(args) > 0 && args[0] == "search" {
 		return c.runAdminSearch(ctx, args[1:], false)
 	}
+	if len(args) > 0 && args[0] == "config" {
+		return c.runAdminConfig(ctx, args[1:], false)
+	}
+	if len(args) > 0 && args[0] == "service" {
+		return c.runAdminService(ctx, args[1:], false)
+	}
+	if len(args) > 0 && args[0] == "logs" {
+		return c.runAdminLogs(ctx, args[1:], false)
+	}
+	if len(args) > 0 && args[0] == "diagnostics" {
+		return c.runAdminDiagnostics(ctx, args[1:], false)
+	}
+	if len(args) > 0 && (args[0] == "runbook" || args[0] == "runbooks") {
+		return c.runAdminRunbook(ctx, args[1:], false)
+	}
 	if adminCommandIsOffline(args) {
 		return c.runAdminOfflineCommand(ctx, args)
 	}
@@ -70,6 +85,21 @@ func (c *command) runAdminCommand(ctx context.Context, args []string) int {
 	}
 	if rest[0] == "search" {
 		return c.runAdminSearch(ctx, rest[1:], *jsonOutput)
+	}
+	if rest[0] == "config" {
+		return c.runAdminConfig(ctx, rest[1:], *jsonOutput)
+	}
+	if rest[0] == "service" {
+		return c.runAdminService(ctx, rest[1:], *jsonOutput)
+	}
+	if rest[0] == "logs" {
+		return c.runAdminLogs(ctx, rest[1:], *jsonOutput)
+	}
+	if rest[0] == "diagnostics" {
+		return c.runAdminDiagnostics(ctx, rest[1:], *jsonOutput)
+	}
+	if rest[0] == "runbook" || rest[0] == "runbooks" {
+		return c.runAdminRunbook(ctx, rest[1:], *jsonOutput)
 	}
 	if adminCommandIsOffline(rest) {
 		return c.runAdminOfflineCommand(ctx, rest)
@@ -751,6 +781,13 @@ func (c *command) printAdminUsage(w io.Writer) {
   opencook admin reindex --all-orgs [--complete|--drop|--no-drop] [--dry-run] [--with-timing] [--json]
   opencook admin search check [--org ORG|--all-orgs] [--index INDEX] [--with-timing] [--json]
   opencook admin search repair [--org ORG|--all-orgs] [--index INDEX] [--dry-run|--yes] [--with-timing] [--json]
+  opencook admin config check [--offline] [--json] [--with-timing]
+  opencook admin service status [--json] [--with-timing]
+  opencook admin service doctor [--offline] [--json] [--with-timing]
+  opencook admin logs paths [--json] [--with-timing]
+  opencook admin diagnostics collect --output PATH [--offline] [--yes] [--json] [--with-timing]
+  opencook admin runbook list [--json]
+  opencook admin runbook show NAME [--json]
   opencook admin migration preflight [--org ORG|--all-orgs] [--json] [--with-timing]
   opencook admin migration backup create --output PATH --offline [--dry-run|--yes] [--json] [--with-timing]
   opencook admin migration backup inspect PATH [--json]

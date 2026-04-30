@@ -32,7 +32,7 @@ func (s *FileStore) Status() Status {
 	return Status{
 		Backend:    "filesystem",
 		Configured: strings.TrimSpace(s.root) != "",
-		Message:    "blob compatibility routes are backed by provider-like local filesystem storage rooted at " + s.root,
+		Message:    "checksum blobs use provider-backed local filesystem storage at the configured path",
 	}
 }
 

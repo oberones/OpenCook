@@ -120,7 +120,7 @@ func OpenSearchUnavailableStatus() Status {
 	return Status{
 		Backend:    "opensearch",
 		Configured: true,
-		Message:    "OpenSearch is configured but unavailable",
+		Message:    "OpenSearch is configured but unavailable; search routes cannot reach the provider",
 	}
 }
 

@@ -1773,8 +1773,8 @@ func TestOpenSearchClientErrorClassificationDoesNotLeakProviderBodies(t *testing
 
 func TestOpenSearchStatusVariants(t *testing.T) {
 	memory := NewMemoryIndex(nil, "http://opensearch.example").Status()
-	if memory.Backend != "memory-compat" || !strings.Contains(memory.Message, "memory search fallback") {
-		t.Fatalf("memory status = %+v, want memory fallback wording", memory)
+	if memory.Backend != "memory-compat" || !strings.Contains(memory.Message, "in-memory compatibility index") {
+		t.Fatalf("memory status = %+v, want in-memory fallback wording", memory)
 	}
 
 	active := OpenSearchActiveStatus()

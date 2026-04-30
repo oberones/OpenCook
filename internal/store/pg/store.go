@@ -111,7 +111,7 @@ func (s *Store) Status() Status {
 		return Status{
 			Driver:     "postgres",
 			Configured: false,
-			Message:    "set OPENCOOK_POSTGRES_DSN to configure persistence",
+			Message:    "PostgreSQL is not configured; cookbook, bootstrap core, and core object metadata use in-memory persistence and will be lost on restart",
 		}
 	}
 
@@ -119,13 +119,13 @@ func (s *Store) Status() Status {
 		return Status{
 			Driver:     "postgres",
 			Configured: true,
-			Message:    "PostgreSQL cookbook, bootstrap core, and core object persistence active",
+			Message:    "PostgreSQL-backed cookbook, bootstrap core, and core object metadata persistence is active",
 		}
 	}
 
 	return Status{
 		Driver:     "postgres",
 		Configured: true,
-		Message:    "PostgreSQL configured for cookbook, bootstrap core, and core object persistence; waiting for app activation",
+		Message:    "PostgreSQL is configured for cookbook, bootstrap core, and core object metadata persistence but activation is not active",
 	}
 }

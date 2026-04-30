@@ -40,7 +40,8 @@ type Dependencies struct {
 }
 
 type server struct {
-	deps Dependencies
+	deps    Dependencies
+	metrics *metricsRegistry
 }
 
 type contextKey string
@@ -50,6 +51,8 @@ const (
 	authenticatedRouteIDContextKey   contextKey = "authenticated_route_id"
 )
 
+// NewRouter wires the Chef-compatible HTTP surface and wraps it with
+// low-cardinality operational instrumentation.
 func NewRouter(deps Dependencies) http.Handler {
 	if deps.Now == nil {
 		deps.Now = time.Now
@@ -61,13 +64,14 @@ func NewRouter(deps Dependencies) http.Handler {
 		}
 	}
 
-	srv := &server{deps: deps}
+	srv := &server{deps: deps, metrics: newMetricsRegistry(deps.Now)}
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/", srv.handleRoot)
 	mux.HandleFunc("/_status", srv.handleStatus)
 	mux.HandleFunc("/healthz", srv.handleHealth)
 	mux.HandleFunc("/readyz", srv.handleReady)
+	mux.HandleFunc("/metrics", srv.handleMetrics)
 	mux.HandleFunc("/server_api_version", srv.withServerAPIVersion(srv.handleServerAPIVersion))
 	mux.HandleFunc("/server_api_version/", srv.withServerAPIVersion(srv.handleServerAPIVersion))
 	mux.HandleFunc("/internal/contracts/routes", srv.handleRouteContract)
@@ -183,7 +187,7 @@ func NewRouter(deps Dependencies) http.Handler {
 		}
 	}
 
-	return mux
+	return srv.withRequestLogging(srv.withMetrics(mux))
 }
 
 func (s *server) handleRoot(w http.ResponseWriter, r *http.Request) {
@@ -200,7 +204,7 @@ func (s *server) handleRoot(w http.ResponseWriter, r *http.Request) {
 		"phase":         "compatibility-foundation",
 		"version":       s.deps.Version,
 		"compat_routes": s.deps.Compat.RouteCount(),
-		"next":          "plan broader Lucene/query-string search compatibility, with cookbook/policy/sandbox search coverage and migration/cutover tooling as follow-on buckets",
+		"next":          "continue chef-server-ctl-style operational parity with config validation, service diagnostics, metrics, logs, and runbooks",
 	})
 }
 
@@ -213,7 +217,12 @@ func (s *server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *server) handleReady(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, s.statusPayload("bootstrap"))
+	readiness := s.readinessPayload()
+	status := http.StatusOK
+	if !readiness.Ready {
+		status = http.StatusServiceUnavailable
+	}
+	writeJSON(w, status, s.statusPayloadWithReadiness("bootstrap", readiness))
 }
 
 func (s *server) handleRouteContract(w http.ResponseWriter, _ *http.Request) {
@@ -536,6 +545,9 @@ func (s *server) withAuthn(routeID string, next http.HandlerFunc) http.HandlerFu
 	}
 }
 
+// logAuthnFailure records authentication failures with request correlation and
+// safe diagnostics while deliberately omitting Chef signature values and raw
+// request headers.
 func (s *server) logAuthnFailure(routeID string, r *http.Request, err error) {
 	var authErr *authn.Error
 	if !errors.As(err, &authErr) {
@@ -547,38 +559,27 @@ func (s *server) logAuthnFailure(routeID string, r *http.Request, err error) {
 	if serverAPIVersion == "" {
 		serverAPIVersion = "0"
 	}
+	requestID, _ := requestIDFromContext(r.Context())
 
-	if serverHashedPath, ok := authn.LegacyHashedPathDebugValue(sign, r.URL.Path); ok {
-		s.logf(
-			"authn failure route=%q method=%q path=%q org=%q requestor=%q sign=%q server_api_version=%q server_hashed_path=%q error=%q headers=%v message=%q",
-			routeID,
-			r.Method,
-			r.URL.Path,
-			s.authnOrganization(r),
-			strings.TrimSpace(r.Header.Get("X-Ops-Userid")),
-			sign,
-			serverAPIVersion,
-			serverHashedPath,
-			authErr.Kind,
-			authErr.Headers,
-			authErr.Message,
-		)
-		return
+	fields := map[string]any{
+		"request_id":         requestID,
+		"route":              routeID,
+		"method":             metricMethod(r.Method),
+		"path":               r.URL.Path,
+		"surface":            metricSurfaceForPath(r.URL.Path),
+		"org":                s.authnOrganization(r),
+		"requestor":          strings.TrimSpace(r.Header.Get("X-Ops-Userid")),
+		"server_api_version": serverAPIVersion,
+		"error":              string(authErr.Kind),
+		"message":            authErr.Message,
 	}
-
-	s.logf(
-		"authn failure route=%q method=%q path=%q org=%q requestor=%q sign=%q server_api_version=%q error=%q headers=%v message=%q",
-		routeID,
-		r.Method,
-		r.URL.Path,
-		s.authnOrganization(r),
-		strings.TrimSpace(r.Header.Get("X-Ops-Userid")),
-		sign,
-		serverAPIVersion,
-		authErr.Kind,
-		authErr.Headers,
-		authErr.Message,
-	)
+	if len(authErr.Headers) > 0 {
+		fields["headers"] = authErr.Headers
+	}
+	if serverHashedPath, ok := authn.LegacyHashedPathDebugValue(sign, r.URL.Path); ok {
+		fields["server_hashed_path"] = serverHashedPath
+	}
+	s.logStructured("authn_failure", fields)
 }
 
 func (s *server) writeAuthnFailure(w http.ResponseWriter, err error) {
@@ -699,10 +700,36 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, payload any) bool {
 	}
 }
 
+type readinessPayload struct {
+	Ready   bool                      `json:"ready"`
+	Status  string                    `json:"status"`
+	Message string                    `json:"message"`
+	Checks  map[string]readinessCheck `json:"checks"`
+}
+
+type readinessCheck struct {
+	Ready   bool   `json:"ready"`
+	Message string `json:"message"`
+}
+
 func (s *server) statusPayload(mode string) map[string]any {
+	return s.statusPayloadWithReadiness(mode, s.readinessPayload())
+}
+
+func (s *server) statusPayloadWithReadiness(mode string, readiness readinessPayload) map[string]any {
 	cookbookBackend := s.deps.CookbookBackend
 	if strings.TrimSpace(cookbookBackend) == "" {
 		cookbookBackend = "memory-bootstrap"
+	}
+	authnBackend := "unconfigured"
+	authnCapabilities := authn.Capabilities{}
+	if s.deps.Authn != nil {
+		authnBackend = s.deps.Authn.Name()
+		authnCapabilities = s.deps.Authn.Capabilities()
+	}
+	authzBackend := "unconfigured"
+	if s.deps.Authz != nil {
+		authzBackend = s.deps.Authz.Name()
 	}
 
 	return map[string]any{
@@ -716,20 +743,140 @@ func (s *server) statusPayload(mode string) map[string]any {
 			"strategy": "contract-first",
 			"surfaces": s.deps.Compat.Surfaces(),
 		},
+		"readiness": readiness,
 		"dependencies": map[string]any{
 			"cookbooks": map[string]string{
 				"backend": cookbookBackend,
 			},
 			"authn": map[string]string{
-				"backend": s.deps.Authn.Name(),
+				"backend": authnBackend,
 			},
-			"authn_capabilities": s.deps.Authn.Capabilities(),
+			"authn_capabilities": authnCapabilities,
 			"authz": map[string]string{
-				"backend": s.deps.Authz.Name(),
+				"backend": authzBackend,
 			},
-			"postgres":   s.deps.Postgres.Status(),
-			"opensearch": s.deps.Search.Status(),
-			"blob":       s.deps.Blob.Status(),
+			"postgres":   s.postgresStatus(),
+			"opensearch": s.searchStatus(),
+			"blob":       s.blobStatus(),
 		},
 	}
+}
+
+// readinessPayload summarizes whether the current runtime can serve traffic
+// with either configured providers or intentional in-memory compatibility
+// fallbacks. It avoids embedding provider endpoints or credentials.
+func (s *server) readinessPayload() readinessPayload {
+	checks := map[string]readinessCheck{
+		"bootstrap":  s.bootstrapReadiness(),
+		"postgres":   s.postgresReadiness(),
+		"opensearch": s.searchReadiness(),
+		"blob":       s.blobReadiness(),
+	}
+
+	ready := true
+	for _, check := range checks {
+		if !check.Ready {
+			ready = false
+			break
+		}
+	}
+
+	if ready {
+		return readinessPayload{
+			Ready:   true,
+			Status:  "ready",
+			Message: "OpenCook is ready to serve Chef-compatible requests with the active dependency configuration",
+			Checks:  checks,
+		}
+	}
+	return readinessPayload{
+		Ready:   false,
+		Status:  "not_ready",
+		Message: "one or more configured operational dependencies are unavailable or not active",
+		Checks:  checks,
+	}
+}
+
+func (s *server) bootstrapReadiness() readinessCheck {
+	if s.deps.Bootstrap == nil {
+		return readinessCheck{Ready: false, Message: "bootstrap state service is not configured"}
+	}
+	return readinessCheck{Ready: true, Message: "bootstrap state service is active"}
+}
+
+func (s *server) postgresReadiness() readinessCheck {
+	if s.deps.Postgres == nil {
+		return readinessCheck{Ready: false, Message: "PostgreSQL store dependency is not configured"}
+	}
+	if !s.deps.Postgres.Configured() {
+		return readinessCheck{Ready: true, Message: "PostgreSQL is not configured; in-memory persistence fallback is active"}
+	}
+	if s.deps.Postgres.CookbookPersistenceActive() && s.deps.Postgres.BootstrapCorePersistenceActive() && s.deps.Postgres.CoreObjectPersistenceActive() {
+		return readinessCheck{Ready: true, Message: "PostgreSQL-backed cookbook, bootstrap core, and core object persistence is active"}
+	}
+	return readinessCheck{Ready: false, Message: "PostgreSQL is configured but persistence activation is not active"}
+}
+
+func (s *server) searchReadiness() readinessCheck {
+	status := s.searchStatus()
+	if status.Backend == "unavailable" {
+		return readinessCheck{Ready: false, Message: status.Message}
+	}
+	if status.Backend == "memory-compat" {
+		if !status.Configured {
+			return readinessCheck{Ready: false, Message: status.Message}
+		}
+		return readinessCheck{Ready: true, Message: status.Message}
+	}
+	if status.Backend == "opensearch" {
+		if !status.Configured || strings.Contains(strings.ToLower(status.Message), "unavailable") {
+			return readinessCheck{Ready: false, Message: "OpenSearch is configured but unavailable"}
+		}
+		return readinessCheck{Ready: true, Message: status.Message}
+	}
+	if !status.Configured {
+		return readinessCheck{Ready: false, Message: status.Message}
+	}
+	return readinessCheck{Ready: true, Message: status.Message}
+}
+
+func (s *server) blobReadiness() readinessCheck {
+	status := s.blobStatus()
+	if !status.Configured {
+		return readinessCheck{Ready: false, Message: status.Message}
+	}
+	return readinessCheck{Ready: true, Message: status.Message}
+}
+
+func (s *server) postgresStatus() pg.Status {
+	if s.deps.Postgres == nil {
+		return pg.Status{
+			Driver:     "postgres",
+			Configured: false,
+			Message:    "PostgreSQL store dependency is not configured",
+		}
+	}
+	return s.deps.Postgres.Status()
+}
+
+func (s *server) searchStatus() search.Status {
+	if s.deps.Search == nil {
+		return search.Status{
+			Backend:    "unavailable",
+			Configured: false,
+			Message:    "search index dependency is not configured",
+		}
+	}
+	return s.deps.Search.Status()
+}
+
+func (s *server) blobStatus() blob.Status {
+	if s.deps.Blob == nil {
+		return blob.Status{
+			Backend:    "unavailable",
+			Configured: false,
+			Message:    "blob store dependency is not configured",
+		}
+	}
+	return s.deps.Blob.Status()
 }

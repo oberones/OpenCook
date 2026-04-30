@@ -224,13 +224,13 @@ func TestNewReturnsOpenSearchActivationFailure(t *testing.T) {
 
 func TestStartupSummaryReportsConnectedIntegrations(t *testing.T) {
 	summary := formatStartupSummary(
-		pg.Status{Message: "PostgreSQL cookbook, bootstrap core, and core object persistence active"},
+		pg.Status{Message: "PostgreSQL-backed cookbook, bootstrap core, and core object metadata persistence is active"},
 		true,
 		search.Status{Message: "OpenSearch-backed search provider active (opensearch 3.5.0; search-after pagination, delete-by-query, object total hits)"},
 		true,
 	)
 
-	if !strings.Contains(summary, "PostgreSQL: connected - PostgreSQL cookbook, bootstrap core, and core object persistence active") {
+	if !strings.Contains(summary, "PostgreSQL: connected - PostgreSQL-backed cookbook, bootstrap core, and core object metadata persistence is active") {
 		t.Fatalf("summary = %q, want connected postgres status", summary)
 	}
 	if !strings.Contains(summary, "OpenSearch: connected - OpenSearch-backed search provider active") {
@@ -243,16 +243,16 @@ func TestStartupSummaryReportsConnectedIntegrations(t *testing.T) {
 
 func TestStartupSummaryWarnsWhenPersistenceIsInMemory(t *testing.T) {
 	summary := formatStartupSummary(
-		pg.Status{Message: "set OPENCOOK_POSTGRES_DSN to configure persistence"},
+		pg.Status{Message: "PostgreSQL is not configured; cookbook, bootstrap core, and core object metadata use in-memory persistence and will be lost on restart"},
 		false,
-		search.Status{Message: "set OPENCOOK_OPENSEARCH_URL to configure search"},
+		search.Status{Message: "OpenSearch is not configured; search routes use the in-memory compatibility index"},
 		false,
 	)
 
-	if !strings.Contains(summary, "PostgreSQL: not connected - set OPENCOOK_POSTGRES_DSN to configure persistence") {
+	if !strings.Contains(summary, "PostgreSQL: not connected - PostgreSQL is not configured; cookbook, bootstrap core, and core object metadata use in-memory persistence and will be lost on restart") {
 		t.Fatalf("summary = %q, want disconnected postgres status", summary)
 	}
-	if !strings.Contains(summary, "OpenSearch: not connected - set OPENCOOK_OPENSEARCH_URL to configure search") {
+	if !strings.Contains(summary, "OpenSearch: not connected - OpenSearch is not configured; search routes use the in-memory compatibility index") {
 		t.Fatalf("summary = %q, want disconnected opensearch status", summary)
 	}
 	if !strings.Contains(summary, "Reminder: OpenCook is running with in-memory persistence; all data will be lost on restart") {
@@ -262,13 +262,13 @@ func TestStartupSummaryWarnsWhenPersistenceIsInMemory(t *testing.T) {
 
 func TestStartupSummaryDoesNotWarnWhenOnlyOpenSearchIsUnavailable(t *testing.T) {
 	summary := formatStartupSummary(
-		pg.Status{Message: "PostgreSQL cookbook, bootstrap core, and core object persistence active"},
+		pg.Status{Message: "PostgreSQL-backed cookbook, bootstrap core, and core object metadata persistence is active"},
 		true,
-		search.Status{Message: "memory search fallback active; search compatibility routes are backed by in-memory state"},
+		search.Status{Message: "OpenSearch is not configured; search routes use the in-memory compatibility index"},
 		false,
 	)
 
-	if !strings.Contains(summary, "OpenSearch: not connected - memory search fallback active; search compatibility routes are backed by in-memory state") {
+	if !strings.Contains(summary, "OpenSearch: not connected - OpenSearch is not configured; search routes use the in-memory compatibility index") {
 		t.Fatalf("summary = %q, want opensearch fallback status", summary)
 	}
 	if strings.Contains(summary, "all data will be lost on restart") {
@@ -387,7 +387,7 @@ func TestNewStatusReportsActivePostgresAndFilesystemBlob(t *testing.T) {
 	if !ok {
 		t.Fatalf("dependencies.postgres = %T, want map[string]any (%v)", dependencies["postgres"], dependencies)
 	}
-	if postgresStatus["message"] != "PostgreSQL cookbook, bootstrap core, and core object persistence active" {
+	if postgresStatus["message"] != "PostgreSQL-backed cookbook, bootstrap core, and core object metadata persistence is active" {
 		t.Fatalf("dependencies.postgres.message = %v, want active status", postgresStatus["message"])
 	}
 
