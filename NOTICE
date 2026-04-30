@@ -1,0 +1,8 @@
+OpenCook
+Copyright 2026 OpenCook contributors
+
+OpenCook is a compatibility-first Go rewrite of Chef Infra Server.
+
+The OpenCook name is used as a project trademark by the OpenCook maintainers.
+Trademark rights are not licensed under the Apache License, Version 2.0. See
+TRADEMARKS.md for trademark usage guidance.

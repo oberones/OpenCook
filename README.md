@@ -4,7 +4,7 @@ OpenCook is a compatibility-first Go rewrite of Chef Infra Server.
 
 The goal is to remain wire-compatible with existing Chef and Cinc clients, `knife`, and surrounding automation while replacing the legacy server internals with a simpler, modern Go implementation.
 
-OpenCook is free and open source software under the MIT License. Licensing, license enforcement, license telemetry, and license-management endpoints are intentionally out of scope.
+OpenCook is free and open source software under the Apache License, Version 2.0. Licensing, license enforcement, license telemetry, and license-management endpoints are intentionally out of scope. The OpenCook name is being prepared as a project trademark; see [TRADEMARKS.md](TRADEMARKS.md) for usage guidance.
 
 ## Project Status
 
@@ -337,10 +337,14 @@ Useful project docs:
 - [Milestones](docs/milestones.md)
 - [Compatibility matrix](docs/compatibility-matrix-template.md)
 - [Functional Docker Stack](docs/functional-testing.md)
+- [Contributing](CONTRIBUTING.md)
+- [Trademark policy](TRADEMARKS.md)
 - [Compatibility-first architecture](docs/adr/0001-compatibility-first-architecture.md)
 - [External stateful dependencies](docs/adr/0002-external-stateful-dependencies.md)
 - [No licensing subsystem](docs/adr/0003-no-licensing-subsystem.md)
 
 ## License
 
-OpenCook is released under the [MIT License](LICENSE).
+OpenCook is released under the [Apache License, Version 2.0](LICENSE). See [NOTICE](NOTICE) for attribution notices.
+
+Trademark usage is governed by [TRADEMARKS.md](TRADEMARKS.md). The Apache License, Version 2.0, does not grant trademark rights except for reasonable and customary use in describing the origin of the software and reproducing the NOTICE file.
