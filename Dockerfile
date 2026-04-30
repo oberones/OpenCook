@@ -19,6 +19,11 @@ RUN CGO_ENABLED=0 go build -trimpath \
     -o /out/opencook ./cmd/opencook
 
 FROM ${RUNTIME_IMAGE} AS runtime
+LABEL org.opencontainers.image.title="OpenCook" \
+      org.opencontainers.image.description="Compatibility-first Go rewrite of Chef Infra Server" \
+      org.opencontainers.image.source="https://github.com/oberones/OpenCook" \
+      org.opencontainers.image.licenses="Apache-2.0"
+
 RUN apk add --no-cache ca-certificates tzdata
 
 WORKDIR /app

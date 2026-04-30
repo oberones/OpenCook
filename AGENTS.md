@@ -10,6 +10,10 @@ The goal is not to design a new configuration-management server. The goal is to 
 
 OpenCook is intended to be fully free and open source.
 
+The repository is licensed under the Apache License, Version 2.0. The OpenCook
+name is governed separately by `TRADEMARKS.md`; do not treat the software
+license as a grant of project trademark rights.
+
 Intentional divergence from upstream Chef Infra Server:
 
 - do not implement licensing
