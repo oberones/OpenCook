@@ -416,6 +416,12 @@ func metricSurfaceForSegment(segment string) string {
 		return "cookbook_artifacts"
 	case "clients":
 		return "clients"
+	case "groups":
+		return "groups"
+	case "containers":
+		return "containers"
+	case "_acl":
+		return "acls"
 	case "data":
 		return "data_bags"
 	case "environments":

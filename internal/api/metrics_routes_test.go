@@ -97,3 +97,22 @@ func TestMetricsEndpointRejectsMutatingMethods(t *testing.T) {
 		t.Fatalf("POST /metrics Allow = %q, want %q", allow, "GET, HEAD")
 	}
 }
+
+func TestMetricSurfaceForPathKeepsOrgAdminRoutesSpecific(t *testing.T) {
+	for _, tt := range []struct {
+		path string
+		want string
+	}{
+		{path: "/organizations/ponyville/groups", want: "groups"},
+		{path: "/organizations/ponyville/groups/admins", want: "groups"},
+		{path: "/organizations/ponyville/containers", want: "containers"},
+		{path: "/organizations/ponyville/containers/clients/_acl", want: "containers"},
+		{path: "/organizations/ponyville/_acl", want: "acls"},
+	} {
+		t.Run(tt.path, func(t *testing.T) {
+			if got := metricSurfaceForPath(tt.path); got != tt.want {
+				t.Fatalf("metricSurfaceForPath(%q) = %q, want %q", tt.path, got, tt.want)
+			}
+		})
+	}
+}
