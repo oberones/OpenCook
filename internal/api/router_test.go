@@ -3494,6 +3494,7 @@ func TestAuthnFailuresAreLoggedWithSafeRequestMetadata(t *testing.T) {
 		Algorithm: "sha256",
 	}, "2026-04-02T15:04:05Z")
 	req.Header.Set(serverAPIVersionHeader, "2")
+	req.Header.Set(requestIDHeader, "authn-v13-request")
 	authChunk := req.Header.Get("X-Ops-Authorization-1")
 	rec := httptest.NewRecorder()
 
@@ -3510,18 +3511,22 @@ func TestAuthnFailuresAreLoggedWithSafeRequestMetadata(t *testing.T) {
 	if payload["error"] != "bad_signature" {
 		t.Fatalf("error = %v, want %q", payload["error"], "bad_signature")
 	}
+	if got := rec.Header().Get(requestIDHeader); got != "authn-v13-request" {
+		t.Fatalf("%s response header = %q, want preserved request ID", requestIDHeader, got)
+	}
 
 	logOutput := logs.String()
 	for _, want := range []string{
-		`route="org-clients"`,
-		`method="GET"`,
-		`path="/organizations/ponyville/clients"`,
-		`org="ponyville"`,
-		`requestor="silent-bob"`,
-		`sign="algorithm=sha256;version=1.3"`,
-		`server_api_version="2"`,
-		`error="bad_signature"`,
-		`message="signature verification failed"`,
+		`"event":"authn_failure"`,
+		`"request_id":"authn-v13-request"`,
+		`"route":"org-clients"`,
+		`"method":"GET"`,
+		`"path":"/organizations/ponyville/clients"`,
+		`"org":"ponyville"`,
+		`"requestor":"silent-bob"`,
+		`"server_api_version":"2"`,
+		`"error":"bad_signature"`,
+		`"message":"signature verification failed"`,
 	} {
 		if !strings.Contains(logOutput, want) {
 			t.Fatalf("logs = %q, want to contain %q", logOutput, want)
@@ -3530,6 +3535,9 @@ func TestAuthnFailuresAreLoggedWithSafeRequestMetadata(t *testing.T) {
 
 	if strings.Contains(logOutput, authChunk) {
 		t.Fatalf("logs leaked authorization header chunk: %q", logOutput)
+	}
+	if strings.Contains(logOutput, `sign=`) || strings.Contains(logOutput, `algorithm=sha256;version=1.3`) {
+		t.Fatalf("logs leaked request signature metadata: %q", logOutput)
 	}
 	if strings.Contains(logOutput, `server_hashed_path=`) {
 		t.Fatalf("logs unexpectedly included legacy hashed path for v1.3 request: %q", logOutput)
@@ -3548,6 +3556,7 @@ func TestLegacyAuthnFailuresLogServerComputedHashedPath(t *testing.T) {
 		Version:   "1.1",
 		Algorithm: "sha1",
 	}, "2026-04-02T15:04:05Z")
+	req.Header.Set(requestIDHeader, "authn-legacy-request")
 	rec := httptest.NewRecorder()
 
 	router.ServeHTTP(rec, req)
@@ -3575,23 +3584,27 @@ func TestLegacyAuthnFailuresLogServerComputedHashedPath(t *testing.T) {
 
 	logOutput := logs.String()
 	for _, want := range []string{
-		`route="org-clients"`,
-		`method="POST"`,
-		`path="/organizations/ponyville/clients"`,
-		`org="ponyville"`,
-		`requestor="silent-bob"`,
-		`sign="algorithm=sha1;version=1.1;"`,
-		`server_api_version="0"`,
-		`server_hashed_path="` + serverHashedPath + `"`,
-		`error="bad_signature"`,
-		`message="signature verification failed"`,
+		`"event":"authn_failure"`,
+		`"request_id":"authn-legacy-request"`,
+		`"route":"org-clients"`,
+		`"method":"POST"`,
+		`"path":"/organizations/ponyville/clients"`,
+		`"org":"ponyville"`,
+		`"requestor":"silent-bob"`,
+		`"server_api_version":"0"`,
+		`"server_hashed_path":"` + serverHashedPath + `"`,
+		`"error":"bad_signature"`,
+		`"message":"signature verification failed"`,
 	} {
 		if !strings.Contains(logOutput, want) {
 			t.Fatalf("logs = %q, want to contain %q", logOutput, want)
 		}
 	}
-	if strings.Contains(logOutput, `server_hashed_path="`+signedHashedPath+`"`) {
+	if strings.Contains(logOutput, `"server_hashed_path":"`+signedHashedPath+`"`) {
 		t.Fatalf("logs used signed request path hash instead of server path hash: %q", logOutput)
+	}
+	if strings.Contains(logOutput, `sign=`) || strings.Contains(logOutput, `algorithm=sha1;version=1.1`) {
+		t.Fatalf("logs leaked request signature metadata: %q", logOutput)
 	}
 }
 

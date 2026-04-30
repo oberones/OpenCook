@@ -116,6 +116,8 @@ services:
       OPENCOOK_FUNCTIONAL_RESTORE_LISTEN_ADDRESS: 127.0.0.1:4400
       OPENCOOK_BOOTSTRAP_REQUESTOR_NAME: ${OPENCOOK_FUNCTIONAL_ACTOR_NAME:-pivotal}
       OPENCOOK_BOOTSTRAP_REQUESTOR_TYPE: user
+      OPENCOOK_BOOTSTRAP_REQUESTOR_KEY_ID: ${OPENCOOK_FUNCTIONAL_ACTOR_KEY_ID:-default}
+      OPENCOOK_BOOTSTRAP_PUBLIC_KEY_PATH: /src/test/functional/fixtures/bootstrap_public.pem
       GOCACHE: /tmp/opencook-go-cache
     depends_on:
       opencook:

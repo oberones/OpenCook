@@ -140,9 +140,9 @@ func (s *S3CompatibleStore) Status() Status {
 		}
 	}
 
-	message := "S3-compatible blob adapter is configured for request operations"
+	message := "S3-compatible blob adapter is configured for checksum blob operations"
 	if s.endpoint != "" {
-		message = message + " (endpoint " + s.endpoint + ")"
+		message = message + " with a configured endpoint"
 	}
 
 	return Status{

@@ -69,13 +69,13 @@ func (s NoopStore) Status() Status {
 		return Status{
 			Backend:    "unconfigured",
 			Configured: false,
-			Message:    "set OPENCOOK_BLOB_STORAGE_URL to configure object storage",
+			Message:    "blob storage is not configured; use the memory, filesystem, or S3-compatible backend for checksum content",
 		}
 	}
 
 	return Status{
 		Backend:    "placeholder",
 		Configured: true,
-		Message:    "blob storage backend configured but not activated",
+		Message:    "blob storage is configured but no active checksum blob adapter is available",
 	}
 }

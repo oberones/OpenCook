@@ -30,9 +30,9 @@ func (s *MemoryStore) Name() string {
 }
 
 func (s *MemoryStore) Status() Status {
-	message := "blob compatibility routes are backed by in-memory content-addressed storage; filesystem and S3-compatible modes are available for provider-backed paths"
+	message := "checksum blobs use in-memory content-addressed storage and will be lost on restart; filesystem and S3-compatible provider modes are available"
 	if s.target != "" {
-		message = "blob storage is explicitly pinned to the in-memory compatibility adapter for this phase"
+		message = "checksum blobs are explicitly pinned to the in-memory compatibility adapter and will be lost on restart"
 	}
 
 	return Status{

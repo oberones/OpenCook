@@ -10,7 +10,7 @@ The tests intentionally talk to OpenCook over HTTP with Chef-style signed reques
 scripts/functional-compose.sh
 ```
 
-The default flow builds the images, starts the stack, creates compatibility objects including encrypted-looking data bag items, restarts OpenCook, verifies rehydration through active OpenSearch-backed search, runs the targeted Lucene/query-string compatibility phase, runs invalid-write/no-mutation checks, updates searchable fields and verifies old search terms disappear, restarts again, reruns the query compatibility phase against updated persisted state, runs the operational admin/reindex/search-repair phases, restarts after repair, runs migration preflight plus backup create/inspect against the active stack, deletes the objects, restarts one more time, and verifies deletion persisted.
+The default flow builds the images, starts the stack, creates compatibility objects including encrypted-looking data bag items, restarts OpenCook, verifies rehydration through active OpenSearch-backed search, runs the targeted Lucene/query-string compatibility phase, runs invalid-write/no-mutation checks, updates searchable fields and verifies old search terms disappear, restarts again, reruns the query compatibility phase against updated persisted state, runs the operational admin/config/service/metrics/logs/diagnostics/runbook/reindex/search-repair phases, restarts after repair, runs migration preflight plus backup create/inspect against the active stack, deletes the objects, restarts one more time, and verifies deletion persisted.
 
 Successful default and targeted runs end with a `functional tests passed successfully` footer so CI and humans can distinguish a clean finish from an abrupt final phase log.
 
@@ -84,7 +84,9 @@ restore database first when that database is missing or empty.
 The operational phases can run against a fresh stack for live-safe admin command
 coverage. The encrypted data bag scoped reindex/repair checks only run when the
 `create` phase fixture is already present; otherwise the harness skips those
-fixture-dependent checks with an explicit message.
+fixture-dependent checks with an explicit message. Diagnostic bundles generated
+inside the test container are removed by default and preserved only when
+`KEEP_STACK=1` or `OPENCOOK_FUNCTIONAL_KEEP_ARTIFACTS=1` is set.
 
 ## Remote Docker
 
@@ -147,6 +149,10 @@ rehearsal coverage.
 - Searchable environments, nodes, roles, ordinary data bag items, and encrypted-looking data bag items update OpenSearch-visible terms, removing old terms and matching new terms.
 - `opencook admin` can sign live HTTP admin requests from the test container to the OpenCook container over the shared Compose network.
 - Live-safe operational commands cover admin status, user/org creation, user key creation, a follow-up signed request with the generated key, group/container/ACL inspection, and complete org reindex.
+- Operational config/service coverage exercises `opencook admin config check`, `opencook admin service status`, and offline `opencook admin service doctor` in the PostgreSQL-backed, OpenSearch-backed, filesystem-blob Compose stack.
+- Operational metrics coverage verifies `/metrics` exposes the expected Prometheus counters and dependency readiness signals without leaking backend DSNs or signed request headers.
+- Operational diagnostics coverage verifies log path discovery, redacted diagnostics bundle creation, bundle manifest contents, embedded runbook summaries, and default cleanup of generated archives.
+- Operational runbook coverage verifies `opencook admin runbook list` and `opencook admin runbook show` include service-management and intentionally unsupported omnibus guidance.
 - Operational search consistency detects injected stale OpenSearch documents, including encrypted data bag index drift, dry-runs repair, repairs the stale documents, and verifies clean state after an OpenCook restart.
 - Operational reindex/check/repair rejects unsupported cookbook, cookbook-artifact, policy, policy-group, sandbox, and checksum indexes, and unscoped repair deletes stale unsupported provider documents without recreating unsupported search documents.
 - Package-level operational coverage exercises admin reindex/check/repair against both direct delete-by-query and safe search-after-backed fallback-delete provider capability modes.

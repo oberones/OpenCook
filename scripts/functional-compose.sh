@@ -47,11 +47,17 @@ wait_for_opencook() {
   return 1
 }
 
+# run_phase forwards phase and artifact-retention settings into the isolated test
+# container so diagnostics created there follow the same KEEP_STACK contract.
 run_phase() {
 	local phase="$1"
 	echo
 	echo "==> functional phase: $phase"
-	compose_with_tests run --rm -e "OPENCOOK_FUNCTIONAL_PHASE=$phase" functional-tests
+	compose_with_tests run --rm \
+		-e "OPENCOOK_FUNCTIONAL_PHASE=$phase" \
+		-e "KEEP_STACK=${KEEP_STACK:-0}" \
+		-e "OPENCOOK_FUNCTIONAL_KEEP_ARTIFACTS=${OPENCOOK_FUNCTIONAL_KEEP_ARTIFACTS:-${KEEP_STACK:-0}}" \
+		functional-tests
 }
 
 restart_opencook() {

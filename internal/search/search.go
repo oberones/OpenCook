@@ -67,14 +67,14 @@ func (i NoopIndex) Status() Status {
 		return Status{
 			Backend:    "unconfigured",
 			Configured: false,
-			Message:    "set OPENCOOK_OPENSEARCH_URL to configure search",
+			Message:    "OpenSearch is not configured; use the in-memory compatibility search index or set OPENCOOK_OPENSEARCH_URL for provider-backed search",
 		}
 	}
 
 	return Status{
 		Backend:    "placeholder",
 		Configured: true,
-		Message:    "OpenSearch adapter scaffold only",
+		Message:    "OpenSearch is configured but no active search adapter is available",
 	}
 }
 
