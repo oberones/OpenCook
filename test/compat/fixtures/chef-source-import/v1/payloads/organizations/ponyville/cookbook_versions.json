@@ -1,0 +1,22 @@
+[
+  {
+    "name": "apache2-1.0.0",
+    "cookbook_name": "apache2",
+    "version": "1.0.0",
+    "json_class": "Chef::CookbookVersion",
+    "chef_type": "cookbook_version",
+    "metadata": {
+      "name": "apache2",
+      "version": "1.0.0",
+      "dependencies": {"apt": ">= 1.0.0"}
+    },
+    "all_files": [
+      {
+        "name": "recipes/default.rb",
+        "path": "recipes/default.rb",
+        "checksum": "364c08d77216cb1c1c5b3826de020dc3",
+        "specificity": "default"
+      }
+    ]
+  }
+]

@@ -1,0 +1,38 @@
+{
+  "format_version": "opencook.migration.chef_source.v1",
+  "source_type": "normalized_chef_source_fixture",
+  "payloads": [
+    {"family": "users", "path": "payloads/bootstrap/users.json", "count": 1},
+    {"family": "user_acls", "path": "payloads/bootstrap/user_acls.json", "count": 1},
+    {"family": "user_keys", "path": "payloads/bootstrap/user_keys.json", "count": 1},
+    {"family": "server_admin_memberships", "path": "payloads/bootstrap/server_admin_memberships.json", "count": 1},
+    {"family": "organizations", "path": "payloads/organizations/ponyville/organization.json", "count": 1},
+    {"organization": "ponyville", "family": "clients", "path": "payloads/organizations/ponyville/clients.json", "count": 1},
+    {"organization": "ponyville", "family": "client_keys", "path": "payloads/organizations/ponyville/client_keys.json", "count": 1},
+    {"organization": "ponyville", "family": "groups", "path": "payloads/organizations/ponyville/groups.json", "count": 4},
+    {"organization": "ponyville", "family": "group_memberships", "path": "payloads/organizations/ponyville/group_memberships.json", "count": 4},
+    {"organization": "ponyville", "family": "containers", "path": "payloads/organizations/ponyville/containers.json", "count": 12},
+    {"organization": "ponyville", "family": "acls", "path": "payloads/organizations/ponyville/acls.json", "count": 24},
+    {"organization": "ponyville", "family": "nodes", "path": "payloads/organizations/ponyville/nodes.json", "count": 1},
+    {"organization": "ponyville", "family": "environments", "path": "payloads/organizations/ponyville/environments.json", "count": 1},
+    {"organization": "ponyville", "family": "roles", "path": "payloads/organizations/ponyville/roles.json", "count": 1},
+    {"organization": "ponyville", "family": "data_bags", "path": "payloads/organizations/ponyville/data_bags.json", "count": 1},
+    {"organization": "ponyville", "family": "data_bag_items", "path": "payloads/organizations/ponyville/data_bag_items.json", "count": 2},
+    {"organization": "ponyville", "family": "policy_revisions", "path": "payloads/organizations/ponyville/policy_revisions.json", "count": 1},
+    {"organization": "ponyville", "family": "policy_groups", "path": "payloads/organizations/ponyville/policy_groups.json", "count": 1},
+    {"organization": "ponyville", "family": "policy_assignments", "path": "payloads/organizations/ponyville/policy_assignments.json", "count": 1},
+    {"organization": "ponyville", "family": "sandboxes", "path": "payloads/organizations/ponyville/sandboxes.json", "count": 1},
+    {"organization": "ponyville", "family": "checksum_references", "path": "payloads/organizations/ponyville/checksum_references.json", "count": 2},
+    {"organization": "ponyville", "family": "cookbook_versions", "path": "payloads/organizations/ponyville/cookbook_versions.json", "count": 1},
+    {"organization": "ponyville", "family": "cookbook_artifacts", "path": "payloads/organizations/ponyville/cookbook_artifacts.json", "count": 1}
+  ],
+  "artifacts": [
+    {"family": "bookshelf", "path": "blobs/checksums", "count": 1, "supported": true},
+    {"family": "opensearch", "path": "derived/opensearch", "count": 1, "deferred": true},
+    {"family": "oc_id", "path": "unsupported/oc-id", "count": 1, "supported": false}
+  ],
+  "notes": [
+    "Synthetic fixture for parser and taxonomy tests only.",
+    "OpenSearch entries are derived state and must be rebuilt from imported PostgreSQL rows."
+  ]
+}

@@ -1,0 +1,4 @@
+[
+  {"bag": "secrets", "id": "db", "payload": {"id": "db", "encrypted_data": "fixture"}},
+  {"bag": "secrets", "id": "plain", "payload": {"id": "plain", "value": "cleartext"}}
+]

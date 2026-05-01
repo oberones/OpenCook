@@ -35,10 +35,11 @@ KEEP_STACK=1 scripts/functional-compose.sh invalid restart verify
 KEEP_STACK=1 scripts/functional-compose.sh search-update verify-search-updated restart verify-search-updated
 KEEP_STACK=1 scripts/functional-compose.sh operational restart operational-verify
 KEEP_STACK=1 scripts/functional-compose.sh migration-preflight migration-backup migration-backup-inspect
+KEEP_STACK=1 scripts/functional-compose.sh migration-source-all
 KEEP_STACK=1 scripts/functional-compose.sh delete restart verify-deleted
 ```
 
-Supported phase names are `create`, `verify`, `query-compat`, `invalid`, `search-update`, `verify-search-updated`, `operational`, `operational-verify`, `migration-preflight`, `migration-backup`, `migration-backup-inspect`, `migration-restore-preflight`, `migration-restore`, `migration-reindex`, `migration-rehearsal`, `migration-all`, `delete`, `verify-deleted`, and `restart`.
+Supported phase names are `create`, `verify`, `query-compat`, `invalid`, `search-update`, `verify-search-updated`, `operational`, `operational-verify`, `migration-preflight`, `migration-backup`, `migration-backup-inspect`, `migration-restore-preflight`, `migration-restore`, `migration-reindex`, `migration-rehearsal`, `migration-source-normalize`, `migration-source-import-preflight`, `migration-source-import`, `migration-source-reindex`, `migration-source-sync-preflight`, `migration-source-sync`, `migration-shadow-compare`, `migration-source-rehearsal`, `migration-source-all`, `migration-all`, `delete`, `verify-deleted`, and `restart`.
 
 To run just the OpenSearch-heavy compatibility phases after a stack already has created fixtures, use:
 
@@ -86,6 +87,15 @@ coverage. The encrypted data bag scoped reindex/repair checks only run when the
 `create` phase fixture is already present; otherwise the harness skips those
 fixture-dependent checks with an explicit message. Diagnostic bundles generated
 inside the test container are removed by default and preserved only when
+`KEEP_STACK=1` or `OPENCOOK_FUNCTIONAL_KEEP_ARTIFACTS=1` is set.
+
+The source-import migration phases are opt-in to keep the default flow quick.
+`migration-source-all` normalizes the baked Chef source fixture, validates and
+applies source import into the restore database, rebuilds/search-checks
+OpenSearch, records source-sync cursor progress, runs shadow-read comparison,
+and then runs hardened cutover rehearsal with import/sync/search/shadow/rollback
+evidence. Generated source, import, search, shadow, and rehearsal artifacts live
+under the Compose-managed functional state volume and are cleaned unless
 `KEEP_STACK=1` or `OPENCOOK_FUNCTIONAL_KEEP_ARTIFACTS=1` is set.
 
 ## Remote Docker

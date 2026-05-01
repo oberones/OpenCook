@@ -1,0 +1,3 @@
+[
+  {"resource": "user:pivotal", "read": {"actors": ["pivotal"], "groups": []}}
+]

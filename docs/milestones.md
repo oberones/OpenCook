@@ -80,9 +80,9 @@ Status: in progress
 - policy payload validation now covers more cookbook-lock and solution-dependency structure, while node policy refs remain compatibility-safe searchable fields instead of enforced foreign keys
 - Docker functional coverage now also sends v0, v1, and v2 API-version headers through representative object and OpenSearch-backed search flows after PostgreSQL restart/rehydration
 - OpenSearch provider capability/version hardening is now pinned with provider discovery, truthful status/admin capability wording, versioned mapping lifecycle, direct and fallback delete-by-query behavior, provider response/failure redaction, startup activation hardening, and opt-in provider matrix coverage
-- first migration/cutover tooling is now complete for OpenCook-to-OpenCook logical backup/restore, source artifact inventory, restored-target reindex, and cutover rehearsal
+- migration/cutover tooling is now complete for OpenCook-to-OpenCook logical backup/restore, normalized Chef Server source inventory/normalize/import/sync, source-to-target shadow-read comparison, restored-target reindex, and cutover rehearsal
 - `chef-server-ctl`-style operational parity is now complete for config validation, service status/doctor, metrics, request IDs, structured logs, log discovery, diagnostics bundles, runbook discovery, and Docker functional coverage
-- Chef Infra Server source import/sync plus shadow-read/cutover hardening is the next recommended operational bucket unless deployment testing identifies a higher-risk compatibility gap
+- live maintenance-mode request blocking and cache-safe online repair/cutover controls are the next recommended operational bucket unless deployment testing identifies a higher-risk Chef compatibility gap
 
 ## Milestone 6: Cookbook and Blob Workflows
 
@@ -223,9 +223,10 @@ Status: in progress
 - OpenSearch reindex, consistency check, and repair commands can rebuild and compare derived documents from PostgreSQL-backed state, including encrypted data bag indexes
 - functional Docker coverage now proves admin status, live-safe user/org/key operations, group/container/ACL inspection, complete org reindex, encrypted data bag scoped reindex/check/repair, stale OpenSearch detection, dry-run repair, repair, and post-restart verification
 - OpenSearch provider capability details are visible through status/admin status and functional coverage, with package-level direct and fallback delete provider-mode coverage for admin reindex/check/repair
-- migration/cutover tooling now provides redacted preflight checks, OpenCook logical backup create/inspect, offline restore preflight/apply, read-only Chef Server source artifact inventory, restored-target complete reindex, and live cutover rehearsal against a temporary restored OpenCook target
-- functional Docker coverage now also exercises migration preflight, backup create/inspect, restore into a fresh PostgreSQL/blob target, complete reindex from restored state, and cutover rehearsal with a clear success footer
+- migration/cutover tooling now provides redacted preflight checks, OpenCook logical backup create/inspect, offline restore preflight/apply, normalized Chef Server source inventory/normalize/import/sync, source-to-target shadow-read comparison, restored-target complete reindex, and live cutover rehearsal against a temporary restored OpenCook target
+- functional Docker coverage now also exercises migration preflight, backup create/inspect, restore into a fresh PostgreSQL/blob target, complete reindex from restored state, normalized source import/sync, shadow-read comparison, hardened source cutover rehearsal, and clear success footers
 - `chef-server-ctl`-style operational parity now includes config validation, service status/doctor, safe `/metrics`, request IDs, structured request logs, log path discovery, redacted diagnostics bundles, runbook list/show, service-management docs, and Docker functional coverage
 - full Chef-style operational documentation is now anchored in the README, functional test guide, and `docs/chef-server-ctl-operational-runbooks.md`
-- expand source import/sync beyond read-only inventory for existing Chef Infra Server installs
-- deepen shadow-read and deployment cutover runbooks with production-scale rehearsal guidance
+- add live maintenance-mode request blocking for backup, restore, sync, reindex, repair, and cutover windows
+- define cache-invalidation and process-safety gates for eventually allowing controlled online direct PostgreSQL repair mutations
+- deepen production-scale validation for migration, reindex, source sync, and shadow-read rehearsal guidance
