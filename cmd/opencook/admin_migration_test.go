@@ -1017,6 +1017,30 @@ func TestPostgresAdminOfflineStoreRestoreCookbookExportRollsBackPartialCookbooks
 	}
 }
 
+func TestPostgresAdminOfflineStoreSyncCookbooksRejectsMissingBootstrapOrg(t *testing.T) {
+	cookbookStore := &fakeMigrationCookbookStore{}
+	store := postgresAdminOfflineStore{cookbooks: cookbookStore}
+	current := adminMigrationCookbookExport{Orgs: map[string]adminMigrationCookbookOrgExport{}}
+	desired := adminMigrationCookbookExport{Orgs: map[string]adminMigrationCookbookOrgExport{
+		"phantom": {
+			Versions: []bootstrap.CookbookVersion{{
+				Name:         "app-1.2.3",
+				CookbookName: "app",
+				Version:      "1.2.3",
+			}},
+		},
+	}}
+	scopes := map[adminMigrationSourcePayloadKey]bool{{Organization: "phantom", Family: "cookbook_versions"}: true}
+
+	err := store.applySyncedCookbookExport(bootstrap.BootstrapCoreState{Orgs: map[string]bootstrap.BootstrapCoreOrganizationState{}}, current, desired, scopes)
+	if err == nil || !strings.Contains(err.Error(), "missing from bootstrap core state") {
+		t.Fatalf("applySyncedCookbookExport() error = %v, want missing bootstrap org", err)
+	}
+	if len(cookbookStore.ensuredOrgs) != 0 {
+		t.Fatalf("ensured orgs = %#v, want none for missing bootstrap org", cookbookStore.ensuredOrgs)
+	}
+}
+
 func TestAdminMigrationRestoreApplyDryRunDoesNotMutate(t *testing.T) {
 	bundlePath, _ := writeAdminMigrationRestoreTestBundleWithBlobAndCookbook(t)
 	targetStore := &fakeMigrationInventoryStore{
@@ -1478,6 +1502,45 @@ func TestAdminMigrationSourceNormalizeWritesDeterministicBundleFromFixture(t *te
 	}
 	if _, ok := out["duration_ms"]; !ok {
 		t.Fatalf("output missing duration_ms: %v", out)
+	}
+}
+
+func TestAdminMigrationSourcePayloadMaterializationPreservesEmptyFamilies(t *testing.T) {
+	key := adminMigrationSourcePayloadKey{Organization: "ponyville", Family: "nodes"}
+	files := map[string][]byte{}
+	payloads, err := adminMigrationMaterializeSourcePayloadFiles(map[adminMigrationSourcePayloadKey][]json.RawMessage{
+		key: []json.RawMessage{},
+	}, files)
+	if err != nil {
+		t.Fatalf("adminMigrationMaterializeSourcePayloadFiles() error = %v", err)
+	}
+	if len(payloads) != 1 {
+		t.Fatalf("payloads = %#v, want one zero-count family", payloads)
+	}
+	payload := payloads[0]
+	if payload.Path != "payloads/organizations/ponyville/nodes.json" || payload.Count != 0 {
+		t.Fatalf("payload = %#v, want zero-count ponyville nodes payload", payload)
+	}
+	if got := string(files[payload.Path]); got != "[\n]\n" {
+		t.Fatalf("payload file = %q, want empty canonical array", got)
+	}
+
+	read := adminMigrationSourceImportRead{PayloadValues: map[adminMigrationSourcePayloadKey][]json.RawMessage{key: []json.RawMessage{}}}
+	scopes := adminMigrationSourceSyncCoveredScopes(read)
+	if !scopes[key] {
+		t.Fatalf("source sync scopes = %#v, want empty nodes family covered", scopes)
+	}
+	diff := adminMigrationSourceSyncDiffStates(
+		adminMigrationSourceImportState{CoreObjects: bootstrap.CoreObjectState{Orgs: map[string]bootstrap.CoreObjectOrganizationState{
+			"ponyville": {Nodes: map[string]bootstrap.Node{}},
+		}}},
+		adminMigrationSourceImportState{CoreObjects: bootstrap.CoreObjectState{Orgs: map[string]bootstrap.CoreObjectOrganizationState{
+			"ponyville": {Nodes: map[string]bootstrap.Node{"stale": {Name: "stale"}}},
+		}}},
+		scopes,
+	)
+	if diff.DeleteCount != 1 || !diff.HasChanges {
+		t.Fatalf("diff = %#v, want target-only node delete from empty covered family", diff)
 	}
 }
 
@@ -3209,9 +3272,12 @@ type fakeMigrationCookbookStore struct {
 	versionDeleteErr  error
 	deletedArtifacts  []string
 	deletedVersions   []string
+	ensuredOrgs       []bootstrap.Organization
 }
 
-func (s *fakeMigrationCookbookStore) EnsureOrganization(bootstrap.Organization) {}
+func (s *fakeMigrationCookbookStore) EnsureOrganization(org bootstrap.Organization) {
+	s.ensuredOrgs = append(s.ensuredOrgs, org)
+}
 
 func (s *fakeMigrationCookbookStore) HasCookbookVersion(string, string, string) (bool, bool) {
 	return false, true

@@ -3357,13 +3357,12 @@ func adminMigrationSourceSyncCursor(read adminMigrationSourceImportRead) string 
 }
 
 // adminMigrationSourceSyncCoveredScopes freezes deletion intent to exactly the
-// payload families present in the source manifest; absent families are preserved.
+// payload families present in the source manifest. A present zero-count family
+// is still a covered scope because it means source sync should delete target-only
+// rows for that family; absent families are preserved.
 func adminMigrationSourceSyncCoveredScopes(read adminMigrationSourceImportRead) map[adminMigrationSourcePayloadKey]bool {
 	scopes := map[adminMigrationSourcePayloadKey]bool{}
-	for key, values := range read.PayloadValues {
-		if len(values) == 0 {
-			continue
-		}
+	for key := range read.PayloadValues {
 		if adminMigrationSourceSyncFamilyStored(key.Family) {
 			scopes[key] = true
 		}
@@ -5095,11 +5094,13 @@ func adminMigrationMarshalSourcePayloadValues(values []json.RawMessage) ([]byte,
 }
 
 // adminMigrationMaterializeSourcePayloadFiles turns grouped raw payload objects
-// into manifest payload records with byte hashes and deterministic paths.
+// into manifest payload records with byte hashes and deterministic paths. Empty
+// groups are kept so later syncs can distinguish "source has none" from
+// "source did not cover this family."
 func adminMigrationMaterializeSourcePayloadFiles(payloadValues map[adminMigrationSourcePayloadKey][]json.RawMessage, files map[string][]byte) ([]adminMigrationSourceManifestPayload, error) {
 	keys := make([]adminMigrationSourcePayloadKey, 0, len(payloadValues))
 	for key := range payloadValues {
-		if key.Family != "" && len(payloadValues[key]) > 0 {
+		if key.Family != "" {
 			keys = append(keys, key)
 		}
 	}

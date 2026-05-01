@@ -188,9 +188,13 @@ func (s postgresAdminOfflineStore) applySyncedCookbookExport(state bootstrap.Boo
 	registrar, _ := s.cookbooks.(interface{ EnsureOrganization(bootstrap.Organization) })
 	for _, orgName := range adminMigrationSourceSyncCookbookOrgNames(scopes) {
 		if registrar != nil {
-			org := state.Orgs[orgName].Organization
+			orgState, ok := state.Orgs[orgName]
+			if !ok {
+				return fmt.Errorf("cookbook sync organization %q is missing from bootstrap core state", orgName)
+			}
+			org := orgState.Organization
 			if strings.TrimSpace(org.Name) == "" {
-				org = bootstrap.Organization{Name: orgName, FullName: orgName}
+				return fmt.Errorf("cookbook sync organization %q has an invalid bootstrap core definition", orgName)
 			}
 			registrar.EnsureOrganization(org)
 		}

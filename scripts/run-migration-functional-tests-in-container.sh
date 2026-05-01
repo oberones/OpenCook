@@ -78,10 +78,43 @@ keep_functional_artifacts() {
   [[ "${OPENCOOK_FUNCTIONAL_KEEP_ARTIFACTS:-${KEEP_STACK:-0}}" == "1" ]]
 }
 
+# require_state_dir_artifact_path keeps cleanup narrowly scoped to generated
+# functional artifacts so an environment override cannot turn rm -rf dangerous.
+require_state_dir_artifact_path() {
+  local path="$1"
+  local root="${state_dir%/}"
+  if [[ -z "$root" || "$root" == "/" ]]; then
+    echo "refusing to remove source artifact because functional state dir is unsafe: $state_dir" >&2
+    return 1
+  fi
+  if [[ -z "$path" || "$path" == "/" ]]; then
+    echo "refusing to remove empty or root source artifact path" >&2
+    return 1
+  fi
+  case "$path" in
+    "$root"/*)
+      return 0
+      ;;
+    *)
+      echo "refusing to remove source artifact outside functional state dir: $path" >&2
+      return 1
+      ;;
+  esac
+}
+
+# remove_source_tree_artifact validates generated directories before recursive
+# deletion; callers should only pass paths derived from the functional state dir.
+remove_source_tree_artifact() {
+  local path="$1"
+  require_state_dir_artifact_path "$path"
+  rm -rf "$path"
+}
+
 # clean_source_artifacts removes generated source-import outputs while leaving
 # checked-in fixtures and normal backup/restore artifacts untouched.
 clean_source_artifacts() {
-  rm -rf "$source_dir" "$source_backup_dir"
+  remove_source_tree_artifact "$source_dir"
+  remove_source_tree_artifact "$source_backup_dir"
   rm -f \
     "$source_import_sentinel" \
     "$source_reindex_result" \

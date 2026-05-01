@@ -799,6 +799,7 @@ func (c *command) printAdminUsage(w io.Writer) {
   opencook admin migration source import apply PATH --offline [--dry-run|--yes] [--progress PATH] [--json] [--with-timing]
   opencook admin migration source sync preflight PATH --offline [--progress PATH] [--json] [--with-timing]
   opencook admin migration source sync apply PATH --offline [--dry-run|--yes] [--progress PATH] [--json] [--with-timing]
+  opencook admin migration shadow compare --source PATH --target-server-url URL [--manifest PATH] [--json] [--with-timing]
   opencook admin migration cutover rehearse --manifest PATH [--source PATH] [--source-import-progress PATH] [--source-sync-progress PATH] [--search-check-result PATH] [--shadow-result PATH] [--rollback-ready] [--server-url URL] [--json] [--with-timing]
 
 Admin flags:
