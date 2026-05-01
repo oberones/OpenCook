@@ -291,13 +291,13 @@ Current architectural reality:
 - bootstrap core identity/authz state can now be persisted in PostgreSQL and rehydrated into the existing bootstrap service and verifier key cache
 - implemented core object API state can now be persisted in PostgreSQL and rehydrated into the existing bootstrap service, search-facing state, depsolver-visible state, sandbox checksum references, and object ACLs
 - org bootstrap returns validator key material, and generated `<org>-validator` clients can now register normal clients through the stock bootstrap routes
-- the `opencook admin` operational surface is live, including OpenCook-to-OpenCook migration preflight, logical backup/restore, source artifact inventory, restored-target reindex, cutover rehearsal, config validation, service status/doctor, metrics, request IDs, structured logs, log discovery, diagnostics bundles, runbook discovery, and service-management docs; live Chef Infra Server import/sync, live maintenance-mode traffic blocking, and online direct PostgreSQL mutation remain future work
+- the `opencook admin` operational surface is live, including OpenCook-to-OpenCook migration preflight, logical backup/restore, normalized Chef Server source inventory/normalize/import/sync, source-to-target shadow-read comparison, restored-target reindex, cutover rehearsal, config validation, service status/doctor, metrics, request IDs, structured logs, log discovery, diagnostics bundles, runbook discovery, and service-management docs; direct live upstream extraction, live maintenance-mode traffic blocking, and online direct PostgreSQL mutation remain future work
 - data bag CRUD and encrypted data bag payload opacity are now explicitly pinned as tested compatibility slices
 - PostgreSQL is active for cookbook metadata, bootstrap core state, and implemented core object API state; OpenSearch-backed search is active for the implemented Chef search indexes when PostgreSQL and `OPENCOOK_OPENSEARCH_URL` are configured, with provider discovery/capability reporting, versioned mapping management, direct/fallback delete coverage, the memory adapter preserved as the no-OpenSearch fallback, and unsupported cookbook/policy/sandbox/checksum object families pinned as non-searchable
 - the blob layer now has in-memory, filesystem-backed, and S3-compatible compatibility implementations for sandbox checksum uploads/downloads and cookbook file URLs, and the S3-compatible path now includes request-construction parity, configurable timeout/retry plus `Retry-After` behavior, transport/status classification, malformed-endpoint and missing-credential diagnostics, and provider-backed `blob_unavailable` degradation on the current sandbox/cookbook flows
 - API-version negotiation and version-sensitive object payload behavior are now compatibility-pinned for the implemented Chef surfaces; do not reopen those shapes without upstream pedant evidence
 
-Do not mistake the no-OpenSearch memory fallback, deferred live source import/sync, or future unimplemented surfaces for the final persistence architecture.
+Do not mistake the no-OpenSearch memory fallback, normalized-artifact source import/sync path, or future unimplemented surfaces for the final persistence architecture.
 
 ## Architecture Map
 
@@ -457,7 +457,7 @@ These areas are still intentionally incomplete:
 - remaining core Chef object compatibility beyond the currently pinned nodes, environments, roles, data bags, policies, and sandbox flows
 - deeper node and environment compatibility such as cookbook constraint edge cases and linked object behavior
 - deeper role compatibility beyond the current normalization and linked-environment read behavior
-- live Chef Infra Server import/sync beyond read-only source inventory, production-scale shadow-read comparison, and deployment cutover runbooks
+- direct live Chef Infra Server source extraction beyond normalized artifacts, production-scale shadow-read comparison, and deployment cutover runbooks
 - live maintenance-mode request blocking and online direct PostgreSQL repair mutation, both of which need explicit compatibility and cache-invalidation designs
 
-The next likely major slice is Chef Infra Server source import/sync plus shadow-read/cutover hardening, with deployment-test-discovered Chef compatibility gaps taking priority if they prove higher risk.
+The next likely major slice is live maintenance-mode request blocking plus cache-safe online repair/cutover controls, with deployment-test-discovered Chef compatibility gaps taking priority if they prove higher risk.

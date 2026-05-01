@@ -1,0 +1,6 @@
+[
+  {"group": "admins", "actor": "pivotal", "type": "user"},
+  {"group": "billing-admins", "actor": "pivotal", "type": "user"},
+  {"group": "users", "actor": "pivotal", "type": "user"},
+  {"group": "clients", "actor": "ponyville-validator", "type": "client"}
+]

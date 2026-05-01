@@ -259,15 +259,25 @@ func adminRunbookCatalog() []adminRunbook {
 		{
 			Name:    "migration-cutover",
 			Title:   "Migration And Cutover Rehearsal",
-			Summary: "Use preflight, source inventory, restored-target reindex, and cutover rehearsal before switching clients.",
+			Summary: "Use preflight, source import/sync, restored-target reindex, shadow comparison, and cutover rehearsal before switching clients.",
 			Commands: []adminRunbookCommand{
 				{Command: "opencook admin migration preflight --all-orgs --json", Purpose: "summarize migration readiness against configured OpenCook state"},
 				{Command: "opencook admin migration source inventory PATH --json", Purpose: "inventory source artifacts without requiring live source mutation"},
-				{Command: "opencook admin migration cutover rehearse --manifest PATH --server-url URL --json", Purpose: "exercise restored target reads before client cutover"},
+				{Command: "opencook admin migration source normalize PATH --output normalized-source --yes --json", Purpose: "write deterministic normalized source payloads and copied blob references"},
+				{Command: "opencook admin migration source import preflight normalized-source --offline --json", Purpose: "validate source input and target safety before import"},
+				{Command: "opencook admin migration source import apply normalized-source --offline --yes --progress source-import-progress.json --json", Purpose: "apply normalized source metadata and copied blobs to an offline target"},
+				{Command: "opencook admin migration source sync preflight normalized-source --offline --progress source-sync-progress.json --json", Purpose: "preview a repeat source snapshot before final cutover sync"},
+				{Command: "opencook admin migration source sync apply normalized-source --offline --yes --progress source-sync-progress.json --json", Purpose: "apply one final source snapshot after freezing source writes"},
+				{Command: "opencook admin reindex --all-orgs --complete --json", Purpose: "rebuild restored target OpenSearch documents from PostgreSQL"},
+				{Command: "opencook admin search check --all-orgs --json", Purpose: "capture clean search evidence for the cutover gate"},
+				{Command: "opencook admin migration shadow compare --source normalized-source --target-server-url URL --json", Purpose: "capture read-only source/target comparison evidence"},
+				{Command: "opencook admin migration cutover rehearse --manifest PATH --source normalized-source --source-import-progress source-import-progress.json --source-sync-progress source-sync-progress.json --search-check-result PATH --shadow-result PATH --rollback-ready --server-url URL --json", Purpose: "gate client cutover using import, sync, search, shadow-read, auth, blob, and rollback evidence"},
 			},
 			Notes: []string{
+				"freeze source Chef writes before the final source sync; do not proxy source writes into OpenCook during rehearsal",
+				"switch DNS/load balancers or Chef/Cinc chef_server_url only after blocker gates pass",
 				"keep the source Chef Infra Server read/write path available until post-cutover smoke checks pass",
-				"shadow-read comparison should be read-only and normalize documented compatibility differences",
+				"treat cutover rehearsal errors as blockers and warnings as advisories that require an explicit operator decision",
 			},
 		},
 		{

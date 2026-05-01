@@ -23,12 +23,12 @@ The durable deployment path is now PostgreSQL plus provider-backed blob storage,
 - Blob storage backends for in-memory, local filesystem, and S3-compatible providers.
 - `opencook admin` workflows for signed live inspection/management, offline-gated repair commands, PostgreSQL-backed OpenSearch reindex/check/repair, configuration validation, service status/doctor, log discovery, diagnostics bundles, and runbook discovery.
 - Prometheus-compatible `/metrics`, request IDs, and structured operational request logs that avoid secrets and high-cardinality payload values.
-- First migration/cutover tooling for OpenCook targets, including preflight validation, logical backup create/inspect, offline restore preflight/apply, source artifact inventory, restored-target reindex, and cutover rehearsal.
+- Migration/cutover tooling for OpenCook targets, including preflight validation, logical backup create/inspect, offline restore preflight/apply, normalized Chef Server source inventory/import/sync, source-to-target shadow comparison, restored-target reindex, and cutover rehearsal.
 
 ## Current Limitations
 
 - OpenCook is not production-ready yet.
-- The first migration tooling supports OpenCook-to-OpenCook logical backup/restore and read-only Chef Server source inventory. Full live Chef Infra Server import/sync remains follow-on work.
+- Migration tooling supports OpenCook-to-OpenCook logical backup/restore plus normalized Chef Server source artifact import/sync. Direct live upstream extraction and production-scale cutover validation remain follow-on work.
 - Live maintenance-mode request blocking, in-process service supervision, and online direct PostgreSQL repair mutation are intentionally deferred until their compatibility and cache-invalidation contracts are designed.
 - Some Chef object edge cases and less common compatibility surfaces still need additional pedant-backed hardening.
 - OpenSearch is intentionally a derived index. PostgreSQL is the source of truth.
@@ -282,7 +282,7 @@ The first `opencook admin` CLI supports:
 - OpenSearch reindex/check/repair from PostgreSQL-backed state
 - configuration validation and service status/doctor checks
 - log path discovery, redacted diagnostics bundle collection, and runbook discovery
-- migration preflight, backup create/inspect, restore preflight/apply, source inventory, and cutover rehearsal
+- migration preflight, backup create/inspect, restore preflight/apply, normalized source import/sync, shadow comparison, and cutover rehearsal
 
 Show command help:
 
@@ -301,9 +301,10 @@ The server also exposes `/metrics` for Prometheus-compatible scraping. Metrics,
 diagnostics, and structured request logs intentionally omit private keys, signed
 request headers, raw DSNs with credentials, and provider secrets.
 
-The first supported migration path is a logical OpenCook backup/restore drill
-with PostgreSQL-backed state, provider-backed blobs, derived OpenSearch rebuild,
-and live restored-target rehearsal. Run restore, reindex, and rehearsal commands
+The first supported migration paths are a logical OpenCook backup/restore drill
+and normalized Chef Server source artifact import/sync. Both paths use
+PostgreSQL-backed state, provider-backed blobs, derived OpenSearch rebuild, and
+live restored-target rehearsal. Run restore, reindex, and rehearsal commands
 with `OPENCOOK_*` and `OPENCOOK_ADMIN_*` settings pointed at the restore target:
 
 ```bash
@@ -314,6 +315,18 @@ bin/opencook admin migration restore preflight .local/opencook-backup --offline 
 bin/opencook admin migration restore apply .local/opencook-backup --offline --yes --json
 bin/opencook admin reindex --all-orgs --complete --json
 bin/opencook admin migration cutover rehearse --manifest .local/opencook-backup/manifest.json --json
+```
+
+For normalized source artifacts, use the source pipeline before final cutover:
+
+```bash
+bin/opencook admin migration source inventory PATH --json
+bin/opencook admin migration source normalize PATH --output .local/opencook-source --yes --json
+bin/opencook admin migration source import preflight .local/opencook-source --offline --json
+bin/opencook admin migration source import apply .local/opencook-source --offline --yes --progress .local/source-import-progress.json --json
+bin/opencook admin migration source sync preflight .local/opencook-source --offline --progress .local/source-sync-progress.json --json
+bin/opencook admin migration source sync apply .local/opencook-source --offline --yes --progress .local/source-sync-progress.json --json
+bin/opencook admin migration shadow compare --source .local/opencook-source --target-server-url "$OPENCOOK_URL" --json
 ```
 
 ## Testing

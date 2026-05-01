@@ -123,23 +123,36 @@ Notes:
 
 ## Migration And Cutover
 
-Use preflight, source inventory, backup/restore, restored-target reindex, and
-cutover rehearsal before switching clients.
+Use preflight, source inventory/normalize/import/sync, backup/restore,
+restored-target reindex, shadow comparison, and cutover rehearsal before
+switching clients.
 
 Recommended pattern:
 
 ```sh
 opencook admin migration preflight --all-orgs --json
 opencook admin migration source inventory PATH --json
-opencook admin migration cutover rehearse --manifest PATH --server-url URL --json
+opencook admin migration source normalize PATH --output normalized-source --yes --json
+opencook admin migration source import preflight normalized-source --offline --json
+opencook admin migration source import apply normalized-source --offline --yes --progress source-import-progress.json --json
+opencook admin migration source sync preflight normalized-source --offline --progress source-sync-progress.json --json
+opencook admin migration source sync apply normalized-source --offline --yes --progress source-sync-progress.json --json
+opencook admin reindex --all-orgs --complete --json
+opencook admin search check --all-orgs --json > search-check.json
+opencook admin migration shadow compare --source normalized-source --target-server-url URL --json > shadow-compare.json
+opencook admin migration cutover rehearse --manifest PATH --source normalized-source --source-import-progress source-import-progress.json --source-sync-progress source-sync-progress.json --search-check-result search-check.json --shadow-result shadow-compare.json --rollback-ready --server-url URL --json
 ```
 
 Notes:
 
+- Freeze source Chef writes before the final source sync and keep the freeze
+  through post-cutover smoke checks.
+- Switch DNS/load balancers or Chef/Cinc `chef_server_url` only after blocker
+  gates pass.
 - Keep the source Chef Infra Server read/write path available until post-cutover
   smoke checks pass.
-- Shadow-read comparison should be read-only and normalize documented
-  compatibility differences.
+- Cutover rehearsal errors are blockers; warnings are advisories that require an
+  explicit operator decision.
 
 ## Diagnostics
 

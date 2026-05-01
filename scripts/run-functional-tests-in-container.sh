@@ -19,7 +19,7 @@ case "$phase" in
   operational|operational-verify)
     exec bash /src/scripts/run-operational-functional-tests-in-container.sh "$phase"
     ;;
-  migration-preflight|migration-backup|migration-backup-inspect|migration-restore-preflight|migration-restore|migration-reindex|migration-rehearsal|migration-all)
+  migration-*)
     exec bash /src/scripts/run-migration-functional-tests-in-container.sh "$phase"
     ;;
   create|verify|query-compat|invalid|search-update|verify-search-updated|delete|verify-deleted|all)

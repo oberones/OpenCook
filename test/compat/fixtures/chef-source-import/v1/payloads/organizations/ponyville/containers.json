@@ -1,0 +1,14 @@
+[
+  {"name": "clients"},
+  {"name": "containers"},
+  {"name": "cookbooks"},
+  {"name": "data"},
+  {"name": "environments"},
+  {"name": "groups"},
+  {"name": "nodes"},
+  {"name": "roles"},
+  {"name": "sandboxes"},
+  {"name": "policies"},
+  {"name": "policy_groups"},
+  {"name": "cookbook_artifacts"}
+]

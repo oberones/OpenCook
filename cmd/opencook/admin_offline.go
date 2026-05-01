@@ -154,6 +154,173 @@ func (s postgresAdminOfflineStore) RestoreCookbookExport(state bootstrap.Bootstr
 	return nil
 }
 
+// SyncCookbookExport reconciles manifest-covered cookbook families for source
+// sync, including target-only deletes when the source snapshot proves intent.
+func (s postgresAdminOfflineStore) SyncCookbookExport(state bootstrap.BootstrapCoreState, source adminMigrationCookbookExport, scopes map[adminMigrationSourcePayloadKey]bool) error {
+	if s.cookbooks == nil {
+		if adminMigrationCookbookExportCount(source) == 0 {
+			return nil
+		}
+		return fmt.Errorf("cookbook store is not available")
+	}
+	orgNames := adminMigrationSourceSyncCookbookOrgNames(scopes)
+	current, err := s.LoadCookbookExport(orgNames)
+	if err != nil {
+		return err
+	}
+	desired := adminMigrationSourceSyncMergeCookbookExport(current, source, scopes)
+	if err := s.applySyncedCookbookExport(state, current, desired, scopes); err != nil {
+		afterFailure, loadErr := s.LoadCookbookExport(orgNames)
+		if loadErr != nil {
+			return fmt.Errorf("%w; cookbook rollback state could not be loaded: %v", err, loadErr)
+		}
+		if rollbackErr := s.applySyncedCookbookExport(state, afterFailure, current, scopes); rollbackErr != nil {
+			return fmt.Errorf("%w; rollback cookbook metadata: %v", err, rollbackErr)
+		}
+		return err
+	}
+	return nil
+}
+
+// applySyncedCookbookExport moves cookbook metadata from current to desired
+// using the Chef-compatible cookbook store create/update/delete operations.
+func (s postgresAdminOfflineStore) applySyncedCookbookExport(state bootstrap.BootstrapCoreState, current, desired adminMigrationCookbookExport, scopes map[adminMigrationSourcePayloadKey]bool) error {
+	registrar, _ := s.cookbooks.(interface{ EnsureOrganization(bootstrap.Organization) })
+	for _, orgName := range adminMigrationSourceSyncCookbookOrgNames(scopes) {
+		if registrar != nil {
+			orgState, ok := state.Orgs[orgName]
+			if !ok {
+				return fmt.Errorf("cookbook sync organization %q is missing from bootstrap core state", orgName)
+			}
+			org := orgState.Organization
+			if strings.TrimSpace(org.Name) == "" {
+				return fmt.Errorf("cookbook sync organization %q has an invalid bootstrap core definition", orgName)
+			}
+			registrar.EnsureOrganization(org)
+		}
+		currentOrg := current.Orgs[orgName]
+		desiredOrg := desired.Orgs[orgName]
+		if scopes[adminMigrationSourcePayloadKey{Organization: orgName, Family: "cookbook_versions"}] {
+			if err := s.applySyncedCookbookVersions(orgName, currentOrg.Versions, desiredOrg.Versions); err != nil {
+				return err
+			}
+		}
+		if scopes[adminMigrationSourcePayloadKey{Organization: orgName, Family: "cookbook_artifacts"}] {
+			if err := s.applySyncedCookbookArtifacts(orgName, currentOrg.Artifacts, desiredOrg.Artifacts); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// applySyncedCookbookVersions upserts changed source versions and deletes
+// target-only versions only inside the manifest-covered cookbook version scope.
+func (s postgresAdminOfflineStore) applySyncedCookbookVersions(orgName string, current, desired []bootstrap.CookbookVersion) error {
+	currentByID := adminMigrationCookbookVersionMap(current)
+	desiredByID := adminMigrationCookbookVersionMap(desired)
+	for _, id := range adminMigrationSortedMapKeys(currentByID) {
+		if _, ok := desiredByID[id]; ok {
+			continue
+		}
+		version := currentByID[id]
+		if _, _, err := s.cookbooks.DeleteCookbookVersionWithReleasedChecksums(orgName, adminMigrationCookbookRouteName(version), version.Version); err != nil && !errors.Is(err, bootstrap.ErrNotFound) {
+			return fmt.Errorf("sync delete cookbook version %s/%s: %w", orgName, id, err)
+		}
+	}
+	for _, id := range adminMigrationSortedMapKeys(desiredByID) {
+		desiredVersion := desiredByID[id]
+		if currentVersion, ok := currentByID[id]; ok && adminMigrationSourceSyncDigest(currentVersion) == adminMigrationSourceSyncDigest(desiredVersion) {
+			continue
+		}
+		if _, _, _, err := s.cookbooks.UpsertCookbookVersionWithReleasedChecksums(orgName, desiredVersion, true); err != nil {
+			return fmt.Errorf("sync upsert cookbook version %s/%s: %w", orgName, id, err)
+		}
+	}
+	return nil
+}
+
+// applySyncedCookbookArtifacts recreates changed artifact rows because the
+// cookbook store intentionally exposes artifact create/delete, not upsert.
+func (s postgresAdminOfflineStore) applySyncedCookbookArtifacts(orgName string, current, desired []bootstrap.CookbookArtifact) error {
+	currentByID := adminMigrationCookbookArtifactMap(current)
+	desiredByID := adminMigrationCookbookArtifactMap(desired)
+	for _, id := range adminMigrationSortedMapKeys(currentByID) {
+		currentArtifact := currentByID[id]
+		desiredArtifact, keep := desiredByID[id]
+		if keep && adminMigrationSourceSyncDigest(currentArtifact) == adminMigrationSourceSyncDigest(desiredArtifact) {
+			continue
+		}
+		if _, _, err := s.cookbooks.DeleteCookbookArtifactWithReleasedChecksums(orgName, currentArtifact.Name, currentArtifact.Identifier); err != nil && !errors.Is(err, bootstrap.ErrNotFound) {
+			return fmt.Errorf("sync delete cookbook artifact %s/%s: %w", orgName, id, err)
+		}
+	}
+	for _, id := range adminMigrationSortedMapKeys(desiredByID) {
+		desiredArtifact := desiredByID[id]
+		if currentArtifact, ok := currentByID[id]; ok && adminMigrationSourceSyncDigest(currentArtifact) == adminMigrationSourceSyncDigest(desiredArtifact) {
+			continue
+		}
+		if _, err := s.cookbooks.CreateCookbookArtifact(orgName, desiredArtifact); err != nil {
+			return fmt.Errorf("sync create cookbook artifact %s/%s: %w", orgName, id, err)
+		}
+	}
+	return nil
+}
+
+// adminMigrationSourceSyncMergeCookbookExport overlays source cookbook rows
+// onto current export only for cookbook families present in the source manifest.
+func adminMigrationSourceSyncMergeCookbookExport(current, source adminMigrationCookbookExport, scopes map[adminMigrationSourcePayloadKey]bool) adminMigrationCookbookExport {
+	merged := adminMigrationCloneCookbookExport(current)
+	for _, orgName := range adminMigrationSourceSyncCookbookOrgNames(scopes) {
+		currentOrg := merged.Orgs[orgName]
+		sourceOrg := source.Orgs[orgName]
+		if scopes[adminMigrationSourcePayloadKey{Organization: orgName, Family: "cookbook_versions"}] {
+			currentOrg.Versions = append([]bootstrap.CookbookVersion(nil), sourceOrg.Versions...)
+		}
+		if scopes[adminMigrationSourcePayloadKey{Organization: orgName, Family: "cookbook_artifacts"}] {
+			currentOrg.Artifacts = append([]bootstrap.CookbookArtifact(nil), sourceOrg.Artifacts...)
+		}
+		merged.Orgs[orgName] = adminMigrationSortedCookbookExportOrg(currentOrg)
+	}
+	return merged
+}
+
+// adminMigrationSourceSyncCookbookOrgNames lists orgs whose cookbook metadata
+// can be reconciled because their cookbook payload families are manifest-covered.
+func adminMigrationSourceSyncCookbookOrgNames(scopes map[adminMigrationSourcePayloadKey]bool) []string {
+	seen := map[string]struct{}{}
+	for key := range scopes {
+		if key.Family != "cookbook_versions" && key.Family != "cookbook_artifacts" {
+			continue
+		}
+		if strings.TrimSpace(key.Organization) == "" {
+			continue
+		}
+		seen[key.Organization] = struct{}{}
+	}
+	return adminMigrationSortedStringSet(seen)
+}
+
+// adminMigrationCookbookVersionMap indexes cookbook versions by the sync row
+// identity used in source diff output.
+func adminMigrationCookbookVersionMap(values []bootstrap.CookbookVersion) map[string]bootstrap.CookbookVersion {
+	out := make(map[string]bootstrap.CookbookVersion, len(values))
+	for _, value := range values {
+		out[adminMigrationSourceSyncCookbookVersionID(value)] = value
+	}
+	return out
+}
+
+// adminMigrationCookbookArtifactMap indexes artifacts by the sync row identity
+// used in source diff output.
+func adminMigrationCookbookArtifactMap(values []bootstrap.CookbookArtifact) map[string]bootstrap.CookbookArtifact {
+	out := make(map[string]bootstrap.CookbookArtifact, len(values))
+	for _, value := range values {
+		out[adminMigrationSourceSyncCookbookArtifactID(value)] = value
+	}
+	return out
+}
+
 // rollbackRestoredCookbooks removes cookbook metadata successfully imported
 // earlier in the same restore attempt so a failed restore can be retried against
 // a clean target instead of leaving partial cookbook rows behind.

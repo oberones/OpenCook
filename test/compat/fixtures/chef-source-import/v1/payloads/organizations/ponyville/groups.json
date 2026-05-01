@@ -1,0 +1,6 @@
+[
+  {"name": "admins", "actors": ["pivotal"]},
+  {"name": "billing-admins", "users": ["pivotal"]},
+  {"name": "users", "users": ["pivotal"]},
+  {"name": "clients", "clients": ["ponyville-validator"]}
+]
