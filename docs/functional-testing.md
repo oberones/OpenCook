@@ -10,7 +10,7 @@ The tests intentionally talk to OpenCook over HTTP with Chef-style signed reques
 scripts/functional-compose.sh
 ```
 
-The default flow builds the images, starts the stack, creates compatibility objects including encrypted-looking data bag items, restarts OpenCook, verifies rehydration through active OpenSearch-backed search, runs the targeted Lucene/query-string compatibility phase, runs invalid-write/no-mutation checks, updates searchable fields and verifies old search terms disappear, restarts again, reruns the query compatibility phase against updated persisted state, runs the operational admin/config/service/metrics/logs/diagnostics/runbook/reindex/search-repair phases, restarts after repair, runs migration preflight plus backup create/inspect against the active stack, deletes the objects, restarts one more time, and verifies deletion persisted.
+The default flow builds the images, starts the stack, creates compatibility objects including encrypted-looking data bag items, restarts OpenCook, verifies rehydration through active OpenSearch-backed search, runs the targeted Lucene/query-string compatibility phase, runs invalid-write/no-mutation checks, updates searchable fields and verifies old search terms disappear, restarts again, reruns the query compatibility phase against updated persisted state, runs the operational admin/config/service/metrics/logs/diagnostics/runbook/reindex/search-repair phases, restarts after repair, verifies operational state, runs the maintenance-mode phase, runs migration preflight plus backup create/inspect against the active stack, deletes the objects, restarts one more time, and verifies deletion persisted.
 
 Successful default and targeted runs end with a `functional tests passed successfully` footer so CI and humans can distinguish a clean finish from an abrupt final phase log.
 
@@ -34,12 +34,13 @@ KEEP_STACK=1 scripts/functional-compose.sh query-compat
 KEEP_STACK=1 scripts/functional-compose.sh invalid restart verify
 KEEP_STACK=1 scripts/functional-compose.sh search-update verify-search-updated restart verify-search-updated
 KEEP_STACK=1 scripts/functional-compose.sh operational restart operational-verify
+KEEP_STACK=1 scripts/functional-compose.sh maintenance
 KEEP_STACK=1 scripts/functional-compose.sh migration-preflight migration-backup migration-backup-inspect
 KEEP_STACK=1 scripts/functional-compose.sh migration-source-all
 KEEP_STACK=1 scripts/functional-compose.sh delete restart verify-deleted
 ```
 
-Supported phase names are `create`, `verify`, `query-compat`, `invalid`, `search-update`, `verify-search-updated`, `operational`, `operational-verify`, `migration-preflight`, `migration-backup`, `migration-backup-inspect`, `migration-restore-preflight`, `migration-restore`, `migration-reindex`, `migration-rehearsal`, `migration-source-normalize`, `migration-source-import-preflight`, `migration-source-import`, `migration-source-reindex`, `migration-source-sync-preflight`, `migration-source-sync`, `migration-shadow-compare`, `migration-source-rehearsal`, `migration-source-all`, `migration-all`, `delete`, `verify-deleted`, and `restart`.
+Supported phase names are `create`, `verify`, `query-compat`, `invalid`, `search-update`, `verify-search-updated`, `operational`, `operational-verify`, `maintenance`, `migration-preflight`, `migration-backup`, `migration-backup-inspect`, `migration-restore-preflight`, `migration-restore`, `migration-reindex`, `migration-rehearsal`, `migration-source-normalize`, `migration-source-import-preflight`, `migration-source-import`, `migration-source-reindex`, `migration-source-sync-preflight`, `migration-source-sync`, `migration-shadow-compare`, `migration-source-rehearsal`, `migration-source-all`, `migration-all`, `delete`, `verify-deleted`, and `restart`.
 
 To run just the OpenSearch-heavy compatibility phases after a stack already has created fixtures, use:
 
@@ -57,6 +58,12 @@ To run only the operational admin/reindex/search-repair phases, use:
 
 ```sh
 KEEP_STACK=1 REBUILD=0 scripts/functional-compose.sh operational restart operational-verify
+```
+
+To run only the maintenance-mode coverage after fixture creation, use:
+
+```sh
+KEEP_STACK=1 REBUILD=0 scripts/functional-compose.sh maintenance
 ```
 
 To run the heavier backup/restore/reindex/cutover rehearsal drill, first create
@@ -88,6 +95,16 @@ coverage. The encrypted data bag scoped reindex/repair checks only run when the
 fixture-dependent checks with an explicit message. Diagnostic bundles generated
 inside the test container are removed by default and preserved only when
 `KEEP_STACK=1` or `OPENCOOK_FUNCTIONAL_KEEP_ARTIFACTS=1` is set.
+
+The maintenance phase can run against a fresh stack because it first creates the
+same deterministic fixtures used by the normal create phase. It then verifies
+that `opencook admin reindex`, `opencook admin search repair --yes`, and
+`opencook admin acls repair-defaults --online --yes` reject inactive
+maintenance state, enables shared PostgreSQL-backed maintenance, checks status,
+doctor, metrics, read continuity, read-like POSTs, signed blob downloads,
+blocked object writes, blocked cookbook writes, and blocked checksum uploads,
+then disables maintenance before exit. The phase prints
+`==> maintenance functional tests passed successfully` when it completes.
 
 The source-import migration phases are opt-in to keep the default flow quick.
 `migration-source-all` normalizes the baked Chef source fixture, validates and
@@ -165,6 +182,9 @@ rehearsal coverage.
 - Operational runbook coverage verifies `opencook admin runbook list` and `opencook admin runbook show` include service-management and intentionally unsupported omnibus guidance.
 - Operational search consistency detects injected stale OpenSearch documents, including encrypted data bag index drift, dry-runs repair, repairs the stale documents, and verifies clean state after an OpenCook restart.
 - Operational reindex/check/repair rejects unsupported cookbook, cookbook-artifact, policy, policy-group, sandbox, and checksum indexes, and unscoped repair deletes stale unsupported provider documents without recreating unsupported search documents.
+- Maintenance coverage verifies PostgreSQL-backed maintenance state is shared, active state is visible through admin status/doctor and `/metrics`, mutating Chef-facing writes return the static Chef-style `503`, and representative writes do not mutate persisted state.
+- Maintenance coverage verifies read-only routes, depsolver POST, partial-search POST, and signed cookbook blob downloads continue to work while maintenance mode is active.
+- Maintenance coverage verifies reindex, search repair, and online ACL default repair require or report active maintenance consistently.
 - Package-level operational coverage exercises admin reindex/check/repair against both direct delete-by-query and safe search-after-backed fallback-delete provider capability modes.
 - Migration preflight validates the active PostgreSQL, filesystem blob, and OpenSearch stack through `opencook admin migration preflight`.
 - Migration backup create/inspect produces a logical OpenCook backup bundle from PostgreSQL-backed state and filesystem-backed blobs, then verifies manifest and payload integrity without provider connections.

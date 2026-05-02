@@ -2,12 +2,15 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/oberones/OpenCook/internal/maintenance"
 )
 
 func TestRequestIDIsPreservedInResponseAndStructuredLogs(t *testing.T) {
@@ -76,6 +79,43 @@ func TestRequestLoggingGeneratesIDsAndRedactsSensitiveInputs(t *testing.T) {
 	} {
 		if strings.Contains(logOutput, leaked) {
 			t.Fatalf("structured logs leaked %q: %s", leaked, logOutput)
+		}
+	}
+}
+
+func TestMaintenanceBlockedWritesEmitStructuredLog(t *testing.T) {
+	var logs bytes.Buffer
+	store := maintenance.NewMemoryStore()
+	if _, err := store.Enable(context.Background(), maintenance.EnableInput{
+		Mode:   "repair",
+		Reason: "secret operator note",
+		Actor:  "operator",
+	}); err != nil {
+		t.Fatalf("Enable() error = %v", err)
+	}
+	router := newStatusRouteTestRouter(t, statusRouteTestDeps{
+		logger:           log.New(&logs, "", 0),
+		maintenanceStore: store,
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/organizations/ponyville/nodes", strings.NewReader(`{"name":"blocked-node"}`))
+	req.Header.Set(requestIDHeader, "maintenance-request-1")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != maintenanceBlockedHTTPStatus {
+		t.Fatalf("blocked write status = %d, want %d, body = %s", rec.Code, maintenanceBlockedHTTPStatus, rec.Body.String())
+	}
+
+	entry := structuredLogEvent(t, logs.String(), "maintenance_write_blocked")
+	if entry["request_id"] != "maintenance-request-1" || entry["surface"] != "nodes" || entry["reason"] != "active" {
+		t.Fatalf("maintenance log = %v, want request ID, nodes surface, active reason", entry)
+	}
+	if entry["path_shape"] != "/organizations/:org/nodes" || entry["maintenance_mode"] != "repair" {
+		t.Fatalf("maintenance log = %v, want safe path shape and mode", entry)
+	}
+	for _, leaked := range []string{"ponyville", "blocked-node", "secret operator note", "operator"} {
+		if strings.Contains(logs.String(), leaked) {
+			t.Fatalf("maintenance log leaked %q: %s", leaked, logs.String())
 		}
 	}
 }

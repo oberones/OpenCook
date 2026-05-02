@@ -412,6 +412,51 @@ func TestAdminMigrationPreflightReportsOpenSearchConsistencyDrift(t *testing.T) 
 	requireAdminMigrationMutationMessage(t, mutations, "opencook admin search repair --org ponyville --yes")
 }
 
+func TestAdminMigrationMaintenancePolicyWarnings(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		out  adminMigrationCLIOutput
+		want string
+	}{
+		{
+			name: "confirmed backup warns offline",
+			out:  adminMigrationCLIOutput{Command: "migration_backup_create", Confirmed: true, Offline: true},
+			want: "offline-gated",
+		},
+		{
+			name: "confirmed restore warns follow-up reindex",
+			out:  adminMigrationCLIOutput{Command: "migration_restore_apply", Confirmed: true, Offline: true},
+			want: "follow-up reindex",
+		},
+		{
+			name: "confirmed source import warns stopped target",
+			out:  adminMigrationCLIOutput{Command: "migration_source_import_apply", Confirmed: true, Offline: true},
+			want: "stopped OpenCook target",
+		},
+		{
+			name: "confirmed source sync warns frozen writes",
+			out:  adminMigrationCLIOutput{Command: "migration_source_sync_apply", Confirmed: true, Offline: true},
+			want: "writes frozen",
+		},
+		{
+			name: "cutover rehearsal warns source freeze",
+			out:  adminMigrationCLIOutput{Command: "migration_cutover_rehearse"},
+			want: "source Chef writes frozen",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			warnings := adminMigrationMaintenancePolicyWarnings(tc.out)
+			if len(warnings) != 1 || !strings.Contains(warnings[0], tc.want) {
+				t.Fatalf("warnings = %v, want one warning containing %q", warnings, tc.want)
+			}
+		})
+	}
+
+	if warnings := adminMigrationMaintenancePolicyWarnings(adminMigrationCLIOutput{Command: "migration_restore_apply", DryRun: true, Offline: true}); len(warnings) != 0 {
+		t.Fatalf("dry-run warnings = %v, want none", warnings)
+	}
+}
+
 func TestAdminMigrationBackupBundleFormatWritesLogicalPayloads(t *testing.T) {
 	root := t.TempDir()
 	bootstrapState, coreObjectState := adminMigrationHealthyStates(t)
@@ -2253,6 +2298,7 @@ func TestAdminMigrationSourceImportApplyWritesStateBlobsProgressAndRehydrates(t 
 	reindexCmd.newReindexTarget = func(string) (search.ReindexTarget, error) {
 		return reindexTarget, nil
 	}
+	setTestMaintenanceStore(reindexCmd, activeAdminWorkflowMaintenanceStore(t), adminMaintenanceBackend{Name: "postgres", Configured: true, Shared: true})
 	if code := reindexCmd.Run(context.Background(), []string{"admin", "reindex", "--all-orgs", "--complete", "--json"}); code != exitOK {
 		t.Fatalf("Run(admin reindex imported state) exit = %d, want %d; stdout = %s stderr = %s", code, exitOK, reindexStdout.String(), reindexStderr.String())
 	}

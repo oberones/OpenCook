@@ -33,7 +33,7 @@ This roadmap is based on a review of the upstream Chef Infra Server repository a
 
 ## Current Progress Snapshot
 
-As of 2026-05-01, OpenCook has moved past pure scaffolding and into the first compatibility and operational hardening slices:
+As of 2026-05-02, OpenCook has moved past pure scaffolding and into the first compatibility and operational hardening slices:
 
 - Chef request signing verification is implemented in Go and enforced on the first authenticated routes
 - user, organization, client, group, container, key, and ACL bootstrap core flows are working and can now persist through PostgreSQL when configured
@@ -42,6 +42,7 @@ As of 2026-05-01, OpenCook has moved past pure scaffolding and into the first co
 - actor key lifecycle now supports list, create, update, delete, and expiration-aware authentication behavior
 - the first migration/cutover tooling slice is now live with redacted preflight checks, OpenCook logical backup create/inspect, offline restore preflight/apply, Chef Server source artifact inventory/normalize/import/sync for normalized source bundles, shadow-read comparison, restored-target complete reindex, cutover rehearsal, and Docker functional coverage
 - `chef-server-ctl`-style operational parity is now live for config validation, service status/doctor, Prometheus-compatible metrics, request IDs, structured logs, log discovery, redacted diagnostics bundles, runbook discovery, service-management docs, and Docker functional coverage
+- maintenance mode and online repair safety are now live with PostgreSQL-shared maintenance state, process-local standalone truthfulness, Chef-style `503` blocking for mutating Chef-facing writes, preserved reads/read-like POSTs/signed downloads, admin maintenance commands, status/doctor/metrics/log visibility, maintenance-gated reindex/search repair, and the first narrow online default ACL repair path
 - the core object API persistence slice is now live with PostgreSQL-backed durability for nodes, environments, roles, data bags/items, policy revisions/groups/assignments, sandbox metadata/checksum references, and object ACLs when PostgreSQL is configured, while preserving the existing in-memory fallback
 - the adjacent environment slice is now live with `_default`, list/get/head/create/update/delete, and rename-capable `PUT`
 - environment-scoped node listing is implemented via `/environments/{name}/nodes`
@@ -187,9 +188,9 @@ As of 2026-05-01, OpenCook has moved past pure scaffolding and into the first co
 
 Current focus:
 
-- plan live maintenance-mode request blocking and cache-safe online direct PostgreSQL repair behavior now that source import/sync plus shadow-read/cutover hardening is complete for the implemented normalized source families
-- preserve the completed API-version, search-route, unsupported-index, encrypted-data-bag, provider capability, migration/cutover, source import/sync, operational parity, and PostgreSQL-source-of-truth contracts while designing the maintenance and cache-invalidation gates
-- treat deployment-test compatibility gaps as interrupt-worthy if they are higher-risk than maintenance-mode and online-repair hardening
+- deepen production-scale migration validation now that source import/sync, shadow-read/cutover hardening, and maintenance-mode write gates are complete for the implemented normalized source families
+- preserve the completed API-version, search-route, unsupported-index, encrypted-data-bag, provider capability, migration/cutover, source import/sync, maintenance-mode, operational parity, and PostgreSQL-source-of-truth contracts while scaling validation coverage
+- treat deployment-test compatibility gaps as interrupt-worthy if they are higher-risk than production-scale migration and cutover validation
 
 ## What Exists Upstream
 
@@ -386,7 +387,7 @@ These should become regression tests for OpenCook.
 - Metrics compatible with Prometheus/OpenTelemetry
 - Structured logs with request IDs
 - Admin tooling for org/user/group/container/ACL management plus reindex, consistency checks, and data repair
-- Current status: the `opencook admin` surface is live, with signed HTTP-backed user/org/key/group/container/ACL inspection workflows, offline-gated direct PostgreSQL repair commands, OpenSearch reindex/check/repair from PostgreSQL-backed state including encrypted data bag indexes, unsupported-index rejection for cookbook/policy/sandbox/checksum scopes, JSON/human output modes, destructive-command confirmation gates, OpenCook-to-OpenCook migration preflight/backup/restore/reindex/rehearsal tooling, normalized Chef Server source inventory/normalize/import/sync, source-to-target shadow-read comparison, config validation, service status/doctor, log path discovery, redacted diagnostics bundles, runbook discovery, service-management docs, Prometheus-compatible `/metrics`, request IDs, structured operational logs, and Docker functional coverage against PostgreSQL plus OpenSearch plus filesystem-backed blobs
+- Current status: the `opencook admin` surface is live, with signed HTTP-backed user/org/key/group/container/ACL inspection workflows, offline-gated direct PostgreSQL repair commands, maintenance enable/disable/status/check controls, maintenance-gated OpenSearch reindex/check/repair from PostgreSQL-backed state including encrypted data bag indexes, a narrow online default ACL repair path during active maintenance, unsupported-index rejection for cookbook/policy/sandbox/checksum scopes, JSON/human output modes, destructive-command confirmation gates, OpenCook-to-OpenCook migration preflight/backup/restore/reindex/rehearsal tooling, normalized Chef Server source inventory/normalize/import/sync, source-to-target shadow-read comparison, config validation, service status/doctor, log path discovery, redacted diagnostics bundles, runbook discovery, service-management docs, Prometheus-compatible `/metrics`, request IDs, structured operational logs, maintenance blocked-write logs/metrics, and Docker functional coverage against PostgreSQL plus OpenSearch plus filesystem-backed blobs
 
 ## PostgreSQL Modernization Workstream
 
@@ -684,13 +685,13 @@ Exit criteria:
 
 ## Recommended Next Step
 
-Plan and implement live maintenance-mode request blocking plus cache-safe online repair/cutover controls now that PostgreSQL persistence, provider-backed blobs, validator bootstrap, core object persistence, encrypted data bag compatibility, operational admin/reindex/repair tooling, migration/cutover tooling, source import/sync plus shadow-read/cutover hardening, broader Lucene/query-string compatibility, cookbook/policy/sandbox/checksum negative search compatibility, API-version-specific object semantics, OpenSearch provider capability/version hardening, and `chef-server-ctl`-style operational parity are pinned.
+Plan and implement production-scale migration validation and cutover readiness hardening now that PostgreSQL persistence, provider-backed blobs, validator bootstrap, core object persistence, encrypted data bag compatibility, operational admin/reindex/repair tooling, migration/cutover tooling, source import/sync plus shadow-read/cutover hardening, maintenance-mode write gating, broader Lucene/query-string compatibility, cookbook/policy/sandbox/checksum negative search compatibility, API-version-specific object semantics, OpenSearch provider capability/version hardening, and `chef-server-ctl`-style operational parity are pinned.
 
 The recommended next bucket should:
 
-1. Add an operator-visible maintenance state that can block or reject Chef-facing writes during backup, restore, source sync, reindex, repair, and cutover windows without changing successful read contracts.
-2. Make maintenance state truthful through `/status`, admin status/doctor output, logs, and runbooks while preserving the existing status payload shape.
-3. Define the cache-invalidation and process-safety contract needed before direct PostgreSQL repair commands can safely move from offline-only to controlled online operation.
-4. Add functional Docker coverage that proves maintenance gates prevent write races during migration/reindex/repair flows and that rollback/smoke-check guidance remains explicit.
+1. Build larger deterministic migration fixtures that exercise identity/authz, core objects, cookbooks/artifacts, sandboxes/checksums, policies, data bags, blobs, and OpenSearch-derived state through backup, restore, source import/sync, reindex, and cutover rehearsal.
+2. Add scale-aware shadow-read and restored-target validation that reports normalized diffs, inventory counts, timings, pagination behavior, and retry-safe rerun outcomes without proxying writes or changing Chef-facing payloads.
+3. Harden cutover runbooks around source Chef write freezes, OpenCook maintenance windows, rollback readiness, post-cutover smoke checks, and provider-backed PostgreSQL/OpenSearch/blob recovery drills.
+4. Add automated and functional coverage for interruption/retry behavior, large result sets, reindex/search repair after restore, blob integrity, and failure diagnostics under production-shaped datasets.
 
-That sequence builds on the completed identity, cookbook/blob, core object, validator bootstrap, active OpenSearch, operational tooling, migration/cutover, source import/sync, encrypted data bag, Lucene/query-string, API-version, cookbook/policy/sandbox search, provider capability, and operational parity contracts without reopening their Chef-facing behavior.
+That sequence builds on the completed identity, cookbook/blob, core object, validator bootstrap, active OpenSearch, operational tooling, migration/cutover, source import/sync, maintenance-mode, encrypted data bag, Lucene/query-string, API-version, cookbook/policy/sandbox search, provider capability, and operational parity contracts without reopening their Chef-facing behavior.

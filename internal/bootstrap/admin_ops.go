@@ -14,6 +14,75 @@ type AdminRepairResult struct {
 	Repaired []string
 }
 
+// RepairDefaultACLsInput scopes a default-ACL repair to one organization when
+// requested. DryRun is used by tests and future previews to reuse the same
+// normalization path without persisting changes.
+type RepairDefaultACLsInput struct {
+	Organization string
+	DryRun       bool
+}
+
+// RepairDefaultACLsResult reports the two ACL families repaired by the live
+// service seam so operators can distinguish bootstrap ACLs from object ACLs.
+type RepairDefaultACLsResult struct {
+	Changed            bool
+	BootstrapRepaired  []string
+	CoreObjectRepaired []string
+}
+
+// RepairDefaultACLs repairs missing default ACL documents through the live
+// service state and its configured persistence stores. Online maintenance
+// repair uses this seam instead of writing PostgreSQL directly so process-local
+// authorization caches cannot stay stale after the command reports success.
+func (s *Service) RepairDefaultACLs(input RepairDefaultACLsInput) (RepairDefaultACLsResult, error) {
+	if s == nil {
+		return RepairDefaultACLsResult{}, fmt.Errorf("%w: bootstrap service is required", ErrInvalidInput)
+	}
+
+	orgFilter := strings.TrimSpace(input.Organization)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	previousBootstrap := s.snapshotBootstrapCoreLocked()
+	previousCoreObjects := s.snapshotCoreObjectsLocked()
+	if orgFilter != "" {
+		if _, ok := previousBootstrap.Orgs[orgFilter]; !ok {
+			return RepairDefaultACLsResult{}, fmt.Errorf("%w: organization %s not found", ErrNotFound, orgFilter)
+		}
+	}
+
+	nextBootstrap, bootstrapRepair := RepairBootstrapCoreDefaultACLs(previousBootstrap, orgFilter, s.superuserName)
+	nextCoreObjects, coreObjectRepair := RepairCoreObjectDefaultACLs(previousCoreObjects, orgFilter, s.superuserName)
+	result := RepairDefaultACLsResult{
+		Changed:            bootstrapRepair.Changed || coreObjectRepair.Changed,
+		BootstrapRepaired:  append([]string(nil), bootstrapRepair.Repaired...),
+		CoreObjectRepaired: append([]string(nil), coreObjectRepair.Repaired...),
+	}
+	if input.DryRun || !result.Changed {
+		return result, nil
+	}
+
+	s.restoreBootstrapCoreLocked(nextBootstrap)
+	s.restoreCoreObjectsLocked(nextCoreObjects)
+	if err := s.persistBootstrapCoreLocked(); err != nil {
+		s.restoreBootstrapCoreLocked(previousBootstrap)
+		s.restoreCoreObjectsLocked(previousCoreObjects)
+		return RepairDefaultACLsResult{}, fmt.Errorf("save repaired bootstrap ACLs: %w", err)
+	}
+	if err := s.persistCoreObjectsLocked(); err != nil {
+		s.restoreBootstrapCoreLocked(previousBootstrap)
+		s.restoreCoreObjectsLocked(previousCoreObjects)
+		if s.bootstrapCoreStore != nil {
+			if rollbackErr := s.bootstrapCoreStore.SaveBootstrapCore(previousBootstrap); rollbackErr != nil {
+				return RepairDefaultACLsResult{}, fmt.Errorf("save repaired core object ACLs: %w; additionally failed to roll back bootstrap ACLs: %v", err, rollbackErr)
+			}
+		}
+		return RepairDefaultACLsResult{}, fmt.Errorf("save repaired core object ACLs: %w", err)
+	}
+	return result, nil
+}
+
 func AddUserToBootstrapCoreOrg(state BootstrapCoreState, orgName, username string, admin bool) (BootstrapCoreState, []string, error) {
 	state = cloneBootstrapCoreState(state)
 	org, ok := state.Orgs[strings.TrimSpace(orgName)]

@@ -120,6 +120,7 @@ run_phase query-compat
 run_phase operational
 restart_opencook
 run_phase operational-verify
+run_phase maintenance
 run_phase migration-preflight
 run_phase migration-backup
 run_phase migration-backup-inspect

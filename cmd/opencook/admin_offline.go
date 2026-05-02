@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 
 	"github.com/oberones/OpenCook/internal/bootstrap"
@@ -375,10 +376,37 @@ func adminCommandIsOffline(args []string) bool {
 	case "groups":
 		return len(args) > 1 && (args[1] == "add-actor" || args[1] == "remove-actor")
 	case "acls":
-		return len(args) > 1 && args[1] == "repair-defaults"
+		return len(args) > 1 && args[1] == "repair-defaults" && !adminArgsContainTruthyFlag(args, "online")
 	default:
 		return false
 	}
+}
+
+// adminArgsContainTruthyFlag lets legacy offline dispatch skip commands that
+// opt into a live signed workflow before global admin flags have been parsed.
+// Explicit false values such as --online=false keep the offline path available.
+func adminArgsContainTruthyFlag(args []string, flagName string) bool {
+	flagName = strings.TrimPrefix(strings.TrimSpace(flagName), "-")
+	if flagName == "" {
+		return false
+	}
+	long := "--" + flagName
+	for _, arg := range args {
+		if arg == long {
+			return true
+		}
+		if !strings.HasPrefix(arg, long+"=") {
+			continue
+		}
+		enabled, err := strconv.ParseBool(strings.TrimPrefix(arg, long+"="))
+		if err != nil {
+			return true
+		}
+		if enabled {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *command) runAdminOfflineCommand(ctx context.Context, args []string) int {
@@ -539,6 +567,7 @@ func (c *command) runAdminACLRepairOffline(ctx context.Context, args []string) i
 	fs := flag.NewFlagSet("opencook admin acls repair-defaults", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	opts := bindOfflineMutationFlags(fs)
+	online := fs.Bool("online", false, "use the signed online repair path instead")
 	dryRun := fs.Bool("dry-run", false, "report missing default ACLs without saving")
 	orgName := fs.String("org", "", "limit repair to one organization")
 	superuser := fs.String("superuser", "pivotal", "superuser name for repaired ACL defaults")
@@ -547,6 +576,9 @@ func (c *command) runAdminACLRepairOffline(ctx context.Context, args []string) i
 	}
 	if fs.NArg() != 0 {
 		return c.adminUsageError("admin acls repair-defaults received unexpected arguments: %v\n\n", fs.Args())
+	}
+	if *online {
+		return c.adminUsageError("admin acls repair-defaults --online must be run through the signed live repair path\n\n")
 	}
 	if !opts.offline {
 		return c.adminUsageError("admin acls repair-defaults is offline-only and requires --offline\n\n")

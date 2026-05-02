@@ -21,7 +21,8 @@ The durable deployment path is now PostgreSQL plus provider-backed blob storage,
 - Data bag CRUD, including encrypted-looking data bag payload opacity. OpenCook stores, returns, searches, reindexes, and repairs encrypted-looking JSON without decrypting it or managing data bag secrets.
 - Built-in Chef search indexes for clients, environments, nodes, roles, and data bags, with memory fallback and active OpenSearch-backed mode when PostgreSQL and OpenSearch are configured.
 - Blob storage backends for in-memory, local filesystem, and S3-compatible providers.
-- `opencook admin` workflows for signed live inspection/management, offline-gated repair commands, PostgreSQL-backed OpenSearch reindex/check/repair, configuration validation, service status/doctor, log discovery, diagnostics bundles, and runbook discovery.
+- PostgreSQL-backed maintenance mode that blocks mutating Chef-facing writes while preserving reads, read-like POST routes such as partial search and depsolver, and signed blob downloads.
+- `opencook admin` workflows for signed live inspection/management, maintenance controls, online ACL default repair, offline-gated repair commands, PostgreSQL-backed OpenSearch reindex/check/repair, configuration validation, service status/doctor, log discovery, diagnostics bundles, and runbook discovery.
 - Prometheus-compatible `/metrics`, request IDs, and structured operational request logs that avoid secrets and high-cardinality payload values.
 - Migration/cutover tooling for OpenCook targets, including preflight validation, logical backup create/inspect, offline restore preflight/apply, normalized Chef Server source inventory/import/sync, source-to-target shadow comparison, restored-target reindex, and cutover rehearsal.
 
@@ -29,7 +30,9 @@ The durable deployment path is now PostgreSQL plus provider-backed blob storage,
 
 - OpenCook is not production-ready yet.
 - Migration tooling supports OpenCook-to-OpenCook logical backup/restore plus normalized Chef Server source artifact import/sync. Direct live upstream extraction and production-scale cutover validation remain follow-on work.
-- Live maintenance-mode request blocking, in-process service supervision, and online direct PostgreSQL repair mutation are intentionally deferred until their compatibility and cache-invalidation contracts are designed.
+- Maintenance mode is implemented for OpenCook write gating, but it does not freeze an upstream Chef Infra Server during migration/cutover. Operators must still freeze source Chef writes externally before final source sync and cutover rehearsal.
+- Direct PostgreSQL repair mutations remain offline-only by default. The current online repair path is intentionally narrow: default ACL repair through the live service during active maintenance mode.
+- In-process service supervision is intentionally out of scope; run OpenCook under systemd, Docker Compose, Kubernetes, launchd, or another external supervisor.
 - Some Chef object edge cases and less common compatibility surfaces still need additional pedant-backed hardening.
 - OpenSearch is intentionally a derived index. PostgreSQL is the source of truth.
 - Public search indexes are limited to Chef-supported object families that OpenCook has implemented: clients, environments, nodes, roles, and data bags. Cookbook, cookbook-artifact, policy, policy-group, sandbox, and checksum state is intentionally not exposed as public Chef search indexes.
@@ -203,7 +206,10 @@ Check dependency status:
 bin/opencook admin --json status
 ```
 
-The status payload should report PostgreSQL persistence, filesystem blob storage, and OpenSearch-backed search. If OpenSearch is unavailable while configured, startup fails instead of silently falling back to memory search.
+The status payload should report PostgreSQL persistence, shared maintenance
+state, filesystem blob storage, and OpenSearch-backed search. If OpenSearch is
+unavailable while configured, startup fails instead of silently falling back to
+memory search.
 
 If OpenCook itself runs in a container on the same Docker network as PostgreSQL and OpenSearch, use container DNS names instead of `localhost`, for example:
 
@@ -278,6 +284,8 @@ The first `opencook admin` CLI supports:
 - organization creation and inspection
 - client key inspection/management
 - group, container, and ACL inspection
+- shared maintenance enable/disable/status/check commands
+- online default ACL repair through the live service while maintenance mode is active
 - offline-gated membership and ACL repair commands
 - OpenSearch reindex/check/repair from PostgreSQL-backed state
 - configuration validation and service status/doctor checks
@@ -291,6 +299,7 @@ bin/opencook help
 bin/opencook admin help
 bin/opencook admin config check --json
 bin/opencook admin service status --json
+bin/opencook admin maintenance status --json
 bin/opencook admin diagnostics collect --output .local/opencook-diagnostics.tar.gz --offline --yes --json
 bin/opencook admin runbook list --json
 bin/opencook admin reindex help
@@ -301,11 +310,50 @@ The server also exposes `/metrics` for Prometheus-compatible scraping. Metrics,
 diagnostics, and structured request logs intentionally omit private keys, signed
 request headers, raw DSNs with credentials, and provider secrets.
 
+### Maintenance Mode
+
+Maintenance mode is an operator-controlled write gate for OpenCook. It blocks
+mutating Chef-facing routes with a stable Chef-style `503` response while
+continuing to serve compatible reads, read-like POST routes such as partial
+search and environment depsolver, status endpoints, metrics, and signed blob
+downloads.
+
+Use maintenance mode before online OpenSearch mutations and the supported live
+ACL repair path:
+
+```bash
+bin/opencook admin maintenance status --json
+bin/opencook admin maintenance enable --mode repair --reason "repair OpenSearch drift" --yes --json
+bin/opencook admin search repair --all-orgs --yes --json
+bin/opencook admin reindex --all-orgs --complete --json
+bin/opencook admin --json acls repair-defaults --online --yes
+bin/opencook admin maintenance disable --yes --json
+```
+
+In PostgreSQL-backed deployments, maintenance state is shared through
+PostgreSQL so every OpenCook process using the same database sees the same gate.
+In standalone no-PostgreSQL mode, maintenance state is process-local; status
+surfaces report that limitation and a separate CLI process cannot coordinate a
+running standalone server.
+
+`maintenance disable --yes` is idempotent and is the supported rollback or
+emergency cleanup action if an operator workflow fails after opening a
+maintenance window. For planned windows, always verify before and after:
+
+```bash
+bin/opencook admin maintenance check --json
+bin/opencook admin --json status
+bin/opencook admin service doctor --offline --json
+curl http://127.0.0.1:4000/metrics
+```
+
 The first supported migration paths are a logical OpenCook backup/restore drill
 and normalized Chef Server source artifact import/sync. Both paths use
 PostgreSQL-backed state, provider-backed blobs, derived OpenSearch rebuild, and
-live restored-target rehearsal. Run restore, reindex, and rehearsal commands
-with `OPENCOOK_*` and `OPENCOOK_ADMIN_*` settings pointed at the restore target:
+live restored-target rehearsal. Backup, restore, source import, and source sync
+remain offline-gated. Run restore, maintenance-gated reindex, and rehearsal
+commands with `OPENCOOK_*` and `OPENCOOK_ADMIN_*` settings pointed at the
+restore target:
 
 ```bash
 bin/opencook admin migration preflight --all-orgs --json
@@ -313,7 +361,9 @@ bin/opencook admin migration backup create --output .local/opencook-backup --off
 bin/opencook admin migration backup inspect .local/opencook-backup --json
 bin/opencook admin migration restore preflight .local/opencook-backup --offline --json
 bin/opencook admin migration restore apply .local/opencook-backup --offline --yes --json
+bin/opencook admin maintenance enable --mode reindex --reason "post-restore reindex" --yes --json
 bin/opencook admin reindex --all-orgs --complete --json
+bin/opencook admin maintenance disable --yes --json
 bin/opencook admin migration cutover rehearse --manifest .local/opencook-backup/manifest.json --json
 ```
 
@@ -328,6 +378,10 @@ bin/opencook admin migration source sync preflight .local/opencook-source --offl
 bin/opencook admin migration source sync apply .local/opencook-source --offline --yes --progress .local/source-sync-progress.json --json
 bin/opencook admin migration shadow compare --source .local/opencook-source --target-server-url "$OPENCOOK_URL" --json
 ```
+
+Before final source sync and client cutover, freeze writes on the source Chef
+Infra Server externally. OpenCook maintenance mode protects the OpenCook target;
+it cannot block writes that still go to the source Chef server.
 
 ## Testing
 
@@ -345,7 +399,8 @@ make verify
 
 `make verify` runs formatting, `go vet`, and the test suite.
 
-Run the Docker functional stack with PostgreSQL, OpenSearch, filesystem-backed blobs, and black-box functional tests:
+Run the Docker functional stack with PostgreSQL, shared maintenance state,
+OpenSearch, filesystem-backed blobs, and black-box functional tests:
 
 ```bash
 scripts/functional-compose.sh

@@ -28,6 +28,7 @@ import (
 	"github.com/oberones/OpenCook/internal/bootstrap"
 	"github.com/oberones/OpenCook/internal/compat"
 	"github.com/oberones/OpenCook/internal/config"
+	"github.com/oberones/OpenCook/internal/maintenance"
 	"github.com/oberones/OpenCook/internal/search"
 	"github.com/oberones/OpenCook/internal/store/pg"
 	"github.com/oberones/OpenCook/internal/version"
@@ -3768,6 +3769,23 @@ func newTestRouterWithBootstrapOptionsAndBlob(t *testing.T, cfg config.Config, o
 
 func newTestRouterWithBootstrapOptionsAndBlobAndPostgres(t *testing.T, cfg config.Config, opts bootstrap.Options, logger *log.Logger, verifier authn.Verifier, blobStore blob.Store, postgresStore *pg.Store) http.Handler {
 	t.Helper()
+	return newTestRouterWithBootstrapOptionsAndBlobAndPostgresAndMaintenance(t, cfg, opts, logger, verifier, blobStore, postgresStore, nil)
+}
+
+func newTestRouterWithMaintenance(t *testing.T, store maintenance.Store) http.Handler {
+	t.Helper()
+	return newTestRouterWithBootstrapOptionsAndBlobAndPostgresAndMaintenance(t, config.Config{
+		ServiceName: "opencook",
+		Environment: "test",
+		AuthSkew:    15 * time.Minute,
+	}, bootstrap.Options{SuperuserName: "pivotal"}, nil, nil, blob.NewMemoryStore(""), nil, store)
+}
+
+// newTestRouterWithBootstrapOptionsAndBlobAndPostgresAndMaintenance centralizes
+// the route-test dependency graph so maintenance-specific tests can inject a
+// live write gate without changing the default disabled behavior.
+func newTestRouterWithBootstrapOptionsAndBlobAndPostgresAndMaintenance(t *testing.T, cfg config.Config, opts bootstrap.Options, logger *log.Logger, verifier authn.Verifier, blobStore blob.Store, postgresStore *pg.Store, maintenanceStore maintenance.Store) http.Handler {
+	t.Helper()
 
 	privateKey := mustParsePrivateKey(t)
 	store := authn.NewMemoryKeyStore()
@@ -3889,6 +3907,7 @@ func newTestRouterWithBootstrapOptionsAndBlobAndPostgres(t *testing.T, cfg confi
 		BlobUploadSecret: []byte("test-blob-upload-secret"),
 		Search:           search.NewMemoryIndex(state, ""),
 		Postgres:         postgresStore,
+		Maintenance:      maintenanceStore,
 		CookbookBackend:  cookbookBackend,
 	})
 }

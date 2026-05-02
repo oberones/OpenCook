@@ -1,10 +1,13 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/oberones/OpenCook/internal/maintenance"
 )
 
 func TestMetricsEndpointExposesSafePrometheusText(t *testing.T) {
@@ -33,6 +36,9 @@ func TestMetricsEndpointExposesSafePrometheusText(t *testing.T) {
 		"# HELP opencook_build_info",
 		"opencook_http_requests_total",
 		"opencook_http_request_duration_seconds_bucket",
+		"opencook_maintenance_enabled",
+		"opencook_maintenance_expired",
+		"opencook_maintenance_blocked_writes_total",
 		`surface="status"`,
 		`surface="search"`,
 		`surface="blob"`,
@@ -56,6 +62,49 @@ func TestMetricsEndpointExposesSafePrometheusText(t *testing.T) {
 	} {
 		if strings.Contains(body, leaked) {
 			t.Fatalf("/metrics leaked high-cardinality or secret-like value %q:\n%s", leaked, body)
+		}
+	}
+}
+
+func TestMetricsEndpointReportsMaintenanceStateAndBlockedWrites(t *testing.T) {
+	store := maintenance.NewMemoryStore()
+	if _, err := store.Enable(context.Background(), maintenance.EnableInput{
+		Mode:   "backup",
+		Reason: "functional backup window",
+		Actor:  "operator",
+	}); err != nil {
+		t.Fatalf("Enable() error = %v", err)
+	}
+	router := newStatusRouteTestRouter(t, statusRouteTestDeps{
+		maintenanceStore: store,
+	})
+
+	blocked := httptest.NewRecorder()
+	router.ServeHTTP(blocked, httptest.NewRequest(http.MethodPost, "/nodes", strings.NewReader(`{"name":"blocked"}`)))
+	if blocked.Code != maintenanceBlockedHTTPStatus {
+		t.Fatalf("blocked write status = %d, want %d, body = %s", blocked.Code, maintenanceBlockedHTTPStatus, blocked.Body.String())
+	}
+
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("/metrics status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		`opencook_maintenance_enabled{backend="memory",shared="false"} 1`,
+		`opencook_maintenance_expired{backend="memory",shared="false"} 0`,
+		`opencook_maintenance_blocked_writes_total{method="POST",surface="nodes",reason="active"} 1`,
+		`opencook_dependency_configured{dependency="maintenance",backend="memory"} 0`,
+		`opencook_dependency_ready{dependency="maintenance",backend="memory"} 1`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("/metrics body missing %q:\n%s", want, body)
+		}
+	}
+	for _, leaked := range []string{"functional backup window", "operator", "blocked-node"} {
+		if strings.Contains(body, leaked) {
+			t.Fatalf("/metrics leaked maintenance detail %q:\n%s", leaked, body)
 		}
 	}
 }

@@ -401,6 +401,51 @@ func TestAdminOfflineMembershipCommandsMutateBootstrapCoreStore(t *testing.T) {
 	}
 }
 
+func TestAdminACLRepairOnlineCallsMaintenanceRepairRoute(t *testing.T) {
+	cmd, _, stderr := newTestCommand(t)
+	fake := &fakeAdminClient{response: map[string]any{"mode": "online", "changed": true}}
+	cmd.loadAdminConfig = func() admin.Config {
+		return admin.Config{ServerURL: "http://opencook.test", RequestorName: "pivotal", PrivateKeyPath: "redacted.pem"}
+	}
+	cmd.newAdmin = func(admin.Config) (adminJSONClient, error) {
+		return fake, nil
+	}
+
+	code := cmd.Run(context.Background(), []string{"admin", "acls", "repair-defaults", "--online", "--yes", "--org", "ponyville"})
+	if code != exitOK {
+		t.Fatalf("Run(acls repair online) exit = %d, want %d; stderr = %s", code, exitOK, stderr.String())
+	}
+	if len(fake.calls) != 1 {
+		t.Fatalf("admin calls = %d, want 1", len(fake.calls))
+	}
+	call := fake.calls[0]
+	if call.method != http.MethodPost || call.path != maintenanceRepairDefaultACLsAdminPath {
+		t.Fatalf("call = %s %s, want POST %s", call.method, call.path, maintenanceRepairDefaultACLsAdminPath)
+	}
+	if !payloadEqual(call.payload, map[string]any{"yes": true, "org": "ponyville"}) {
+		t.Fatalf("payload = %#v, want yes/org confirmation", call.payload)
+	}
+}
+
+func TestAdminACLRepairOnlineRequiresConfirmationBeforeRequest(t *testing.T) {
+	cmd, _, stderr := newTestCommand(t)
+	fake := &fakeAdminClient{}
+	cmd.loadAdminConfig = func() admin.Config {
+		return admin.Config{ServerURL: "http://opencook.test", RequestorName: "pivotal", PrivateKeyPath: "redacted.pem"}
+	}
+	cmd.newAdmin = func(admin.Config) (adminJSONClient, error) {
+		return fake, nil
+	}
+
+	code := cmd.Run(context.Background(), []string{"admin", "acls", "repair-defaults", "--online"})
+	if code != exitUsage {
+		t.Fatalf("Run(acls repair online without yes) exit = %d, want %d; stderr = %s", code, exitUsage, stderr.String())
+	}
+	if len(fake.calls) != 0 {
+		t.Fatalf("admin calls = %d, want no request without --yes", len(fake.calls))
+	}
+}
+
 func TestAdminOfflineMembershipFailuresDoNotSave(t *testing.T) {
 	cmd, _, stderr := newTestCommand(t)
 	initial := adminOfflineTestState()
@@ -454,6 +499,40 @@ func TestAdminOfflineACLRepairDryRunDoesNotSave(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "ponyville/organization") || !strings.Contains(stdout.String(), "ponyville/node:node1") {
 		t.Fatalf("stdout = %q, want bootstrap and core object ACL repair previews", stdout.String())
+	}
+}
+
+func TestAdminOfflineACLRepairAcceptsExplicitOnlineFalse(t *testing.T) {
+	cmd, stdout, stderr := newTestCommand(t)
+	store := &fakeOfflineStore{
+		bootstrap: adminOfflineTestStateWithoutACLs(),
+		objects: bootstrap.CoreObjectState{
+			Orgs: map[string]bootstrap.CoreObjectOrganizationState{
+				"ponyville": {
+					Nodes: map[string]bootstrap.Node{
+						"node1": {Name: "node1"},
+					},
+					ACLs: map[string]authz.ACL{},
+				},
+			},
+		},
+	}
+	cmd.loadOffline = func() (config.Config, error) {
+		return config.Config{PostgresDSN: "postgres://offline-test"}, nil
+	}
+	cmd.newOfflineStore = func(context.Context, string) (adminOfflineStore, func() error, error) {
+		return store, nil, nil
+	}
+
+	code := cmd.Run(context.Background(), []string{"admin", "acls", "repair-defaults", "--offline", "--online=false", "--dry-run", "--org", "ponyville"})
+	if code != exitOK {
+		t.Fatalf("Run(acls repair --online=false) exit = %d, want %d; stderr = %s", code, exitOK, stderr.String())
+	}
+	if store.bootstrapSaves != 0 || store.objectSaves != 0 {
+		t.Fatalf("saves = %d/%d, want 0/0", store.bootstrapSaves, store.objectSaves)
+	}
+	if !strings.Contains(stdout.String(), "ponyville/organization") {
+		t.Fatalf("stdout = %q, want offline dry-run repair preview", stdout.String())
 	}
 }
 

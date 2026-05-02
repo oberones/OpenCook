@@ -196,6 +196,51 @@ func TestIndexingStoresDoNotEmitForFailedPersistenceWrites(t *testing.T) {
 	recorder.requireSnapshot(t, before)
 }
 
+func TestIndexingStoreLoadsDoNotAdvanceDiffBaseline(t *testing.T) {
+	recorder := &recordingDocumentIndexer{}
+	bootstrapDelegate := bootstrap.NewMemoryBootstrapCoreStore(indexingBootstrapCoreStateWithClients("old-client"))
+	bootstrapStore := NewIndexingBootstrapCoreStore(bootstrapDelegate, recorder)
+
+	if err := bootstrapStore.SaveBootstrapCore(indexingBootstrapCoreStateWithClients("old-client")); err != nil {
+		t.Fatalf("SaveBootstrapCore(initial) error = %v", err)
+	}
+	recorder.upserts = nil
+	recorder.deletes = nil
+	if err := bootstrapDelegate.SaveBootstrapCore(indexingBootstrapCoreStateWithClients("repair-only-client")); err != nil {
+		t.Fatalf("delegate.SaveBootstrapCore(repair) error = %v", err)
+	}
+	if _, err := bootstrapStore.LoadBootstrapCore(); err != nil {
+		t.Fatalf("LoadBootstrapCore() error = %v", err)
+	}
+	if err := bootstrapStore.SaveBootstrapCore(indexingBootstrapCoreStateWithClients("old-client", "new-client")); err != nil {
+		t.Fatalf("SaveBootstrapCore(next) error = %v", err)
+	}
+	if want := []DocumentRef{{Organization: "ponyville", Index: "client", Name: "new-client"}}; !reflect.DeepEqual(recorder.upserts, want) || len(recorder.deletes) != 0 {
+		t.Fatalf("bootstrap recorder = upserts %v deletes %v, want upserts %v and no deletes", recorder.upserts, recorder.deletes, want)
+	}
+
+	recorder = &recordingDocumentIndexer{}
+	coreDelegate := bootstrap.NewMemoryCoreObjectStore(indexingCoreObjectStateWithNodes("old-node"))
+	coreStore := NewIndexingCoreObjectStore(coreDelegate, recorder)
+	if err := coreStore.SaveCoreObjects(indexingCoreObjectStateWithNodes("old-node")); err != nil {
+		t.Fatalf("SaveCoreObjects(initial) error = %v", err)
+	}
+	recorder.upserts = nil
+	recorder.deletes = nil
+	if err := coreDelegate.SaveCoreObjects(indexingCoreObjectStateWithNodes("repair-only-node")); err != nil {
+		t.Fatalf("delegate.SaveCoreObjects(repair) error = %v", err)
+	}
+	if _, err := coreStore.LoadCoreObjects(); err != nil {
+		t.Fatalf("LoadCoreObjects() error = %v", err)
+	}
+	if err := coreStore.SaveCoreObjects(indexingCoreObjectStateWithNodes("old-node", "new-node")); err != nil {
+		t.Fatalf("SaveCoreObjects(next) error = %v", err)
+	}
+	if want := []DocumentRef{{Organization: "ponyville", Index: "node", Name: "new-node"}}; !reflect.DeepEqual(recorder.upserts, want) || len(recorder.deletes) != 0 {
+		t.Fatalf("core object recorder = upserts %v deletes %v, want upserts %v and no deletes", recorder.upserts, recorder.deletes, want)
+	}
+}
+
 func newIndexingStoreTestService(recorder *recordingDocumentIndexer, bootstrapCore bootstrap.BootstrapCoreStore, coreObjects bootstrap.CoreObjectStore) *bootstrap.Service {
 	return bootstrap.NewService(authn.NewMemoryKeyStore(), bootstrap.Options{
 		SuperuserName: "pivotal",
@@ -270,6 +315,58 @@ func requireRef(t *testing.T, refs []DocumentRef, index, name string) {
 		}
 	}
 	t.Fatalf("refs = %v, want ponyville/%s/%s", refs, index, name)
+}
+
+// indexingBootstrapCoreStateWithClients builds a minimal organization/client
+// snapshot so indexing baseline tests can exercise bootstrap-core diffs without
+// depending on route-level organization setup.
+func indexingBootstrapCoreStateWithClients(names ...string) bootstrap.BootstrapCoreState {
+	clients := make(map[string]bootstrap.Client, len(names))
+	for _, name := range names {
+		clients[name] = bootstrap.Client{
+			Name:         name,
+			ClientName:   name,
+			Organization: "ponyville",
+		}
+	}
+	return bootstrap.BootstrapCoreState{
+		Orgs: map[string]bootstrap.BootstrapCoreOrganizationState{
+			"ponyville": {
+				Organization: bootstrap.Organization{
+					Name:     "ponyville",
+					FullName: "Ponyville",
+					OrgType:  "Business",
+					GUID:     "ponyville",
+				},
+				Clients: clients,
+			},
+		},
+	}
+}
+
+// indexingCoreObjectStateWithNodes builds a compact node-only snapshot for
+// stale-cache tests that care about index diffs, not full Chef object defaults.
+func indexingCoreObjectStateWithNodes(names ...string) bootstrap.CoreObjectState {
+	nodes := make(map[string]bootstrap.Node, len(names))
+	for _, name := range names {
+		nodes[name] = bootstrap.Node{
+			Name:            name,
+			JSONClass:       "Chef::Node",
+			ChefType:        "node",
+			ChefEnvironment: "_default",
+			Override:        map[string]any{},
+			Normal:          map[string]any{},
+			Default:         map[string]any{},
+			Automatic:       map[string]any{},
+		}
+	}
+	return bootstrap.CoreObjectState{
+		Orgs: map[string]bootstrap.CoreObjectOrganizationState{
+			"ponyville": {
+				Nodes: nodes,
+			},
+		},
+	}
 }
 
 type failingBootstrapCoreStore struct{}

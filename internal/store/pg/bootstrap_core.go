@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/oberones/OpenCook/internal/authz"
@@ -18,6 +19,7 @@ var bootstrapCorePersistenceSchemaSQL string
 
 type BootstrapCoreRepository struct {
 	store *Store
+	mu    sync.RWMutex
 	db    *sql.DB
 	state bootstrap.BootstrapCoreState
 }
@@ -53,6 +55,9 @@ func (r *BootstrapCoreRepository) LoadBootstrapCore() (bootstrap.BootstrapCoreSt
 	if r == nil {
 		return bootstrap.BootstrapCoreState{}, nil
 	}
+
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	return bootstrap.CloneBootstrapCoreState(r.state), nil
 }
 
@@ -60,13 +65,48 @@ func (r *BootstrapCoreRepository) SaveBootstrapCore(state bootstrap.BootstrapCor
 	if r == nil {
 		return nil
 	}
-	if r.db == nil {
+	r.mu.RLock()
+	db := r.db
+	r.mu.RUnlock()
+	if db == nil {
+		r.mu.Lock()
+		defer r.mu.Unlock()
 		r.state = bootstrap.CloneBootstrapCoreState(state)
 		return nil
 	}
-	if err := saveBootstrapCore(context.Background(), r.db, state); err != nil {
+	if err := saveBootstrapCore(context.Background(), db, state); err != nil {
 		return err
 	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.state = bootstrap.CloneBootstrapCoreState(state)
+	return nil
+}
+
+// Reload refreshes the repository snapshot from PostgreSQL without emitting
+// write-side effects. Future online repair flows call this before rehydrating
+// live service caches after direct database mutations.
+func (r *BootstrapCoreRepository) Reload(ctx context.Context) error {
+	if r == nil {
+		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	r.mu.RLock()
+	db := r.db
+	r.mu.RUnlock()
+	if db == nil {
+		return nil
+	}
+	state, err := loadBootstrapCore(ctx, db)
+	if err != nil {
+		return fmt.Errorf("load bootstrap core state: %w", err)
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.state = bootstrap.CloneBootstrapCoreState(state)
 	return nil
 }
@@ -87,8 +127,10 @@ func (r *BootstrapCoreRepository) activate(ctx context.Context, db *sql.DB) erro
 		return err
 	}
 
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.db = db
-	r.state = state
+	r.state = bootstrap.CloneBootstrapCoreState(state)
 	return nil
 }
 

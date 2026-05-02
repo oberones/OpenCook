@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"sort"
@@ -20,6 +21,7 @@ type metricsRegistry struct {
 	durationBuckets map[durationMetricKey][]uint64
 	durationCount   map[durationMetricKey]uint64
 	durationSum     map[durationMetricKey]float64
+	blockedWrites   map[maintenanceBlockedMetricKey]uint64
 }
 
 type requestMetricKey struct {
@@ -33,6 +35,12 @@ type durationMetricKey struct {
 	Surface string
 }
 
+type maintenanceBlockedMetricKey struct {
+	Method  string
+	Surface string
+	Reason  string
+}
+
 type metricsSnapshot struct {
 	startedAt time.Time
 	buckets   []float64
@@ -41,6 +49,7 @@ type metricsSnapshot struct {
 	durationBuckets map[durationMetricKey][]uint64
 	durationCount   map[durationMetricKey]uint64
 	durationSum     map[durationMetricKey]float64
+	blockedWrites   map[maintenanceBlockedMetricKey]uint64
 }
 
 // newMetricsRegistry creates the in-process metrics recorder used by the HTTP
@@ -57,6 +66,7 @@ func newMetricsRegistry(now func() time.Time) *metricsRegistry {
 		durationBuckets: make(map[durationMetricKey][]uint64),
 		durationCount:   make(map[durationMetricKey]uint64),
 		durationSum:     make(map[durationMetricKey]float64),
+		blockedWrites:   make(map[maintenanceBlockedMetricKey]uint64),
 	}
 }
 
@@ -89,6 +99,23 @@ func (m *metricsRegistry) record(method, path string, status int, duration time.
 	m.durationSum[durationKey] += seconds
 }
 
+// recordMaintenanceBlocked stores one bounded observation when maintenance mode
+// prevents a mutating Chef-facing request from reaching the route handler.
+func (m *metricsRegistry) recordMaintenanceBlocked(method, path, reason string) {
+	if m == nil {
+		return
+	}
+	key := maintenanceBlockedMetricKey{
+		Method:  metricMethod(method),
+		Surface: metricSurfaceForPath(path),
+		Reason:  metricMaintenanceReason(reason),
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.blockedWrites[key]++
+}
+
 // snapshot copies the current counters so Prometheus rendering never holds the
 // metrics lock while it evaluates dependency status or writes the response body.
 func (m *metricsRegistry) snapshot() metricsSnapshot {
@@ -115,6 +142,10 @@ func (m *metricsRegistry) snapshot() metricsSnapshot {
 	for key, sum := range m.durationSum {
 		durationSum[key] = sum
 	}
+	blockedWrites := make(map[maintenanceBlockedMetricKey]uint64, len(m.blockedWrites))
+	for key, count := range m.blockedWrites {
+		blockedWrites[key] = count
+	}
 
 	return metricsSnapshot{
 		startedAt:       m.startedAt,
@@ -123,6 +154,7 @@ func (m *metricsRegistry) snapshot() metricsSnapshot {
 		durationBuckets: durationBuckets,
 		durationCount:   durationCount,
 		durationSum:     durationSum,
+		blockedWrites:   blockedWrites,
 	}
 }
 
@@ -200,19 +232,20 @@ func (s *server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodHead {
 		return
 	}
-	_, _ = w.Write([]byte(s.renderMetrics()))
+	_, _ = w.Write([]byte(s.renderMetrics(r.Context())))
 }
 
 // renderMetrics builds a deterministic Prometheus text payload using only safe,
 // low-cardinality labels.
-func (s *server) renderMetrics() string {
+func (s *server) renderMetrics(ctx context.Context) string {
 	snapshot := s.metrics.snapshot()
 	var b strings.Builder
 
 	s.writeBuildMetrics(&b, snapshot)
 	s.writeHTTPMetrics(&b, snapshot)
 	s.writeDerivedOperationMetrics(&b, snapshot)
-	s.writeDependencyMetrics(&b)
+	s.writeMaintenanceMetrics(ctx, &b, snapshot)
+	s.writeDependencyMetrics(ctx, &b)
 
 	return b.String()
 }
@@ -314,10 +347,47 @@ func (s *server) writeDerivedOperationMetrics(b *strings.Builder, snapshot metri
 	}
 }
 
+// writeMaintenanceMetrics exposes write-gate state and blocked-write counts
+// using only backend, method, surface, and reason labels.
+func (s *server) writeMaintenanceMetrics(ctx context.Context, b *strings.Builder, snapshot metricsSnapshot) {
+	status := s.maintenanceStatus(ctx)
+	backend, _ := status["backend"].(string)
+	shared, _ := status["shared"].(bool)
+	active, _ := status["active"].(bool)
+	expired, _ := status["expired"].(bool)
+
+	fmt.Fprintln(b, "# HELP opencook_maintenance_enabled Whether maintenance mode is currently blocking mutating Chef-facing writes.")
+	fmt.Fprintln(b, "# TYPE opencook_maintenance_enabled gauge")
+	fmt.Fprintf(b, "opencook_maintenance_enabled{backend=%s,shared=%s} %d\n",
+		prometheusLabel(metricBackendLabel(backend)),
+		prometheusLabel(strconv.FormatBool(shared)),
+		boolMetric(active),
+	)
+	fmt.Fprintln(b, "# HELP opencook_maintenance_expired Whether a stored maintenance window has expired and is no longer blocking writes.")
+	fmt.Fprintln(b, "# TYPE opencook_maintenance_expired gauge")
+	fmt.Fprintf(b, "opencook_maintenance_expired{backend=%s,shared=%s} %d\n",
+		prometheusLabel(metricBackendLabel(backend)),
+		prometheusLabel(strconv.FormatBool(shared)),
+		boolMetric(expired),
+	)
+
+	fmt.Fprintln(b, "# HELP opencook_maintenance_blocked_writes_total Mutating Chef-facing requests blocked by maintenance mode.")
+	fmt.Fprintln(b, "# TYPE opencook_maintenance_blocked_writes_total counter")
+	for _, key := range sortedMaintenanceBlockedMetricKeys(snapshot.blockedWrites) {
+		fmt.Fprintf(b, "opencook_maintenance_blocked_writes_total{method=%s,surface=%s,reason=%s} %d\n",
+			prometheusLabel(key.Method),
+			prometheusLabel(key.Surface),
+			prometheusLabel(key.Reason),
+			snapshot.blockedWrites[key],
+		)
+	}
+}
+
 // writeDependencyMetrics exposes configured/ready gauges for the runtime
 // dependencies without exporting messages that could contain provider details.
-func (s *server) writeDependencyMetrics(b *strings.Builder) {
-	readiness := s.readinessPayload()
+func (s *server) writeDependencyMetrics(ctx context.Context, b *strings.Builder) {
+	readiness := s.readinessPayload(ctx)
+	maintenanceStatus := s.maintenanceStatus(ctx)
 	dependencies := []struct {
 		name       string
 		backend    string
@@ -348,6 +418,12 @@ func (s *server) writeDependencyMetrics(b *strings.Builder) {
 			configured: s.blobStatus().Configured,
 			ready:      readiness.Checks["blob"].Ready,
 		},
+		{
+			name:       "maintenance",
+			backend:    stringFromMap(maintenanceStatus, "backend"),
+			configured: boolFromMap(maintenanceStatus, "configured"),
+			ready:      readiness.Checks["maintenance"].Ready,
+		},
 	}
 
 	fmt.Fprintln(b, "# HELP opencook_dependency_configured Whether an OpenCook runtime dependency is configured.")
@@ -368,6 +444,17 @@ func (s *server) writeDependencyMetrics(b *strings.Builder) {
 			prometheusLabel(metricBackendLabel(dep.backend)),
 			boolMetric(dep.ready),
 		)
+	}
+}
+
+// metricMaintenanceReason bounds maintenance blocked-write reason labels to a
+// tiny vocabulary so provider errors or operator text never reach Prometheus.
+func metricMaintenanceReason(reason string) string {
+	switch strings.TrimSpace(strings.ToLower(reason)) {
+	case "active", "check_error":
+		return strings.TrimSpace(strings.ToLower(reason))
+	default:
+		return "unknown"
 	}
 }
 
@@ -500,6 +587,18 @@ func boolMetric(value bool) int {
 	return 0
 }
 
+// stringFromMap pulls a best-effort string from a small internal status map.
+func stringFromMap(values map[string]any, key string) string {
+	value, _ := values[key].(string)
+	return value
+}
+
+// boolFromMap pulls a best-effort boolean from a small internal status map.
+func boolFromMap(values map[string]any, key string) bool {
+	value, _ := values[key].(bool)
+	return value
+}
+
 // sortedRequestMetricKeys provides deterministic metric output for snapshots
 // and tests.
 func sortedRequestMetricKeys(metrics map[requestMetricKey]uint64) []requestMetricKey {
@@ -531,6 +630,25 @@ func sortedDurationMetricKeys(metrics map[durationMetricKey]uint64) []durationMe
 			return keys[i].Method < keys[j].Method
 		}
 		return keys[i].Surface < keys[j].Surface
+	})
+	return keys
+}
+
+// sortedMaintenanceBlockedMetricKeys provides deterministic blocked-write
+// counter ordering for metrics tests and scraper diffs.
+func sortedMaintenanceBlockedMetricKeys(metrics map[maintenanceBlockedMetricKey]uint64) []maintenanceBlockedMetricKey {
+	keys := make([]maintenanceBlockedMetricKey, 0, len(metrics))
+	for key := range metrics {
+		keys = append(keys, key)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if keys[i].Method != keys[j].Method {
+			return keys[i].Method < keys[j].Method
+		}
+		if keys[i].Surface != keys[j].Surface {
+			return keys[i].Surface < keys[j].Surface
+		}
+		return keys[i].Reason < keys[j].Reason
 	})
 	return keys
 }

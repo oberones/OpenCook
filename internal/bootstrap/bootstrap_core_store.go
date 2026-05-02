@@ -72,6 +72,55 @@ func (s *Service) RehydrateKeyStore() error {
 	return s.rehydrateKeyStoreLocked()
 }
 
+// ReloadPersistedState refreshes the service's in-memory bootstrap/core object
+// maps from its configured stores and rebuilds the request verifier cache. It
+// is intentionally all-or-nothing so future online repair workflows cannot
+// leave live reads using partially refreshed state.
+func (s *Service) ReloadPersistedState() error {
+	if s == nil {
+		return fmt.Errorf("bootstrap service is required")
+	}
+
+	var bootstrapState BootstrapCoreState
+	if s.bootstrapCoreStore != nil {
+		loaded, err := s.bootstrapCoreStore.LoadBootstrapCore()
+		if err != nil {
+			return fmt.Errorf("load bootstrap core state: %w", err)
+		}
+		bootstrapState = loaded
+	}
+	var coreObjectState CoreObjectState
+	if s.coreObjectStore != nil {
+		loaded, err := s.coreObjectStore.LoadCoreObjects()
+		if err != nil {
+			return fmt.Errorf("load core object state: %w", err)
+		}
+		coreObjectState = loaded
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	previousBootstrap := s.snapshotBootstrapCoreLocked()
+	previousCoreObjects := s.snapshotCoreObjectsLocked()
+	if s.bootstrapCoreStore != nil {
+		s.restoreBootstrapCoreLocked(bootstrapState)
+	}
+	if s.coreObjectStore != nil {
+		s.restoreCoreObjectsLocked(coreObjectState)
+	}
+	s.ensureUserLocked(s.superuserName)
+	if err := s.rehydrateKeyStoreLocked(); err != nil {
+		s.restoreBootstrapCoreLocked(previousBootstrap)
+		s.restoreCoreObjectsLocked(previousCoreObjects)
+		if hydrateErr := s.rehydrateKeyStoreLocked(); hydrateErr != nil {
+			return fmt.Errorf("reload persisted state: %w; additionally failed to restore key verifier cache: %v", err, hydrateErr)
+		}
+		return fmt.Errorf("reload persisted state: %w", err)
+	}
+	return nil
+}
+
 func (s *Service) snapshotBootstrapCoreLocked() BootstrapCoreState {
 	state := BootstrapCoreState{
 		Users:    cloneUsers(s.users),

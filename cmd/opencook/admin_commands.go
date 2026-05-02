@@ -17,6 +17,8 @@ type adminJSONClient interface {
 	DoJSON(context.Context, string, string, any, any) error
 }
 
+const maintenanceRepairDefaultACLsAdminPath = "/internal/maintenance/repair/default-acls"
+
 type adminOutputOptions struct {
 	privateKeyOut       string
 	overwritePrivateKey bool
@@ -47,6 +49,9 @@ func (c *command) runAdminCommand(ctx context.Context, args []string) int {
 	}
 	if len(args) > 0 && args[0] == "service" {
 		return c.runAdminService(ctx, args[1:], false)
+	}
+	if len(args) > 0 && args[0] == "maintenance" {
+		return c.runAdminMaintenance(ctx, args[1:], false)
 	}
 	if len(args) > 0 && args[0] == "logs" {
 		return c.runAdminLogs(ctx, args[1:], false)
@@ -91,6 +96,9 @@ func (c *command) runAdminCommand(ctx context.Context, args []string) int {
 	}
 	if rest[0] == "service" {
 		return c.runAdminService(ctx, rest[1:], *jsonOutput)
+	}
+	if rest[0] == "maintenance" {
+		return c.runAdminMaintenance(ctx, rest[1:], *jsonOutput)
 	}
 	if rest[0] == "logs" {
 		return c.runAdminLogs(ctx, rest[1:], *jsonOutput)
@@ -363,13 +371,50 @@ func (c *command) runAdminACLs(ctx context.Context, client adminJSONClient, args
 		}
 		return c.adminDo(ctx, client, http.MethodGet, path, nil, "")
 	case "repair-defaults":
-		return c.adminUsageError("admin acls repair-defaults is offline-only; rerun with --offline and --dry-run or --yes\n\n")
+		return c.runAdminACLRepairOnline(ctx, client, args[1:])
 	case "help", "-h", "--help":
 		c.printAdminACLsUsage(c.stdout)
 		return exitOK
 	default:
 		return c.adminUsageError("unknown admin acls command %q\n\n", args[0])
 	}
+}
+
+// runAdminACLRepairOnline calls the authenticated in-process repair route. The
+// route itself checks active maintenance mode so CLI callers cannot accidentally
+// bypass the shared gate by setting only local flags.
+func (c *command) runAdminACLRepairOnline(ctx context.Context, client adminJSONClient, args []string) int {
+	fs := flag.NewFlagSet("opencook admin acls repair-defaults", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	online := fs.Bool("online", false, "repair live process ACL caches during active maintenance mode")
+	offline := fs.Bool("offline", false, "use the offline PostgreSQL repair path instead")
+	yes := fs.Bool("yes", false, "confirm online ACL repair")
+	dryRun := fs.Bool("dry-run", false, "preview offline ACL repair without saving")
+	orgName := fs.String("org", "", "limit repair to one organization")
+	if err := fs.Parse(args); err != nil {
+		return c.adminFlagError("admin acls repair-defaults", err)
+	}
+	if fs.NArg() != 0 {
+		return c.adminUsageError("admin acls repair-defaults received unexpected arguments: %v\n\n", fs.Args())
+	}
+	if *offline {
+		return c.adminUsageError("admin acls repair-defaults --offline must be run without --online through the offline repair path\n\n")
+	}
+	if *dryRun {
+		return c.adminUsageError("admin acls repair-defaults --dry-run is supported only with --offline\n\n")
+	}
+	if !*online {
+		return c.adminUsageError("admin acls repair-defaults is offline-only by default; rerun with --offline and --dry-run or --yes, or use --online --yes during active maintenance\n\n")
+	}
+	if !*yes {
+		return c.adminUsageError("admin acls repair-defaults --online requires --yes\n\n")
+	}
+
+	payload := map[string]any{"yes": true}
+	if org := strings.TrimSpace(*orgName); org != "" {
+		payload["org"] = org
+	}
+	return c.adminDo(ctx, client, http.MethodPost, maintenanceRepairDefaultACLsAdminPath, payload, "")
 }
 
 func (c *command) runAdminOrganizationCreate(ctx context.Context, client adminJSONClient, args []string) int {
@@ -769,6 +814,7 @@ func (c *command) printAdminUsage(w io.Writer) {
   opencook admin [flags] acls get container ORG CONTAINER
   opencook admin [flags] acls get client ORG CLIENT
   opencook admin acls repair-defaults --offline [--org ORG] [--dry-run|--yes]
+  opencook admin [flags] acls repair-defaults --online --yes [--org ORG]
   opencook admin server-admins list --offline
   opencook admin server-admins grant USER --offline --yes
   opencook admin server-admins revoke USER --offline --yes
@@ -784,6 +830,10 @@ func (c *command) printAdminUsage(w io.Writer) {
   opencook admin config check [--offline] [--json] [--with-timing]
   opencook admin service status [--json] [--with-timing]
   opencook admin service doctor [--offline] [--json] [--with-timing]
+  opencook admin maintenance status [--json] [--with-timing] [--postgres-dsn DSN]
+  opencook admin maintenance check [--json] [--with-timing] [--postgres-dsn DSN]
+  opencook admin maintenance enable --reason TEXT --yes [--mode MODE] [--actor ACTOR] [--expires-in DURATION] [--json] [--with-timing] [--postgres-dsn DSN]
+  opencook admin maintenance disable --yes [--actor ACTOR] [--json] [--with-timing] [--postgres-dsn DSN]
   opencook admin logs paths [--json] [--with-timing]
   opencook admin diagnostics collect --output PATH [--offline] [--yes] [--json] [--with-timing]
   opencook admin runbook list [--json]
@@ -876,6 +926,7 @@ func (c *command) printAdminACLsUsage(w io.Writer) {
   opencook admin acls get container ORG CONTAINER
   opencook admin acls get client ORG CLIENT
   opencook admin acls repair-defaults --offline [--org ORG] [--dry-run|--yes]
+  opencook admin acls repair-defaults --online --yes [--org ORG]
 `)
 }
 

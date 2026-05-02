@@ -15,6 +15,7 @@ import (
 
 	"github.com/oberones/OpenCook/internal/authz"
 	"github.com/oberones/OpenCook/internal/bootstrap"
+	"github.com/oberones/OpenCook/internal/maintenance"
 	"github.com/oberones/OpenCook/internal/store/pg"
 )
 
@@ -32,6 +33,7 @@ type Seed struct {
 	Artifacts     []pg.CookbookArtifactBundle
 	BootstrapCore bootstrap.BootstrapCoreState
 	CoreObjects   bootstrap.CoreObjectState
+	Maintenance   maintenance.State
 }
 
 type State struct {
@@ -41,6 +43,7 @@ type State struct {
 	artifacts map[artifactKey]pg.CookbookArtifactBundle
 	bootstrap bootstrap.BootstrapCoreState
 	objects   bootstrap.CoreObjectState
+	maint     maintenance.State
 }
 
 type versionKey struct {
@@ -62,6 +65,7 @@ func NewState(seed Seed) *State {
 		artifacts: make(map[artifactKey]pg.CookbookArtifactBundle),
 		bootstrap: bootstrap.CloneBootstrapCoreState(seed.BootstrapCore),
 		objects:   bootstrap.CloneCoreObjectState(seed.CoreObjects),
+		maint:     maintenance.CloneState(seed.Maintenance),
 	}
 
 	for _, org := range seed.Organizations {
@@ -185,6 +189,21 @@ func (s *State) exec(query string, args []driver.NamedValue) (driver.Result, err
 	defer s.mu.Unlock()
 
 	switch {
+	case strings.Contains(query, "CREATE TABLE IF NOT EXISTS oc_maintenance_state"):
+		return driver.RowsAffected(0), nil
+	case strings.Contains(query, "INSERT INTO oc_maintenance_state"):
+		s.maint = maintenance.State{
+			Enabled:   namedBool(args, 0),
+			Mode:      namedString(args, 1),
+			Reason:    namedString(args, 2),
+			Actor:     namedString(args, 3),
+			CreatedAt: valueTime(args, 4),
+			ExpiresAt: namedTime(args, 5),
+		}
+		return driver.RowsAffected(1), nil
+	case strings.Contains(query, "DELETE FROM oc_maintenance_state"):
+		s.maint = maintenance.State{}
+		return driver.RowsAffected(1), nil
 	case strings.Contains(query, "CREATE TABLE IF NOT EXISTS oc_bootstrap_"):
 		return driver.RowsAffected(0), nil
 	case strings.Contains(query, "DELETE FROM oc_bootstrap_"):
@@ -570,6 +589,21 @@ func (s *State) query(query string, _ []driver.NamedValue) (driver.Rows, error) 
 	defer s.mu.Unlock()
 
 	switch {
+	case strings.Contains(query, "FROM oc_maintenance_state"):
+		if !s.maint.Enabled {
+			return &fakeRows{columns: []string{"enabled", "mode", "reason", "actor", "created_at", "expires_at"}}, nil
+		}
+		return &fakeRows{
+			columns: []string{"enabled", "mode", "reason", "actor", "created_at", "expires_at"},
+			values: [][]driver.Value{{
+				s.maint.Enabled,
+				s.maint.Mode,
+				s.maint.Reason,
+				s.maint.Actor,
+				s.maint.CreatedAt,
+				nullableDriverTime(s.maint.ExpiresAt),
+			}},
+		}, nil
 	case strings.Contains(query, "FROM oc_bootstrap_users"):
 		keys := sortedBootstrapKeys(s.bootstrap.Users)
 		values := make([][]driver.Value, 0, len(keys))

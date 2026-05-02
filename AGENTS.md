@@ -59,7 +59,7 @@ Implemented so far:
 - initial authenticated routing
 - PostgreSQL-backed bootstrap core persistence for users, organizations, clients, user/client keys, groups, containers, and ACL documents, with in-memory fallback behavior when PostgreSQL is not configured
 - PostgreSQL-backed core object API persistence for nodes, environments, roles, data bags/items, policy revisions/groups/assignments, sandbox metadata/checksum references, and object ACLs, with in-memory fallback behavior when PostgreSQL is not configured
-- the first `opencook admin` operational CLI, including signed HTTP-backed user/org/key/group/container/ACL inspection and live-safe management flows, offline-gated direct PostgreSQL repair commands, and OpenSearch reindex/check/repair from PostgreSQL-backed state
+- the first `opencook admin` operational CLI, including signed HTTP-backed user/org/key/group/container/ACL inspection and live-safe management flows, maintenance controls, maintenance-gated OpenSearch reindex/check/repair from PostgreSQL-backed state, narrow online default ACL repair during active maintenance, and offline-gated direct PostgreSQL repair commands for unsafe mutations
 - API-version-specific object semantics for implemented Chef-facing surfaces, including live `/server_api_version`, invalid-version precedence, signed-header verification, v0/v1 user and client key behavior, v0/v2 cookbook and cookbook-artifact file shapes, v0/v1/v2 nodes, roles, environments, data bags, policies, sandboxes, OpenSearch-facing node policy fields, active PostgreSQL restart/rehydration, and Docker functional coverage
 - the first environment slice:
   - `_default` environment bootstrap
@@ -291,7 +291,7 @@ Current architectural reality:
 - bootstrap core identity/authz state can now be persisted in PostgreSQL and rehydrated into the existing bootstrap service and verifier key cache
 - implemented core object API state can now be persisted in PostgreSQL and rehydrated into the existing bootstrap service, search-facing state, depsolver-visible state, sandbox checksum references, and object ACLs
 - org bootstrap returns validator key material, and generated `<org>-validator` clients can now register normal clients through the stock bootstrap routes
-- the `opencook admin` operational surface is live, including OpenCook-to-OpenCook migration preflight, logical backup/restore, normalized Chef Server source inventory/normalize/import/sync, source-to-target shadow-read comparison, restored-target reindex, cutover rehearsal, config validation, service status/doctor, metrics, request IDs, structured logs, log discovery, diagnostics bundles, runbook discovery, and service-management docs; direct live upstream extraction, live maintenance-mode traffic blocking, and online direct PostgreSQL mutation remain future work
+- the `opencook admin` operational surface is live, including OpenCook-to-OpenCook migration preflight, logical backup/restore, normalized Chef Server source inventory/normalize/import/sync, source-to-target shadow-read comparison, restored-target reindex, cutover rehearsal, maintenance controls, maintenance-gated reindex/search repair, narrow online default ACL repair, config validation, service status/doctor, metrics, request IDs, structured logs, log discovery, diagnostics bundles, runbook discovery, and service-management docs; direct live upstream extraction and production-scale migration/cutover validation remain future work
 - data bag CRUD and encrypted data bag payload opacity are now explicitly pinned as tested compatibility slices
 - PostgreSQL is active for cookbook metadata, bootstrap core state, and implemented core object API state; OpenSearch-backed search is active for the implemented Chef search indexes when PostgreSQL and `OPENCOOK_OPENSEARCH_URL` are configured, with provider discovery/capability reporting, versioned mapping management, direct/fallback delete coverage, the memory adapter preserved as the no-OpenSearch fallback, and unsupported cookbook/policy/sandbox/checksum object families pinned as non-searchable
 - the blob layer now has in-memory, filesystem-backed, and S3-compatible compatibility implementations for sandbox checksum uploads/downloads and cookbook file URLs, and the S3-compatible path now includes request-construction parity, configurable timeout/retry plus `Retry-After` behavior, transport/status classification, malformed-endpoint and missing-credential diagnostics, and provider-backed `blob_unavailable` degradation on the current sandbox/cookbook flows
@@ -322,7 +322,7 @@ High-level package roles:
 - `internal/config`
   - env-driven configuration
 - `internal/store/pg`
-  - active PostgreSQL-backed cookbook, bootstrap core, and implemented core object API persistence
+  - active PostgreSQL-backed cookbook, bootstrap core, implemented core object API, and shared maintenance-state persistence
 - `internal/search`
   - memory fallback plus active OpenSearch-backed compatibility search/indexing for implemented Chef-searchable object families, provider capability/version discovery, versioned mapping management, direct/fallback delete behavior, and explicit guardrails against invented cookbook/policy/sandbox/checksum indexes
 - `internal/blob`
@@ -458,6 +458,6 @@ These areas are still intentionally incomplete:
 - deeper node and environment compatibility such as cookbook constraint edge cases and linked object behavior
 - deeper role compatibility beyond the current normalization and linked-environment read behavior
 - direct live Chef Infra Server source extraction beyond normalized artifacts, production-scale shadow-read comparison, and deployment cutover runbooks
-- live maintenance-mode request blocking and online direct PostgreSQL repair mutation, both of which need explicit compatibility and cache-invalidation designs
+- broader online direct PostgreSQL repair mutations beyond the narrow maintenance-gated default ACL repair path
 
-The next likely major slice is live maintenance-mode request blocking plus cache-safe online repair/cutover controls, with deployment-test-discovered Chef compatibility gaps taking priority if they prove higher risk.
+The next likely major slice is production-scale migration validation and cutover readiness hardening, with deployment-test-discovered Chef compatibility gaps taking priority if they prove higher risk.

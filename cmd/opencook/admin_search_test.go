@@ -9,6 +9,7 @@ import (
 
 	"github.com/oberones/OpenCook/internal/admin"
 	"github.com/oberones/OpenCook/internal/config"
+	"github.com/oberones/OpenCook/internal/maintenance"
 	"github.com/oberones/OpenCook/internal/search"
 	"github.com/oberones/OpenCook/internal/testfixtures"
 )
@@ -59,6 +60,9 @@ func TestAdminSearchCheckAndRepairCommands(t *testing.T) {
 	if len(target.bulkBatches) != 1 || len(target.bulkBatches[0]) != 2 {
 		t.Fatalf("bulk batches = %#v, want two missing documents", target.bulkBatches)
 	}
+	out = decodeAdminReindexOutput(t, stdout.String())
+	requireAdminOutputWarningContains(t, out, "active maintenance mode confirmed")
+	requireAdminOutputWarningContains(t, out, "search repair mutates derived OpenSearch documents")
 
 	stdout.Reset()
 	stderr.Reset()
@@ -287,6 +291,83 @@ func TestAdminSearchCommandFailuresAreStableAndRedacted(t *testing.T) {
 	}
 }
 
+func TestAdminSearchRepairMaintenanceGate(t *testing.T) {
+	t.Run("active repair requires maintenance", func(t *testing.T) {
+		cmd, stdout, stderr := newTestCommand(t)
+		maintenanceStore := maintenance.NewMemoryStore()
+		cmd.loadOffline = func() (config.Config, error) {
+			return config.Config{
+				PostgresDSN:   "postgres://search-test",
+				OpenSearchURL: "http://opensearch.test",
+			}, nil
+		}
+		setTestMaintenanceStore(cmd, maintenanceStore, adminMaintenanceBackend{Name: "postgres", Configured: true, Shared: true})
+		cmd.newOfflineStore = func(context.Context, string) (adminOfflineStore, func() error, error) {
+			t.Fatal("search repair opened offline store before maintenance was active")
+			return nil, nil, nil
+		}
+		cmd.newSearchTarget = func(string) (search.ConsistencyTarget, error) {
+			t.Fatal("search repair opened OpenSearch target before maintenance was active")
+			return nil, nil
+		}
+
+		code := cmd.Run(context.Background(), []string{"admin", "search", "repair", "--org", "ponyville", "--yes"})
+		if code != exitDependencyUnavailable {
+			t.Fatalf("Run(search repair without maintenance) exit = %d, want %d; stdout = %s stderr = %s", code, exitDependencyUnavailable, stdout.String(), stderr.String())
+		}
+		if !strings.Contains(stderr.String(), "active maintenance mode is required") {
+			t.Fatalf("stderr = %q, want maintenance requirement", stderr.String())
+		}
+		out := decodeAdminReindexOutput(t, stdout.String())
+		requireAdminOutputErrorCode(t, out, "maintenance_required")
+		assertAdminReindexCount(t, out, "failed", 1)
+		check, err := maintenanceStore.Check(context.Background())
+		if err != nil {
+			t.Fatalf("maintenance Check() error = %v", err)
+		}
+		if check.Active {
+			t.Fatalf("maintenance state active = true after rejected repair, want no temporary gate left behind")
+		}
+	})
+
+	t.Run("dry-run repair does not require maintenance", func(t *testing.T) {
+		target := newFakeAdminSearchTarget(
+			"ponyville/client/web01",
+			"ponyville/environment/_default",
+			"ponyville/node/stale",
+		)
+		cmd, stdout, stderr := newTestCommand(t)
+		cmd.loadOffline = func() (config.Config, error) {
+			return config.Config{
+				PostgresDSN:   "postgres://search-test",
+				OpenSearchURL: "http://opensearch.test",
+			}, nil
+		}
+		cmd.newOfflineStore = func(_ context.Context, dsn string) (adminOfflineStore, func() error, error) {
+			if dsn != "postgres://search-test" {
+				t.Fatalf("dsn = %q, want postgres://search-test", dsn)
+			}
+			return adminReindexTestStore(), nil, nil
+		}
+		cmd.newSearchTarget = func(raw string) (search.ConsistencyTarget, error) {
+			if raw != "http://opensearch.test" {
+				t.Fatalf("opensearch URL = %q, want http://opensearch.test", raw)
+			}
+			return target, nil
+		}
+
+		code := cmd.Run(context.Background(), []string{"admin", "search", "repair", "--org", "ponyville", "--dry-run"})
+		if code != exitPartial {
+			t.Fatalf("Run(search repair dry-run) exit = %d, want %d; stdout = %s stderr = %s", code, exitPartial, stdout.String(), stderr.String())
+		}
+		out := decodeAdminReindexOutput(t, stdout.String())
+		assertAdminReindexCount(t, out, "skipped", 3)
+		if _, ok := out["warnings"]; ok {
+			t.Fatalf("dry-run warnings = %#v, want none", out["warnings"])
+		}
+	})
+}
+
 func TestAdminSearchRequiresConfigAndRepairConfirmation(t *testing.T) {
 	t.Run("postgres required", func(t *testing.T) {
 		cmd, _, stderr := newTestCommand(t)
@@ -361,6 +442,7 @@ func newAdminSearchTestCommand(t *testing.T, store *fakeOfflineStore, target *fa
 		}
 		return target, nil
 	}
+	setTestMaintenanceStore(cmd, activeAdminWorkflowMaintenanceStore(t), adminMaintenanceBackend{Name: "postgres", Configured: true, Shared: true})
 	return cmd, stdout, stderr
 }
 

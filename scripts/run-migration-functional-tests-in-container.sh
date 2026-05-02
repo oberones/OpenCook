@@ -58,6 +58,32 @@ require_json_contains() {
   fi
 }
 
+# run_restore_json_under_maintenance enables maintenance in the restored target
+# database for one OpenSearch mutation, then disables it before returning.
+run_restore_json_under_maintenance() {
+  local mode="$1"
+  local reason="$2"
+  local output="$3"
+  shift 3
+
+  mkdir -p "$state_dir"
+  admin_restore_target maintenance enable --mode "$mode" --reason "$reason" --actor functional-tests --yes --json >"$state_dir/restore-maintenance-enable.json"
+  require_json_contains "$state_dir/restore-maintenance-enable.json" '"active": true'
+  require_json_contains "$state_dir/restore-maintenance-enable.json" '"shared": true'
+
+  set +e
+  "$@" >"$output"
+  local code="$?"
+  set -e
+
+  local disable_code=0
+  admin_restore_target maintenance disable --actor functional-tests --yes --json >"$state_dir/restore-maintenance-disable.json" || disable_code="$?"
+  if [[ "$code" != "0" ]]; then
+    return "$code"
+  fi
+  return "$disable_code"
+}
+
 print_file_if_exists() {
   local file="$1"
   if [[ -f "$file" ]]; then
@@ -301,10 +327,12 @@ run_migration_reindex() {
   ensure_restore_target_ready
 
   echo "==> migration complete reindex from restored target"
-  admin_restore_target reindex --all-orgs --complete --with-timing --json >/tmp/opencook-migration-reindex.json
+  run_restore_json_under_maintenance reindex "functional restored target reindex" /tmp/opencook-migration-reindex.json \
+    admin_restore_target reindex --all-orgs --complete --with-timing --json
   require_json_contains /tmp/opencook-migration-reindex.json '"ok": true'
   require_json_contains /tmp/opencook-migration-reindex.json '"command": "reindex"'
   require_json_contains /tmp/opencook-migration-reindex.json '"mode": "complete"'
+  require_json_contains /tmp/opencook-migration-reindex.json 'active maintenance mode confirmed'
   require_json_contains /tmp/opencook-migration-reindex.json '"upserted"'
   require_json_contains /tmp/opencook-migration-reindex.json '"deleted"'
 
@@ -454,7 +482,8 @@ run_migration_source_reindex() {
   require_source_imported_target
 
   echo "==> migration source complete reindex from imported target"
-  if ! admin_restore_target reindex --all-orgs --complete --with-timing --json >"$source_reindex_result"; then
+  if ! run_restore_json_under_maintenance reindex "functional source imported target reindex" "$source_reindex_result" \
+    admin_restore_target reindex --all-orgs --complete --with-timing --json; then
     echo "migration source reindex command failed; output:" >&2
     print_file_if_exists "$source_reindex_result"
     return 1
@@ -462,6 +491,7 @@ run_migration_source_reindex() {
   require_json_contains "$source_reindex_result" '"ok": true'
   require_json_contains "$source_reindex_result" '"command": "reindex"'
   require_json_contains "$source_reindex_result" '"mode": "complete"'
+  require_json_contains "$source_reindex_result" 'active maintenance mode confirmed'
   require_json_contains "$source_reindex_result" '"upserted"'
 
   echo "==> migration source search consistency check"
