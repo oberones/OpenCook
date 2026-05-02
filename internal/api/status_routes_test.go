@@ -16,6 +16,7 @@ import (
 	"github.com/oberones/OpenCook/internal/bootstrap"
 	"github.com/oberones/OpenCook/internal/compat"
 	"github.com/oberones/OpenCook/internal/config"
+	"github.com/oberones/OpenCook/internal/maintenance"
 	"github.com/oberones/OpenCook/internal/search"
 	"github.com/oberones/OpenCook/internal/store/pg"
 	"github.com/oberones/OpenCook/internal/version"
@@ -130,14 +131,54 @@ func TestStatusRouteStaysInformationalWhenReadinessFails(t *testing.T) {
 	}
 }
 
+func TestStatusRoutesReportMaintenanceWithoutChangingTopLevelShape(t *testing.T) {
+	store := maintenance.NewMemoryStore()
+	if _, err := store.Enable(context.Background(), maintenance.EnableInput{
+		Mode:   "repair",
+		Reason: strings.Repeat("safe online repair window ", 20),
+		Actor:  "operator",
+	}); err != nil {
+		t.Fatalf("Enable() error = %v", err)
+	}
+	router := newStatusRouteTestRouter(t, statusRouteTestDeps{
+		maintenanceStore: store,
+	})
+
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/_status", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("/_status status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	payload := decodeStatusRoutePayload(t, rec)
+	assertStatusTopLevelKeys(t, payload)
+
+	dependencies := statusRouteMap(t, payload, "dependencies")
+	maintenanceStatus := statusRouteMap(t, dependencies, "maintenance")
+	if maintenanceStatus["backend"] != "memory" || maintenanceStatus["shared"] != false {
+		t.Fatalf("maintenance dependency = %v, want process-local memory backend", maintenanceStatus)
+	}
+	if maintenanceStatus["status"] != "enabled" || maintenanceStatus["active"] != true {
+		t.Fatalf("maintenance dependency = %v, want enabled active state", maintenanceStatus)
+	}
+	state := statusRouteMap(t, maintenanceStatus, "state")
+	if state["mode"] != "repair" || state["reason_truncated"] != true {
+		t.Fatalf("maintenance state = %v, want safe truncated repair state", state)
+	}
+	readiness := statusRouteMap(t, payload, "readiness")
+	if readiness["ready"] != true {
+		t.Fatalf("readiness = %v, want active maintenance to preserve read readiness", readiness)
+	}
+}
+
 type statusRouteTestDeps struct {
-	cfg            config.Config
-	bootstrapState *bootstrap.Service
-	omitBootstrap  bool
-	logger         *log.Logger
-	postgres       *pg.Store
-	searchIndex    search.Index
-	blobStore      blob.Store
+	cfg              config.Config
+	bootstrapState   *bootstrap.Service
+	omitBootstrap    bool
+	logger           *log.Logger
+	postgres         *pg.Store
+	searchIndex      search.Index
+	blobStore        blob.Store
+	maintenanceStore maintenance.Store
 }
 
 func newStatusRouteTestRouter(t *testing.T, deps statusRouteTestDeps) http.Handler {
@@ -190,6 +231,7 @@ func newStatusRouteTestRouter(t *testing.T, deps statusRouteTestDeps) http.Handl
 		BlobUploadSecret: []byte("test-blob-upload-secret"),
 		Search:           searchIndex,
 		Postgres:         postgresStore,
+		Maintenance:      deps.maintenanceStore,
 		CookbookBackend:  "memory-bootstrap",
 	})
 }
@@ -244,4 +286,29 @@ func statusRouteMap(t *testing.T, parent map[string]any, key string) map[string]
 		t.Fatalf("%s = %T, want map[string]any (%v)", key, parent[key], parent)
 	}
 	return value
+}
+
+// assertStatusTopLevelKeys pins the stable status envelope while allowing
+// additive details below existing maps such as dependencies.
+func assertStatusTopLevelKeys(t *testing.T, payload map[string]any) {
+	t.Helper()
+	want := map[string]bool{
+		"mode":          true,
+		"service":       true,
+		"environment":   true,
+		"phase":         true,
+		"version":       true,
+		"config":        true,
+		"compatibility": true,
+		"readiness":     true,
+		"dependencies":  true,
+	}
+	if len(payload) != len(want) {
+		t.Fatalf("status top-level keys = %v, want stable status envelope", payload)
+	}
+	for key := range want {
+		if _, ok := payload[key]; !ok {
+			t.Fatalf("status payload missing top-level key %q: %v", key, payload)
+		}
+	}
 }

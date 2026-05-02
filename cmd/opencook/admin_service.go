@@ -12,6 +12,7 @@ import (
 	"github.com/oberones/OpenCook/internal/blob"
 	"github.com/oberones/OpenCook/internal/bootstrap"
 	"github.com/oberones/OpenCook/internal/config"
+	"github.com/oberones/OpenCook/internal/maintenance"
 )
 
 type adminServiceOutput struct {
@@ -35,6 +36,7 @@ type adminServiceSummary struct {
 	Persistence         string `json:"persistence"`
 	Search              string `json:"search"`
 	Blob                string `json:"blob"`
+	Maintenance         string `json:"maintenance"`
 }
 
 // runAdminService dispatches service-oriented diagnostics that describe the
@@ -151,6 +153,7 @@ func (c *command) buildAdminServiceDoctorOutput(ctx context.Context, offline boo
 
 	acc := adminConfigCheckAccumulator{checks: out.Checks, warnings: out.Warnings, errors: out.Errors}
 	acc.add(c.adminServicePostgresStateCheck(ctx, cfg, offline))
+	acc.add(c.adminServiceMaintenanceStateCheck(ctx, cfg))
 	acc.add(c.adminServiceOpenSearchPingCheck(ctx, cfg))
 	acc.add(c.adminServiceBlobInventoryCheck(ctx, cfg))
 	out.Checks = acc.checks
@@ -192,6 +195,10 @@ func (c *command) adminServiceSummary(cfg config.Config) adminServiceSummary {
 	if store, err := c.newBlobStore(cfg); err == nil && store != nil {
 		blobMode = store.Status().Backend
 	}
+	maintenanceMode := "memory-process-local"
+	if strings.TrimSpace(cfg.PostgresDSN) != "" {
+		maintenanceMode = "postgres-shared-configured"
+	}
 
 	return adminServiceSummary{
 		ServiceName:         cfg.ServiceName,
@@ -201,6 +208,7 @@ func (c *command) adminServiceSummary(cfg config.Config) adminServiceSummary {
 		Persistence:         persistence,
 		Search:              searchMode,
 		Blob:                blobMode,
+		Maintenance:         maintenanceMode,
 	}
 }
 
@@ -250,6 +258,68 @@ func (c *command) adminServicePostgresStateCheck(ctx context.Context, cfg config
 		Configured: true,
 		Details:    adminServicePostgresStateDetails(bootstrapState, coreState),
 	}
+}
+
+// adminServiceMaintenanceStateCheck reads the maintenance gate through the same
+// store opener used by `admin maintenance`, reporting only bounded state.
+func (c *command) adminServiceMaintenanceStateCheck(ctx context.Context, cfg config.Config) adminConfigCheck {
+	store, backend, closeStore, err := c.openAdminMaintenanceStore(ctx, cfg.PostgresDSN)
+	if err != nil {
+		return adminConfigCheck{
+			Name:       "maintenance_state",
+			Status:     "error",
+			Message:    "maintenance state could not be opened",
+			Configured: backend.Configured,
+			Details:    adminServiceMaintenanceDetails(backend, maintenance.CheckResult{}),
+		}
+	}
+	defer closeAdminMaintenanceStore(closeStore)
+
+	check, err := store.Check(ctx)
+	if err != nil {
+		return adminConfigCheck{
+			Name:       "maintenance_state",
+			Status:     "error",
+			Message:    "maintenance state could not be checked",
+			Configured: backend.Configured,
+			Details:    adminServiceMaintenanceDetails(backend, maintenance.CheckResult{}),
+		}
+	}
+
+	message := "maintenance mode is disabled"
+	status := "ok"
+	if check.Active {
+		message = "maintenance mode is active; mutating Chef-facing writes are blocked"
+	} else if check.State.Enabled && check.Expired {
+		message = "maintenance window is expired and no longer blocks writes"
+		status = "warning"
+	}
+	return adminConfigCheck{
+		Name:       "maintenance_state",
+		Status:     status,
+		Message:    message,
+		Configured: backend.Configured,
+		Details:    adminServiceMaintenanceDetails(backend, check),
+	}
+}
+
+// adminServiceMaintenanceDetails returns safe aggregate maintenance metadata for
+// service doctor without including free-form reason text or actor identities.
+func adminServiceMaintenanceDetails(backend adminMaintenanceBackend, check maintenance.CheckResult) map[string]string {
+	details := map[string]string{
+		"backend":    backend.Name,
+		"configured": strconv.FormatBool(backend.Configured),
+		"shared":     strconv.FormatBool(backend.Shared),
+		"active":     strconv.FormatBool(check.Active),
+		"expired":    strconv.FormatBool(check.Expired),
+	}
+	if check.State.Mode != "" {
+		details["mode"] = check.State.SafeStatus().Mode
+	}
+	if check.State.ExpiresAt != nil {
+		details["expires_at"] = check.State.ExpiresAt.UTC().Format(time.RFC3339Nano)
+	}
+	return details
 }
 
 // adminServiceOpenSearchPingCheck performs only the provider root ping; it does

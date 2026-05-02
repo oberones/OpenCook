@@ -65,11 +65,6 @@ func (c *command) runAdminSearchConsistency(ctx context.Context, args []string, 
 		return c.adminUsageError("admin search repair requires --dry-run or --yes\n\n")
 	}
 
-	_, state, target, code, ok := c.openAdminSearchConsistency(ctx, *postgresDSN, *openSearchURL)
-	if !ok {
-		return code
-	}
-
 	plan := search.ConsistencyPlan{
 		AllOrganizations: *allOrgs || strings.TrimSpace(*orgName) == "",
 		Organization:     *orgName,
@@ -77,8 +72,35 @@ func (c *command) runAdminSearchConsistency(ctx context.Context, args []string, 
 		Repair:           repair,
 		DryRun:           *dryRun,
 	}
+	cfg, resolvedPostgresDSN, resolvedOpenSearchURL, code, ok := c.loadAdminSearchConsistencyConfig(*postgresDSN, *openSearchURL)
+	if !ok {
+		return code
+	}
+
+	var maintenanceWarnings []string
+	if repair && !*dryRun {
+		var err error
+		maintenanceWarnings, err = c.requireAdminWorkflowMaintenance(ctx, resolvedPostgresDSN, "admin search repair")
+		if err != nil {
+			result := adminSearchResultFromPlan(plan)
+			result.Counts.Failed = 1
+			output := adminSearchOutput(result, err, nil, *withTiming)
+			if writeErr := writePrettyJSON(c.stdout, output); writeErr != nil {
+				fmt.Fprintf(c.stderr, "write search output: %v\n", writeErr)
+				return exitDependencyUnavailable
+			}
+			fmt.Fprintf(c.stderr, "search consistency failed: %s\n", adminReindexFailureMessage(err))
+			return adminReindexExitCode(err, search.ReindexResult{})
+		}
+	}
+
+	_, state, target, code, ok := c.openAdminSearchConsistencyWithConfig(ctx, cfg, resolvedPostgresDSN, resolvedOpenSearchURL)
+	if !ok {
+		return code
+	}
+
 	result, err := search.NewConsistencyService(state, target).Run(ctx, plan)
-	output := adminSearchOutput(result, err, adminSearchWarnings(plan), *withTiming)
+	output := adminSearchOutput(result, err, appendUniqueAdminWarnings(adminSearchWarnings(plan), maintenanceWarnings...), *withTiming)
 	if writeErr := writePrettyJSON(c.stdout, output); writeErr != nil {
 		fmt.Fprintf(c.stderr, "write search output: %v\n", writeErr)
 		return exitDependencyUnavailable
@@ -93,11 +115,13 @@ func (c *command) runAdminSearchConsistency(ctx context.Context, args []string, 
 	return exitOK
 }
 
-func (c *command) openAdminSearchConsistency(ctx context.Context, postgresDSN, openSearchURL string) (config.Config, *bootstrap.Service, search.ConsistencyTarget, int, bool) {
+// loadAdminSearchConsistencyConfig resolves command flags against environment
+// config once so maintenance checks and OpenSearch work use the same targets.
+func (c *command) loadAdminSearchConsistencyConfig(postgresDSN, openSearchURL string) (config.Config, string, string, int, bool) {
 	cfg, err := c.loadOffline()
 	if err != nil {
 		fmt.Fprintf(c.stderr, "load search config: %v\n", err)
-		return config.Config{}, nil, nil, exitDependencyUnavailable, false
+		return config.Config{}, "", "", exitDependencyUnavailable, false
 	}
 	if strings.TrimSpace(postgresDSN) == "" {
 		postgresDSN = cfg.PostgresDSN
@@ -107,13 +131,26 @@ func (c *command) openAdminSearchConsistency(ctx context.Context, postgresDSN, o
 	}
 	if strings.TrimSpace(postgresDSN) == "" {
 		fmt.Fprintln(c.stderr, "search consistency requires PostgreSQL configuration via --postgres-dsn or OPENCOOK_POSTGRES_DSN")
-		return cfg, nil, nil, exitDependencyUnavailable, false
+		return cfg, "", "", exitDependencyUnavailable, false
 	}
 	if strings.TrimSpace(openSearchURL) == "" {
 		fmt.Fprintln(c.stderr, "search consistency requires OpenSearch configuration via --opensearch-url or OPENCOOK_OPENSEARCH_URL")
-		return cfg, nil, nil, exitDependencyUnavailable, false
+		return cfg, postgresDSN, "", exitDependencyUnavailable, false
 	}
+	return cfg, postgresDSN, openSearchURL, exitOK, true
+}
 
+func (c *command) openAdminSearchConsistency(ctx context.Context, postgresDSN, openSearchURL string) (config.Config, *bootstrap.Service, search.ConsistencyTarget, int, bool) {
+	cfg, postgresDSN, openSearchURL, code, ok := c.loadAdminSearchConsistencyConfig(postgresDSN, openSearchURL)
+	if !ok {
+		return cfg, nil, nil, code, false
+	}
+	return c.openAdminSearchConsistencyWithConfig(ctx, cfg, postgresDSN, openSearchURL)
+}
+
+// openAdminSearchConsistencyWithConfig opens the offline PostgreSQL snapshot
+// and OpenSearch target after caller-level safety gates have already passed.
+func (c *command) openAdminSearchConsistencyWithConfig(ctx context.Context, cfg config.Config, postgresDSN, openSearchURL string) (config.Config, *bootstrap.Service, search.ConsistencyTarget, int, bool) {
 	store, closeStore, err := c.newOfflineStore(ctx, postgresDSN)
 	if err != nil {
 		fmt.Fprintf(c.stderr, "open search consistency store: %v\n", err)
@@ -192,11 +229,23 @@ func adminSearchOutput(result search.ConsistencyResult, err error, warnings []st
 	return out
 }
 
+// adminSearchResultFromPlan builds an output envelope for safety-gate failures
+// detected before PostgreSQL state or OpenSearch consistency checks run.
+func adminSearchResultFromPlan(plan search.ConsistencyPlan) search.ConsistencyResult {
+	return search.ConsistencyResult{
+		AllOrganizations: plan.AllOrganizations,
+		Organization:     plan.Organization,
+		Index:            plan.Index,
+		Repair:           plan.Repair,
+		DryRun:           plan.DryRun,
+	}
+}
+
 func adminSearchWarnings(plan search.ConsistencyPlan) []string {
 	if !plan.Repair || plan.DryRun {
 		return nil
 	}
-	return []string{"search repair can race with concurrent Chef object writes until a future maintenance gate exists"}
+	return []string{"search repair mutates derived OpenSearch documents; keep maintenance mode active until repair and follow-up search checks finish"}
 }
 
 func adminSearchErrorMessages(result search.ConsistencyResult, err error) []string {

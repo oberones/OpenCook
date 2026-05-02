@@ -401,6 +401,51 @@ func TestAdminOfflineMembershipCommandsMutateBootstrapCoreStore(t *testing.T) {
 	}
 }
 
+func TestAdminACLRepairOnlineCallsMaintenanceRepairRoute(t *testing.T) {
+	cmd, _, stderr := newTestCommand(t)
+	fake := &fakeAdminClient{response: map[string]any{"mode": "online", "changed": true}}
+	cmd.loadAdminConfig = func() admin.Config {
+		return admin.Config{ServerURL: "http://opencook.test", RequestorName: "pivotal", PrivateKeyPath: "redacted.pem"}
+	}
+	cmd.newAdmin = func(admin.Config) (adminJSONClient, error) {
+		return fake, nil
+	}
+
+	code := cmd.Run(context.Background(), []string{"admin", "acls", "repair-defaults", "--online", "--yes", "--org", "ponyville"})
+	if code != exitOK {
+		t.Fatalf("Run(acls repair online) exit = %d, want %d; stderr = %s", code, exitOK, stderr.String())
+	}
+	if len(fake.calls) != 1 {
+		t.Fatalf("admin calls = %d, want 1", len(fake.calls))
+	}
+	call := fake.calls[0]
+	if call.method != http.MethodPost || call.path != maintenanceRepairDefaultACLsAdminPath {
+		t.Fatalf("call = %s %s, want POST %s", call.method, call.path, maintenanceRepairDefaultACLsAdminPath)
+	}
+	if !payloadEqual(call.payload, map[string]any{"yes": true, "org": "ponyville"}) {
+		t.Fatalf("payload = %#v, want yes/org confirmation", call.payload)
+	}
+}
+
+func TestAdminACLRepairOnlineRequiresConfirmationBeforeRequest(t *testing.T) {
+	cmd, _, stderr := newTestCommand(t)
+	fake := &fakeAdminClient{}
+	cmd.loadAdminConfig = func() admin.Config {
+		return admin.Config{ServerURL: "http://opencook.test", RequestorName: "pivotal", PrivateKeyPath: "redacted.pem"}
+	}
+	cmd.newAdmin = func(admin.Config) (adminJSONClient, error) {
+		return fake, nil
+	}
+
+	code := cmd.Run(context.Background(), []string{"admin", "acls", "repair-defaults", "--online"})
+	if code != exitUsage {
+		t.Fatalf("Run(acls repair online without yes) exit = %d, want %d; stderr = %s", code, exitUsage, stderr.String())
+	}
+	if len(fake.calls) != 0 {
+		t.Fatalf("admin calls = %d, want no request without --yes", len(fake.calls))
+	}
+}
+
 func TestAdminOfflineMembershipFailuresDoNotSave(t *testing.T) {
 	cmd, _, stderr := newTestCommand(t)
 	initial := adminOfflineTestState()

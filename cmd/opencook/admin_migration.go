@@ -11460,6 +11460,7 @@ func applyAdminMigrationConfigOverrides(cfg *config.Config, opts *adminMigration
 // writeAdminMigrationResult finalizes timing, normalizes empty collections, and
 // writes the shared migration JSON envelope for implemented commands.
 func (c *command) writeAdminMigrationResult(out adminMigrationCLIOutput, withTiming bool, start time.Time, exitCode int) int {
+	out.Warnings = appendUniqueAdminWarnings(out.Warnings, adminMigrationMaintenancePolicyWarnings(out)...)
 	adminMigrationNormalizeOutput(&out)
 	if withTiming {
 		duration := time.Since(start)
@@ -11472,6 +11473,37 @@ func (c *command) writeAdminMigrationResult(out adminMigrationCLIOutput, withTim
 		return exitDependencyUnavailable
 	}
 	return exitCode
+}
+
+// adminMigrationMaintenancePolicyWarnings documents why migration workflows do
+// not acquire the live maintenance gate: destructive target writes are still
+// offline-only, while cutover rehearsal remains read-only but source-freeze
+// sensitive.
+func adminMigrationMaintenancePolicyWarnings(out adminMigrationCLIOutput) []string {
+	if out.DryRun {
+		return nil
+	}
+	switch out.Command {
+	case "migration_backup_create":
+		if out.Confirmed {
+			return []string{"migration backup create remains offline-gated; keep OpenCook servers stopped or externally freeze writes while the backup is taken"}
+		}
+	case "migration_restore_apply":
+		if out.Confirmed {
+			return []string{"migration restore apply remains offline-gated; start OpenCook only after restore and follow-up reindex checks complete"}
+		}
+	case "migration_source_import_apply":
+		if out.Confirmed {
+			return []string{"migration source import apply remains offline-gated; run it only against a stopped OpenCook target or an externally frozen target"}
+		}
+	case "migration_source_sync_apply":
+		if out.Confirmed {
+			return []string{"migration source sync apply remains offline-gated; keep source Chef and OpenCook target writes frozen until sync, reindex, and smoke checks finish"}
+		}
+	case "migration_cutover_rehearse":
+		return []string{"cutover rehearsal is read-only; keep source Chef writes frozen through final sync, shadow reads, reindex checks, and post-cutover smoke checks"}
+	}
+	return nil
 }
 
 // writeAdminMigrationScaffold emits the shared migration JSON envelope now so

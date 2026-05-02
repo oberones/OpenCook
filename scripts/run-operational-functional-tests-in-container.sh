@@ -63,6 +63,31 @@ require_json_contains() {
   fi
 }
 
+# run_admin_json_under_maintenance opens the shared PostgreSQL maintenance gate
+# for one online mutation and always attempts to close it before returning.
+run_admin_json_under_maintenance() {
+  local mode="$1"
+  local reason="$2"
+  local output="$3"
+  shift 3
+
+  admin maintenance enable --mode "$mode" --reason "$reason" --actor functional-tests --yes --json >/tmp/opencook-admin-maintenance-enable.json
+  require_json_contains /tmp/opencook-admin-maintenance-enable.json '"active": true'
+  require_json_contains /tmp/opencook-admin-maintenance-enable.json '"shared": true'
+
+  set +e
+  "$@" >"$output"
+  local code="$?"
+  set -e
+
+  local disable_code=0
+  admin maintenance disable --actor functional-tests --yes --json >/tmp/opencook-admin-maintenance-disable.json || disable_code="$?"
+  if [[ "$code" != "0" ]]; then
+    return "$code"
+  fi
+  return "$disable_code"
+}
+
 # require_not_contains guards redaction-sensitive command output and collected
 # artifacts so functional coverage catches accidental secret leakage.
 require_not_contains() {
@@ -318,11 +343,11 @@ JSON
 require_unsupported_search_admin_surfaces() {
   local unsupported_index
   for unsupported_index in cookbooks cookbook_artifacts policy policy_groups sandbox checksums; do
-    expect_exit 2 admin reindex --org "$org" --index "$unsupported_index" --no-drop --json >/tmp/opencook-admin-reindex-unsupported-"$unsupported_index".json
+    expect_exit 2 admin reindex --org "$org" --index "$unsupported_index" --dry-run --json >/tmp/opencook-admin-reindex-unsupported-"$unsupported_index".json
     require_json_contains /tmp/opencook-admin-reindex-unsupported-"$unsupported_index".json 'search index not found'
     expect_exit 2 admin search check --org "$org" --index "$unsupported_index" --json >/tmp/opencook-admin-search-check-unsupported-"$unsupported_index".json
     require_json_contains /tmp/opencook-admin-search-check-unsupported-"$unsupported_index".json 'search index not found'
-    expect_exit 2 admin search repair --org "$org" --index "$unsupported_index" --yes --json >/tmp/opencook-admin-search-repair-unsupported-"$unsupported_index".json
+    expect_exit 2 admin search repair --org "$org" --index "$unsupported_index" --dry-run --json >/tmp/opencook-admin-search-repair-unsupported-"$unsupported_index".json
     require_json_contains /tmp/opencook-admin-search-repair-unsupported-"$unsupported_index".json 'search index not found'
   done
 }
@@ -368,13 +393,17 @@ run_operational_phase() {
   fi
 
   echo "==> operational complete org reindex"
-  admin reindex --org "$org" --complete --with-timing --json >/tmp/opencook-admin-reindex.json
+  run_admin_json_under_maintenance repair "functional complete org reindex" /tmp/opencook-admin-reindex.json \
+    admin reindex --org "$org" --complete --with-timing --json
   require_json_contains /tmp/opencook-admin-reindex.json '"mode": "complete"'
+  require_json_contains /tmp/opencook-admin-reindex.json 'active maintenance mode confirmed'
   if [[ "$encrypted_search_checks" == "1" ]]; then
     admin search check --org "$org" --index "$encrypted_bag" --json >/tmp/opencook-admin-encrypted-search-clean.json
     require_json_contains /tmp/opencook-admin-encrypted-search-clean.json '"clean": 1'
-    admin reindex --org "$org" --index "$encrypted_bag" --no-drop --json >/tmp/opencook-admin-encrypted-reindex.json
+    run_admin_json_under_maintenance repair "functional encrypted data bag reindex" /tmp/opencook-admin-encrypted-reindex.json \
+      admin reindex --org "$org" --index "$encrypted_bag" --no-drop --json
     require_json_contains /tmp/opencook-admin-encrypted-reindex.json '"upserted": 1'
+    require_json_contains /tmp/opencook-admin-encrypted-reindex.json 'active maintenance mode confirmed'
   fi
 
   echo "==> operational unsupported search admin surfaces"
@@ -385,8 +414,10 @@ run_operational_phase() {
   require_json_contains /tmp/opencook-admin-search-check-unsupported-drift.json "$org/cookbooks"
   expect_exit 3 admin search repair --org "$org" --dry-run --json >/tmp/opencook-admin-search-repair-unsupported-dry-run.json
   require_json_contains /tmp/opencook-admin-search-repair-unsupported-dry-run.json '"skipped": 1'
-  admin search repair --org "$org" --yes --json >/tmp/opencook-admin-search-repair-unsupported.json
+  run_admin_json_under_maintenance repair "functional unsupported search cleanup" /tmp/opencook-admin-search-repair-unsupported.json \
+    admin search repair --org "$org" --yes --json
   require_json_contains /tmp/opencook-admin-search-repair-unsupported.json '"deleted": 1'
+  require_json_contains /tmp/opencook-admin-search-repair-unsupported.json 'active maintenance mode confirmed'
   admin search check --org "$org" --json >/tmp/opencook-admin-search-check-after-unsupported-cleanup.json
   require_json_contains /tmp/opencook-admin-search-check-after-unsupported-cleanup.json '"clean": 1'
 
@@ -398,8 +429,10 @@ run_operational_phase() {
   require_json_contains /tmp/opencook-admin-search-repair-dry-run.json '"skipped": 1'
 
   echo "==> operational search repair"
-  admin search repair --org "$org" --index node --yes --with-timing --json >/tmp/opencook-admin-search-repair.json
+  run_admin_json_under_maintenance repair "functional node search repair" /tmp/opencook-admin-search-repair.json \
+    admin search repair --org "$org" --index node --yes --with-timing --json
   require_json_contains /tmp/opencook-admin-search-repair.json '"deleted": 1'
+  require_json_contains /tmp/opencook-admin-search-repair.json 'active maintenance mode confirmed'
   admin search check --org "$org" --index node --json >/tmp/opencook-admin-search-check-clean.json
   require_json_contains /tmp/opencook-admin-search-check-clean.json '"clean": 1'
 
@@ -410,8 +443,10 @@ run_operational_phase() {
     require_json_contains /tmp/opencook-admin-encrypted-search-check-drift.json "$encrypted_stale_doc_id"
     expect_exit 3 admin search repair --org "$org" --index "$encrypted_bag" --dry-run --json >/tmp/opencook-admin-encrypted-search-repair-dry-run.json
     require_json_contains /tmp/opencook-admin-encrypted-search-repair-dry-run.json '"skipped": 1'
-    admin search repair --org "$org" --index "$encrypted_bag" --yes --with-timing --json >/tmp/opencook-admin-encrypted-search-repair.json
+    run_admin_json_under_maintenance repair "functional encrypted data bag search repair" /tmp/opencook-admin-encrypted-search-repair.json \
+      admin search repair --org "$org" --index "$encrypted_bag" --yes --with-timing --json
     require_json_contains /tmp/opencook-admin-encrypted-search-repair.json '"deleted": 1'
+    require_json_contains /tmp/opencook-admin-encrypted-search-repair.json 'active maintenance mode confirmed'
     admin search check --org "$org" --index "$encrypted_bag" --json >/tmp/opencook-admin-encrypted-search-check-clean-after-repair.json
     require_json_contains /tmp/opencook-admin-encrypted-search-check-clean-after-repair.json '"clean": 1'
   fi

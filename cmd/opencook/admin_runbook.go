@@ -248,11 +248,13 @@ func adminRunbookCatalog() []adminRunbook {
 			Commands: []adminRunbookCommand{
 				{Command: "opencook admin search check --all-orgs --json", Purpose: "compare indexed documents with PostgreSQL-backed source state"},
 				{Command: "opencook admin search repair --all-orgs --dry-run --json", Purpose: "preview OpenSearch repairs without mutations"},
+				{Command: "opencook admin maintenance enable --mode repair --reason TEXT --yes --json", Purpose: "activate the shared write gate before online OpenSearch mutations"},
 				{Command: "opencook admin search repair --all-orgs --yes --json", Purpose: "repair mismatched or missing OpenSearch documents"},
 				{Command: "opencook admin reindex --all-orgs --complete --json", Purpose: "drop and rebuild searchable documents from PostgreSQL-backed state"},
+				{Command: "opencook admin maintenance disable --yes --json", Purpose: "release the write gate after repair/reindex and follow-up checks pass"},
 			},
 			Notes: []string{
-				"complete reindex can race with concurrent writes; prefer a maintenance window until a future maintenance gate exists",
+				"non-dry-run search repair and reindex commands require active maintenance mode before they mutate OpenSearch",
 				"unsupported search indexes remain intentionally rejected rather than silently fabricated",
 			},
 		},

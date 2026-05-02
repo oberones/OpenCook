@@ -11,6 +11,7 @@ import (
 	"github.com/oberones/OpenCook/internal/app"
 	"github.com/oberones/OpenCook/internal/blob"
 	"github.com/oberones/OpenCook/internal/config"
+	"github.com/oberones/OpenCook/internal/maintenance"
 	"github.com/oberones/OpenCook/internal/search"
 	"github.com/oberones/OpenCook/internal/version"
 )
@@ -24,19 +25,20 @@ const (
 )
 
 type command struct {
-	stdin            io.Reader
-	stdout           io.Writer
-	stderr           io.Writer
-	build            version.Info
-	load             func() (config.Config, error)
-	loadAdminConfig  func() admin.Config
-	loadOffline      func() (config.Config, error)
-	newAdmin         func(admin.Config) (adminJSONClient, error)
-	newOfflineStore  func(context.Context, string) (adminOfflineStore, func() error, error)
-	newBlobStore     func(config.Config) (blob.Store, error)
-	newReindexTarget func(string) (search.ReindexTarget, error)
-	newSearchTarget  func(string) (search.ConsistencyTarget, error)
-	runServer        func(context.Context, config.Config, *log.Logger, version.Info) error
+	stdin               io.Reader
+	stdout              io.Writer
+	stderr              io.Writer
+	build               version.Info
+	load                func() (config.Config, error)
+	loadAdminConfig     func() admin.Config
+	loadOffline         func() (config.Config, error)
+	newAdmin            func(admin.Config) (adminJSONClient, error)
+	newOfflineStore     func(context.Context, string) (adminOfflineStore, func() error, error)
+	newMaintenanceStore func(context.Context, string) (maintenance.Store, adminMaintenanceBackend, func() error, error)
+	newBlobStore        func(config.Config) (blob.Store, error)
+	newReindexTarget    func(string) (search.ReindexTarget, error)
+	newSearchTarget     func(string) (search.ConsistencyTarget, error)
+	runServer           func(context.Context, config.Config, *log.Logger, version.Info) error
 }
 
 func newCommand(stdout, stderr io.Writer) *command {
@@ -51,8 +53,9 @@ func newCommand(stdout, stderr io.Writer) *command {
 		newAdmin: func(cfg admin.Config) (adminJSONClient, error) {
 			return admin.NewClient(cfg)
 		},
-		newOfflineStore: newPostgresAdminOfflineStore,
-		newBlobStore:    blob.NewStore,
+		newOfflineStore:     newPostgresAdminOfflineStore,
+		newMaintenanceStore: newAdminMaintenanceStore,
+		newBlobStore:        blob.NewStore,
 		newReindexTarget: func(raw string) (search.ReindexTarget, error) {
 			return search.NewOpenSearchClient(raw)
 		},

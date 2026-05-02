@@ -224,13 +224,13 @@ func TestNewReturnsOpenSearchActivationFailure(t *testing.T) {
 
 func TestStartupSummaryReportsConnectedIntegrations(t *testing.T) {
 	summary := formatStartupSummary(
-		pg.Status{Message: "PostgreSQL-backed cookbook, bootstrap core, and core object metadata persistence is active"},
+		pg.Status{Message: "PostgreSQL-backed cookbook, bootstrap core, core object, and maintenance state persistence is active"},
 		true,
 		search.Status{Message: "OpenSearch-backed search provider active (opensearch 3.5.0; search-after pagination, delete-by-query, object total hits)"},
 		true,
 	)
 
-	if !strings.Contains(summary, "PostgreSQL: connected - PostgreSQL-backed cookbook, bootstrap core, and core object metadata persistence is active") {
+	if !strings.Contains(summary, "PostgreSQL: connected - PostgreSQL-backed cookbook, bootstrap core, core object, and maintenance state persistence is active") {
 		t.Fatalf("summary = %q, want connected postgres status", summary)
 	}
 	if !strings.Contains(summary, "OpenSearch: connected - OpenSearch-backed search provider active") {
@@ -243,13 +243,13 @@ func TestStartupSummaryReportsConnectedIntegrations(t *testing.T) {
 
 func TestStartupSummaryWarnsWhenPersistenceIsInMemory(t *testing.T) {
 	summary := formatStartupSummary(
-		pg.Status{Message: "PostgreSQL is not configured; cookbook, bootstrap core, and core object metadata use in-memory persistence and will be lost on restart"},
+		pg.Status{Message: "PostgreSQL is not configured; cookbook, bootstrap core, and core object metadata use in-memory persistence and will be lost on restart; maintenance state is process-local"},
 		false,
 		search.Status{Message: "OpenSearch is not configured; search routes use the in-memory compatibility index"},
 		false,
 	)
 
-	if !strings.Contains(summary, "PostgreSQL: not connected - PostgreSQL is not configured; cookbook, bootstrap core, and core object metadata use in-memory persistence and will be lost on restart") {
+	if !strings.Contains(summary, "PostgreSQL: not connected - PostgreSQL is not configured; cookbook, bootstrap core, and core object metadata use in-memory persistence and will be lost on restart; maintenance state is process-local") {
 		t.Fatalf("summary = %q, want disconnected postgres status", summary)
 	}
 	if !strings.Contains(summary, "OpenSearch: not connected - OpenSearch is not configured; search routes use the in-memory compatibility index") {
@@ -262,7 +262,7 @@ func TestStartupSummaryWarnsWhenPersistenceIsInMemory(t *testing.T) {
 
 func TestStartupSummaryDoesNotWarnWhenOnlyOpenSearchIsUnavailable(t *testing.T) {
 	summary := formatStartupSummary(
-		pg.Status{Message: "PostgreSQL-backed cookbook, bootstrap core, and core object metadata persistence is active"},
+		pg.Status{Message: "PostgreSQL-backed cookbook, bootstrap core, core object, and maintenance state persistence is active"},
 		true,
 		search.Status{Message: "OpenSearch is not configured; search routes use the in-memory compatibility index"},
 		false,
@@ -387,7 +387,7 @@ func TestNewStatusReportsActivePostgresAndFilesystemBlob(t *testing.T) {
 	if !ok {
 		t.Fatalf("dependencies.postgres = %T, want map[string]any (%v)", dependencies["postgres"], dependencies)
 	}
-	if postgresStatus["message"] != "PostgreSQL-backed cookbook, bootstrap core, and core object metadata persistence is active" {
+	if postgresStatus["message"] != "PostgreSQL-backed cookbook, bootstrap core, core object, and maintenance state persistence is active" {
 		t.Fatalf("dependencies.postgres.message = %v, want active status", postgresStatus["message"])
 	}
 

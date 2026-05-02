@@ -18,6 +18,7 @@ import (
 	"github.com/oberones/OpenCook/internal/bootstrap"
 	"github.com/oberones/OpenCook/internal/compat"
 	"github.com/oberones/OpenCook/internal/config"
+	"github.com/oberones/OpenCook/internal/maintenance"
 	"github.com/oberones/OpenCook/internal/search"
 	"github.com/oberones/OpenCook/internal/store/pg"
 	"github.com/oberones/OpenCook/internal/version"
@@ -36,6 +37,7 @@ type Dependencies struct {
 	BlobUploadSecret []byte
 	Search           search.Index
 	Postgres         *pg.Store
+	Maintenance      maintenance.Store
 	CookbookBackend  string
 }
 
@@ -63,6 +65,9 @@ func NewRouter(deps Dependencies) http.Handler {
 			deps.BlobUploadSecret = []byte("opencook-fallback-blob-upload-secret")
 		}
 	}
+	if deps.Maintenance == nil {
+		deps.Maintenance = maintenance.NewMemoryStore(maintenance.WithClock(deps.Now))
+	}
 
 	srv := &server{deps: deps, metrics: newMetricsRegistry(deps.Now)}
 	mux := http.NewServeMux()
@@ -76,6 +81,7 @@ func NewRouter(deps Dependencies) http.Handler {
 	mux.HandleFunc("/server_api_version/", srv.withServerAPIVersion(srv.handleServerAPIVersion))
 	mux.HandleFunc("/internal/contracts/routes", srv.handleRouteContract)
 	mux.HandleFunc("/internal/authn/capabilities", srv.handleAuthnCapabilities)
+	mux.HandleFunc("/internal/maintenance/repair/default-acls", srv.withAuthn("maintenance-repair-default-acls", srv.handleMaintenanceRepairDefaultACLs))
 	mux.HandleFunc("/_blob/checksums/{checksum}", srv.handleBlobChecksumUpload)
 	mux.HandleFunc("/_blob/checksums/{checksum}/", srv.handleBlobChecksumUpload)
 	mux.HandleFunc("/cookbooks", srv.withAuthn("cookbooks-root", srv.handleCookbooks))
@@ -187,7 +193,46 @@ func NewRouter(deps Dependencies) http.Handler {
 		}
 	}
 
-	return srv.withRequestLogging(srv.withMetrics(mux))
+	return srv.withRequestLogging(srv.withMetrics(srv.withMaintenanceGate(mux)))
+}
+
+// withMaintenanceGate blocks only the route/method pairs frozen in the
+// maintenance contract. It asks ServeMux for the matching concrete pattern and
+// then lets ServeMux serve the request normally so path variables remain intact.
+func (s *server) withMaintenanceGate(mux *http.ServeMux) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.maintenanceBlocksRequest(w, r, mux) {
+			return
+		}
+		mux.ServeHTTP(w, r)
+	})
+}
+
+// maintenanceBlocksRequest returns true after writing the Chef-compatible 503
+// response for an active maintenance write gate. Read-only routes and read-like
+// POST exceptions avoid touching the maintenance store entirely.
+func (s *server) maintenanceBlocksRequest(w http.ResponseWriter, r *http.Request, mux *http.ServeMux) bool {
+	_, pattern := mux.Handler(r)
+	contract, ok := maintenanceRouteContractByPattern()[pattern]
+	if !ok || !maintenanceRouteMethodListed(contract.BlockedMethods, r.Method) {
+		return false
+	}
+
+	check, err := s.deps.Maintenance.Check(r.Context())
+	if err != nil {
+		s.metrics.recordMaintenanceBlocked(r.Method, r.URL.Path, "check_error")
+		s.logMaintenanceBlocked(r, pattern, "check_error", maintenance.State{})
+		writeJSON(w, maintenanceBlockedHTTPStatus, maintenanceBlockedPayload())
+		return true
+	}
+	if !check.Active {
+		return false
+	}
+
+	s.metrics.recordMaintenanceBlocked(r.Method, r.URL.Path, "active")
+	s.logMaintenanceBlocked(r, pattern, "active", check.State)
+	writeJSON(w, maintenanceBlockedHTTPStatus, maintenanceBlockedPayload())
+	return true
 }
 
 func (s *server) handleRoot(w http.ResponseWriter, r *http.Request) {
@@ -755,9 +800,10 @@ func (s *server) statusPayloadWithReadiness(mode string, readiness readinessPayl
 			"authz": map[string]string{
 				"backend": authzBackend,
 			},
-			"postgres":   s.postgresStatus(),
-			"opensearch": s.searchStatus(),
-			"blob":       s.blobStatus(),
+			"postgres":    s.postgresStatus(),
+			"opensearch":  s.searchStatus(),
+			"blob":        s.blobStatus(),
+			"maintenance": s.maintenanceStatus(),
 		},
 	}
 }
@@ -767,10 +813,11 @@ func (s *server) statusPayloadWithReadiness(mode string, readiness readinessPayl
 // fallbacks. It avoids embedding provider endpoints or credentials.
 func (s *server) readinessPayload() readinessPayload {
 	checks := map[string]readinessCheck{
-		"bootstrap":  s.bootstrapReadiness(),
-		"postgres":   s.postgresReadiness(),
-		"opensearch": s.searchReadiness(),
-		"blob":       s.blobReadiness(),
+		"bootstrap":   s.bootstrapReadiness(),
+		"postgres":    s.postgresReadiness(),
+		"opensearch":  s.searchReadiness(),
+		"blob":        s.blobReadiness(),
+		"maintenance": s.maintenanceReadiness(),
 	}
 
 	ready := true
@@ -811,8 +858,8 @@ func (s *server) postgresReadiness() readinessCheck {
 	if !s.deps.Postgres.Configured() {
 		return readinessCheck{Ready: true, Message: "PostgreSQL is not configured; in-memory persistence fallback is active"}
 	}
-	if s.deps.Postgres.CookbookPersistenceActive() && s.deps.Postgres.BootstrapCorePersistenceActive() && s.deps.Postgres.CoreObjectPersistenceActive() {
-		return readinessCheck{Ready: true, Message: "PostgreSQL-backed cookbook, bootstrap core, and core object persistence is active"}
+	if s.deps.Postgres.CookbookPersistenceActive() && s.deps.Postgres.BootstrapCorePersistenceActive() && s.deps.Postgres.CoreObjectPersistenceActive() && s.deps.Postgres.MaintenancePersistenceActive() {
+		return readinessCheck{Ready: true, Message: "PostgreSQL-backed cookbook, bootstrap core, core object, and maintenance state persistence is active"}
 	}
 	return readinessCheck{Ready: false, Message: "PostgreSQL is configured but persistence activation is not active"}
 }
@@ -848,6 +895,18 @@ func (s *server) blobReadiness() readinessCheck {
 	return readinessCheck{Ready: true, Message: status.Message}
 }
 
+// maintenanceReadiness reports whether the write gate can be evaluated. Active
+// maintenance does not make the server unready because reads remain available.
+func (s *server) maintenanceReadiness() readinessCheck {
+	status := s.maintenanceStatus()
+	if status["status"] == "error" {
+		message, _ := status["message"].(string)
+		return readinessCheck{Ready: false, Message: message}
+	}
+	message, _ := status["message"].(string)
+	return readinessCheck{Ready: true, Message: message}
+}
+
 func (s *server) postgresStatus() pg.Status {
 	if s.deps.Postgres == nil {
 		return pg.Status{
@@ -879,4 +938,59 @@ func (s *server) blobStatus() blob.Status {
 		}
 	}
 	return s.deps.Blob.Status()
+}
+
+// maintenanceStatus builds an operator-safe dependency block for /_status,
+// /readyz, and metrics. It exposes bounded state only and never returns raw
+// provider errors, DSNs, signatures, or unbounded operator notes.
+func (s *server) maintenanceStatus() map[string]any {
+	backend, configured, shared, message := s.maintenanceBackend()
+	status := map[string]any{
+		"backend":    backend,
+		"configured": configured,
+		"shared":     shared,
+		"active":     false,
+		"expired":    false,
+		"message":    message,
+		"status":     "disabled",
+	}
+	if s.deps.Maintenance == nil {
+		status["status"] = "error"
+		status["message"] = "maintenance store dependency is not configured"
+		return status
+	}
+
+	check, err := s.deps.Maintenance.Check(context.Background())
+	if err != nil {
+		status["status"] = "error"
+		status["message"] = "maintenance state could not be checked; mutating writes fail closed"
+		return status
+	}
+	status["active"] = check.Active
+	status["expired"] = check.Expired
+	status["checked_at"] = check.CheckedAt
+	status["state"] = check.State.SafeStatus()
+	switch {
+	case check.Active:
+		status["status"] = "enabled"
+		status["message"] = message + "; mutating Chef-facing writes are currently blocked"
+	case check.State.Enabled && check.Expired:
+		status["status"] = "expired"
+		status["message"] = message + "; stored maintenance window has expired and no longer blocks writes"
+	default:
+		status["status"] = "disabled"
+	}
+	return status
+}
+
+// maintenanceBackend describes whether the write gate is shared through
+// PostgreSQL or process-local memory, without exposing configuration secrets.
+func (s *server) maintenanceBackend() (backend string, configured bool, shared bool, message string) {
+	if s.deps.Postgres != nil && s.deps.Postgres.MaintenancePersistenceActive() {
+		return "postgres", true, true, "PostgreSQL-backed maintenance state is shared across OpenCook processes"
+	}
+	if s.deps.Postgres != nil && s.deps.Postgres.Configured() {
+		return "postgres-configured", true, false, "PostgreSQL is configured but maintenance persistence is not active; writes fail closed if state cannot be checked"
+	}
+	return "memory", false, false, "process-local maintenance state is active for this OpenCook process only"
 }

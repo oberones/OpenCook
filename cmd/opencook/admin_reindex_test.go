@@ -17,6 +17,7 @@ import (
 	"github.com/oberones/OpenCook/internal/authz"
 	"github.com/oberones/OpenCook/internal/bootstrap"
 	"github.com/oberones/OpenCook/internal/config"
+	"github.com/oberones/OpenCook/internal/maintenance"
 	"github.com/oberones/OpenCook/internal/search"
 	"github.com/oberones/OpenCook/internal/testfixtures"
 )
@@ -112,6 +113,10 @@ func TestAdminReindexCommandScopesAndModes(t *testing.T) {
 			assertAdminReindexCount(t, out, "missing", tc.wantMissing)
 			if _, ok := out["duration_ms"]; ok != tc.wantTiming {
 				t.Fatalf("duration_ms present = %t, want %t in output %v", ok, tc.wantTiming, out)
+			}
+			requireAdminOutputWarningContains(t, out, "active maintenance mode confirmed")
+			if len(tc.wantDeleteQueries) > 0 || len(tc.wantDeletedIDs) > 0 {
+				requireAdminOutputWarningContains(t, out, "drop-and-reindex mutates derived OpenSearch documents")
 			}
 			if strings.Contains(stderr.String(), "raw provider") {
 				t.Fatalf("stderr leaked provider internals: %q", stderr.String())
@@ -216,6 +221,63 @@ func TestAdminReindexDryRunDoesNotRequireOpenSearchOrMutateProvider(t *testing.T
 	out := decodeAdminReindexOutput(t, stdout.String())
 	assertAdminReindexCount(t, out, "scanned", 1)
 	assertAdminReindexCount(t, out, "skipped", 2)
+}
+
+func TestAdminReindexActiveRunRequiresMaintenanceMode(t *testing.T) {
+	cmd, stdout, stderr := newTestCommand(t)
+	maintenanceStore := maintenance.NewMemoryStore()
+	cmd.loadOffline = func() (config.Config, error) {
+		return config.Config{
+			PostgresDSN:   "postgres://reindex-test",
+			OpenSearchURL: "http://opensearch.test",
+		}, nil
+	}
+	setTestMaintenanceStore(cmd, maintenanceStore, adminMaintenanceBackend{Name: "postgres", Configured: true, Shared: true})
+	cmd.newOfflineStore = func(context.Context, string) (adminOfflineStore, func() error, error) {
+		t.Fatal("reindex opened offline store before maintenance was active")
+		return nil, nil, nil
+	}
+	cmd.newReindexTarget = func(string) (search.ReindexTarget, error) {
+		t.Fatal("reindex opened OpenSearch target before maintenance was active")
+		return nil, nil
+	}
+
+	code := cmd.Run(context.Background(), []string{"admin", "reindex", "--org", "ponyville", "--no-drop"})
+	if code != exitDependencyUnavailable {
+		t.Fatalf("Run(reindex without maintenance) exit = %d, want %d; stdout = %s stderr = %s", code, exitDependencyUnavailable, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "active maintenance mode is required") {
+		t.Fatalf("stderr = %q, want maintenance requirement", stderr.String())
+	}
+	out := decodeAdminReindexOutput(t, stdout.String())
+	requireAdminOutputErrorCode(t, out, "maintenance_required")
+	assertAdminReindexCount(t, out, "failed", 1)
+	check, err := maintenanceStore.Check(context.Background())
+	if err != nil {
+		t.Fatalf("maintenance Check() error = %v", err)
+	}
+	if check.Active {
+		t.Fatalf("maintenance state active = true after rejected reindex, want no temporary gate left behind")
+	}
+}
+
+func TestAdminReindexFailureLeavesActiveMaintenanceState(t *testing.T) {
+	maintenanceStore := activeAdminWorkflowMaintenanceStore(t)
+	target := &fakeAdminReindexTarget{pingErr: fmt.Errorf("%w: raw provider body from cluster", search.ErrUnavailable)}
+	cmd, stdout, stderr := newAdminReindexTestCommand(t, adminReindexTestStore(), target)
+	setTestMaintenanceStore(cmd, maintenanceStore, adminMaintenanceBackend{Name: "postgres", Configured: true, Shared: true})
+
+	code := cmd.Run(context.Background(), []string{"admin", "reindex", "--org", "ponyville", "--no-drop"})
+	if code != exitDependencyUnavailable {
+		t.Fatalf("Run(reindex provider failure) exit = %d, want %d; stdout = %s stderr = %s", code, exitDependencyUnavailable, stdout.String(), stderr.String())
+	}
+	check, err := maintenanceStore.Check(context.Background())
+	if err != nil {
+		t.Fatalf("maintenance Check() error = %v", err)
+	}
+	if !check.Active {
+		t.Fatalf("maintenance state active = false after failed reindex, want caller-managed window preserved")
+	}
 }
 
 // TestAdminReindexEncryptedDataBagIndexRebuildsOpaqueDocuments proves the CLI
@@ -438,7 +500,23 @@ func newAdminReindexTestCommand(t *testing.T, store *fakeOfflineStore, target *f
 		}
 		return target, nil
 	}
+	setTestMaintenanceStore(cmd, activeAdminWorkflowMaintenanceStore(t), adminMaintenanceBackend{Name: "postgres", Configured: true, Shared: true})
 	return cmd, stdout, stderr
+}
+
+// activeAdminWorkflowMaintenanceStore gives mutating reindex/search command
+// tests a pre-existing maintenance window, matching the production requirement.
+func activeAdminWorkflowMaintenanceStore(t *testing.T) maintenance.Store {
+	t.Helper()
+	store := maintenance.NewMemoryStore()
+	if _, err := store.Enable(context.Background(), maintenance.EnableInput{
+		Mode:   "repair",
+		Reason: "test maintenance window",
+		Actor:  "test",
+	}); err != nil {
+		t.Fatalf("Enable(test maintenance) error = %v", err)
+	}
+	return store
 }
 
 func adminReindexTestStore() *fakeOfflineStore {
@@ -741,6 +819,7 @@ func newAdminCapabilityOpenSearchCommand(t *testing.T, store *fakeOfflineStore, 
 	cmd.newSearchTarget = func(raw string) (search.ConsistencyTarget, error) {
 		return adminCapabilityOpenSearchClient(t, raw, transport)
 	}
+	setTestMaintenanceStore(cmd, activeAdminWorkflowMaintenanceStore(t), adminMaintenanceBackend{Name: "postgres", Configured: true, Shared: true})
 	return cmd, stdout, stderr
 }
 
@@ -1159,6 +1238,41 @@ func decodeAdminReindexOutput(t *testing.T, raw string) map[string]any {
 		t.Fatalf("json.Unmarshal(%q) error = %v", raw, err)
 	}
 	return out
+}
+
+func requireAdminOutputWarningContains(t *testing.T, out map[string]any, want string) {
+	t.Helper()
+
+	raw, ok := out["warnings"].([]any)
+	if !ok {
+		t.Fatalf("warnings = %#v, want list containing %q", out["warnings"], want)
+	}
+	for _, item := range raw {
+		warning, ok := item.(string)
+		if ok && strings.Contains(warning, want) {
+			return
+		}
+	}
+	t.Fatalf("warnings = %#v, want entry containing %q", raw, want)
+}
+
+func requireAdminOutputErrorCode(t *testing.T, out map[string]any, want string) {
+	t.Helper()
+
+	raw, ok := out["errors"].([]any)
+	if !ok {
+		t.Fatalf("errors = %#v, want list containing code %q", out["errors"], want)
+	}
+	for _, item := range raw {
+		errObj, ok := item.(map[string]any)
+		if !ok {
+			t.Fatalf("errors item = %#v, want object", item)
+		}
+		if code, ok := errObj["code"].(string); ok && code == want {
+			return
+		}
+	}
+	t.Fatalf("errors = %#v, want code %q", raw, want)
 }
 
 func assertAdminReindexCount(t *testing.T, out map[string]any, key string, want int) {

@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/oberones/OpenCook/internal/maintenance"
 )
 
 const (
@@ -106,6 +108,33 @@ func (s *server) logHTTPRequest(r *http.Request, requestID string, status int, b
 		"content_length": r.ContentLength,
 		"response_bytes": bytesWritten,
 	})
+}
+
+// logMaintenanceBlocked emits a separate low-cardinality event when the
+// maintenance gate prevents a write from reaching a Chef-facing handler.
+func (s *server) logMaintenanceBlocked(r *http.Request, pattern, reason string, state maintenance.State) {
+	if r == nil {
+		return
+	}
+	requestID, _ := requestIDFromContext(r.Context())
+	safe := state.SafeStatus()
+	fields := map[string]any{
+		"request_id":   requestID,
+		"method":       metricMethod(r.Method),
+		"surface":      metricSurfaceForPath(r.URL.Path),
+		"path_shape":   operationalPathShape(r.URL.Path),
+		"pattern":      pattern,
+		"reason":       metricMaintenanceReason(reason),
+		"status":       maintenanceBlockedHTTPStatus,
+		"status_class": metricStatusClass(maintenanceBlockedHTTPStatus),
+	}
+	if safe.Mode != "" {
+		fields["maintenance_mode"] = safe.Mode
+	}
+	if safe.ExpiresAt != nil {
+		fields["maintenance_expires_at"] = safe.ExpiresAt.UTC().Format(time.RFC3339Nano)
+	}
+	s.logStructured("maintenance_write_blocked", fields)
 }
 
 // logStructured emits a JSON event through the configured server logger. It is

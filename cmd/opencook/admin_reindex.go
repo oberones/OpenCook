@@ -93,6 +93,22 @@ func (c *command) runAdminReindex(ctx context.Context, args []string, inheritedJ
 		return exitDependencyUnavailable
 	}
 
+	var maintenanceWarnings []string
+	if !plan.DryRun {
+		maintenanceWarnings, err = c.requireAdminWorkflowMaintenance(ctx, *postgresDSN, "admin reindex")
+		if err != nil {
+			result := adminReindexResultFromPlan(plan)
+			result.Counts.Failed = 1
+			output := adminReindexOutput(result, err, nil, *withTiming)
+			if writeErr := writePrettyJSON(c.stdout, output); writeErr != nil {
+				fmt.Fprintf(c.stderr, "write reindex output: %v\n", writeErr)
+				return exitDependencyUnavailable
+			}
+			fmt.Fprintf(c.stderr, "reindex failed: %s\n", adminReindexFailureMessage(err))
+			return adminReindexExitCode(err, result)
+		}
+	}
+
 	store, closeStore, err := c.newOfflineStore(ctx, *postgresDSN)
 	if err != nil {
 		fmt.Fprintf(c.stderr, "open reindex store: %v\n", err)
@@ -115,7 +131,7 @@ func (c *command) runAdminReindex(ctx context.Context, args []string, inheritedJ
 	}
 
 	result, err := search.NewReindexService(state, target).Run(ctx, plan)
-	output := adminReindexOutput(result, err, adminReindexWarnings(plan), *withTiming)
+	output := adminReindexOutput(result, err, appendUniqueAdminWarnings(adminReindexWarnings(plan), maintenanceWarnings...), *withTiming)
 	if writeErr := writePrettyJSON(c.stdout, output); writeErr != nil {
 		fmt.Fprintf(c.stderr, "write reindex output: %v\n", writeErr)
 		return exitDependencyUnavailable
@@ -273,12 +289,25 @@ func adminReindexOutput(result search.ReindexResult, err error, warnings []strin
 	return out
 }
 
+// adminReindexResultFromPlan builds a result envelope for failures detected
+// before the reindex service can load PostgreSQL state or touch OpenSearch.
+func adminReindexResultFromPlan(plan search.ReindexPlan) search.ReindexResult {
+	return search.ReindexResult{
+		Mode:             plan.Mode,
+		AllOrganizations: plan.AllOrganizations,
+		Organization:     plan.Organization,
+		Index:            plan.Index,
+		Names:            append([]string(nil), plan.Names...),
+		DryRun:           plan.DryRun,
+	}
+}
+
 func adminReindexWarnings(plan search.ReindexPlan) []string {
 	if plan.DryRun {
 		return nil
 	}
 	if plan.Mode == search.ReindexModeDrop || plan.Mode == search.ReindexModeComplete {
-		return []string{"drop-and-reindex can race with concurrent Chef object writes until a future maintenance gate exists"}
+		return []string{"drop-and-reindex mutates derived OpenSearch documents; keep maintenance mode active until reindex and follow-up search checks finish"}
 	}
 	return nil
 }
@@ -294,6 +323,10 @@ func adminReindexFailureMessage(err error) string {
 	switch {
 	case err == nil:
 		return ""
+	case errors.Is(err, errAdminMaintenanceRequired):
+		return adminWorkflowMaintenanceRequiredMessage
+	case errors.Is(err, errAdminMaintenanceCheckFailed):
+		return "maintenance state could not be checked"
 	case errors.Is(err, search.ErrOrganizationNotFound):
 		return search.ErrOrganizationNotFound.Error()
 	case errors.Is(err, search.ErrIndexNotFound):
@@ -311,6 +344,10 @@ func adminReindexFailureMessage(err error) string {
 
 func adminReindexErrorCode(err error) string {
 	switch {
+	case errors.Is(err, errAdminMaintenanceRequired):
+		return "maintenance_required"
+	case errors.Is(err, errAdminMaintenanceCheckFailed):
+		return "dependency_unavailable"
 	case errors.Is(err, search.ErrOrganizationNotFound), errors.Is(err, search.ErrIndexNotFound):
 		return "not_found"
 	case errors.Is(err, search.ErrInvalidConfiguration):
@@ -324,6 +361,8 @@ func adminReindexErrorCode(err error) string {
 
 func adminReindexExitCode(err error, result search.ReindexResult) int {
 	switch {
+	case errors.Is(err, errAdminMaintenanceRequired), errors.Is(err, errAdminMaintenanceCheckFailed):
+		return exitDependencyUnavailable
 	case errors.Is(err, search.ErrOrganizationNotFound), errors.Is(err, search.ErrIndexNotFound):
 		return exitNotFound
 	case errors.Is(err, search.ErrInvalidConfiguration):

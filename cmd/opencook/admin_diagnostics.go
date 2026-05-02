@@ -131,6 +131,7 @@ func (c *command) buildAdminDiagnosticsFiles(ctx context.Context, offline bool) 
 	warnings := []string{
 		"diagnostics bundles include summaries and log references only; collect external log files separately if needed",
 		"do not attach private keys, request signatures, raw DSNs, database dumps, or blob object contents to support tickets",
+		"diagnostics collection is read-only and does not acquire maintenance mode; enable maintenance separately before online repair, reindex, or migration cutover work",
 	}
 
 	logsOutput, _ := c.buildAdminLogsPathsOutput()

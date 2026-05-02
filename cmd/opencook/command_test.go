@@ -11,6 +11,7 @@ import (
 	"github.com/oberones/OpenCook/internal/admin"
 	"github.com/oberones/OpenCook/internal/blob"
 	"github.com/oberones/OpenCook/internal/config"
+	"github.com/oberones/OpenCook/internal/maintenance"
 	"github.com/oberones/OpenCook/internal/search"
 	"github.com/oberones/OpenCook/internal/version"
 )
@@ -213,6 +214,10 @@ func newTestCommand(t *testing.T) (*command, *bytes.Buffer, *bytes.Buffer) {
 		newOfflineStore: func(context.Context, string) (adminOfflineStore, func() error, error) {
 			t.Fatal("unexpected offline store construction")
 			return nil, nil, nil
+		},
+		newMaintenanceStore: func(context.Context, string) (maintenance.Store, adminMaintenanceBackend, func() error, error) {
+			t.Fatal("unexpected maintenance store construction")
+			return nil, adminMaintenanceBackend{}, nil, nil
 		},
 		newBlobStore: func(config.Config) (blob.Store, error) {
 			t.Fatal("unexpected blob store construction")

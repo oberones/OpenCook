@@ -173,6 +173,45 @@ func (r *CookbookRepository) activate(ctx context.Context, db *sql.DB) error {
 	return nil
 }
 
+// Reload refreshes the in-process cookbook repository snapshot from
+// PostgreSQL. This is the cookbook-side cache invalidation seam needed before
+// any direct database repair can safely become online.
+func (r *CookbookRepository) Reload(ctx context.Context) error {
+	if r == nil {
+		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	r.mu.RLock()
+	db := r.db
+	r.mu.RUnlock()
+	if db == nil {
+		return nil
+	}
+
+	orgs, err := loadCookbookOrganizations(ctx, db)
+	if err != nil {
+		return fmt.Errorf("load cookbook organizations: %w", err)
+	}
+	versions, err := loadCookbookVersions(ctx, db)
+	if err != nil {
+		return fmt.Errorf("load cookbook versions: %w", err)
+	}
+	artifacts, err := loadCookbookArtifacts(ctx, db)
+	if err != nil {
+		return fmt.Errorf("load cookbook artifacts: %w", err)
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.orgs = orgs
+	r.versions = versions
+	r.artifacts = artifacts
+	return nil
+}
+
 func (r *CookbookRepository) EncodeCookbookVersion(orgName string, version bootstrap.CookbookVersion) (CookbookVersionBundle, error) {
 	orgName = strings.TrimSpace(orgName)
 	if orgName == "" {

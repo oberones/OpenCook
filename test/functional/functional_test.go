@@ -51,6 +51,7 @@ const (
 	validatorBootstrapClientKeyStateFile = "validator_bootstrap_client_private.pem"
 	validatorDefaultClientKeyStateFile   = "validator_default_bootstrap_client_private.pem"
 	validatorKeyStateFile                = "validator_private.pem"
+	functionalMaintenanceBlockedError    = "503 - Service Unavailable: Sorry, we are unavailable right now.  Please try again later."
 )
 
 var sandboxBlob = []byte("opencook functional sandbox blob\n")
@@ -107,6 +108,8 @@ func TestFunctional(t *testing.T) {
 				runSearchUpdatePhase(t, client, cfg)
 			case "verify-search-updated":
 				runVerifySearchUpdatedPhase(t, client, cfg)
+			case "maintenance":
+				runMaintenancePhase(t, client, cfg)
 			case "delete":
 				runDeletePhase(t, client, cfg)
 			case "verify-deleted":
@@ -373,6 +376,14 @@ func runVerifySearchUpdatedPhase(t *testing.T, client *functionalClient, cfg fun
 	requireFunctionalEncryptedOldTermsAbsent(t, client, cfg, testfixtures.EncryptedDataBagItem())
 }
 
+func runMaintenancePhase(t *testing.T, client *functionalClient, cfg functionalConfig) {
+	requireOperationalStatus(t, client)
+	requireFunctionalMaintenanceActive(t, client)
+	requireFunctionalMaintenanceReadSurfaces(t, client, cfg)
+	requireFunctionalMaintenanceReadLikePOSTs(t, client, cfg)
+	requireFunctionalMaintenanceBlockedWrites(t, client, cfg)
+}
+
 func runDeletePhase(t *testing.T, client *functionalClient, cfg functionalConfig) {
 	client.expectJSON(t, http.MethodDelete, "/organizations/"+cfg.org+"/clients/"+validatorBootstrapClientName, nil, http.StatusOK, http.StatusNotFound)
 	_ = os.Remove(filepath.Join(cfg.stateDir, validatorBootstrapClientKeyStateFile))
@@ -439,6 +450,98 @@ func requireOperationalStatus(t *testing.T, client *functionalClient) {
 		if !strings.Contains(message, want) {
 			t.Fatalf("opensearch status message = %q, want provider capability detail %q", search["message"], want)
 		}
+	}
+}
+
+// requireFunctionalMaintenanceActive proves the Compose phase is exercising the
+// shared PostgreSQL gate rather than the standalone process-local fallback.
+func requireFunctionalMaintenanceActive(t *testing.T, client *functionalClient) {
+	t.Helper()
+
+	payload := asMap(t, client.expectUnsignedJSON(t, "/_status", http.StatusOK).JSON)
+	deps := asMap(t, payload["dependencies"])
+	maintenance := asMap(t, deps["maintenance"])
+	if maintenance["backend"] != "postgres" || maintenance["configured"] != true || maintenance["shared"] != true {
+		t.Fatalf("maintenance status = %v, want active shared postgres backend", maintenance)
+	}
+	if maintenance["active"] != true || maintenance["status"] != "enabled" {
+		t.Fatalf("maintenance status = %v, want enabled active maintenance", maintenance)
+	}
+	state := asMap(t, maintenance["state"])
+	if state["mode"] != "repair" {
+		t.Fatalf("maintenance state = %v, want repair mode from functional phase", state)
+	}
+}
+
+// requireFunctionalMaintenanceReadSurfaces covers persisted PostgreSQL reads
+// and filesystem-backed signed blob downloads while maintenance is active.
+func requireFunctionalMaintenanceReadSurfaces(t *testing.T, client *functionalClient, cfg functionalConfig) {
+	t.Helper()
+
+	node := asMap(t, client.expectJSON(t, http.MethodGet, "/nodes/twilight", nil, http.StatusOK).JSON)
+	if node["name"] != "twilight" || node["chef_environment"] != "production" {
+		t.Fatalf("maintenance node read = %v, want twilight in production", node)
+	}
+	item := asMap(t, client.expectJSON(t, http.MethodGet, "/organizations/"+cfg.org+"/data/ponies/twilight", nil, http.StatusOK).JSON)
+	if item["id"] != "twilight" || item["kind"] != "unicorn" {
+		t.Fatalf("maintenance data bag read = %v, want twilight unicorn", item)
+	}
+	requireFunctionalCookbookAPIVersionFileShapes(t, client, cfg)
+}
+
+// requireFunctionalMaintenanceReadLikePOSTs pins the two POST surfaces that are
+// intentionally read-like for Chef compatibility: depsolver and partial search.
+func requireFunctionalMaintenanceReadLikePOSTs(t *testing.T, client *functionalClient, cfg functionalConfig) {
+	t.Helper()
+
+	depsolver := asMap(t, client.expectJSON(t, http.MethodPost, "/organizations/"+cfg.org+"/environments/_default/cookbook_versions", map[string]any{
+		"run_list": []string{},
+	}, http.StatusOK).JSON)
+	if len(depsolver) != 0 {
+		t.Fatalf("maintenance depsolver empty run_list = %v, want empty solution", depsolver)
+	}
+
+	partial := requirePartialSearchRows(t, client, searchQueryPath("/organizations/"+cfg.org+"/search/node", "name:twilight"), map[string][]string{
+		"name": {"name"},
+	}, 1)
+	row := asMap(t, searchRows(t, partial)[0])
+	data := asMap(t, row["data"])
+	if data["name"] != "twilight" {
+		t.Fatalf("maintenance partial search data = %v, want twilight", data)
+	}
+}
+
+// requireFunctionalMaintenanceBlockedWrites checks representative Chef-facing
+// writes, including blob upload, return the static Chef-shaped 503 and do not
+// mutate the backing PostgreSQL state.
+func requireFunctionalMaintenanceBlockedWrites(t *testing.T, client *functionalClient, cfg functionalConfig) {
+	t.Helper()
+
+	blockedNodeName := "maintenance-blocked-node"
+	requireFunctionalMaintenanceBlocked(t, client.expectJSON(t, http.MethodPost, "/nodes", nodePayload(blockedNodeName, "_default"), http.StatusServiceUnavailable))
+	client.expectJSON(t, http.MethodGet, "/nodes/"+blockedNodeName, nil, http.StatusNotFound)
+
+	checksum := checksumHex(sandboxBlob)
+	cookbookPath := "/organizations/" + cfg.org + "/cookbooks/" + functionalUnsupportedCookbookName + "/" + functionalUnsupportedCookbookVersion + "?force=true"
+	requireFunctionalMaintenanceBlocked(t, client.expectJSON(t, http.MethodPut, cookbookPath, cookbookVersionPayload(functionalUnsupportedCookbookName, functionalUnsupportedCookbookVersion, checksum), http.StatusServiceUnavailable))
+	requireFunctionalUnsupportedSearchFixtures(t, client, cfg)
+
+	upload := client.doUnsigned(t, http.MethodPut, "/_blob/checksums/"+checksum, []byte("blocked maintenance upload"), map[string]string{
+		"Content-Type": "application/x-binary",
+		"Content-MD5":  checksumBase64([]byte("blocked maintenance upload")),
+	}, http.StatusServiceUnavailable)
+	decodeJSONBody(t, &upload)
+	requireFunctionalMaintenanceBlocked(t, upload)
+}
+
+// requireFunctionalMaintenanceBlocked asserts the exact static body Chef
+// clients see while maintenance mode blocks mutating routes.
+func requireFunctionalMaintenanceBlocked(t *testing.T, resp apiResponse) {
+	t.Helper()
+
+	payload := asMap(t, resp.JSON)
+	if payload["error"] != functionalMaintenanceBlockedError {
+		t.Fatalf("maintenance blocked payload = %v, want static Chef 503 error", payload)
 	}
 }
 

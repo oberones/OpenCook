@@ -375,10 +375,26 @@ func adminCommandIsOffline(args []string) bool {
 	case "groups":
 		return len(args) > 1 && (args[1] == "add-actor" || args[1] == "remove-actor")
 	case "acls":
-		return len(args) > 1 && args[1] == "repair-defaults"
+		return len(args) > 1 && args[1] == "repair-defaults" && !adminArgsContainFlag(args, "online")
 	default:
 		return false
 	}
+}
+
+// adminArgsContainFlag lets legacy offline dispatch skip commands that opt into
+// a live signed workflow before global admin flags have been parsed.
+func adminArgsContainFlag(args []string, flagName string) bool {
+	flagName = strings.TrimPrefix(strings.TrimSpace(flagName), "-")
+	if flagName == "" {
+		return false
+	}
+	long := "--" + flagName
+	for _, arg := range args {
+		if arg == long || strings.HasPrefix(arg, long+"=") {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *command) runAdminOfflineCommand(ctx context.Context, args []string) int {

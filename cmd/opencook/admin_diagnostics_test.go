@@ -15,6 +15,7 @@ import (
 	"github.com/oberones/OpenCook/internal/admin"
 	"github.com/oberones/OpenCook/internal/blob"
 	"github.com/oberones/OpenCook/internal/config"
+	"github.com/oberones/OpenCook/internal/maintenance"
 	"github.com/oberones/OpenCook/internal/search"
 )
 
@@ -67,6 +68,7 @@ func TestAdminDiagnosticsCollectWritesRedactedBundle(t *testing.T) {
 		return cfg, nil
 	}
 	cmd.newBlobStore = blob.NewStore
+	setTestMaintenanceStore(cmd, maintenance.NewMemoryStore(), adminMaintenanceBackend{Name: "postgres", Configured: true, Shared: true})
 	cmd.newSearchTarget = func(raw string) (search.ConsistencyTarget, error) {
 		if !strings.Contains(raw, "searchsecret") {
 			t.Fatalf("OpenSearch URL = %q, want configured secret-bearing URL before redaction", raw)
@@ -109,6 +111,9 @@ func TestAdminDiagnosticsCollectWritesRedactedBundle(t *testing.T) {
 	}
 	if !strings.Contains(files["manifest.json"], "opencook.diagnostics.v1") {
 		t.Fatalf("manifest missing format version: %s", files["manifest.json"])
+	}
+	if !strings.Contains(files["manifest.json"], "diagnostics collection is read-only") {
+		t.Fatalf("manifest missing maintenance safety warning: %s", files["manifest.json"])
 	}
 	if !strings.Contains(files["runbooks/summary.json"], "opencook admin migration backup create") {
 		t.Fatalf("runbook summary missing migration backup reference: %s", files["runbooks/summary.json"])

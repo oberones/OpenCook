@@ -49,16 +49,9 @@ type indexingBootstrapCoreStore struct {
 }
 
 func (s *indexingBootstrapCoreStore) LoadBootstrapCore() (bootstrap.BootstrapCoreState, error) {
-	state, err := s.delegate.LoadBootstrapCore()
-	if err != nil {
-		return bootstrap.BootstrapCoreState{}, err
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.previous = bootstrap.CloneBootstrapCoreState(state)
-	s.initialized = true
-	return state, nil
+	// Loading is intentionally side-effect free: repair reloads may inspect
+	// persisted state and then roll back live maps if verifier hydration fails.
+	return s.delegate.LoadBootstrapCore()
 }
 
 func (s *indexingBootstrapCoreStore) SaveBootstrapCore(next bootstrap.BootstrapCoreState) error {
@@ -126,16 +119,9 @@ type indexingCoreObjectStore struct {
 }
 
 func (s *indexingCoreObjectStore) LoadCoreObjects() (bootstrap.CoreObjectState, error) {
-	state, err := s.delegate.LoadCoreObjects()
-	if err != nil {
-		return bootstrap.CoreObjectState{}, err
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.previous = bootstrap.CloneCoreObjectState(state)
-	s.initialized = true
-	return state, nil
+	// Loading is intentionally side-effect free: repair reloads may inspect
+	// persisted state before deciding whether live maps can be safely replaced.
+	return s.delegate.LoadCoreObjects()
 }
 
 func (s *indexingCoreObjectStore) SaveCoreObjects(next bootstrap.CoreObjectState) error {

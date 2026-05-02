@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/oberones/OpenCook/internal/authz"
@@ -18,6 +19,7 @@ var coreObjectPersistenceSchemaSQL string
 
 type CoreObjectRepository struct {
 	store *Store
+	mu    sync.RWMutex
 	db    *sql.DB
 	state bootstrap.CoreObjectState
 }
@@ -105,6 +107,9 @@ func (r *CoreObjectRepository) LoadCoreObjects() (bootstrap.CoreObjectState, err
 	if r == nil {
 		return bootstrap.CoreObjectState{}, nil
 	}
+
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	return bootstrap.CloneCoreObjectState(r.state), nil
 }
 
@@ -112,13 +117,48 @@ func (r *CoreObjectRepository) SaveCoreObjects(state bootstrap.CoreObjectState) 
 	if r == nil {
 		return nil
 	}
-	if r.db == nil {
+	r.mu.RLock()
+	db := r.db
+	r.mu.RUnlock()
+	if db == nil {
+		r.mu.Lock()
+		defer r.mu.Unlock()
 		r.state = bootstrap.CloneCoreObjectState(state)
 		return nil
 	}
-	if err := saveCoreObjects(context.Background(), r.db, state); err != nil {
+	if err := saveCoreObjects(context.Background(), db, state); err != nil {
 		return err
 	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.state = bootstrap.CloneCoreObjectState(state)
+	return nil
+}
+
+// Reload refreshes the repository snapshot from PostgreSQL without indexing or
+// write-path side effects. Live services can use it before reloading their
+// in-memory core object maps after a controlled direct repair.
+func (r *CoreObjectRepository) Reload(ctx context.Context) error {
+	if r == nil {
+		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	r.mu.RLock()
+	db := r.db
+	r.mu.RUnlock()
+	if db == nil {
+		return nil
+	}
+	state, err := loadCoreObjects(ctx, db)
+	if err != nil {
+		return fmt.Errorf("load core object state: %w", err)
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.state = bootstrap.CloneCoreObjectState(state)
 	return nil
 }
@@ -139,8 +179,10 @@ func (r *CoreObjectRepository) activate(ctx context.Context, db *sql.DB) error {
 		return err
 	}
 
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.db = db
-	r.state = state
+	r.state = bootstrap.CloneCoreObjectState(state)
 	return nil
 }
 

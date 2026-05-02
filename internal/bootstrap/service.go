@@ -231,13 +231,25 @@ func NewService(keyStore *authn.MemoryKeyStore, opts Options) *Service {
 		s.bootstrapCoreStore = opts.BootstrapCoreStoreFactory(s)
 	}
 	if s.bootstrapCoreStore == nil {
-		s.bootstrapCoreStore = NewMemoryBootstrapCoreStore(BootstrapCoreState{})
+		initial := BootstrapCoreState{}
+		if opts.InitialBootstrapCoreState != nil {
+			initial = *opts.InitialBootstrapCoreState
+		}
+		// Keep standalone reloads idempotent by mirroring startup state in the
+		// default in-memory store that ReloadPersistedState reads from later.
+		s.bootstrapCoreStore = NewMemoryBootstrapCoreStore(initial)
 	}
 	if opts.CoreObjectStoreFactory != nil {
 		s.coreObjectStore = opts.CoreObjectStoreFactory(s)
 	}
 	if s.coreObjectStore == nil {
-		s.coreObjectStore = NewMemoryCoreObjectStore(CoreObjectState{})
+		initial := CoreObjectState{}
+		if opts.InitialCoreObjectState != nil {
+			initial = *opts.InitialCoreObjectState
+		}
+		// Keep standalone reloads idempotent by mirroring startup state in the
+		// default in-memory store that ReloadPersistedState reads from later.
+		s.coreObjectStore = NewMemoryCoreObjectStore(initial)
 	}
 	if opts.InitialBootstrapCoreState != nil {
 		s.restoreBootstrapCoreLocked(*opts.InitialBootstrapCoreState)

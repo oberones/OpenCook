@@ -18,6 +18,7 @@ import (
 	"github.com/oberones/OpenCook/internal/bootstrap"
 	"github.com/oberones/OpenCook/internal/compat"
 	"github.com/oberones/OpenCook/internal/config"
+	"github.com/oberones/OpenCook/internal/maintenance"
 	"github.com/oberones/OpenCook/internal/search"
 	"github.com/oberones/OpenCook/internal/store/pg"
 	"github.com/oberones/OpenCook/internal/version"
@@ -109,6 +110,12 @@ func New(cfg config.Config, logger *log.Logger, build version.Info) (*Applicatio
 	if activeSearchIndex != nil {
 		searchIndex = activeSearchIndex
 	}
+	// Standalone deployments use a process-local maintenance gate; PostgreSQL
+	// deployments use the shared repository activated during startup.
+	maintenanceStore := maintenance.Store(maintenance.NewMemoryStore(maintenance.WithClock(time.Now)))
+	if postgresStore.MaintenancePersistenceActive() {
+		maintenanceStore = postgresStore.Maintenance()
+	}
 	authSkew := cfg.AuthSkew
 	authnVerifier := authn.NewChefVerifier(keyStore, authn.Options{
 		AllowedClockSkew: &authSkew,
@@ -132,6 +139,7 @@ func New(cfg config.Config, logger *log.Logger, build version.Info) (*Applicatio
 		BlobUploadSecret: blobUploadSecret,
 		Search:           searchIndex,
 		Postgres:         postgresStore,
+		Maintenance:      maintenanceStore,
 		CookbookBackend:  resolveCookbookBackend(postgresStore),
 	})
 
@@ -148,7 +156,7 @@ func New(cfg config.Config, logger *log.Logger, build version.Info) (*Applicatio
 		server:              server,
 		postgresStatus:      postgresStore.Status(),
 		searchStatus:        searchIndex.Status(),
-		postgresConnected:   postgresStore.CookbookPersistenceActive() && postgresStore.BootstrapCorePersistenceActive() && postgresStore.CoreObjectPersistenceActive(),
+		postgresConnected:   postgresStore.CookbookPersistenceActive() && postgresStore.BootstrapCorePersistenceActive() && postgresStore.CoreObjectPersistenceActive() && postgresStore.MaintenancePersistenceActive(),
 		openSearchConnected: activeSearchIndex != nil,
 	}, nil
 }

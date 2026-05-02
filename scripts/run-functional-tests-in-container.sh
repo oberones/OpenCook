@@ -16,6 +16,9 @@ if [[ "$phase" == "wait" ]]; then
 fi
 
 case "$phase" in
+  maintenance)
+    exec bash /src/scripts/run-maintenance-functional-tests-in-container.sh "$phase"
+    ;;
   operational|operational-verify)
     exec bash /src/scripts/run-operational-functional-tests-in-container.sh "$phase"
     ;;
