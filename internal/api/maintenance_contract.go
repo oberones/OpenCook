@@ -26,6 +26,8 @@ type maintenanceRouteContract struct {
 	Notes          string
 }
 
+var maintenanceRouteContractsByPattern = buildMaintenanceRouteContractByPattern()
+
 // maintenanceBlockedPayload freezes the Chef-compatible 503 body used by the
 // active maintenance gate. Upstream nginx serves a static /503.json body, so we
 // intentionally avoid OpenCook-specific error codes in Chef-facing responses.
@@ -306,14 +308,21 @@ func maintenanceContractsForPatterns(patterns []string, classes []maintenanceRou
 	return contracts
 }
 
-// maintenanceRouteContractByPattern gives future middleware and tests a stable
-// lookup keyed by the concrete ServeMux pattern registered in NewRouter.
-func maintenanceRouteContractByPattern() map[string]maintenanceRouteContract {
+// buildMaintenanceRouteContractByPattern builds the immutable package-level
+// lookup used by the hot-path maintenance gate. Keeping the map cached avoids
+// rebuilding the full route inventory for every request.
+func buildMaintenanceRouteContractByPattern() map[string]maintenanceRouteContract {
 	out := map[string]maintenanceRouteContract{}
 	for _, contract := range maintenanceRouteContracts() {
 		out[contract.Pattern] = contract
 	}
 	return out
+}
+
+// maintenanceRouteContractByPattern gives middleware and tests a stable lookup
+// keyed by the concrete ServeMux pattern registered in NewRouter.
+func maintenanceRouteContractByPattern() map[string]maintenanceRouteContract {
+	return maintenanceRouteContractsByPattern
 }
 
 // maintenanceRouteHasClass reports whether a route contract includes a class;

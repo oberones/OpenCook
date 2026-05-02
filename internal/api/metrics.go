@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"sort"
@@ -231,20 +232,20 @@ func (s *server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodHead {
 		return
 	}
-	_, _ = w.Write([]byte(s.renderMetrics()))
+	_, _ = w.Write([]byte(s.renderMetrics(r.Context())))
 }
 
 // renderMetrics builds a deterministic Prometheus text payload using only safe,
 // low-cardinality labels.
-func (s *server) renderMetrics() string {
+func (s *server) renderMetrics(ctx context.Context) string {
 	snapshot := s.metrics.snapshot()
 	var b strings.Builder
 
 	s.writeBuildMetrics(&b, snapshot)
 	s.writeHTTPMetrics(&b, snapshot)
 	s.writeDerivedOperationMetrics(&b, snapshot)
-	s.writeMaintenanceMetrics(&b, snapshot)
-	s.writeDependencyMetrics(&b)
+	s.writeMaintenanceMetrics(ctx, &b, snapshot)
+	s.writeDependencyMetrics(ctx, &b)
 
 	return b.String()
 }
@@ -348,8 +349,8 @@ func (s *server) writeDerivedOperationMetrics(b *strings.Builder, snapshot metri
 
 // writeMaintenanceMetrics exposes write-gate state and blocked-write counts
 // using only backend, method, surface, and reason labels.
-func (s *server) writeMaintenanceMetrics(b *strings.Builder, snapshot metricsSnapshot) {
-	status := s.maintenanceStatus()
+func (s *server) writeMaintenanceMetrics(ctx context.Context, b *strings.Builder, snapshot metricsSnapshot) {
+	status := s.maintenanceStatus(ctx)
 	backend, _ := status["backend"].(string)
 	shared, _ := status["shared"].(bool)
 	active, _ := status["active"].(bool)
@@ -384,9 +385,9 @@ func (s *server) writeMaintenanceMetrics(b *strings.Builder, snapshot metricsSna
 
 // writeDependencyMetrics exposes configured/ready gauges for the runtime
 // dependencies without exporting messages that could contain provider details.
-func (s *server) writeDependencyMetrics(b *strings.Builder) {
-	readiness := s.readinessPayload()
-	maintenanceStatus := s.maintenanceStatus()
+func (s *server) writeDependencyMetrics(ctx context.Context, b *strings.Builder) {
+	readiness := s.readinessPayload(ctx)
+	maintenanceStatus := s.maintenanceStatus(ctx)
 	dependencies := []struct {
 		name       string
 		backend    string

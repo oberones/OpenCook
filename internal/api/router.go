@@ -53,6 +53,8 @@ const (
 	authenticatedRouteIDContextKey   contextKey = "authenticated_route_id"
 )
 
+const maintenanceStatusCheckTimeout = 2 * time.Second
+
 // NewRouter wires the Chef-compatible HTTP surface and wraps it with
 // low-cardinality operational instrumentation.
 func NewRouter(deps Dependencies) http.Handler {
@@ -213,7 +215,7 @@ func (s *server) withMaintenanceGate(mux *http.ServeMux) http.Handler {
 // POST exceptions avoid touching the maintenance store entirely.
 func (s *server) maintenanceBlocksRequest(w http.ResponseWriter, r *http.Request, mux *http.ServeMux) bool {
 	_, pattern := mux.Handler(r)
-	contract, ok := maintenanceRouteContractByPattern()[pattern]
+	contract, ok := maintenanceRouteContractsByPattern[pattern]
 	if !ok || !maintenanceRouteMethodListed(contract.BlockedMethods, r.Method) {
 		return false
 	}
@@ -253,21 +255,21 @@ func (s *server) handleRoot(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *server) handleStatus(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, s.statusPayload("status"))
+func (s *server) handleStatus(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.statusPayload(r.Context(), "status"))
 }
 
-func (s *server) handleHealth(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, s.statusPayload("health"))
+func (s *server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.statusPayload(r.Context(), "health"))
 }
 
-func (s *server) handleReady(w http.ResponseWriter, _ *http.Request) {
-	readiness := s.readinessPayload()
+func (s *server) handleReady(w http.ResponseWriter, r *http.Request) {
+	readiness := s.readinessPayload(r.Context())
 	status := http.StatusOK
 	if !readiness.Ready {
 		status = http.StatusServiceUnavailable
 	}
-	writeJSON(w, status, s.statusPayloadWithReadiness("bootstrap", readiness))
+	writeJSON(w, status, s.statusPayloadWithReadiness(r.Context(), "bootstrap", readiness))
 }
 
 func (s *server) handleRouteContract(w http.ResponseWriter, _ *http.Request) {
@@ -757,11 +759,11 @@ type readinessCheck struct {
 	Message string `json:"message"`
 }
 
-func (s *server) statusPayload(mode string) map[string]any {
-	return s.statusPayloadWithReadiness(mode, s.readinessPayload())
+func (s *server) statusPayload(ctx context.Context, mode string) map[string]any {
+	return s.statusPayloadWithReadiness(ctx, mode, s.readinessPayload(ctx))
 }
 
-func (s *server) statusPayloadWithReadiness(mode string, readiness readinessPayload) map[string]any {
+func (s *server) statusPayloadWithReadiness(ctx context.Context, mode string, readiness readinessPayload) map[string]any {
 	cookbookBackend := s.deps.CookbookBackend
 	if strings.TrimSpace(cookbookBackend) == "" {
 		cookbookBackend = "memory-bootstrap"
@@ -803,7 +805,7 @@ func (s *server) statusPayloadWithReadiness(mode string, readiness readinessPayl
 			"postgres":    s.postgresStatus(),
 			"opensearch":  s.searchStatus(),
 			"blob":        s.blobStatus(),
-			"maintenance": s.maintenanceStatus(),
+			"maintenance": s.maintenanceStatus(ctx),
 		},
 	}
 }
@@ -811,13 +813,13 @@ func (s *server) statusPayloadWithReadiness(mode string, readiness readinessPayl
 // readinessPayload summarizes whether the current runtime can serve traffic
 // with either configured providers or intentional in-memory compatibility
 // fallbacks. It avoids embedding provider endpoints or credentials.
-func (s *server) readinessPayload() readinessPayload {
+func (s *server) readinessPayload(ctx context.Context) readinessPayload {
 	checks := map[string]readinessCheck{
 		"bootstrap":   s.bootstrapReadiness(),
 		"postgres":    s.postgresReadiness(),
 		"opensearch":  s.searchReadiness(),
 		"blob":        s.blobReadiness(),
-		"maintenance": s.maintenanceReadiness(),
+		"maintenance": s.maintenanceReadiness(ctx),
 	}
 
 	ready := true
@@ -897,8 +899,8 @@ func (s *server) blobReadiness() readinessCheck {
 
 // maintenanceReadiness reports whether the write gate can be evaluated. Active
 // maintenance does not make the server unready because reads remain available.
-func (s *server) maintenanceReadiness() readinessCheck {
-	status := s.maintenanceStatus()
+func (s *server) maintenanceReadiness(ctx context.Context) readinessCheck {
+	status := s.maintenanceStatus(ctx)
 	if status["status"] == "error" {
 		message, _ := status["message"].(string)
 		return readinessCheck{Ready: false, Message: message}
@@ -941,9 +943,9 @@ func (s *server) blobStatus() blob.Status {
 }
 
 // maintenanceStatus builds an operator-safe dependency block for /_status,
-// /readyz, and metrics. It exposes bounded state only and never returns raw
-// provider errors, DSNs, signatures, or unbounded operator notes.
-func (s *server) maintenanceStatus() map[string]any {
+// /readyz, and metrics. It bounds the backend check with the caller context so
+// stalled PostgreSQL maintenance checks do not hang health or scrape requests.
+func (s *server) maintenanceStatus(ctx context.Context) map[string]any {
 	backend, configured, shared, message := s.maintenanceBackend()
 	status := map[string]any{
 		"backend":    backend,
@@ -960,7 +962,9 @@ func (s *server) maintenanceStatus() map[string]any {
 		return status
 	}
 
-	check, err := s.deps.Maintenance.Check(context.Background())
+	checkCtx, cancel := maintenanceStatusContext(ctx)
+	defer cancel()
+	check, err := s.deps.Maintenance.Check(checkCtx)
 	if err != nil {
 		status["status"] = "error"
 		status["message"] = "maintenance state could not be checked; mutating writes fail closed"
@@ -981,6 +985,16 @@ func (s *server) maintenanceStatus() map[string]any {
 		status["status"] = "disabled"
 	}
 	return status
+}
+
+// maintenanceStatusContext derives a short-lived check context from the
+// incoming request context. Status and metrics endpoints should report an error
+// quickly instead of waiting for provider or driver timeouts during outages.
+func maintenanceStatusContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithTimeout(ctx, maintenanceStatusCheckTimeout)
 }
 
 // maintenanceBackend describes whether the write gate is shared through

@@ -502,6 +502,40 @@ func TestAdminOfflineACLRepairDryRunDoesNotSave(t *testing.T) {
 	}
 }
 
+func TestAdminOfflineACLRepairAcceptsExplicitOnlineFalse(t *testing.T) {
+	cmd, stdout, stderr := newTestCommand(t)
+	store := &fakeOfflineStore{
+		bootstrap: adminOfflineTestStateWithoutACLs(),
+		objects: bootstrap.CoreObjectState{
+			Orgs: map[string]bootstrap.CoreObjectOrganizationState{
+				"ponyville": {
+					Nodes: map[string]bootstrap.Node{
+						"node1": {Name: "node1"},
+					},
+					ACLs: map[string]authz.ACL{},
+				},
+			},
+		},
+	}
+	cmd.loadOffline = func() (config.Config, error) {
+		return config.Config{PostgresDSN: "postgres://offline-test"}, nil
+	}
+	cmd.newOfflineStore = func(context.Context, string) (adminOfflineStore, func() error, error) {
+		return store, nil, nil
+	}
+
+	code := cmd.Run(context.Background(), []string{"admin", "acls", "repair-defaults", "--offline", "--online=false", "--dry-run", "--org", "ponyville"})
+	if code != exitOK {
+		t.Fatalf("Run(acls repair --online=false) exit = %d, want %d; stderr = %s", code, exitOK, stderr.String())
+	}
+	if store.bootstrapSaves != 0 || store.objectSaves != 0 {
+		t.Fatalf("saves = %d/%d, want 0/0", store.bootstrapSaves, store.objectSaves)
+	}
+	if !strings.Contains(stdout.String(), "ponyville/organization") {
+		t.Fatalf("stdout = %q, want offline dry-run repair preview", stdout.String())
+	}
+}
+
 func TestAdminOfflineACLRepairRejectsMissingOrgFilter(t *testing.T) {
 	cmd, _, stderr := newTestCommand(t)
 	store := &fakeOfflineStore{

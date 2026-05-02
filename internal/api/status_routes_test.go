@@ -170,6 +170,31 @@ func TestStatusRoutesReportMaintenanceWithoutChangingTopLevelShape(t *testing.T)
 	}
 }
 
+func TestStatusMaintenanceCheckUsesRequestContext(t *testing.T) {
+	store := &contextCapturingMaintenanceStore{errs: make(chan error, 8)}
+	router := newStatusRouteTestRouter(t, statusRouteTestDeps{
+		maintenanceStore: store,
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/_status", nil).WithContext(ctx))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("/_status status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	for i := 0; i < 2; i++ {
+		select {
+		case err := <-store.errs:
+			if err != context.Canceled {
+				t.Fatalf("maintenance check context error = %v, want %v", err, context.Canceled)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("maintenance check did not observe request cancellation")
+		}
+	}
+}
+
 type statusRouteTestDeps struct {
 	cfg              config.Config
 	bootstrapState   *bootstrap.Service
@@ -179,6 +204,31 @@ type statusRouteTestDeps struct {
 	searchIndex      search.Index
 	blobStore        blob.Store
 	maintenanceStore maintenance.Store
+}
+
+type contextCapturingMaintenanceStore struct {
+	errs chan error
+}
+
+func (s *contextCapturingMaintenanceStore) Read(context.Context) (maintenance.State, error) {
+	return maintenance.State{}, nil
+}
+
+func (s *contextCapturingMaintenanceStore) Enable(context.Context, maintenance.EnableInput) (maintenance.State, error) {
+	return maintenance.State{}, nil
+}
+
+func (s *contextCapturingMaintenanceStore) Disable(context.Context, maintenance.DisableInput) (maintenance.State, error) {
+	return maintenance.State{}, nil
+}
+
+// Check waits for the derived request context to finish so the test can prove
+// status payload generation does not fall back to context.Background().
+func (s *contextCapturingMaintenanceStore) Check(ctx context.Context) (maintenance.CheckResult, error) {
+	<-ctx.Done()
+	err := ctx.Err()
+	s.errs <- err
+	return maintenance.CheckResult{}, err
 }
 
 func newStatusRouteTestRouter(t *testing.T, deps statusRouteTestDeps) http.Handler {
