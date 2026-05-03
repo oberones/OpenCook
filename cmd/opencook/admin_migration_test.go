@@ -2,6 +2,7 @@ package main
 
 import (
 	"archive/tar"
+	"bytes"
 	"compress/gzip"
 	"context"
 	"crypto/md5"
@@ -9,6 +10,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -668,6 +670,7 @@ func TestAdminMigrationBackupCreateWritesAndInspectValidatesBundle(t *testing.T)
 	}
 	tamperedOut := decodeAdminMigrationOutput(t, tamperedStdout.String())
 	requireAdminMigrationFinding(t, requireAdminMigrationArray(t, tamperedOut, "findings"), "backup_payload_integrity_failed")
+	requireAdminMigrationFinding(t, requireAdminMigrationArray(t, tamperedOut, "findings"), adminMigrationFindingRetrySafe)
 }
 
 func TestAdminMigrationInspectBackupBundleRequiresRestorePayloads(t *testing.T) {
@@ -690,7 +693,7 @@ func TestAdminMigrationInspectBackupBundleRequiresRestorePayloads(t *testing.T) 
 		t.Fatalf("WriteFile(manifest without cookbooks payload) error = %v", err)
 	}
 
-	_, findings, err := adminMigrationInspectBackupBundle(bundlePath)
+	_, _, findings, err := adminMigrationInspectBackupBundle(bundlePath)
 	if err == nil {
 		t.Fatalf("adminMigrationInspectBackupBundle() error = nil, want missing required payload")
 	}
@@ -928,6 +931,136 @@ func TestAdminMigrationRestorePreflightReportsTargetBlobUnavailable(t *testing.T
 	requireAdminMigrationDependency(t, requireAdminMigrationArray(t, out, "dependencies"), "blob", "error")
 }
 
+func TestAdminMigrationRestorePreflightRejectsMalformedStatePayloadBeforeApply(t *testing.T) {
+	bundlePath := writeAdminMigrationRestoreTestBundle(t)
+	if err := os.WriteFile(filepath.Join(bundlePath, adminMigrationBackupCookbooksPath), []byte("{not-json"), 0o644); err != nil {
+		t.Fatalf("WriteFile(malformed cookbooks payload) error = %v", err)
+	}
+	updateAdminMigrationScaleBackupPayloadHash(t, bundlePath, adminMigrationBackupCookbooksPath)
+
+	for _, subcommand := range []string{"preflight", "apply"} {
+		t.Run(subcommand, func(t *testing.T) {
+			cmd, stdout, stderr := newTestCommand(t)
+			cmd.loadOffline = func() (config.Config, error) {
+				t.Fatal("restore should reject malformed state payloads before loading target config")
+				return config.Config{}, nil
+			}
+
+			args := []string{"admin", "migration", "restore", subcommand, bundlePath, "--offline", "--json"}
+			if subcommand == "apply" {
+				args = append(args, "--yes")
+			}
+			code := cmd.Run(context.Background(), args)
+			if code != exitDependencyUnavailable {
+				t.Fatalf("Run(migration restore %s malformed payload) exit = %d, want %d; stdout = %s stderr = %s", subcommand, code, exitDependencyUnavailable, stdout.String(), stderr.String())
+			}
+			out := decodeAdminMigrationOutput(t, stdout.String())
+			requireAdminMigrationDependency(t, requireAdminMigrationArray(t, out, "dependencies"), "backup_payloads", "error")
+			requireAdminMigrationFinding(t, requireAdminMigrationArray(t, out, "findings"), "backup_state_payload_invalid")
+		})
+	}
+}
+
+func TestAdminMigrationRestorePreflightRejectsMissingRequiredPayloadBeforeConfig(t *testing.T) {
+	bundlePath := writeAdminMigrationRestoreTestBundle(t)
+	removeAdminMigrationScaleBackupManifestPayload(t, bundlePath, adminMigrationBackupCookbooksPath)
+	cmd, stdout, stderr := newTestCommand(t)
+	cmd.loadOffline = func() (config.Config, error) {
+		t.Fatal("restore should reject missing required payloads before loading target config")
+		return config.Config{}, nil
+	}
+
+	code := cmd.Run(context.Background(), []string{"admin", "migration", "restore", "preflight", bundlePath, "--offline", "--json"})
+	if code != exitDependencyUnavailable {
+		t.Fatalf("Run(migration restore preflight missing required payload) exit = %d, want %d; stdout = %s stderr = %s", code, exitDependencyUnavailable, stdout.String(), stderr.String())
+	}
+	out := decodeAdminMigrationOutput(t, stdout.String())
+	requireAdminMigrationDependency(t, requireAdminMigrationArray(t, out, "dependencies"), "backup_bundle", "error")
+	requireAdminMigrationFinding(t, requireAdminMigrationArray(t, out, "findings"), "backup_required_payload_missing")
+}
+
+func TestAdminMigrationRestorePreflightValidatesUncopiedBlobReferencesBeforeApply(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		prepare  func(*testing.T, string, string)
+		wantCode string
+	}{
+		{
+			name:     "missing provider blob",
+			prepare:  func(*testing.T, string, string) {},
+			wantCode: "missing_blob",
+		},
+		{
+			name: "provider checksum mismatch",
+			prepare: func(t *testing.T, root, checksum string) {
+				t.Helper()
+				if err := os.WriteFile(filepath.Join(root, checksum), []byte("wrong-bytes"), 0o644); err != nil {
+					t.Fatalf("WriteFile(mismatched provider blob) error = %v", err)
+				}
+			},
+			wantCode: "blob_checksum_mismatch",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bundlePath, checksum := writeAdminMigrationRestoreTestBundleWithBlobAndCookbook(t)
+			blobManifest := readAdminMigrationScaleBackupBlobManifest(t, bundlePath)
+			blobManifest.Copied = nil
+			writeAdminMigrationScaleBackupBlobManifest(t, bundlePath, blobManifest)
+
+			blobRoot := t.TempDir()
+			tc.prepare(t, blobRoot, checksum)
+			targetStore := &fakeMigrationInventoryStore{
+				fakeOfflineStore: &fakeOfflineStore{
+					bootstrap: bootstrap.BootstrapCoreState{},
+					objects:   bootstrap.CoreObjectState{},
+				},
+				cookbookInventory: map[string]adminMigrationCookbookInventory{},
+				cookbookExport:    adminMigrationCookbookExport{Orgs: map[string]adminMigrationCookbookOrgExport{}},
+			}
+			newRestoreCommand := func(t *testing.T) (*command, *bytes.Buffer, *bytes.Buffer) {
+				t.Helper()
+				cmd, stdout, stderr := newTestCommand(t)
+				cmd.newBlobStore = blob.NewStore
+				cmd.loadOffline = func() (config.Config, error) {
+					return config.Config{
+						PostgresDSN:             "postgres://opencook",
+						BlobBackend:             "filesystem",
+						BlobStorageURL:          blobRoot,
+						BootstrapRequestorName:  "pivotal",
+						BootstrapRequestorType:  "user",
+						BootstrapRequestorKeyID: "default",
+					}, nil
+				}
+				cmd.newOfflineStore = func(context.Context, string) (adminOfflineStore, func() error, error) {
+					return targetStore, nil, nil
+				}
+				return cmd, stdout, stderr
+			}
+
+			for attempt := 1; attempt <= 2; attempt++ {
+				cmd, stdout, stderr := newRestoreCommand(t)
+				code := cmd.Run(context.Background(), []string{"admin", "migration", "restore", "preflight", bundlePath, "--offline", "--json"})
+				if code != exitDependencyUnavailable {
+					t.Fatalf("Run(migration restore preflight %s attempt %d) exit = %d, want %d; stdout = %s stderr = %s", tc.name, attempt, code, exitDependencyUnavailable, stdout.String(), stderr.String())
+				}
+				out := decodeAdminMigrationOutput(t, stdout.String())
+				requireAdminMigrationFinding(t, requireAdminMigrationArray(t, out, "findings"), tc.wantCode)
+			}
+
+			cmd, stdout, stderr := newRestoreCommand(t)
+			code := cmd.Run(context.Background(), []string{"admin", "migration", "restore", "apply", bundlePath, "--offline", "--yes", "--json"})
+			if code != exitDependencyUnavailable {
+				t.Fatalf("Run(migration restore apply %s) exit = %d, want %d; stdout = %s stderr = %s", tc.name, code, exitDependencyUnavailable, stdout.String(), stderr.String())
+			}
+			out := decodeAdminMigrationOutput(t, stdout.String())
+			requireAdminMigrationFinding(t, requireAdminMigrationArray(t, out, "findings"), tc.wantCode)
+			if targetStore.bootstrapSaves != 0 || targetStore.objectSaves != 0 {
+				t.Fatalf("failed preflight mutated target metadata bootstrap=%d objects=%d", targetStore.bootstrapSaves, targetStore.objectSaves)
+			}
+		})
+	}
+}
+
 func TestAdminMigrationRestoreApplyRestoresStateAndRecommendsReindex(t *testing.T) {
 	bundlePath, checksum := writeAdminMigrationRestoreTestBundleWithBlobAndCookbook(t)
 	targetStore := &fakeMigrationInventoryStore{
@@ -972,7 +1105,11 @@ func TestAdminMigrationRestoreApplyRestoresStateAndRecommendsReindex(t *testing.
 	}
 	requireAdminMigrationDependency(t, requireAdminMigrationArray(t, out, "dependencies"), "restore_write", "ok")
 	requireAdminMigrationDependency(t, requireAdminMigrationArray(t, out, "dependencies"), "restore_blobs", "ok")
+	requireAdminMigrationDependency(t, requireAdminMigrationArray(t, out, "dependencies"), "restore_validation", "ok")
 	requireAdminMigrationMutationMessage(t, requireAdminMigrationArray(t, out, "planned_mutations"), "opencook admin reindex --all-orgs --complete")
+	families := requireAdminMigrationArray(t, requireAdminMigrationMap(t, out, "inventory"), "families")
+	requireAdminMigrationInventoryFamily(t, families, "", "reachable_blobs", 1)
+	requireAdminMigrationInventoryFamily(t, families, "", "content_verified_blobs", 1)
 	if _, ok := targetStore.bootstrap.Orgs["ponyville"]; !ok {
 		t.Fatalf("restored bootstrap orgs = %#v, want ponyville", targetStore.bootstrap.Orgs)
 	}
@@ -1152,9 +1289,87 @@ func TestAdminMigrationRestoreApplyBlobFailureDoesNotSaveMetadata(t *testing.T) 
 	}
 	out := decodeAdminMigrationOutput(t, stdout.String())
 	requireAdminMigrationDependency(t, requireAdminMigrationArray(t, out, "dependencies"), "restore_blobs", "error")
+	requireAdminMigrationFinding(t, requireAdminMigrationArray(t, out, "findings"), adminMigrationFindingManualCleanupRequired)
 	if targetStore.bootstrapSaves != 0 || targetStore.objectSaves != 0 {
 		t.Fatalf("blob failure saved metadata bootstrap=%d objects=%d", targetStore.bootstrapSaves, targetStore.objectSaves)
 	}
+}
+
+func TestAdminMigrationRestoreApplyCookbookFailureRollsBackMetadata(t *testing.T) {
+	bundlePath, _ := writeAdminMigrationRestoreTestBundleWithBlobAndCookbook(t)
+	targetStore := &fakeMigrationInventoryStore{
+		fakeOfflineStore: &fakeOfflineStore{
+			bootstrap: bootstrap.BootstrapCoreState{},
+			objects:   bootstrap.CoreObjectState{},
+		},
+		cookbookInventory:  map[string]adminMigrationCookbookInventory{},
+		cookbookExport:     adminMigrationCookbookExport{Orgs: map[string]adminMigrationCookbookOrgExport{}},
+		cookbookRestoreErr: errors.New("cookbook restore failed"),
+	}
+	cmd, stdout, stderr := newTestCommand(t)
+	cmd.newBlobStore = func(config.Config) (blob.Store, error) {
+		return fakeMigrationBlobStore{
+			status: blob.Status{Backend: "memory-compat", Configured: true, Message: "test blob backend"},
+			exists: map[string]bool{},
+			puts:   map[string][]byte{},
+		}, nil
+	}
+	cmd.loadOffline = func() (config.Config, error) {
+		return config.Config{PostgresDSN: "postgres://opencook", BlobBackend: "memory"}, nil
+	}
+	cmd.newOfflineStore = func(context.Context, string) (adminOfflineStore, func() error, error) {
+		return targetStore, nil, nil
+	}
+
+	code := cmd.Run(context.Background(), []string{"admin", "migration", "restore", "apply", bundlePath, "--offline", "--yes", "--json"})
+	if code != exitDependencyUnavailable {
+		t.Fatalf("Run(migration restore apply cookbook failure) exit = %d, want %d; stdout = %s stderr = %s", code, exitDependencyUnavailable, stdout.String(), stderr.String())
+	}
+	out := decodeAdminMigrationOutput(t, stdout.String())
+	requireAdminMigrationFinding(t, requireAdminMigrationArray(t, out, "findings"), "restore_write_failed")
+	if len(targetStore.bootstrap.Orgs) != 0 || len(targetStore.objects.Orgs) != 0 {
+		t.Fatalf("cookbook failure left metadata bootstrap=%#v objects=%#v, want empty rollback", targetStore.bootstrap.Orgs, targetStore.objects.Orgs)
+	}
+	if targetStore.restoredCookbooks.Orgs != nil {
+		t.Fatalf("cookbook failure recorded restored cookbooks: %#v", targetStore.restoredCookbooks)
+	}
+}
+
+func TestAdminMigrationRestoreApplyReportsRehydratedInventoryMismatch(t *testing.T) {
+	bundlePath, _ := writeAdminMigrationRestoreTestBundleWithBlobAndCookbook(t)
+	targetStore := &fakeMigrationInventoryStore{
+		fakeOfflineStore: &fakeOfflineStore{
+			bootstrap: bootstrap.BootstrapCoreState{},
+			objects:   bootstrap.CoreObjectState{},
+		},
+		cookbookInventory:                 map[string]adminMigrationCookbookInventory{},
+		cookbookExport:                    adminMigrationCookbookExport{Orgs: map[string]adminMigrationCookbookOrgExport{}},
+		dropCookbookInventoryAfterRestore: true,
+	}
+	cmd, stdout, stderr := newTestCommand(t)
+	cmd.newBlobStore = func(config.Config) (blob.Store, error) {
+		exists := map[string]bool{}
+		puts := map[string][]byte{}
+		return fakeMigrationBlobStore{
+			status: blob.Status{Backend: "memory-compat", Configured: true, Message: "test blob backend"},
+			exists: exists,
+			puts:   puts,
+		}, nil
+	}
+	cmd.loadOffline = func() (config.Config, error) {
+		return config.Config{PostgresDSN: "postgres://opencook", BlobBackend: "memory"}, nil
+	}
+	cmd.newOfflineStore = func(context.Context, string) (adminOfflineStore, func() error, error) {
+		return targetStore, nil, nil
+	}
+
+	code := cmd.Run(context.Background(), []string{"admin", "migration", "restore", "apply", bundlePath, "--offline", "--yes", "--json"})
+	if code != exitDependencyUnavailable {
+		t.Fatalf("Run(migration restore apply validation mismatch) exit = %d, want %d; stdout = %s stderr = %s", code, exitDependencyUnavailable, stdout.String(), stderr.String())
+	}
+	out := decodeAdminMigrationOutput(t, stdout.String())
+	requireAdminMigrationDependency(t, requireAdminMigrationArray(t, out, "dependencies"), "restore_validation", "error")
+	requireAdminMigrationFinding(t, requireAdminMigrationArray(t, out, "findings"), adminMigrationFindingRestoredObjectMissing)
 }
 
 func TestAdminMigrationRestoreApplyCoreFailureRollsBackBootstrap(t *testing.T) {
@@ -2411,6 +2626,7 @@ func TestAdminMigrationSourceImportApplyBlobFailureDoesNotSaveMetadata(t *testin
 	out := decodeAdminMigrationOutput(t, stdout.String())
 	requireAdminMigrationDependency(t, requireAdminMigrationArray(t, out, "dependencies"), "source_import_blobs", "error")
 	requireAdminMigrationFinding(t, requireAdminMigrationArray(t, out, "findings"), "source_import_blob_copy_failed")
+	requireAdminMigrationFinding(t, requireAdminMigrationArray(t, out, "findings"), adminMigrationFindingRetrySafe)
 	if targetStore.bootstrapSaves != 0 || targetStore.objectSaves != 0 || len(targetStore.restoredCookbooks.Orgs) != 0 {
 		t.Fatalf("blob failure saved metadata bootstrap=%d objects=%d cookbooks=%#v", targetStore.bootstrapSaves, targetStore.objectSaves, targetStore.restoredCookbooks)
 	}
@@ -2440,11 +2656,59 @@ func TestAdminMigrationSourceImportApplyWriteFailureRollsBackMetadata(t *testing
 	}
 	out := decodeAdminMigrationOutput(t, stdout.String())
 	requireAdminMigrationFinding(t, requireAdminMigrationArray(t, out, "findings"), "source_import_write_failed")
+	requireAdminMigrationFinding(t, requireAdminMigrationArray(t, out, "findings"), adminMigrationFindingRetrySafe)
 	if len(targetStore.bootstrap.Users) != 0 || len(targetStore.objects.Orgs) != 0 || len(targetStore.restoredCookbooks.Orgs) != 0 {
 		t.Fatalf("write failure left state bootstrap=%#v objects=%#v cookbooks=%#v", targetStore.bootstrap, targetStore.objects, targetStore.restoredCookbooks)
 	}
 	if targetStore.bootstrapSaves != 2 || targetStore.objectSaves != 0 {
 		t.Fatalf("write failure saves bootstrap=%d objects=%d, want rollback bootstrap save and no object save", targetStore.bootstrapSaves, targetStore.objectSaves)
+	}
+}
+
+func TestAdminMigrationSourceImportApplyRejectsStaleProgressTargetMismatch(t *testing.T) {
+	sourcePath := writeAdminMigrationNormalizedSourceFixture(t)
+	progressPath := filepath.Join(t.TempDir(), "source-import-progress.json")
+	targetStore := &fakeMigrationInventoryStore{
+		fakeOfflineStore:  &fakeOfflineStore{bootstrap: bootstrap.BootstrapCoreState{}, objects: bootstrap.CoreObjectState{}},
+		cookbookInventory: map[string]adminMigrationCookbookInventory{},
+		cookbookExport:    adminMigrationCookbookExport{Orgs: map[string]adminMigrationCookbookOrgExport{}},
+	}
+	cmd, stdout, stderr := newTestCommand(t)
+	cmd.newBlobStore = func(config.Config) (blob.Store, error) {
+		return fakeMigrationBlobStore{status: blob.Status{Backend: "filesystem", Configured: true, Message: "test blob backend"}, exists: map[string]bool{}, puts: map[string][]byte{}}, nil
+	}
+	cmd.loadOffline = func() (config.Config, error) {
+		return config.Config{PostgresDSN: "postgres://opencook", BlobBackend: "filesystem", BlobStorageURL: t.TempDir()}, nil
+	}
+	cmd.newOfflineStore = func(context.Context, string) (adminOfflineStore, func() error, error) {
+		return targetStore, nil, nil
+	}
+
+	code := cmd.Run(context.Background(), []string{"admin", "migration", "source", "import", "apply", sourcePath, "--offline", "--yes", "--progress", progressPath, "--json"})
+	if code != exitOK {
+		t.Fatalf("Run(migration source import apply initial) exit = %d, want %d; stdout = %s stderr = %s", code, exitOK, stdout.String(), stderr.String())
+	}
+	driftedUser := targetStore.bootstrap.Users["pivotal"]
+	driftedUser.DisplayName = "Drifted Target"
+	targetStore.bootstrap.Users["pivotal"] = driftedUser
+	bootstrapSavesBefore := targetStore.bootstrapSaves
+	objectSavesBefore := targetStore.objectSaves
+
+	stdout.Reset()
+	stderr.Reset()
+	code = cmd.Run(context.Background(), []string{"admin", "migration", "source", "import", "apply", sourcePath, "--offline", "--yes", "--progress", progressPath, "--json"})
+	if code != exitDependencyUnavailable {
+		t.Fatalf("Run(migration source import apply stale progress) exit = %d, want %d; stdout = %s stderr = %s", code, exitDependencyUnavailable, stdout.String(), stderr.String())
+	}
+	out := decodeAdminMigrationOutput(t, stdout.String())
+	findings := requireAdminMigrationArray(t, out, "findings")
+	requireAdminMigrationFinding(t, findings, "source_import_progress_target_mismatch")
+	requireAdminMigrationFinding(t, findings, adminMigrationFindingRetryUnsafe)
+	if targetStore.bootstrap.Users["pivotal"].DisplayName != "Drifted Target" {
+		t.Fatalf("stale progress retry changed target user = %#v", targetStore.bootstrap.Users["pivotal"])
+	}
+	if targetStore.bootstrapSaves != bootstrapSavesBefore || targetStore.objectSaves != objectSavesBefore {
+		t.Fatalf("stale progress retry saved metadata bootstrap=%d/%d objects=%d/%d", targetStore.bootstrapSaves, bootstrapSavesBefore, targetStore.objectSaves, objectSavesBefore)
 	}
 }
 
@@ -2493,6 +2757,35 @@ func TestAdminMigrationSourceSyncPreflightPlansStableRepeatedSnapshot(t *testing
 	requireAdminMigrationInventoryFamily(t, requireAdminMigrationArray(t, requireAdminMigrationMap(t, out, "inventory"), "families"), "", "users_unchanged", 1)
 	if targetStore.bootstrapSaves != 0 || targetStore.objectSaves != 0 {
 		t.Fatalf("source sync preflight saved metadata bootstrap=%d objects=%d", targetStore.bootstrapSaves, targetStore.objectSaves)
+	}
+}
+
+func TestAdminMigrationSourceSyncPreflightWrongTargetDSNFailsWithoutMutation(t *testing.T) {
+	sourcePath := writeAdminMigrationNormalizedSourceFixture(t)
+	cmd, stdout, stderr := newTestCommand(t)
+	cmd.loadOffline = func() (config.Config, error) {
+		return config.Config{PostgresDSN: "postgres://wrong-target:supersecret@postgres/opencook", BlobBackend: "filesystem", BlobStorageURL: t.TempDir()}, nil
+	}
+	cmd.newOfflineStore = func(_ context.Context, dsn string) (adminOfflineStore, func() error, error) {
+		if dsn != "postgres://wrong-target:supersecret@postgres/opencook" {
+			t.Fatalf("dsn = %q, want configured target DSN", dsn)
+		}
+		return nil, nil, errors.New("dial postgres://wrong-target:supersecret@postgres/opencook failed")
+	}
+	cmd.newBlobStore = func(config.Config) (blob.Store, error) {
+		t.Fatal("source sync preflight opened blob backend after PostgreSQL target was unavailable")
+		return nil, nil
+	}
+
+	code := cmd.Run(context.Background(), []string{"admin", "migration", "source", "sync", "preflight", sourcePath, "--offline", "--json"})
+	if code != exitDependencyUnavailable {
+		t.Fatalf("Run(migration source sync preflight wrong DSN) exit = %d, want %d; stdout = %s stderr = %s", code, exitDependencyUnavailable, stdout.String(), stderr.String())
+	}
+	out := decodeAdminMigrationOutput(t, stdout.String())
+	requireAdminMigrationDependency(t, requireAdminMigrationArray(t, out, "dependencies"), "postgres", "error")
+	requireAdminMigrationFinding(t, requireAdminMigrationArray(t, out, "findings"), adminMigrationFindingRetrySafe)
+	if strings.Contains(stdout.String(), "supersecret") || strings.Contains(stderr.String(), "supersecret") {
+		t.Fatalf("wrong target DSN leaked secret: stdout=%s stderr=%s", stdout.String(), stderr.String())
 	}
 }
 
@@ -2650,6 +2943,7 @@ func TestAdminMigrationSourceSyncApplyWriteFailureIsRetryable(t *testing.T) {
 	}
 	out := decodeAdminMigrationOutput(t, stdout.String())
 	requireAdminMigrationFinding(t, requireAdminMigrationArray(t, out, "findings"), "source_sync_write_failed")
+	requireAdminMigrationFinding(t, requireAdminMigrationArray(t, out, "findings"), adminMigrationFindingRetrySafe)
 	if targetStore.bootstrap.Users["pivotal"].DisplayName != "Old Source" {
 		t.Fatalf("failed sync left user = %#v, want rollback to old source", targetStore.bootstrap.Users["pivotal"])
 	}
@@ -2717,6 +3011,15 @@ func TestAdminMigrationCutoverRehearseValidatesLiveTargetAndDownloadsBlob(t *tes
 		},
 		"errors": []any{},
 	})
+	maintenanceResultPath := filepath.Join(t.TempDir(), "maintenance-status.json")
+	writeAdminMigrationSourceJSON(t, maintenanceResultPath, map[string]any{
+		"ok":      true,
+		"command": "maintenance_status",
+		"active":  true,
+		"expired": false,
+		"backend": map[string]any{"name": "postgres", "shared": true},
+		"state":   map[string]any{"mode": "cutover"},
+	})
 	downloadURL := "http://opencook.test/_blob/checksums/" + checksum + "?signature=secret"
 	cookbookPath := "/organizations/ponyville/cookbooks/app/1.2.3"
 	fake := &fakeMigrationRehearsalClient{
@@ -2755,6 +3058,8 @@ func TestAdminMigrationCutoverRehearseValidatesLiveTargetAndDownloadsBlob(t *tes
 		"--source-sync-progress", syncProgressPath,
 		"--search-check-result", searchResultPath,
 		"--shadow-result", shadowResultPath,
+		"--maintenance-result", maintenanceResultPath,
+		"--source-frozen",
 		"--rollback-ready",
 		"--server-url", "http://opencook.test",
 		"--requestor-name", "pivotal",
@@ -2777,14 +3082,19 @@ func TestAdminMigrationCutoverRehearseValidatesLiveTargetAndDownloadsBlob(t *tes
 	}
 	requireAdminMigrationDependency(t, requireAdminMigrationArray(t, out, "dependencies"), "backup_bundle", "ok")
 	requireAdminMigrationDependency(t, requireAdminMigrationArray(t, out, "dependencies"), "cutover_source_bundle", "ok")
+	requireAdminMigrationDependency(t, requireAdminMigrationArray(t, out, "dependencies"), "source_freeze_evidence", "ok")
 	requireAdminMigrationDependency(t, requireAdminMigrationArray(t, out, "dependencies"), "source_import_progress", "ok")
 	requireAdminMigrationDependency(t, requireAdminMigrationArray(t, out, "dependencies"), "source_sync_freshness", "ok")
 	requireAdminMigrationDependency(t, requireAdminMigrationArray(t, out, "dependencies"), "search_cleanliness", "ok")
 	requireAdminMigrationDependency(t, requireAdminMigrationArray(t, out, "dependencies"), "shadow_read_evidence", "ok")
+	requireAdminMigrationDependency(t, requireAdminMigrationArray(t, out, "dependencies"), "maintenance_evidence", "ok")
 	requireAdminMigrationDependency(t, requireAdminMigrationArray(t, out, "dependencies"), "rollback_readiness", "ok")
+	requireAdminMigrationDependency(t, requireAdminMigrationArray(t, out, "dependencies"), "blob_integrity_evidence", "ok")
 	requireAdminMigrationDependency(t, requireAdminMigrationArray(t, out, "dependencies"), "signed_auth", "ok")
 	requireAdminMigrationDependency(t, requireAdminMigrationArray(t, out, "dependencies"), "blob_reachability", "ok")
+	requireAdminMigrationDependency(t, requireAdminMigrationArray(t, out, "dependencies"), "restored_target_validation", "ok")
 	requireAdminMigrationDependency(t, requireAdminMigrationArray(t, out, "dependencies"), "cutover_rehearsal", "ok")
+	requireAdminMigrationDependency(t, requireAdminMigrationArray(t, out, "dependencies"), "cutover_evidence", "ok")
 	families := requireAdminMigrationArray(t, requireAdminMigrationMap(t, out, "inventory"), "families")
 	requireAdminMigrationInventoryFamily(t, families, "", "rehearsal_failed", 0)
 	requireAdminMigrationInventoryFamily(t, families, "", "rehearsal_downloads", 1)
@@ -2797,6 +3107,46 @@ func TestAdminMigrationCutoverRehearseValidatesLiveTargetAndDownloadsBlob(t *tes
 	if len(fake.downloadCalls) != 1 || fake.downloadCalls[0] != downloadURL {
 		t.Fatalf("download calls = %v, want %s", fake.downloadCalls, downloadURL)
 	}
+}
+
+func TestAdminMigrationCutoverRehearseReportsMissingEvidenceWarnings(t *testing.T) {
+	bundlePath := writeAdminMigrationRestoreTestBundle(t)
+	cmd, stdout, stderr := newTestCommand(t)
+	cmd.loadAdminConfig = func() admin.Config {
+		return admin.Config{
+			ServerURL:        "http://opencook.test",
+			RequestorName:    "pivotal",
+			RequestorType:    "user",
+			PrivateKeyPath:   "/keys/pivotal.pem",
+			ServerAPIVersion: "1",
+		}
+	}
+	cmd.newAdmin = func(admin.Config) (adminJSONClient, error) {
+		return &fakeMigrationRehearsalClient{}, nil
+	}
+
+	code := cmd.Run(context.Background(), []string{"admin", "migration", "cutover", "rehearse", "--manifest", bundlePath, "--json"})
+	if code != exitOK {
+		t.Fatalf("Run(migration cutover rehearse missing evidence) exit = %d, want %d; stdout = %s stderr = %s", code, exitOK, stdout.String(), stderr.String())
+	}
+	out := decodeAdminMigrationOutput(t, stdout.String())
+	deps := requireAdminMigrationArray(t, out, "dependencies")
+	requireAdminMigrationDependency(t, deps, "source_freeze_evidence", "warning")
+	requireAdminMigrationDependency(t, deps, "source_import_progress", "warning")
+	requireAdminMigrationDependency(t, deps, "source_sync_freshness", "warning")
+	requireAdminMigrationDependency(t, deps, "search_cleanliness", "warning")
+	requireAdminMigrationDependency(t, deps, "shadow_read_evidence", "warning")
+	requireAdminMigrationDependency(t, deps, "maintenance_evidence", "warning")
+	requireAdminMigrationDependency(t, deps, "rollback_readiness", "warning")
+	requireAdminMigrationDependency(t, deps, "blob_integrity_evidence", "skipped")
+	requireAdminMigrationDependency(t, deps, "restored_target_validation", "ok")
+	cutoverEvidence := requireAdminMigrationDependency(t, deps, "cutover_evidence", "ok")
+	details := requireAdminMigrationMap(t, cutoverEvidence, "details")
+	if details["blockers"] != "0" {
+		t.Fatalf("cutover_evidence blockers = %v, want 0", details["blockers"])
+	}
+	families := requireAdminMigrationArray(t, requireAdminMigrationMap(t, out, "inventory"), "families")
+	requireAdminMigrationInventoryFamily(t, families, "", "cutover_blockers", 0)
 }
 
 func TestAdminMigrationCutoverRehearsePromotesEvidenceFailuresToBlockers(t *testing.T) {
@@ -2842,6 +3192,14 @@ func TestAdminMigrationCutoverRehearsePromotesEvidenceFailuresToBlockers(t *test
 		},
 		"errors": []map[string]string{{"code": "shadow_payload_mismatch"}},
 	})
+	maintenanceResultPath := filepath.Join(t.TempDir(), "maintenance-status.json")
+	writeAdminMigrationSourceJSON(t, maintenanceResultPath, map[string]any{
+		"ok":      true,
+		"command": "maintenance_status",
+		"active":  false,
+		"backend": map[string]any{"name": "postgres", "shared": true},
+		"state":   map[string]any{"mode": "cutover"},
+	})
 	cmd, stdout, stderr := newTestCommand(t)
 	cmd.loadAdminConfig = func() admin.Config {
 		return admin.Config{
@@ -2864,6 +3222,7 @@ func TestAdminMigrationCutoverRehearsePromotesEvidenceFailuresToBlockers(t *test
 		"--source-sync-progress", syncProgressPath,
 		"--search-check-result", searchResultPath,
 		"--shadow-result", shadowResultPath,
+		"--maintenance-result", maintenanceResultPath,
 		"--rollback-ready",
 		"--json",
 	})
@@ -2876,11 +3235,14 @@ func TestAdminMigrationCutoverRehearsePromotesEvidenceFailuresToBlockers(t *test
 	requireAdminMigrationDependency(t, deps, "source_sync_freshness", "error")
 	requireAdminMigrationDependency(t, deps, "search_cleanliness", "error")
 	requireAdminMigrationDependency(t, deps, "shadow_read_evidence", "error")
+	requireAdminMigrationDependency(t, deps, "maintenance_evidence", "error")
+	requireAdminMigrationDependency(t, deps, "cutover_evidence", "error")
 	findings := requireAdminMigrationArray(t, out, "findings")
 	requireAdminMigrationFinding(t, findings, "source_import_incomplete")
 	requireAdminMigrationFinding(t, findings, "source_sync_stale")
 	requireAdminMigrationFinding(t, findings, "cutover_search_not_clean")
 	requireAdminMigrationFinding(t, findings, "cutover_shadow_result_failed")
+	requireAdminMigrationFinding(t, findings, adminMigrationFindingMaintenanceInactive)
 	families := requireAdminMigrationArray(t, requireAdminMigrationMap(t, out, "inventory"), "families")
 	for _, item := range families {
 		entry, _ := item.(map[string]any)
@@ -2915,8 +3277,11 @@ func TestAdminMigrationCutoverRehearseReportsLiveReadFailures(t *testing.T) {
 		t.Fatalf("Run(migration cutover rehearse failure) exit = %d, want %d; stdout = %s stderr = %s", code, exitDependencyUnavailable, stdout.String(), stderr.String())
 	}
 	out := decodeAdminMigrationOutput(t, stdout.String())
+	requireAdminMigrationDependency(t, requireAdminMigrationArray(t, out, "dependencies"), "restored_target_validation", "error")
 	requireAdminMigrationDependency(t, requireAdminMigrationArray(t, out, "dependencies"), "cutover_rehearsal", "error")
+	requireAdminMigrationDependency(t, requireAdminMigrationArray(t, out, "dependencies"), "cutover_evidence", "error")
 	requireAdminMigrationFinding(t, requireAdminMigrationArray(t, out, "findings"), "cutover_rehearsal_check_failed")
+	requireAdminMigrationFinding(t, requireAdminMigrationArray(t, out, "findings"), adminMigrationFindingRetrySafe)
 	families := requireAdminMigrationArray(t, requireAdminMigrationMap(t, out, "inventory"), "families")
 	requireAdminMigrationInventoryFamily(t, families, "", "rehearsal_failed", 1)
 }
@@ -3026,6 +3391,7 @@ func TestAdminMigrationShadowCompareReportsPayloadAndSearchMismatches(t *testing
 			out := decodeAdminMigrationOutput(t, stdout.String())
 			requireAdminMigrationDependency(t, requireAdminMigrationArray(t, out, "dependencies"), "shadow_read_compare", "error")
 			requireAdminMigrationFinding(t, requireAdminMigrationArray(t, out, "findings"), tc.wantCode)
+			requireAdminMigrationFinding(t, requireAdminMigrationArray(t, out, "findings"), adminMigrationFindingRetrySafe)
 			requireAdminMigrationInventoryFamily(t, requireAdminMigrationArray(t, requireAdminMigrationMap(t, out, "inventory"), "families"), "", "shadow_failed", 1)
 			if strings.Contains(stdout.String(), "wrong-node") || strings.Contains(stdout.String(), "HTTP 403") {
 				t.Fatalf("shadow mismatch output leaked raw target details: %s", stdout.String())
@@ -3255,15 +3621,19 @@ func TestAdminMigrationScaffoldParsesCommandShapes(t *testing.T) {
 
 type fakeMigrationInventoryStore struct {
 	*fakeOfflineStore
-	cookbookInventory  map[string]adminMigrationCookbookInventory
-	cookbookExport     adminMigrationCookbookExport
-	restoredCookbooks  adminMigrationCookbookExport
-	cookbookRestoreErr error
+	cookbookInventory                 map[string]adminMigrationCookbookInventory
+	cookbookExport                    adminMigrationCookbookExport
+	restoredCookbooks                 adminMigrationCookbookExport
+	cookbookRestoreErr                error
+	dropCookbookInventoryAfterRestore bool
 }
 
 // LoadCookbookInventory lets migration preflight tests exercise cookbook
 // inventory counts without needing a live PostgreSQL cookbook repository.
 func (s *fakeMigrationInventoryStore) LoadCookbookInventory([]string) (map[string]adminMigrationCookbookInventory, error) {
+	if s.dropCookbookInventoryAfterRestore && len(s.restoredCookbooks.Orgs) > 0 {
+		return map[string]adminMigrationCookbookInventory{}, nil
+	}
 	return s.cookbookInventory, nil
 }
 
@@ -3449,6 +3819,12 @@ func (f *fakeMigrationRehearsalClient) calledPath(path string) bool {
 // adminMigrationShadowClientForSource builds target responses from normalized
 // source state, then adds volatile fields so shadow tests exercise normalizers.
 func adminMigrationShadowClientForSource(t *testing.T, sourcePath string, overrides map[string]any) *fakeMigrationRehearsalClient {
+	return adminMigrationShadowClientForSourceCoverage(t, sourcePath, adminMigrationShadowCoverageRepresentative, overrides)
+}
+
+// adminMigrationShadowClientForSourceCoverage builds target responses for the
+// requested shadow coverage mode so tests exercise the same check generator as the CLI.
+func adminMigrationShadowClientForSourceCoverage(t *testing.T, sourcePath, coverage string, overrides map[string]any) *fakeMigrationRehearsalClient {
 	t.Helper()
 	read, err := adminMigrationReadSourceImportBundle(sourcePath)
 	if err != nil {
@@ -3459,11 +3835,11 @@ func adminMigrationShadowClientForSource(t *testing.T, sourcePath string, overri
 		t.Fatalf("adminMigrationSourceImportStateFromRead() error = %v", err)
 	}
 	blobManifest := adminMigrationSourceReadBlobManifest(sourceState, read)
-	checks, _ := adminMigrationShadowComparableChecks(adminMigrationCutoverRehearsalChecks(sourceState.Bootstrap, sourceState.CoreObjects, sourceState.Cookbooks, blobManifest))
+	checks, _ := adminMigrationShadowChecksForCoverage(sourceState, blobManifest, coverage)
 	responses := map[string]any{}
 	downloads := map[string][]byte{}
 	for _, check := range checks {
-		if check.Family == "search" {
+		if check.Family == "search" || check.Family == "partial_search" {
 			responses[check.Path] = map[string]any{
 				"start": 0,
 				"total": adminMigrationShadowExpectedSearchCount(check, sourceState),
@@ -3622,6 +3998,22 @@ func (s fakeMigrationBlobStore) Put(_ context.Context, req blob.PutRequest) (blo
 		s.exists[key] = true
 	}
 	return blob.PutResult{Location: key}, nil
+}
+
+// Get returns restored or preloaded blob bytes so local-content restore
+// validation can detect checksum mismatches without a real provider.
+func (s fakeMigrationBlobStore) Get(_ context.Context, key string) ([]byte, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	key = strings.TrimSpace(key)
+	if body, ok := s.puts[key]; ok {
+		return append([]byte(nil), body...), nil
+	}
+	if s.exists[key] {
+		return nil, blob.ErrNotFound
+	}
+	return nil, blob.ErrNotFound
 }
 
 // writeAdminMigrationTestBlob writes content under its Chef MD5 checksum so
@@ -3875,6 +4267,163 @@ func TestAdminMigrationInheritedJSONBypassesLiveAdminClient(t *testing.T) {
 	}
 }
 
+func TestAdminMigrationProductionScaleValidationContractShape(t *testing.T) {
+	contract := adminMigrationProductionScaleValidationContract()
+	if contract.FormatVersion != adminMigrationProductionScaleFormatV1 {
+		t.Fatalf("format version = %q, want %q", contract.FormatVersion, adminMigrationProductionScaleFormatV1)
+	}
+	if contract.DefaultScaleProfile != adminMigrationScaleProfileSmall {
+		t.Fatalf("default scale profile = %q, want %q", contract.DefaultScaleProfile, adminMigrationScaleProfileSmall)
+	}
+
+	profiles := make(map[string]adminMigrationValidationScaleProfile)
+	for _, profile := range contract.ScaleProfiles {
+		profiles[profile.Name] = profile
+		if profile.Description == "" {
+			t.Fatalf("scale profile %q missing description", profile.Name)
+		}
+	}
+	if profile := profiles[adminMigrationScaleProfileSmall]; !profile.Default || profile.OptIn {
+		t.Fatalf("small profile = %+v, want default non-opt-in", profile)
+	}
+	for _, name := range []string{adminMigrationScaleProfileMedium, adminMigrationScaleProfileLarge} {
+		if profile := profiles[name]; profile.Default || !profile.OptIn {
+			t.Fatalf("%s profile = %+v, want opt-in non-default", name, profile)
+		}
+	}
+
+	wantPhases := []string{"backup", "restore", "source_import_sync", "shadow_compare", "opensearch_check_repair", "blob_verification", "cutover_rehearsal"}
+	if len(contract.Evidence) != len(wantPhases) {
+		t.Fatalf("evidence phases = %d, want %d", len(contract.Evidence), len(wantPhases))
+	}
+	evidencePhases := map[string]bool{}
+	for _, evidence := range contract.Evidence {
+		evidencePhases[evidence.Phase] = true
+		if len(evidence.Commands) == 0 || evidence.Description == "" {
+			t.Fatalf("evidence phase %q incomplete: %+v", evidence.Phase, evidence)
+		}
+	}
+	for _, phase := range wantPhases {
+		if !evidencePhases[phase] {
+			t.Fatalf("evidence phases = %v, want %s", evidencePhases, phase)
+		}
+	}
+
+	contains := func(values []string, want string) bool {
+		for _, value := range values {
+			if value == want {
+				return true
+			}
+		}
+		return false
+	}
+	counts := make(map[string]adminMigrationValidationCountRequirement)
+	for _, requirement := range contract.RequiredCounts {
+		counts[requirement.Phase] = requirement
+	}
+	if len(contract.RequiredCounts) != len(wantPhases) {
+		t.Fatalf("required count phases = %d, want %d", len(contract.RequiredCounts), len(wantPhases))
+	}
+	for _, phase := range wantPhases {
+		if _, ok := counts[phase]; !ok {
+			t.Fatalf("required count phases = %v, want %s", counts, phase)
+		}
+	}
+	backup := counts["backup"]
+	for _, family := range []string{"users", "organizations"} {
+		if !contains(backup.GlobalFamilies, family) {
+			t.Fatalf("backup global families = %v, want %s", backup.GlobalFamilies, family)
+		}
+	}
+	for _, family := range []string{"clients", "nodes", "cookbook_versions", "cookbook_artifacts"} {
+		if !contains(backup.OrganizationFamilies, family) {
+			t.Fatalf("backup organization families = %v, want %s", backup.OrganizationFamilies, family)
+		}
+	}
+	for _, family := range []string{"referenced_blobs", "reachable_blobs", "missing_blobs", "copied_blobs"} {
+		if !contains(backup.BlobFamilies, family) {
+			t.Fatalf("backup blob families = %v, want %s", backup.BlobFamilies, family)
+		}
+	}
+	search := counts["opensearch_check_repair"]
+	for _, family := range []string{"opensearch_expected_documents", "opensearch_missing_documents", "opensearch_stale_documents"} {
+		if !contains(search.SearchFamilies, family) {
+			t.Fatalf("search families = %v, want %s", search.SearchFamilies, family)
+		}
+	}
+	rehearsal := counts["cutover_rehearsal"]
+	for _, family := range []string{"rehearsal_checks", "rehearsal_passed", "rehearsal_failed", "rehearsal_downloads"} {
+		if !contains(rehearsal.RehearsalFamilies, family) {
+			t.Fatalf("rehearsal families = %v, want %s", rehearsal.RehearsalFamilies, family)
+		}
+	}
+
+	findingCodes := make(map[string]adminMigrationValidationFindingCode)
+	for _, finding := range contract.FindingCodes {
+		findingCodes[finding.Code] = finding
+		if finding.Severity == "" || finding.Family == "" || finding.Message == "" {
+			t.Fatalf("finding code %q incomplete: %+v", finding.Code, finding)
+		}
+	}
+	wantFindingCodes := []string{
+		adminMigrationFindingCountMismatch,
+		adminMigrationFindingRestoredObjectMissing,
+		adminMigrationFindingUnexpectedExtraObject,
+		adminMigrationFindingBlobMismatch,
+		adminMigrationFindingMissingBlob,
+		adminMigrationFindingStaleSearchDocument,
+		adminMigrationFindingMissingSearchDocument,
+		adminMigrationFindingUnsupportedSourceFamily,
+		adminMigrationFindingRetryProgressDrift,
+		adminMigrationFindingRetrySafe,
+		adminMigrationFindingRetryUnsafe,
+		adminMigrationFindingManualCleanupRequired,
+		adminMigrationFindingMaintenanceInvalid,
+		adminMigrationFindingMaintenanceInactive,
+		adminMigrationFindingMaintenanceProcessLocal,
+	}
+	if len(contract.FindingCodes) != len(wantFindingCodes) {
+		t.Fatalf("finding codes = %d, want %d", len(contract.FindingCodes), len(wantFindingCodes))
+	}
+	for _, code := range wantFindingCodes {
+		if _, ok := findingCodes[code]; !ok {
+			t.Fatalf("finding codes = %v, want %s", findingCodes, code)
+		}
+	}
+}
+
+func TestAdminMigrationProductionScaleValidationContractJSONShape(t *testing.T) {
+	raw, err := json.Marshal(adminMigrationProductionScaleValidationContract())
+	if err != nil {
+		t.Fatalf("json.Marshal(validation contract) error = %v", err)
+	}
+	if strings.Contains(string(raw), "null") {
+		t.Fatalf("validation contract JSON contains null arrays: %s", string(raw))
+	}
+
+	out := decodeAdminMigrationOutput(t, string(raw))
+	if out["format_version"] != adminMigrationProductionScaleFormatV1 {
+		t.Fatalf("format_version = %v, want %s", out["format_version"], adminMigrationProductionScaleFormatV1)
+	}
+	if out["default_scale_profile"] != adminMigrationScaleProfileSmall {
+		t.Fatalf("default_scale_profile = %v, want %s", out["default_scale_profile"], adminMigrationScaleProfileSmall)
+	}
+	requireAdminMigrationArray(t, out, "scale_profiles")
+	requireAdminMigrationArray(t, out, "evidence")
+	requiredCounts := requireAdminMigrationArray(t, out, "required_counts")
+	requireAdminMigrationArray(t, out, "finding_codes")
+
+	for _, item := range requiredCounts {
+		entry, ok := item.(map[string]any)
+		if !ok {
+			t.Fatalf("required count = %#v, want object", item)
+		}
+		for _, key := range []string{"global_families", "organization_families", "blob_families", "search_families", "rehearsal_families"} {
+			requireAdminMigrationArray(t, entry, key)
+		}
+	}
+}
+
 func decodeAdminMigrationOutput(t *testing.T, raw string) map[string]any {
 	t.Helper()
 	var out map[string]any
@@ -3938,6 +4487,34 @@ func requireAdminMigrationDependency(t *testing.T, source []any, name, status st
 	}
 	t.Fatalf("dependencies = %v, want %s/%s", source, name, status)
 	return nil
+}
+
+func requireAdminMigrationOperatorEvidence(t *testing.T, source []any, name, status string) map[string]any {
+	t.Helper()
+	for _, item := range source {
+		evidence, ok := item.(map[string]any)
+		if !ok {
+			t.Fatalf("operator evidence = %#v, want object", item)
+		}
+		if evidence["name"] == name {
+			if evidence["status"] != status {
+				t.Fatalf("operator evidence %s status = %v, want %s in %v", name, evidence["status"], status, evidence)
+			}
+			return evidence
+		}
+	}
+	t.Fatalf("operator evidence = %v, want %s/%s", source, name, status)
+	return nil
+}
+
+func requireAdminMigrationArrayContainsString(t *testing.T, source []any, want string) {
+	t.Helper()
+	for _, item := range source {
+		if strings.Contains(fmt.Sprint(item), want) {
+			return
+		}
+	}
+	t.Fatalf("array = %v, want item containing %q", source, want)
 }
 
 // requireAdminMigrationInventoryFamily finds a scoped family count so inventory

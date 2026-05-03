@@ -71,9 +71,25 @@ func TestAdminRunbookShowReportsUnsupportedOmnibusWorkflows(t *testing.T) {
 	}
 
 	body := stdout.String()
-	for _, want := range []string{"embedded process supervisor", "omnibus reconfigure", "licensing and license telemetry", "maintenance-mode traffic blocking"} {
+	for _, want := range []string{"embedded process supervisor", "omnibus reconfigure", "licensing and license telemetry", "omnibus maintenance-mode wrappers"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("unsupported runbook missing %q: %s", want, body)
+		}
+	}
+}
+
+func TestAdminRunbookShowReportsProductionScaleMigrationGuidance(t *testing.T) {
+	cmd, stdout, stderr := newTestCommand(t)
+
+	code := cmd.Run(context.Background(), []string{"admin", "runbook", "show", "migration-cutover", "--json"})
+	if code != exitOK {
+		t.Fatalf("Run(admin runbook show migration-cutover) exit = %d, want %d; stderr = %s", code, exitOK, stderr.String())
+	}
+
+	body := stdout.String()
+	for _, want := range []string{"operator_report", "migration scale-fixture create", "migration-scale-all", "source-frozen", "emergency rollback"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("migration runbook missing %q: %s", want, body)
 		}
 	}
 }

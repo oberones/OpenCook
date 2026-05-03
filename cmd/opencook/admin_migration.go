@@ -20,6 +20,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -39,9 +40,39 @@ const (
 	adminMigrationChefSourceFormatV1           = "opencook.migration.chef_source.v1"
 	adminMigrationSourceImportProgressFormatV1 = "opencook.migration.source_import_progress.v1"
 	adminMigrationSourceSyncProgressFormatV1   = "opencook.migration.source_sync_progress.v1"
+	adminMigrationProductionScaleFormatV1      = "opencook.migration.production_scale_validation.v1"
 	adminMigrationSourceManifestPath           = "opencook-source-manifest.json"
 	adminMigrationSourceImportProgressPath     = "opencook-source-import-progress.json"
 	adminMigrationSourceSyncProgressPath       = "opencook-source-sync-progress.json"
+)
+
+const (
+	adminMigrationScaleProfileSmall  = "small"
+	adminMigrationScaleProfileMedium = "medium"
+	adminMigrationScaleProfileLarge  = "large"
+)
+
+const (
+	adminMigrationShadowCoverageRepresentative = "representative"
+	adminMigrationShadowCoverageScale          = "scale"
+)
+
+const (
+	adminMigrationFindingCountMismatch           = "migration_count_mismatch"
+	adminMigrationFindingRestoredObjectMissing   = "migration_restored_object_missing"
+	adminMigrationFindingUnexpectedExtraObject   = "migration_unexpected_extra_object"
+	adminMigrationFindingBlobMismatch            = "migration_blob_mismatch"
+	adminMigrationFindingMissingBlob             = "migration_missing_blob"
+	adminMigrationFindingStaleSearchDocument     = "migration_stale_search_document"
+	adminMigrationFindingMissingSearchDocument   = "migration_missing_search_document"
+	adminMigrationFindingUnsupportedSourceFamily = "migration_unsupported_source_family"
+	adminMigrationFindingRetryProgressDrift      = "migration_retry_progress_drift"
+	adminMigrationFindingRetrySafe               = "migration_retry_safe"
+	adminMigrationFindingRetryUnsafe             = "migration_retry_unsafe"
+	adminMigrationFindingManualCleanupRequired   = "migration_manual_cleanup_required"
+	adminMigrationFindingMaintenanceInvalid      = "cutover_maintenance_evidence_invalid"
+	adminMigrationFindingMaintenanceInactive     = "cutover_maintenance_inactive"
+	adminMigrationFindingMaintenanceProcessLocal = "cutover_maintenance_process_local"
 )
 
 var (
@@ -56,37 +87,40 @@ var (
 )
 
 type adminMigrationFlagValues struct {
-	orgName            string
-	allOrgs            bool
-	jsonOutput         bool
-	withTiming         bool
-	dryRun             bool
-	offline            bool
-	yes                bool
-	outputPath         string
-	progressPath       string
-	manifestPath       string
-	sourcePath         string
-	importProgressPath string
-	syncProgressPath   string
-	shadowResultPath   string
-	searchResultPath   string
-	serverURL          string
-	postgresDSN        string
-	openSearchURL      string
-	blobBackend        string
-	blobStorageURL     string
-	blobS3Endpoint     string
-	blobS3Region       string
-	blobS3AccessKeyID  string
-	blobS3SecretKey    string
-	blobS3SessionToken string
-	requestorName      string
-	requestorType      string
-	privateKeyPath     string
-	defaultOrg         string
-	serverAPIVersion   string
-	rollbackReady      bool
+	orgName               string
+	allOrgs               bool
+	jsonOutput            bool
+	withTiming            bool
+	dryRun                bool
+	offline               bool
+	yes                   bool
+	outputPath            string
+	progressPath          string
+	manifestPath          string
+	sourcePath            string
+	importProgressPath    string
+	syncProgressPath      string
+	shadowResultPath      string
+	searchResultPath      string
+	maintenanceResultPath string
+	serverURL             string
+	postgresDSN           string
+	openSearchURL         string
+	blobBackend           string
+	blobStorageURL        string
+	blobS3Endpoint        string
+	blobS3Region          string
+	blobS3AccessKeyID     string
+	blobS3SecretKey       string
+	blobS3SessionToken    string
+	requestorName         string
+	requestorType         string
+	privateKeyPath        string
+	defaultOrg            string
+	serverAPIVersion      string
+	shadowCoverage        string
+	rollbackReady         bool
+	sourceFrozen          bool
 }
 
 type adminMigrationCLIOutput struct {
@@ -101,6 +135,7 @@ type adminMigrationCLIOutput struct {
 	Inventory        adminMigrationInventory         `json:"inventory"`
 	Findings         []adminMigrationFinding         `json:"findings"`
 	PlannedMutations []adminMigrationPlannedMutation `json:"planned_mutations"`
+	OperatorReport   *adminMigrationOperatorReport   `json:"operator_report,omitempty"`
 	Warnings         []string                        `json:"warnings,omitempty"`
 	Errors           []adminCLIError                 `json:"errors,omitempty"`
 	Duration         string                          `json:"duration,omitempty"`
@@ -108,18 +143,19 @@ type adminMigrationCLIOutput struct {
 }
 
 type adminMigrationTarget struct {
-	AllOrganizations   bool   `json:"all_organizations,omitempty"`
-	Organization       string `json:"organization,omitempty"`
-	BundlePath         string `json:"bundle_path,omitempty"`
-	OutputPath         string `json:"output_path,omitempty"`
-	ProgressPath       string `json:"progress_path,omitempty"`
-	ImportProgressPath string `json:"source_import_progress_path,omitempty"`
-	SyncProgressPath   string `json:"source_sync_progress_path,omitempty"`
-	ShadowResultPath   string `json:"shadow_result_path,omitempty"`
-	SearchResultPath   string `json:"search_check_result_path,omitempty"`
-	ManifestPath       string `json:"manifest_path,omitempty"`
-	SourcePath         string `json:"source_path,omitempty"`
-	ServerURL          string `json:"server_url,omitempty"`
+	AllOrganizations      bool   `json:"all_organizations,omitempty"`
+	Organization          string `json:"organization,omitempty"`
+	BundlePath            string `json:"bundle_path,omitempty"`
+	OutputPath            string `json:"output_path,omitempty"`
+	ProgressPath          string `json:"progress_path,omitempty"`
+	ImportProgressPath    string `json:"source_import_progress_path,omitempty"`
+	SyncProgressPath      string `json:"source_sync_progress_path,omitempty"`
+	ShadowResultPath      string `json:"shadow_result_path,omitempty"`
+	SearchResultPath      string `json:"search_check_result_path,omitempty"`
+	MaintenanceResultPath string `json:"maintenance_result_path,omitempty"`
+	ManifestPath          string `json:"manifest_path,omitempty"`
+	SourcePath            string `json:"source_path,omitempty"`
+	ServerURL             string `json:"server_url,omitempty"`
 }
 
 type adminMigrationDependency struct {
@@ -141,6 +177,44 @@ type adminMigrationInventoryFamily struct {
 	Count        int    `json:"count"`
 }
 
+type adminMigrationValidationContract struct {
+	FormatVersion       string                                     `json:"format_version"`
+	DefaultScaleProfile string                                     `json:"default_scale_profile"`
+	ScaleProfiles       []adminMigrationValidationScaleProfile     `json:"scale_profiles"`
+	Evidence            []adminMigrationValidationEvidence         `json:"evidence"`
+	RequiredCounts      []adminMigrationValidationCountRequirement `json:"required_counts"`
+	FindingCodes        []adminMigrationValidationFindingCode      `json:"finding_codes"`
+}
+
+type adminMigrationValidationScaleProfile struct {
+	Name        string `json:"name"`
+	Default     bool   `json:"default"`
+	OptIn       bool   `json:"opt_in"`
+	Description string `json:"description"`
+}
+
+type adminMigrationValidationEvidence struct {
+	Phase       string   `json:"phase"`
+	Commands    []string `json:"commands"`
+	Description string   `json:"description"`
+}
+
+type adminMigrationValidationCountRequirement struct {
+	Phase                string   `json:"phase"`
+	GlobalFamilies       []string `json:"global_families"`
+	OrganizationFamilies []string `json:"organization_families"`
+	BlobFamilies         []string `json:"blob_families"`
+	SearchFamilies       []string `json:"search_families"`
+	RehearsalFamilies    []string `json:"rehearsal_families"`
+}
+
+type adminMigrationValidationFindingCode struct {
+	Code     string `json:"code"`
+	Severity string `json:"severity"`
+	Family   string `json:"family"`
+	Message  string `json:"message"`
+}
+
 type adminMigrationPostgresRead struct {
 	Dependencies      []adminMigrationDependency
 	Bootstrap         bootstrap.BootstrapCoreState
@@ -156,6 +230,16 @@ type adminMigrationBackupRead struct {
 	CookbookInventory map[string]adminMigrationCookbookInventory
 	Cookbooks         adminMigrationCookbookExport
 	Loaded            bool
+}
+
+type adminMigrationBackupInspectSummary struct {
+	Payloads            int
+	HashedPayloads      int
+	PayloadBytes        int64
+	RequiredPayloads    int
+	ReferencedBlobs     int
+	CopiedBlobs         int
+	VerifiedCopiedBlobs int
 }
 
 type adminMigrationCookbookInventory struct {
@@ -186,6 +270,12 @@ type adminMigrationBlobReference struct {
 type adminMigrationBlobValidation struct {
 	Dependency adminMigrationDependency
 	Families   []adminMigrationInventoryFamily
+	Findings   []adminMigrationFinding
+}
+
+type adminMigrationRestoreValidation struct {
+	Dependency adminMigrationDependency
+	Inventory  adminMigrationInventory
 	Findings   []adminMigrationFinding
 }
 
@@ -324,6 +414,7 @@ type adminMigrationRehearsalCheck struct {
 	Name               string
 	Method             string
 	Path               string
+	RequestPayload     any
 	DownloadChecksums  []string
 	RequireBlobContent bool
 }
@@ -344,6 +435,16 @@ type adminMigrationShadowComparisonResult struct {
 	Skipped   int
 	Downloads int
 	Findings  []adminMigrationFinding
+	Coverage  string
+	Families  map[adminMigrationSourcePayloadKey]adminMigrationShadowFamilyResult
+}
+
+type adminMigrationShadowFamilyResult struct {
+	Checks    int
+	Passed    int
+	Failed    int
+	Skipped   int
+	Downloads int
 }
 
 type adminMigrationUnsignedClient interface {
@@ -365,6 +466,243 @@ type adminMigrationPlannedMutation struct {
 	Name         string `json:"name,omitempty"`
 	Count        int    `json:"count,omitempty"`
 	Message      string `json:"message,omitempty"`
+}
+
+type adminMigrationOperatorReport struct {
+	Summary   string                           `json:"summary"`
+	Inventory adminMigrationOperatorInventory  `json:"inventory"`
+	Findings  adminMigrationOperatorFindings   `json:"findings"`
+	Evidence  []adminMigrationOperatorEvidence `json:"evidence"`
+	Guidance  []string                         `json:"guidance"`
+	NextSteps []string                         `json:"next_steps"`
+}
+
+type adminMigrationOperatorInventory struct {
+	Total         int      `json:"total"`
+	FamilyCounts  int      `json:"family_counts"`
+	Organizations []string `json:"organizations"`
+}
+
+type adminMigrationOperatorFindings struct {
+	Errors   int `json:"errors"`
+	Warnings int `json:"warnings"`
+	Total    int `json:"total"`
+}
+
+type adminMigrationOperatorEvidence struct {
+	Name    string            `json:"name"`
+	Status  string            `json:"status"`
+	Backend string            `json:"backend,omitempty"`
+	Message string            `json:"message,omitempty"`
+	Details map[string]string `json:"details,omitempty"`
+}
+
+// adminMigrationProductionScaleValidationContract freezes the additive
+// validation report vocabulary used by the production-scale migration bucket.
+func adminMigrationProductionScaleValidationContract() adminMigrationValidationContract {
+	return adminMigrationValidationContract{
+		FormatVersion:       adminMigrationProductionScaleFormatV1,
+		DefaultScaleProfile: adminMigrationScaleProfileSmall,
+		ScaleProfiles:       adminMigrationValidationScaleProfiles(),
+		Evidence:            adminMigrationValidationEvidencePhases(),
+		RequiredCounts:      adminMigrationValidationRequiredCounts(),
+		FindingCodes:        adminMigrationValidationFindingCodes(),
+	}
+}
+
+// adminMigrationValidationScaleProfiles records the deterministic fixture sizes
+// so local tests can stay fast while heavier operator rehearsals remain opt-in.
+func adminMigrationValidationScaleProfiles() []adminMigrationValidationScaleProfile {
+	return []adminMigrationValidationScaleProfile{
+		{
+			Name:        adminMigrationScaleProfileSmall,
+			Default:     true,
+			OptIn:       false,
+			Description: "CI-friendly fixture volume that mirrors the current functional migration coverage while preserving deterministic counts.",
+		},
+		{
+			Name:        adminMigrationScaleProfileMedium,
+			Default:     false,
+			OptIn:       true,
+			Description: "Larger local rehearsal profile for pagination, repeated sync, shared blobs, and multi-family validation.",
+		},
+		{
+			Name:        adminMigrationScaleProfileLarge,
+			Default:     false,
+			OptIn:       true,
+			Description: "Slower production-shaped stress profile intended for release confidence and operator cutover drills.",
+		},
+	}
+}
+
+// adminMigrationValidationEvidencePhases lists the migration phases that must
+// produce durable evidence before a production-scale cutover is considered ready.
+func adminMigrationValidationEvidencePhases() []adminMigrationValidationEvidence {
+	return []adminMigrationValidationEvidence{
+		{
+			Phase:       "backup",
+			Commands:    []string{"opencook admin migration backup create", "opencook admin migration backup inspect"},
+			Description: "logical PostgreSQL and blob backup evidence, including manifest and payload hash coverage",
+		},
+		{
+			Phase:       "restore",
+			Commands:    []string{"opencook admin migration restore preflight", "opencook admin migration restore apply"},
+			Description: "restored PostgreSQL state, blob reachability, and restart/rehydration evidence",
+		},
+		{
+			Phase:       "source_import_sync",
+			Commands:    []string{"opencook admin migration source import preflight", "opencook admin migration source import apply", "opencook admin migration source sync preflight", "opencook admin migration source sync apply"},
+			Description: "normalized source-artifact import and sync evidence, including resumable progress files",
+		},
+		{
+			Phase:       "shadow_compare",
+			Commands:    []string{"opencook admin migration shadow compare"},
+			Description: "read-only source-to-target comparison evidence with documented compatibility normalizers",
+		},
+		{
+			Phase:       "opensearch_check_repair",
+			Commands:    []string{"opencook admin reindex", "opencook admin search check", "opencook admin search repair"},
+			Description: "derived OpenSearch rebuild, consistency, and repair evidence sourced from PostgreSQL state",
+		},
+		{
+			Phase:       "blob_verification",
+			Commands:    []string{"opencook admin migration backup inspect", "opencook admin migration restore preflight", "opencook admin migration source import preflight", "opencook admin migration source sync preflight"},
+			Description: "checksum-addressed blob reachability and local content-hash verification where provider reads are safe",
+		},
+		{
+			Phase:       "cutover_rehearsal",
+			Commands:    []string{"opencook admin migration cutover rehearse"},
+			Description: "live restored-target smoke evidence, source-freeze warnings, and rollback-readiness checks",
+		},
+	}
+}
+
+// adminMigrationValidationRequiredCounts declares which inventory families each
+// phase must be able to report before later tasks add larger fixture assertions.
+func adminMigrationValidationRequiredCounts() []adminMigrationValidationCountRequirement {
+	global := adminMigrationValidationGlobalFamilies()
+	organization := adminMigrationValidationOrganizationFamilies()
+	blobFamilies := adminMigrationValidationBlobFamilies()
+	searchFamilies := adminMigrationValidationSearchFamilies()
+	rehearsalFamilies := adminMigrationValidationRehearsalFamilies()
+	empty := []string{}
+
+	return []adminMigrationValidationCountRequirement{
+		{
+			Phase:                "backup",
+			GlobalFamilies:       adminMigrationCloneStrings(global),
+			OrganizationFamilies: adminMigrationCloneStrings(organization),
+			BlobFamilies:         adminMigrationCloneStrings(blobFamilies),
+			SearchFamilies:       empty,
+			RehearsalFamilies:    empty,
+		},
+		{
+			Phase:                "restore",
+			GlobalFamilies:       adminMigrationCloneStrings(global),
+			OrganizationFamilies: adminMigrationCloneStrings(organization),
+			BlobFamilies:         adminMigrationCloneStrings(blobFamilies),
+			SearchFamilies:       empty,
+			RehearsalFamilies:    empty,
+		},
+		{
+			Phase:                "source_import_sync",
+			GlobalFamilies:       adminMigrationCloneStrings(global),
+			OrganizationFamilies: adminMigrationCloneStrings(organization),
+			BlobFamilies:         adminMigrationCloneStrings(blobFamilies),
+			SearchFamilies:       empty,
+			RehearsalFamilies:    empty,
+		},
+		{
+			Phase:                "shadow_compare",
+			GlobalFamilies:       adminMigrationCloneStrings(global),
+			OrganizationFamilies: adminMigrationCloneStrings(organization),
+			BlobFamilies:         adminMigrationCloneStrings(blobFamilies),
+			SearchFamilies:       adminMigrationCloneStrings(searchFamilies),
+			RehearsalFamilies:    empty,
+		},
+		{
+			Phase:                "opensearch_check_repair",
+			GlobalFamilies:       empty,
+			OrganizationFamilies: empty,
+			BlobFamilies:         empty,
+			SearchFamilies:       adminMigrationCloneStrings(searchFamilies),
+			RehearsalFamilies:    empty,
+		},
+		{
+			Phase:                "blob_verification",
+			GlobalFamilies:       empty,
+			OrganizationFamilies: empty,
+			BlobFamilies:         adminMigrationCloneStrings(blobFamilies),
+			SearchFamilies:       empty,
+			RehearsalFamilies:    empty,
+		},
+		{
+			Phase:                "cutover_rehearsal",
+			GlobalFamilies:       adminMigrationCloneStrings(global),
+			OrganizationFamilies: adminMigrationCloneStrings(organization),
+			BlobFamilies:         adminMigrationCloneStrings(blobFamilies),
+			SearchFamilies:       adminMigrationCloneStrings(searchFamilies),
+			RehearsalFamilies:    adminMigrationCloneStrings(rehearsalFamilies),
+		},
+	}
+}
+
+// adminMigrationValidationGlobalFamilies captures non-org-scoped state whose
+// counts must remain stable across backup, restore, import, sync, and rehearsal.
+func adminMigrationValidationGlobalFamilies() []string {
+	return []string{"users", "user_acls", "user_keys", "organizations", "server_admin_memberships"}
+}
+
+// adminMigrationValidationOrganizationFamilies captures org-scoped PostgreSQL
+// state that the production-scale fixtures must validate per organization.
+func adminMigrationValidationOrganizationFamilies() []string {
+	return []string{"clients", "client_keys", "groups", "group_memberships", "containers", "acls", "nodes", "environments", "roles", "data_bags", "data_bag_items", "policy_revisions", "policy_groups", "policy_assignments", "sandboxes", "checksum_references", "cookbook_versions", "cookbook_artifacts"}
+}
+
+// adminMigrationValidationBlobFamilies captures provider-backed checksum
+// counters that prove blob reachability, integrity, copy, and orphan reporting.
+func adminMigrationValidationBlobFamilies() []string {
+	return []string{"referenced_blobs", "reachable_blobs", "missing_blobs", "provider_unavailable_checks", "content_verified_blobs", "checksum_mismatch_blobs", "candidate_orphan_blobs", "copied_blobs"}
+}
+
+// adminMigrationValidationSearchFamilies captures OpenSearch-derived counters
+// while keeping PostgreSQL state as the authoritative migration source.
+func adminMigrationValidationSearchFamilies() []string {
+	return []string{"opensearch_expected_documents", "opensearch_observed_documents", "opensearch_missing_documents", "opensearch_stale_documents", "opensearch_unsupported_scopes"}
+}
+
+// adminMigrationValidationRehearsalFamilies captures live cutover smoke counters
+// that summarize how much of the restored-target rehearsal actually ran.
+func adminMigrationValidationRehearsalFamilies() []string {
+	return []string{"rehearsal_checks", "rehearsal_passed", "rehearsal_failed", "rehearsal_skipped", "rehearsal_downloads"}
+}
+
+// adminMigrationValidationFindingCodes centralizes the new production-scale
+// finding vocabulary so future task slices can reuse the same stable codes.
+func adminMigrationValidationFindingCodes() []adminMigrationValidationFindingCode {
+	return []adminMigrationValidationFindingCode{
+		{Code: adminMigrationFindingCountMismatch, Severity: "error", Family: "inventory", Message: "observed per-family count did not match the expected production-scale fixture count"},
+		{Code: adminMigrationFindingRestoredObjectMissing, Severity: "error", Family: "restore", Message: "an object expected from the validated backup or source artifact was missing from restored PostgreSQL state"},
+		{Code: adminMigrationFindingUnexpectedExtraObject, Severity: "error", Family: "restore", Message: "restored PostgreSQL state contained an object outside the validated backup or source artifact inventory"},
+		{Code: adminMigrationFindingBlobMismatch, Severity: "error", Family: "blob", Message: "provider blob content did not match the checksum-addressed payload expected by migration metadata"},
+		{Code: adminMigrationFindingMissingBlob, Severity: "error", Family: "blob", Message: "a checksum referenced by migration metadata was missing from the configured blob provider"},
+		{Code: adminMigrationFindingStaleSearchDocument, Severity: "warning", Family: "opensearch", Message: "OpenSearch contained a stale document relative to PostgreSQL-backed source state"},
+		{Code: adminMigrationFindingMissingSearchDocument, Severity: "warning", Family: "opensearch", Message: "OpenSearch was missing a document expected from PostgreSQL-backed source state"},
+		{Code: adminMigrationFindingUnsupportedSourceFamily, Severity: "warning", Family: "source", Message: "the normalized source bundle included a Chef family OpenCook intentionally does not import yet"},
+		{Code: adminMigrationFindingRetryProgressDrift, Severity: "error", Family: "progress", Message: "a retry or resume progress file no longer matched the manifest, target, or previous migration phase"},
+		{Code: adminMigrationFindingRetrySafe, Severity: "warning", Family: "retry", Message: "the failed migration command is safe to rerun after the reported dependency or input problem is fixed"},
+		{Code: adminMigrationFindingRetryUnsafe, Severity: "warning", Family: "retry", Message: "the failed migration command should not be blindly rerun until progress, manifest, or target identity is reconciled"},
+		{Code: adminMigrationFindingManualCleanupRequired, Severity: "warning", Family: "retry", Message: "the failed migration command may require manual target inspection or cleanup before retry"},
+		{Code: adminMigrationFindingMaintenanceInvalid, Severity: "error", Family: "maintenance", Message: "OpenCook maintenance evidence could not be read or was not maintenance status/check JSON"},
+		{Code: adminMigrationFindingMaintenanceInactive, Severity: "error", Family: "maintenance", Message: "OpenCook maintenance evidence did not show an active, unexpired cutover gate"},
+		{Code: adminMigrationFindingMaintenanceProcessLocal, Severity: "warning", Family: "maintenance", Message: "OpenCook maintenance evidence was active but process-local instead of PostgreSQL-shared"},
+	}
+}
+
+// adminMigrationCloneStrings returns a non-nil copy so validation report arrays
+// marshal as [] instead of null and callers cannot mutate shared contract data.
+func adminMigrationCloneStrings(in []string) []string {
+	return append([]string{}, in...)
 }
 
 type adminMigrationOutputOptions struct {
@@ -398,6 +736,8 @@ func (c *command) runAdminMigration(ctx context.Context, args []string, inherite
 		return c.runAdminMigrationRestore(ctx, args[1:], inheritedJSON)
 	case "source":
 		return c.runAdminMigrationSource(ctx, args[1:], inheritedJSON)
+	case "scale-fixture":
+		return c.runAdminMigrationScaleFixture(args[1:], inheritedJSON)
 	case "cutover":
 		return c.runAdminMigrationCutover(ctx, args[1:], inheritedJSON)
 	case "shadow":
@@ -405,6 +745,180 @@ func (c *command) runAdminMigration(ctx context.Context, args []string, inherite
 	default:
 		return c.adminUsageError("unknown admin migration command %q\n\n", args[0])
 	}
+}
+
+// runAdminMigrationScaleFixture dispatches deterministic fixture generation
+// commands used by opt-in functional and operator rehearsal flows.
+func (c *command) runAdminMigrationScaleFixture(args []string, inheritedJSON bool) int {
+	if len(args) == 0 {
+		return c.adminUsageError("admin migration scale-fixture requires create\n\n")
+	}
+	if len(args) == 1 && (args[0] == "help" || args[0] == "-h" || args[0] == "--help") {
+		c.printAdminMigrationUsage(c.stdout)
+		return exitOK
+	}
+	switch args[0] {
+	case "create":
+		return c.runAdminMigrationScaleFixtureCreate(args[1:], inheritedJSON)
+	default:
+		return c.adminUsageError("unknown admin migration scale-fixture command %q\n\n", args[0])
+	}
+}
+
+// runAdminMigrationScaleFixtureCreate writes a generated production-shaped
+// source bundle without connecting to PostgreSQL, blob storage, or OpenSearch.
+func (c *command) runAdminMigrationScaleFixtureCreate(args []string, inheritedJSON bool) int {
+	start := time.Now()
+	fs := flag.NewFlagSet("opencook admin migration scale-fixture create", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	opts := bindAdminMigrationCommonFlags(fs, inheritedJSON)
+	profile := adminMigrationScaleProfileSmall
+	includeSidecars := true
+	fs.StringVar(&opts.outputPath, "output", "", "normalized source output path")
+	fs.StringVar(&profile, "profile", adminMigrationScaleProfileSmall, "scale fixture profile: small, medium, or large")
+	fs.BoolVar(&includeSidecars, "include-sidecars", true, "include derived search and unsupported-source sidecar artifacts")
+	if err := fs.Parse(args); err != nil {
+		return c.adminFlagError("admin migration scale-fixture create", err)
+	}
+	if fs.NArg() != 0 {
+		return c.adminUsageError("admin migration scale-fixture create received unexpected arguments: %v\n\n", fs.Args())
+	}
+	if strings.TrimSpace(opts.outputPath) == "" {
+		return c.adminUsageError("admin migration scale-fixture create requires --output PATH\n\n")
+	}
+
+	result := buildAdminMigrationScaleFixtureCreate(profile, includeSidecars, opts)
+	return c.writeAdminMigrationResult(result, opts.withTiming, start, adminMigrationExitCode(result))
+}
+
+// buildAdminMigrationScaleFixtureCreate returns a migration-style report for
+// deterministic fixture generation so functional phases get auditable evidence.
+func buildAdminMigrationScaleFixtureCreate(profile string, includeSidecars bool, opts *adminMigrationFlagValues) adminMigrationCLIOutput {
+	out := adminMigrationCLIOutput{
+		OK:        true,
+		Command:   "migration_scale_fixture_create",
+		Target:    adminMigrationTarget{OutputPath: adminMigrationRedactMigrationPath(opts.outputPath)},
+		DryRun:    opts.dryRun,
+		Offline:   true,
+		Confirmed: opts.yes,
+		Config: map[string]string{
+			"scale_profile":    strings.TrimSpace(profile),
+			"include_sidecars": fmt.Sprintf("%t", includeSidecars),
+		},
+		Dependencies:     []adminMigrationDependency{},
+		Inventory:        adminMigrationInventory{Families: []adminMigrationInventoryFamily{}},
+		Findings:         []adminMigrationFinding{},
+		PlannedMutations: []adminMigrationPlannedMutation{},
+	}
+
+	fixture, bundle, err := adminMigrationScaleFixtureSourceBundle(profile, includeSidecars)
+	if err != nil {
+		adminMigrationMarkDependency(&out, adminMigrationDependency{
+			Name:       "scale_fixture",
+			Status:     "error",
+			Backend:    "internal",
+			Configured: true,
+			Message:    "production-scale migration fixture could not be generated",
+		})
+		adminMigrationMarkFinding(&out, adminMigrationFinding{
+			Severity: "error",
+			Code:     "scale_fixture_invalid",
+			Family:   "scale_fixture",
+			Message:  "production-scale migration fixture could not be generated",
+		})
+		return out
+	}
+	out.Config["scale_profile"] = fixture.Profile
+	out.Config["format_version"] = bundle.FormatVersion
+	out.Config["source_type"] = bundle.SourceType
+	out.Inventory = bundle.Inventory
+	adminMigrationMarkDependency(&out, adminMigrationDependency{
+		Name:       "scale_fixture",
+		Status:     "ok",
+		Backend:    "internal",
+		Configured: true,
+		Message:    "deterministic production-scale migration fixture was generated",
+		Details: map[string]string{
+			"profile":     fixture.Profile,
+			"seed":        fixture.Seed,
+			"default_org": fixture.DefaultOrganization,
+			"payloads":    fmt.Sprintf("%d", len(bundle.Manifest.Payloads)),
+			"blobs":       fmt.Sprintf("%d", len(fixture.BlobCopies)),
+		},
+	})
+	if opts.dryRun {
+		adminMigrationMarkDependency(&out, adminMigrationDependency{
+			Name:       "normalized_source_output",
+			Status:     "skipped",
+			Backend:    "filesystem",
+			Configured: false,
+			Message:    "dry run requested; normalized source bundle was not written",
+		})
+		out.PlannedMutations = append(out.PlannedMutations, adminMigrationPlannedMutation{
+			Action:  "write_scale_fixture_source",
+			Family:  "source_manifest",
+			Count:   len(bundle.Manifest.Payloads),
+			Message: "would write deterministic production-scale normalized source files",
+		})
+		adminMigrationCollectOutputStatuses(&out)
+		return out
+	}
+	if err := adminMigrationEnsureScaleFixtureOutputAllowed(opts.outputPath, opts.yes); err != nil {
+		adminMigrationMarkDependency(&out, adminMigrationDependency{
+			Name:       "normalized_source_output",
+			Status:     "error",
+			Backend:    "filesystem",
+			Configured: true,
+			Message:    "scale fixture output path is not safe to write",
+		})
+		adminMigrationMarkFinding(&out, adminMigrationNormalizeOutputFinding(err))
+		return out
+	}
+	if err := adminMigrationWriteNormalizedSourceBundle(opts.outputPath, bundle, opts.yes); err != nil {
+		adminMigrationMarkDependency(&out, adminMigrationDependency{
+			Name:       "normalized_source_output",
+			Status:     "error",
+			Backend:    "filesystem",
+			Configured: true,
+			Message:    "scale fixture source bundle could not be written",
+		})
+		adminMigrationMarkFinding(&out, adminMigrationSourceErrorFinding("scale_fixture_write_failed", "scale fixture source bundle could not be written"))
+		return out
+	}
+	adminMigrationMarkDependency(&out, adminMigrationDependency{
+		Name:       "normalized_source_output",
+		Status:     "ok",
+		Backend:    "filesystem",
+		Configured: true,
+		Message:    "production-scale normalized source bundle was written",
+		Details: map[string]string{
+			"payloads": fmt.Sprintf("%d", len(bundle.Manifest.Payloads)),
+			"files":    fmt.Sprintf("%d", len(bundle.Files)+1),
+		},
+	})
+	out.PlannedMutations = append(out.PlannedMutations, adminMigrationPlannedMutation{
+		Action:  "write_scale_fixture_source",
+		Family:  "source_manifest",
+		Count:   len(bundle.Manifest.Payloads),
+		Message: "wrote deterministic production-scale normalized source files",
+	})
+	adminMigrationCollectOutputStatuses(&out)
+	return out
+}
+
+// adminMigrationEnsureScaleFixtureOutputAllowed mirrors source-normalize output
+// safety without requiring a real source path to compare against.
+func adminMigrationEnsureScaleFixtureOutputAllowed(outputPath string, overwrite bool) error {
+	outputPath = strings.TrimSpace(outputPath)
+	if outputPath == "" || filepath.Clean(outputPath) == "." || filepath.Clean(outputPath) == string(os.PathSeparator) {
+		return errAdminMigrationUnsafeSourcePath
+	}
+	if _, err := os.Stat(outputPath); err == nil && !overwrite {
+		return errAdminMigrationNormalizeOutputExists
+	} else if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
 }
 
 // runAdminMigrationPreflight performs read-only target readiness checks for the
@@ -896,7 +1410,7 @@ func buildAdminMigrationBackupInspect(bundlePath string, opts *adminMigrationFla
 		Findings:         []adminMigrationFinding{},
 		PlannedMutations: []adminMigrationPlannedMutation{},
 	}
-	manifest, findings, err := adminMigrationInspectBackupBundle(bundlePath)
+	manifest, summary, findings, err := adminMigrationInspectBackupBundle(bundlePath)
 	if err != nil {
 		out.OK = false
 		out.Dependencies[0].Status = "error"
@@ -911,30 +1425,31 @@ func buildAdminMigrationBackupInspect(bundlePath string, opts *adminMigrationFla
 	out.Inventory = manifest.Inventory
 	out.Warnings = append(out.Warnings, manifest.Warnings...)
 	out.Findings = append(out.Findings, findings...)
-	out.Dependencies[0].Details = map[string]string{
-		"format_version": manifest.FormatVersion,
-		"payloads":       fmt.Sprintf("%d", len(manifest.Payloads)),
-	}
+	out.Dependencies[0].Details = adminMigrationBackupInspectDetails(manifest, summary)
 	return out
 }
 
 // adminMigrationInspectBackupBundle loads manifest.json, checks every recorded
 // payload size plus SHA-256 digest, and requires the fixed payloads that restore
 // consumes later so a trimmed manifest cannot bypass integrity validation.
-func adminMigrationInspectBackupBundle(bundlePath string) (adminMigrationBackupManifest, []adminMigrationFinding, error) {
+func adminMigrationInspectBackupBundle(bundlePath string) (adminMigrationBackupManifest, adminMigrationBackupInspectSummary, []adminMigrationFinding, error) {
 	manifestPath := filepath.Join(bundlePath, adminMigrationBackupManifestPath)
 	rawManifest, err := os.ReadFile(manifestPath)
 	if err != nil {
-		return adminMigrationBackupManifest{}, []adminMigrationFinding{adminMigrationBackupInspectFinding("backup_manifest_missing", "backup manifest.json could not be read")}, err
+		return adminMigrationBackupManifest{}, adminMigrationBackupInspectSummary{}, []adminMigrationFinding{adminMigrationBackupInspectFinding("backup_manifest_missing", "backup manifest.json could not be read")}, err
 	}
 	var manifest adminMigrationBackupManifest
 	if err := json.Unmarshal(rawManifest, &manifest); err != nil {
-		return adminMigrationBackupManifest{}, []adminMigrationFinding{adminMigrationBackupInspectFinding("backup_manifest_invalid_json", "backup manifest.json is not valid JSON")}, err
+		return adminMigrationBackupManifest{}, adminMigrationBackupInspectSummary{}, []adminMigrationFinding{adminMigrationBackupInspectFinding("backup_manifest_invalid_json", "backup manifest.json is not valid JSON")}, err
 	}
 	if manifest.FormatVersion != adminMigrationBackupFormatVersion {
-		return manifest, []adminMigrationFinding{adminMigrationBackupInspectFinding("backup_manifest_unsupported_format", "backup manifest format version is not supported")}, fmt.Errorf("unsupported backup format %q", manifest.FormatVersion)
+		return manifest, adminMigrationBackupInspectSummary{}, []adminMigrationFinding{adminMigrationBackupInspectFinding("backup_manifest_unsupported_format", "backup manifest format version is not supported")}, fmt.Errorf("unsupported backup format %q", manifest.FormatVersion)
 	}
 	var findings []adminMigrationFinding
+	summary := adminMigrationBackupInspectSummary{
+		Payloads:         len(manifest.Payloads),
+		RequiredPayloads: len(adminMigrationRequiredRestorePayloadPaths()),
+	}
 	manifestPayloads := map[string]struct{}{}
 	for _, payload := range manifest.Payloads {
 		relativePath, err := adminMigrationNormalizeBackupPayloadPath(payload.Path)
@@ -943,17 +1458,83 @@ func adminMigrationInspectBackupBundle(bundlePath string) (adminMigrationBackupM
 		}
 		if err := adminMigrationInspectBackupPayload(bundlePath, payload); err != nil {
 			findings = append(findings, adminMigrationBackupInspectFinding("backup_payload_integrity_failed", "backup payload "+payload.Path+" failed integrity validation"))
+			continue
 		}
+		summary.HashedPayloads++
+		summary.PayloadBytes += payload.Bytes
 	}
 	for _, path := range adminMigrationRequiredRestorePayloadPaths() {
 		if _, ok := manifestPayloads[path]; !ok {
 			findings = append(findings, adminMigrationBackupInspectFinding("backup_required_payload_missing", "backup manifest is missing required restore payload "+path))
 		}
 	}
+	findings = append(findings, adminMigrationInspectBackupCopiedBlobs(bundlePath, manifestPayloads, &summary)...)
 	if len(findings) > 0 {
-		return manifest, findings, fmt.Errorf("backup payload integrity failed")
+		return manifest, summary, findings, fmt.Errorf("backup payload integrity failed")
 	}
-	return manifest, nil, nil
+	return manifest, summary, nil, nil
+}
+
+// adminMigrationBackupInspectDetails turns the provider-free integrity summary
+// into string details so JSON consumers can compare backup evidence across runs.
+func adminMigrationBackupInspectDetails(manifest adminMigrationBackupManifest, summary adminMigrationBackupInspectSummary) map[string]string {
+	return map[string]string{
+		"format_version":        manifest.FormatVersion,
+		"payloads":              fmt.Sprintf("%d", summary.Payloads),
+		"hashed_payloads":       fmt.Sprintf("%d", summary.HashedPayloads),
+		"payload_bytes":         fmt.Sprintf("%d", summary.PayloadBytes),
+		"required_payloads":     fmt.Sprintf("%d", summary.RequiredPayloads),
+		"referenced_blobs":      fmt.Sprintf("%d", summary.ReferencedBlobs),
+		"copied_blobs":          fmt.Sprintf("%d", summary.CopiedBlobs),
+		"verified_copied_blobs": fmt.Sprintf("%d", summary.VerifiedCopiedBlobs),
+	}
+}
+
+// adminMigrationInspectBackupCopiedBlobs cross-checks blobs/manifest.json with
+// copied object payloads so copied bytes cannot be omitted from manifest hashing.
+func adminMigrationInspectBackupCopiedBlobs(bundlePath string, manifestPayloads map[string]struct{}, summary *adminMigrationBackupInspectSummary) []adminMigrationFinding {
+	blobManifest, err := adminMigrationReadBackupBlobManifest(bundlePath)
+	if err != nil {
+		return []adminMigrationFinding{adminMigrationBackupInspectFinding("backup_blob_manifest_invalid", "backup blob manifest could not be parsed")}
+	}
+	if summary != nil {
+		summary.ReferencedBlobs = len(blobManifest.ReferencedChecksums)
+		summary.CopiedBlobs = len(blobManifest.Copied)
+	}
+
+	var findings []adminMigrationFinding
+	for _, copy := range blobManifest.Copied {
+		relativePath, err := adminMigrationNormalizeBackupPayloadPath(copy.Path)
+		if err != nil {
+			findings = append(findings, adminMigrationBackupInspectFinding("backup_blob_integrity_failed", "backup copied blob payload failed integrity validation"))
+			continue
+		}
+		if _, ok := manifestPayloads[relativePath]; !ok {
+			findings = append(findings, adminMigrationBackupInspectFinding("backup_blob_payload_missing", "backup manifest is missing copied blob payload "+relativePath))
+		}
+		data, err := os.ReadFile(filepath.Join(bundlePath, relativePath))
+		if err != nil {
+			findings = append(findings, adminMigrationBackupInspectFinding("backup_blob_integrity_failed", "backup copied blob payload failed integrity validation"))
+			continue
+		}
+		if int64(len(data)) != copy.Bytes {
+			findings = append(findings, adminMigrationBackupInspectFinding("backup_blob_integrity_failed", "backup copied blob payload failed integrity validation"))
+			continue
+		}
+		sum := sha256.Sum256(data)
+		if hex.EncodeToString(sum[:]) != strings.ToLower(strings.TrimSpace(copy.SHA256)) {
+			findings = append(findings, adminMigrationBackupInspectFinding("backup_blob_integrity_failed", "backup copied blob payload failed integrity validation"))
+			continue
+		}
+		if got := adminMigrationMD5Hex(data); got != strings.ToLower(strings.TrimSpace(copy.Checksum)) {
+			findings = append(findings, adminMigrationBackupInspectFinding("backup_blob_checksum_mismatch", "backup copied blob content does not match its Chef checksum"))
+			continue
+		}
+		if summary != nil {
+			summary.VerifiedCopiedBlobs++
+		}
+	}
+	return findings
 }
 
 // adminMigrationRequiredRestorePayloadPaths lists payloads that restore reads by
@@ -1069,7 +1650,7 @@ func (c *command) runAdminMigrationRestorePreflight(ctx context.Context, args []
 // integrity and blob-manifest parsing before any target configuration is loaded.
 func buildAdminMigrationRestoreBundlePreflight(bundlePath string, opts *adminMigrationFlagValues) (adminMigrationBackupManifest, adminMigrationBackupBlobManifest, adminMigrationCLIOutput) {
 	out := adminMigrationRestorePreflightOutput(bundlePath, opts)
-	manifest, findings, err := adminMigrationInspectBackupBundle(bundlePath)
+	manifest, summary, findings, err := adminMigrationInspectBackupBundle(bundlePath)
 	if err != nil {
 		out.Dependencies = append(out.Dependencies, adminMigrationBackupBundleDependency("error", "backup bundle failed integrity inspection", nil))
 		out.Findings = append(out.Findings, findings...)
@@ -1081,10 +1662,7 @@ func buildAdminMigrationRestoreBundlePreflight(bundlePath string, opts *adminMig
 	}
 	out.Inventory = manifest.Inventory
 	out.Warnings = append(out.Warnings, manifest.Warnings...)
-	out.Dependencies = append(out.Dependencies, adminMigrationBackupBundleDependency("ok", "backup manifest and payload hashes are valid", map[string]string{
-		"format_version": manifest.FormatVersion,
-		"payloads":       fmt.Sprintf("%d", len(manifest.Payloads)),
-	}))
+	out.Dependencies = append(out.Dependencies, adminMigrationBackupBundleDependency("ok", "backup manifest and payload hashes are valid", adminMigrationBackupInspectDetails(manifest, summary)))
 
 	blobManifest, err := adminMigrationReadBackupBlobManifest(bundlePath)
 	if err != nil {
@@ -1099,6 +1677,13 @@ func buildAdminMigrationRestoreBundlePreflight(bundlePath string, opts *adminMig
 		adminMigrationCollectOutputStatuses(&out)
 		return manifest, adminMigrationBackupBlobManifest{}, out
 	}
+	if _, _, _, err := adminMigrationReadBackupStatePayloads(bundlePath); err != nil {
+		out.Dependencies = append(out.Dependencies, adminMigrationBackupPayloadsDependency("error", "backup PostgreSQL state payloads could not be decoded"))
+		out.Findings = append(out.Findings, adminMigrationBackupInspectFinding("backup_state_payload_invalid", "backup PostgreSQL state payloads could not be decoded"))
+		adminMigrationCollectOutputStatuses(&out)
+		return manifest, blobManifest, out
+	}
+	out.Dependencies = append(out.Dependencies, adminMigrationBackupPayloadsDependency("ok", "backup PostgreSQL state payloads are decodable"))
 	out.Dependencies = append(out.Dependencies, adminMigrationDependency{
 		Name:       "backup_blobs",
 		Status:     "ok",
@@ -1126,6 +1711,7 @@ func (c *command) buildAdminMigrationRestorePreflight(ctx context.Context, cfg c
 			"format_version": manifest.FormatVersion,
 			"payloads":       fmt.Sprintf("%d", len(manifest.Payloads)),
 		}),
+		adminMigrationBackupPayloadsDependency("ok", "backup PostgreSQL state payloads are decodable"),
 		adminMigrationDependency{
 			Name:       "backup_blobs",
 			Status:     "ok",
@@ -1165,8 +1751,9 @@ func (c *command) buildAdminMigrationRestorePreflight(ctx context.Context, cfg c
 		})
 	}
 
-	blobValidation := c.adminMigrationBlobValidation(ctx, cfg, nil)
+	blobValidation := c.adminMigrationBlobValidation(ctx, cfg, adminMigrationRestoreProviderBlobReferences(blobManifest))
 	out.Dependencies = append(out.Dependencies, blobValidation.Dependency)
+	out.Inventory.Families = append(out.Inventory.Families, blobValidation.Families...)
 	out.Findings = append(out.Findings, blobValidation.Findings...)
 	openSearchDependency := adminMigrationOpenSearchDependency(ctx, cfg)
 	out.Dependencies = append(out.Dependencies, openSearchDependency)
@@ -1219,6 +1806,21 @@ func adminMigrationBackupBundleDependency(status, message string, details map[st
 		Configured: true,
 		Message:    message,
 		Details:    details,
+	}
+}
+
+// adminMigrationBackupPayloadsDependency records whether the fixed logical
+// PostgreSQL payloads can be decoded before restore touches any target state.
+func adminMigrationBackupPayloadsDependency(status, message string) adminMigrationDependency {
+	return adminMigrationDependency{
+		Name:       "backup_payloads",
+		Status:     status,
+		Backend:    "filesystem",
+		Configured: true,
+		Message:    message,
+		Details: map[string]string{
+			"payloads": strings.Join(adminMigrationRequiredRestorePayloadPaths(), ","),
+		},
 	}
 }
 
@@ -1275,6 +1877,205 @@ func adminMigrationRestorePlannedMutations(manifest adminMigrationBackupManifest
 			Message: "would rebuild OpenSearch derived state from restored PostgreSQL state after restore",
 		},
 	}
+}
+
+// adminMigrationRestoreProviderBlobReferences returns only checksums whose
+// bytes are not copied into the bundle, because preflight must prove those
+// external provider dependencies are already reachable before apply can run.
+func adminMigrationRestoreProviderBlobReferences(blobManifest adminMigrationBackupBlobManifest) []adminMigrationBlobReference {
+	copied := map[string]bool{}
+	for _, copy := range blobManifest.Copied {
+		checksum := strings.ToLower(strings.TrimSpace(copy.Checksum))
+		if checksum != "" {
+			copied[checksum] = true
+		}
+	}
+	var refs []adminMigrationBlobReference
+	for _, checksum := range blobManifest.ReferencedChecksums {
+		checksum = strings.ToLower(strings.TrimSpace(checksum))
+		if checksum == "" || copied[checksum] {
+			continue
+		}
+		refs = append(refs, adminMigrationBlobReference{Checksum: checksum, Family: "checksum_references"})
+	}
+	return refs
+}
+
+// adminMigrationRestoreBlobReferences adapts backup checksum metadata to the
+// generic blob-validation shape used by preflight, apply validation, and
+// operator reports.
+func adminMigrationRestoreBlobReferences(blobManifest adminMigrationBackupBlobManifest) []adminMigrationBlobReference {
+	var refs []adminMigrationBlobReference
+	for _, checksum := range blobManifest.ReferencedChecksums {
+		checksum = strings.ToLower(strings.TrimSpace(checksum))
+		if checksum != "" {
+			refs = append(refs, adminMigrationBlobReference{Checksum: checksum, Family: "checksum_references"})
+		}
+	}
+	return adminMigrationUniqueBlobReferences(refs)
+}
+
+// adminMigrationRestoreLogicalInventoryCount totals only PostgreSQL-backed
+// families, excluding derived blob/search/rehearsal counters that can appear in
+// backup reports but are validated through their own provider-specific checks.
+func adminMigrationRestoreLogicalInventoryCount(inventory adminMigrationInventory) int {
+	total := 0
+	for _, family := range inventory.Families {
+		if !adminMigrationRestoreLogicalInventoryFamily(family.Family) {
+			continue
+		}
+		total += family.Count
+	}
+	return total
+}
+
+// adminMigrationRestoreInventoryFindings compares manifest counts to a freshly
+// reloaded target inventory so restore apply can report missing or unexpected
+// persisted rows before reindex or rehearsal rely on that state.
+func adminMigrationRestoreInventoryFindings(expected, restored adminMigrationInventory) []adminMigrationFinding {
+	expectedCounts := adminMigrationRestoreInventoryCounts(expected)
+	restoredCounts := adminMigrationRestoreInventoryCounts(restored)
+	keySet := map[adminMigrationSourcePayloadKey]struct{}{}
+	for key := range expectedCounts {
+		keySet[key] = struct{}{}
+	}
+	for key := range restoredCounts {
+		keySet[key] = struct{}{}
+	}
+
+	var findings []adminMigrationFinding
+	for _, key := range adminMigrationSortedSourcePayloadKeys(keySet) {
+		want := expectedCounts[key]
+		got := restoredCounts[key]
+		if got == want {
+			continue
+		}
+		code := adminMigrationFindingCountMismatch
+		message := fmt.Sprintf("restored %s count is %d, expected %d from backup manifest", key.Family, got, want)
+		if got < want {
+			code = adminMigrationFindingRestoredObjectMissing
+		} else if got > want {
+			code = adminMigrationFindingUnexpectedExtraObject
+		}
+		findings = append(findings, adminMigrationFinding{
+			Severity:     "error",
+			Code:         code,
+			Organization: key.Organization,
+			Family:       key.Family,
+			Message:      message,
+		})
+	}
+	return findings
+}
+
+// adminMigrationRestoreInventoryCounts indexes only logical PostgreSQL families
+// by organization/family so restore comparisons ignore provider-derived rows.
+func adminMigrationRestoreInventoryCounts(inventory adminMigrationInventory) map[adminMigrationSourcePayloadKey]int {
+	counts := map[adminMigrationSourcePayloadKey]int{}
+	for _, family := range inventory.Families {
+		if !adminMigrationRestoreLogicalInventoryFamily(family.Family) {
+			continue
+		}
+		counts[adminMigrationSourcePayloadKey{Organization: strings.TrimSpace(family.Organization), Family: strings.TrimSpace(family.Family)}] += family.Count
+	}
+	return counts
+}
+
+// adminMigrationSortedSourcePayloadKeys gives inventory comparisons a stable
+// org/family order so JSON findings and tests remain deterministic.
+func adminMigrationSortedSourcePayloadKeys(keySet map[adminMigrationSourcePayloadKey]struct{}) []adminMigrationSourcePayloadKey {
+	keys := make([]adminMigrationSourcePayloadKey, 0, len(keySet))
+	for key := range keySet {
+		keys = append(keys, key)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if keys[i].Organization != keys[j].Organization {
+			return keys[i].Organization < keys[j].Organization
+		}
+		return keys[i].Family < keys[j].Family
+	})
+	return keys
+}
+
+// adminMigrationRestoreLogicalInventoryFamily identifies manifest families that
+// should be present in PostgreSQL after restore, excluding derived validation
+// counters that are checked through blob, OpenSearch, or rehearsal phases.
+func adminMigrationRestoreLogicalInventoryFamily(family string) bool {
+	family = strings.TrimSpace(family)
+	if family == "" || strings.HasPrefix(family, "opensearch_") || strings.HasPrefix(family, "rehearsal_") {
+		return false
+	}
+	for _, blobFamily := range adminMigrationValidationBlobFamilies() {
+		if family == blobFamily {
+			return false
+		}
+	}
+	return true
+}
+
+// adminMigrationRestoreChecksumReferenceFindings proves the restored metadata
+// references exactly the checksum set captured by the backup blob manifest.
+func adminMigrationRestoreChecksumReferenceFindings(blobManifest adminMigrationBackupBlobManifest, restoredRefs []adminMigrationBlobReference) []adminMigrationFinding {
+	expected := adminMigrationBlobReferenceSet(adminMigrationRestoreBlobReferences(blobManifest))
+	restored := adminMigrationBlobReferenceSet(adminMigrationUniqueBlobReferences(restoredRefs))
+	keySet := map[string]struct{}{}
+	for checksum := range expected {
+		keySet[checksum] = struct{}{}
+	}
+	for checksum := range restored {
+		keySet[checksum] = struct{}{}
+	}
+
+	var findings []adminMigrationFinding
+	for _, checksum := range adminMigrationSortedStringSet(keySet) {
+		_, want := expected[checksum]
+		_, got := restored[checksum]
+		switch {
+		case want && !got:
+			findings = append(findings, adminMigrationFinding{
+				Severity: "error",
+				Code:     adminMigrationFindingRestoredObjectMissing,
+				Family:   "checksum_references",
+				Message:  "restored PostgreSQL metadata does not reference backup checksum " + checksum,
+			})
+		case got && !want:
+			findings = append(findings, adminMigrationFinding{
+				Severity: "error",
+				Code:     adminMigrationFindingUnexpectedExtraObject,
+				Family:   "checksum_references",
+				Message:  "restored PostgreSQL metadata references checksum " + checksum + " outside the backup manifest",
+			})
+		}
+	}
+	return findings
+}
+
+// adminMigrationRestoreBlobFindings maps low-level provider validation findings
+// onto the production-scale restore vocabulary while preserving provider errors
+// that need their original operational code.
+func adminMigrationRestoreBlobFindings(findings []adminMigrationFinding) []adminMigrationFinding {
+	out := make([]adminMigrationFinding, 0, len(findings))
+	for _, finding := range findings {
+		switch finding.Code {
+		case "missing_blob":
+			finding.Code = adminMigrationFindingMissingBlob
+		case "blob_checksum_mismatch":
+			finding.Code = adminMigrationFindingBlobMismatch
+		}
+		out = append(out, finding)
+	}
+	return out
+}
+
+// adminMigrationInventoryFamilyCount extracts one generated counter from a
+// validation family list for compact dependency details.
+func adminMigrationInventoryFamilyCount(families []adminMigrationInventoryFamily, organization, family string) int {
+	for _, item := range families {
+		if item.Organization == organization && item.Family == family {
+			return item.Count
+		}
+	}
+	return 0
 }
 
 // adminMigrationInventoryTotalCount totals non-derived inventory rows so
@@ -1409,9 +2210,71 @@ func (c *command) applyAdminMigrationRestore(ctx context.Context, cfg config.Con
 		Configured: true,
 		Message:    "PostgreSQL-backed logical state restored from backup bundle",
 	})
+	validation := c.adminMigrationValidateRestoredTarget(ctx, cfg, store, manifest, blobManifest)
+	if len(validation.Inventory.Families) > 0 {
+		out.Inventory = validation.Inventory
+	}
+	adminMigrationMarkDependency(&out, validation.Dependency)
+	for _, finding := range validation.Findings {
+		adminMigrationMarkFinding(&out, finding)
+	}
+	if !out.OK {
+		return out
+	}
 	out.PlannedMutations = adminMigrationRestoreCompletedMutations(manifest, blobManifest)
 	out.Warnings = append(out.Warnings, "OpenSearch documents were not restored as source data; run opencook admin reindex --all-orgs --complete after starting the restored target")
 	return out
+}
+
+// adminMigrationValidateRestoredTarget reloads the offline store after restore
+// so apply output is based on the same persisted state later reindex and
+// cutover-rehearsal commands will read after a process restart.
+func (c *command) adminMigrationValidateRestoredTarget(ctx context.Context, cfg config.Config, store adminOfflineStore, manifest adminMigrationBackupManifest, blobManifest adminMigrationBackupBlobManifest) adminMigrationRestoreValidation {
+	dep := adminMigrationDependency{
+		Name:       "restore_validation",
+		Status:     "ok",
+		Backend:    "postgres+blob",
+		Configured: true,
+		Message:    "restored PostgreSQL rows and checksum blobs match the backup manifest after rehydration",
+		Details: map[string]string{
+			"expected_objects": fmt.Sprintf("%d", adminMigrationRestoreLogicalInventoryCount(manifest.Inventory)),
+			"expected_blobs":   fmt.Sprintf("%d", len(adminMigrationRestoreBlobReferences(blobManifest))),
+		},
+	}
+
+	bootstrapState, coreObjectState, ok := adminMigrationLoadRestoreTargetSnapshots(&adminMigrationCLIOutput{}, store)
+	if !ok {
+		dep.Status = "error"
+		dep.Message = "restored PostgreSQL-backed state could not be reloaded for validation"
+		return adminMigrationRestoreValidation{Dependency: dep}
+	}
+	cookbookInventory, err := adminMigrationRestoreTargetCookbookInventory(store, bootstrapState, coreObjectState, manifest.Inventory)
+	if err != nil {
+		dep.Status = "error"
+		dep.Message = "restored cookbook metadata could not be reloaded for validation"
+		return adminMigrationRestoreValidation{Dependency: dep, Inventory: adminMigrationInventoryFromState(bootstrapState, coreObjectState, nil, "")}
+	}
+
+	restoredInventory := adminMigrationInventoryFromState(bootstrapState, coreObjectState, cookbookInventory, "")
+	dep.Details["restored_objects"] = fmt.Sprintf("%d", adminMigrationRestoreLogicalInventoryCount(restoredInventory))
+	findings := adminMigrationRestoreInventoryFindings(manifest.Inventory, restoredInventory)
+	findings = append(findings, adminMigrationRestoreChecksumReferenceFindings(blobManifest, adminMigrationBlobReferencesFromState(coreObjectState, cookbookInventory, ""))...)
+
+	blobValidation := c.adminMigrationBlobValidation(ctx, cfg, adminMigrationRestoreBlobReferences(blobManifest))
+	restoredInventory.Families = append(restoredInventory.Families, blobValidation.Families...)
+	dep.Details["reachable_blobs"] = fmt.Sprintf("%d", adminMigrationInventoryFamilyCount(blobValidation.Families, "", "reachable_blobs"))
+	dep.Details["content_verified_blobs"] = fmt.Sprintf("%d", adminMigrationInventoryFamilyCount(blobValidation.Families, "", "content_verified_blobs"))
+	if blobValidation.Dependency.Status == "error" {
+		dep.Status = "error"
+		dep.Message = "restored checksum blobs could not be validated"
+	}
+	findings = append(findings, adminMigrationRestoreBlobFindings(blobValidation.Findings)...)
+
+	if adminMigrationHasErrorFindings(findings) {
+		dep.Status = "error"
+		dep.Message = "restored target validation found mismatches after rehydration"
+	}
+	return adminMigrationRestoreValidation{Dependency: dep, Inventory: restoredInventory, Findings: findings}
 }
 
 // adminMigrationReadBackupStatePayloads decodes the typed PostgreSQL logical
@@ -1779,12 +2642,66 @@ func (c *command) runAdminMigrationSourceImportApply(ctx context.Context, args [
 	result.Command = "migration_source_import_apply"
 	result.Confirmed = opts.yes
 	result.Target.ProgressPath = adminMigrationRedactMigrationPath(opts.progressPath)
-	if !result.OK || opts.dryRun {
+	if !result.OK {
+		if opts.dryRun || !adminMigrationSourceImportReplayCandidate(result, opts.progressPath) {
+			return c.writeAdminMigrationResult(result, opts.withTiming, start, adminMigrationExitCode(result))
+		}
+		result = adminMigrationSourceImportReplayOutput(result)
+	}
+	if opts.dryRun {
 		return c.writeAdminMigrationResult(result, opts.withTiming, start, adminMigrationExitCode(result))
 	}
 
 	result = c.applyAdminMigrationSourceImport(ctx, cfg, sourcePath, sourceRead, opts, result)
 	return c.writeAdminMigrationResult(result, opts.withTiming, start, adminMigrationExitCode(result))
+}
+
+// adminMigrationSourceImportReplayCandidate permits apply to continue past the
+// normal non-empty-target preflight only when import progress proves a previous
+// metadata phase completed; apply then performs the stronger state-match check.
+func adminMigrationSourceImportReplayCandidate(out adminMigrationCLIOutput, progressPath string) bool {
+	progress, err := adminMigrationReadSourceImportProgress(progressPath)
+	if err != nil || !progress.MetadataImported {
+		return false
+	}
+	for _, dep := range out.Dependencies {
+		if dep.Status == "error" && dep.Name != "source_import_target" {
+			return false
+		}
+	}
+	for _, finding := range out.Findings {
+		if finding.Severity == "error" && finding.Code != "source_import_target_not_empty" {
+			return false
+		}
+	}
+	return true
+}
+
+// adminMigrationSourceImportReplayOutput removes the provisional target-empty
+// failure from preflight output so apply can replace it with either a verified
+// already-imported result or a stricter replay-mismatch error.
+func adminMigrationSourceImportReplayOutput(out adminMigrationCLIOutput) adminMigrationCLIOutput {
+	filteredDependencies := make([]adminMigrationDependency, 0, len(out.Dependencies))
+	for _, dep := range out.Dependencies {
+		if dep.Name == "source_import_target" && dep.Status == "error" {
+			continue
+		}
+		filteredDependencies = append(filteredDependencies, dep)
+	}
+	filteredFindings := make([]adminMigrationFinding, 0, len(out.Findings))
+	for _, finding := range out.Findings {
+		if finding.Code == "source_import_target_not_empty" {
+			continue
+		}
+		filteredFindings = append(filteredFindings, finding)
+	}
+	out.Dependencies = filteredDependencies
+	out.Findings = filteredFindings
+	out.Errors = nil
+	out.Warnings = nil
+	out.OK = true
+	adminMigrationCollectOutputStatuses(&out)
+	return out
 }
 
 // runAdminMigrationSourceSync dispatches repeatable normalized-source
@@ -2208,12 +3125,24 @@ func (c *command) applyAdminMigrationSourceImport(ctx context.Context, cfg confi
 		return out
 	}
 	targetDependency, targetFindings := adminMigrationSourceImportTargetDependency(adminMigrationInventoryFromState(previousBootstrap, previousCore, targetCookbookInventory, ""), read.Bundle.Inventory)
+	alreadyImported := false
 	if targetDependency.Status == "error" {
-		adminMigrationMarkDependency(&out, targetDependency)
-		for _, finding := range targetFindings {
-			adminMigrationMarkFinding(&out, finding)
+		if applied, appliedDependency, appliedFindings := adminMigrationSourceImportAlreadyAppliedTarget(store, previousBootstrap, previousCore, read.Bundle.Inventory, importState, read, opts.progressPath); applied {
+			adminMigrationMarkDependency(&out, appliedDependency)
+			for _, finding := range appliedFindings {
+				adminMigrationMarkFinding(&out, finding)
+			}
+			alreadyImported = true
+		} else {
+			adminMigrationMarkDependency(&out, targetDependency)
+			for _, finding := range targetFindings {
+				adminMigrationMarkFinding(&out, finding)
+			}
+			for _, finding := range appliedFindings {
+				adminMigrationMarkFinding(&out, finding)
+			}
+			return out
 		}
-		return out
 	}
 
 	blobApply := c.adminMigrationSourceImportApplyBlobs(ctx, cfg, sourcePath, read, opts.progressPath)
@@ -2224,6 +3153,18 @@ func (c *command) applyAdminMigrationSourceImport(ctx context.Context, cfg confi
 		adminMigrationMarkFinding(&out, finding)
 	}
 	if blobApply.Dependency.Status == "error" || adminMigrationHasErrorFindings(blobApply.Findings) {
+		return out
+	}
+
+	if alreadyImported {
+		adminMigrationMarkDependency(&out, adminMigrationDependency{
+			Name:       "source_import_write",
+			Status:     "ok",
+			Backend:    "postgres",
+			Configured: true,
+			Message:    "normalized source state was already present; no PostgreSQL metadata write was needed",
+		})
+		out.PlannedMutations = adminMigrationSourceImportAlreadyImportedMutations()
 		return out
 	}
 
@@ -2251,6 +3192,85 @@ func (c *command) applyAdminMigrationSourceImport(ctx context.Context, cfg confi
 	out.PlannedMutations = adminMigrationSourceImportCompletedMutations(read)
 	out.Warnings = append(out.Warnings, "OpenSearch documents were not imported as source data; run opencook admin reindex --all-orgs --complete and opencook admin search check --all-orgs after starting the imported target")
 	return out
+}
+
+// adminMigrationSourceImportAlreadyAppliedTarget admits a confirmed import
+// rerun only when durable progress says metadata was imported and the current
+// target still matches the normalized source snapshot exactly.
+func adminMigrationSourceImportAlreadyAppliedTarget(store adminOfflineStore, bootstrapState bootstrap.BootstrapCoreState, coreObjectState bootstrap.CoreObjectState, expected adminMigrationInventory, importState adminMigrationSourceImportState, read adminMigrationSourceImportRead, progressPath string) (bool, adminMigrationDependency, []adminMigrationFinding) {
+	progress, err := adminMigrationReadSourceImportProgress(progressPath)
+	if err != nil {
+		return false, adminMigrationDependency{}, []adminMigrationFinding{{
+			Severity: "error",
+			Code:     "source_import_progress_invalid",
+			Family:   "source_import_progress",
+			Message:  "source import progress metadata could not be read",
+		}}
+	}
+	if !progress.MetadataImported {
+		return false, adminMigrationDependency{}, nil
+	}
+	cookbooks, err := adminMigrationLoadSourceImportTargetCookbookExport(store, bootstrapState, coreObjectState, expected)
+	if err != nil {
+		return false, adminMigrationDependency{}, []adminMigrationFinding{{
+			Severity: "error",
+			Code:     "postgres_cookbooks_unavailable",
+			Family:   "source_import_target",
+			Message:  "source import target cookbook state could not be loaded for progress replay validation",
+		}}
+	}
+	targetState := adminMigrationSourceImportState{Bootstrap: bootstrapState, CoreObjects: coreObjectState, Cookbooks: cookbooks}
+	diff := adminMigrationSourceSyncDiffStates(importState, targetState, adminMigrationSourceSyncCoveredScopes(read))
+	if diff.HasChanges {
+		return false, adminMigrationDependency{}, []adminMigrationFinding{{
+			Severity: "error",
+			Code:     "source_import_progress_target_mismatch",
+			Family:   "source_import_progress",
+			Message:  "source import progress says metadata was imported, but the target no longer matches the normalized source snapshot",
+		}}
+	}
+	return true, adminMigrationDependency{
+		Name:       "source_import_target",
+		Status:     "ok",
+		Backend:    "postgres",
+		Configured: true,
+		Message:    "source import target already contains the normalized source metadata named by progress",
+		Details: map[string]string{
+			"state":             "already_imported",
+			"expected_objects":  fmt.Sprintf("%d", adminMigrationInventoryTotalCount(read.Bundle.Inventory)),
+			"expected_orgs":     strings.Join(adminMigrationInventoryOrgNames(read.Bundle.Inventory), ","),
+			"progress_metadata": "imported",
+		},
+	}, nil
+}
+
+// adminMigrationLoadSourceImportTargetCookbookExport loads cookbook metadata
+// for completed-import replay checks, including orgs that exist only in the
+// normalized source manifest.
+func adminMigrationLoadSourceImportTargetCookbookExport(store adminOfflineStore, bootstrapState bootstrap.BootstrapCoreState, coreObjectState bootstrap.CoreObjectState, expected adminMigrationInventory) (adminMigrationCookbookExport, error) {
+	loader, ok := store.(adminMigrationCookbookExportLoader)
+	if !ok {
+		return adminMigrationCookbookExport{Orgs: map[string]adminMigrationCookbookOrgExport{}}, nil
+	}
+	orgSet := map[string]struct{}{}
+	for _, orgName := range adminMigrationOrgNames(bootstrapState, coreObjectState, nil, "") {
+		orgSet[orgName] = struct{}{}
+	}
+	for _, orgName := range adminMigrationInventoryOrgNames(expected) {
+		orgSet[orgName] = struct{}{}
+	}
+	return loader.LoadCookbookExport(adminMigrationSortedStringSet(orgSet))
+}
+
+// adminMigrationSourceImportAlreadyImportedMutations keeps replay output
+// explicit that metadata was not rewritten while search validation remains due.
+func adminMigrationSourceImportAlreadyImportedMutations() []adminMigrationPlannedMutation {
+	mutations := []adminMigrationPlannedMutation{{
+		Action:  "noop",
+		Family:  "postgres",
+		Message: "source import progress already marked metadata imported and target state still matches",
+	}}
+	return append(mutations, adminMigrationSourceSearchFollowupMutations(false)...)
 }
 
 // buildAdminMigrationSourceSyncPreflight plans a covered-family reconciliation
@@ -8197,6 +9217,7 @@ func (c *command) runAdminMigrationShadowCompare(ctx context.Context, args []str
 	fs.StringVar(&opts.privateKeyPath, "private-key", "", "path to the requestor private key PEM")
 	fs.StringVar(&opts.defaultOrg, "default-org", "", "default organization for default-org compatibility checks")
 	fs.StringVar(&opts.serverAPIVersion, "server-api-version", "", "X-Ops-Server-API-Version value for signed shadow reads")
+	fs.StringVar(&opts.shadowCoverage, "coverage", adminMigrationShadowCoverageRepresentative, "shadow coverage mode: representative or scale")
 	if err := fs.Parse(args); err != nil {
 		return c.adminFlagError("admin migration shadow compare", err)
 	}
@@ -8209,13 +9230,17 @@ func (c *command) runAdminMigrationShadowCompare(ctx context.Context, args []str
 	if strings.TrimSpace(opts.serverURL) == "" {
 		return c.adminUsageError("admin migration shadow compare requires --target-server-url URL\n\n")
 	}
+	opts.shadowCoverage = adminMigrationNormalizeShadowCoverage(opts.shadowCoverage)
+	if !adminMigrationValidShadowCoverage(opts.shadowCoverage) {
+		return c.adminUsageError("admin migration shadow compare --coverage must be representative or scale\n\n")
+	}
 
 	result := c.buildAdminMigrationShadowCompare(ctx, sourcePath, opts)
 	return c.writeAdminMigrationResult(result, opts.withTiming, start, adminMigrationExitCode(result))
 }
 
 // buildAdminMigrationShadowCompare validates source integrity, constructs a
-// read-only target client, and compares representative Chef-facing reads.
+// read-only target client, and compares representative or scale Chef-facing reads.
 func (c *command) buildAdminMigrationShadowCompare(ctx context.Context, sourcePath string, opts *adminMigrationFlagValues) adminMigrationCLIOutput {
 	out := adminMigrationShadowCompareOutput(sourcePath, opts)
 	read, err := adminMigrationReadSourceImportBundle(sourcePath)
@@ -8278,8 +9303,9 @@ func (c *command) buildAdminMigrationShadowCompare(ctx context.Context, sourcePa
 	}
 
 	blobManifest := adminMigrationSourceReadBlobManifest(sourceState, read)
-	checks, skipped := adminMigrationShadowComparableChecks(adminMigrationCutoverRehearsalChecks(sourceState.Bootstrap, sourceState.CoreObjects, sourceState.Cookbooks, blobManifest))
+	checks, skipped := adminMigrationShadowChecksForCoverage(sourceState, blobManifest, opts.shadowCoverage)
 	shadow := adminMigrationRunShadowComparison(ctx, client, sourceState, checks, skipped)
+	shadow.Coverage = opts.shadowCoverage
 	out.Inventory.Families = append(out.Inventory.Families, adminMigrationShadowInventoryFamilies(shadow)...)
 	if shadow.Failed > 0 {
 		adminMigrationMarkDependency(&out, adminMigrationDependency{
@@ -8304,7 +9330,7 @@ func (c *command) buildAdminMigrationShadowCompare(ctx context.Context, sourcePa
 		adminMigrationMarkFinding(&out, finding)
 	}
 	out.PlannedMutations = adminMigrationShadowCompareRecommendations()
-	out.Warnings = append(out.Warnings, "shadow compare issued only read-only GET requests and signed blob downloads; writes remain blocked until cutover")
+	out.Warnings = append(out.Warnings, "shadow compare issued only read-only GET requests, Chef read-like POST checks, and signed blob downloads; writes remain blocked until cutover")
 	return out
 }
 
@@ -8333,7 +9359,7 @@ func adminMigrationShadowCompareOutput(sourcePath string, opts *adminMigrationFl
 // manifest when provided, making shadow comparison composable with rehearsal.
 func adminMigrationShadowInspectOptionalManifest(out adminMigrationCLIOutput, manifestPath string) adminMigrationCLIOutput {
 	bundlePath, _ := adminMigrationResolveManifestBundlePath(manifestPath)
-	manifest, findings, err := adminMigrationInspectBackupBundle(bundlePath)
+	manifest, summary, findings, err := adminMigrationInspectBackupBundle(bundlePath)
 	if err != nil {
 		adminMigrationMarkDependency(&out, adminMigrationBackupBundleDependency("error", "optional backup manifest failed integrity inspection", nil))
 		for _, finding := range findings {
@@ -8344,10 +9370,7 @@ func adminMigrationShadowInspectOptionalManifest(out adminMigrationCLIOutput, ma
 		}
 		return out
 	}
-	adminMigrationMarkDependency(&out, adminMigrationBackupBundleDependency("ok", "optional backup manifest and payload hashes are valid", map[string]string{
-		"format_version": manifest.FormatVersion,
-		"payloads":       fmt.Sprintf("%d", len(manifest.Payloads)),
-	}))
+	adminMigrationMarkDependency(&out, adminMigrationBackupBundleDependency("ok", "optional backup manifest and payload hashes are valid", adminMigrationBackupInspectDetails(manifest, summary)))
 	return out
 }
 
@@ -8391,12 +9414,14 @@ func (c *command) runAdminMigrationCutoverRehearse(ctx context.Context, args []s
 	fs.StringVar(&opts.syncProgressPath, "source-sync-progress", "", "source sync progress metadata path")
 	fs.StringVar(&opts.shadowResultPath, "shadow-result", "", "migration shadow compare JSON result path")
 	fs.StringVar(&opts.searchResultPath, "search-check-result", "", "admin search check JSON result path")
+	fs.StringVar(&opts.maintenanceResultPath, "maintenance-result", "", "admin maintenance status/check JSON result path")
 	fs.StringVar(&opts.serverURL, "server-url", "", "restored OpenCook server URL")
 	fs.StringVar(&opts.requestorName, "requestor-name", "", "Chef requestor name used for signed rehearsal requests")
 	fs.StringVar(&opts.requestorType, "requestor-type", "", "Chef requestor type used for signed rehearsal requests")
 	fs.StringVar(&opts.privateKeyPath, "private-key", "", "path to the requestor private key PEM")
 	fs.StringVar(&opts.defaultOrg, "default-org", "", "default organization for default-org compatibility checks")
 	fs.StringVar(&opts.serverAPIVersion, "server-api-version", "", "X-Ops-Server-API-Version value for signed rehearsal requests")
+	fs.BoolVar(&opts.sourceFrozen, "source-frozen", false, "confirm source Chef writes are externally frozen for final sync and cutover")
 	fs.BoolVar(&opts.rollbackReady, "rollback-ready", false, "confirm the source Chef path remains available for rollback")
 	if err := fs.Parse(args); err != nil {
 		return c.adminFlagError("admin migration cutover rehearse", err)
@@ -8418,7 +9443,7 @@ func (c *command) buildAdminMigrationCutoverRehearsal(ctx context.Context, opts 
 	bundlePath, manifestPath := adminMigrationResolveManifestBundlePath(opts.manifestPath)
 	out := adminMigrationCutoverRehearsalOutput(opts, manifestPath)
 
-	manifest, findings, err := adminMigrationInspectBackupBundle(bundlePath)
+	manifest, summary, findings, err := adminMigrationInspectBackupBundle(bundlePath)
 	if err != nil {
 		adminMigrationMarkDependency(&out, adminMigrationBackupBundleDependency("error", "backup manifest failed integrity inspection", nil))
 		for _, finding := range findings {
@@ -8432,10 +9457,8 @@ func (c *command) buildAdminMigrationCutoverRehearsal(ctx context.Context, opts 
 	out.Inventory = manifest.Inventory
 	out.Warnings = append(out.Warnings, manifest.Warnings...)
 	adminMigrationApplyCutoverEvidenceGates(&out, opts)
-	adminMigrationMarkDependency(&out, adminMigrationBackupBundleDependency("ok", "backup manifest and payload hashes are valid", map[string]string{
-		"format_version": manifest.FormatVersion,
-		"payloads":       fmt.Sprintf("%d", len(manifest.Payloads)),
-	}))
+	adminMigrationMarkDependency(&out, adminMigrationBackupBundleDependency("ok", "backup manifest and payload hashes are valid", adminMigrationBackupInspectDetails(manifest, summary)))
+	adminMigrationCutoverBlobIntegrityEvidenceGate(&out, summary)
 
 	bootstrapState, coreObjectState, cookbooks, err := adminMigrationReadBackupStatePayloads(bundlePath)
 	if err != nil {
@@ -8512,13 +9535,14 @@ func adminMigrationCutoverRehearsalOutput(opts *adminMigrationFlagValues, manife
 		OK:      true,
 		Command: "migration_cutover_rehearse",
 		Target: adminMigrationTarget{
-			ManifestPath:       manifestPath,
-			SourcePath:         adminMigrationRedactMigrationPath(opts.sourcePath),
-			ImportProgressPath: adminMigrationRedactMigrationPath(opts.importProgressPath),
-			SyncProgressPath:   adminMigrationRedactMigrationPath(opts.syncProgressPath),
-			ShadowResultPath:   adminMigrationRedactMigrationPath(opts.shadowResultPath),
-			SearchResultPath:   adminMigrationRedactMigrationPath(opts.searchResultPath),
-			ServerURL:          adminMigrationRedact(opts.serverURL),
+			ManifestPath:          manifestPath,
+			SourcePath:            adminMigrationRedactMigrationPath(opts.sourcePath),
+			ImportProgressPath:    adminMigrationRedactMigrationPath(opts.importProgressPath),
+			SyncProgressPath:      adminMigrationRedactMigrationPath(opts.syncProgressPath),
+			ShadowResultPath:      adminMigrationRedactMigrationPath(opts.shadowResultPath),
+			SearchResultPath:      adminMigrationRedactMigrationPath(opts.searchResultPath),
+			MaintenanceResultPath: adminMigrationRedactMigrationPath(opts.maintenanceResultPath),
+			ServerURL:             adminMigrationRedact(opts.serverURL),
 		},
 		DryRun:           opts.dryRun,
 		Offline:          opts.offline,
@@ -8578,14 +9602,17 @@ func adminMigrationRedactedAdminConfig(cfg admin.Config) map[string]string {
 	}
 }
 
-// adminMigrationApplyCutoverEvidenceGates folds prior import, sync, search, and
-// shadow-read outputs into cutover rehearsal without making old invocations fail.
+// adminMigrationApplyCutoverEvidenceGates folds operator, import, sync, search,
+// shadow-read, maintenance, and rollback evidence into cutover rehearsal without
+// making old invocations fail just because new evidence files were omitted.
 func adminMigrationApplyCutoverEvidenceGates(out *adminMigrationCLIOutput, opts *adminMigrationFlagValues) {
 	sourceRead, sourceLoaded := adminMigrationCutoverSourceBundleGate(out, opts)
+	adminMigrationCutoverSourceFreezeGate(out, opts)
 	adminMigrationCutoverImportProgressGate(out, opts)
 	adminMigrationCutoverSyncFreshnessGate(out, opts, sourceRead, sourceLoaded)
 	adminMigrationCutoverSearchCleanlinessGate(out, opts)
 	adminMigrationCutoverShadowEvidenceGate(out, opts)
+	adminMigrationCutoverMaintenanceEvidenceGate(out, opts)
 	adminMigrationCutoverRollbackReadinessGate(out, opts)
 }
 
@@ -8635,6 +9662,35 @@ func adminMigrationCutoverSourceBundleGate(out *adminMigrationCLIOutput, opts *a
 		},
 	})
 	return read, true
+}
+
+// adminMigrationCutoverSourceFreezeGate records the explicit source-freeze
+// acknowledgement while staying honest that OpenCook cannot enforce source Chef
+// write blocking from this read-only target-side command.
+func adminMigrationCutoverSourceFreezeGate(out *adminMigrationCLIOutput, opts *adminMigrationFlagValues) {
+	details := map[string]string{
+		"operator_confirmed":   fmt.Sprintf("%t", opts.sourceFrozen),
+		"enforced_by_opencook": "false",
+	}
+	if !opts.sourceFrozen {
+		adminMigrationMarkDependency(out, adminMigrationDependency{
+			Name:       "source_freeze_evidence",
+			Status:     "warning",
+			Backend:    "runbook",
+			Configured: false,
+			Message:    "source Chef write-freeze evidence was not confirmed; OpenCook cannot enforce writes still targeting source Chef",
+			Details:    details,
+		})
+		return
+	}
+	adminMigrationMarkDependency(out, adminMigrationDependency{
+		Name:       "source_freeze_evidence",
+		Status:     "ok",
+		Backend:    "runbook",
+		Configured: true,
+		Message:    "source Chef write freeze was operator-confirmed for final sync and cutover",
+		Details:    details,
+	})
 }
 
 // adminMigrationCutoverImportProgressGate proves the offline import reached the
@@ -8876,6 +9932,64 @@ func adminMigrationCutoverSearchCleanlinessGate(out *adminMigrationCLIOutput, op
 	})
 }
 
+// adminMigrationCutoverBlobIntegrityEvidenceGate reports whether the backup
+// bundle itself contained hash-verified checksum blob bytes before live signed
+// download checks prove the restored HTTP route can serve them.
+func adminMigrationCutoverBlobIntegrityEvidenceGate(out *adminMigrationCLIOutput, summary adminMigrationBackupInspectSummary) {
+	details := map[string]string{
+		"referenced_blobs":      fmt.Sprintf("%d", summary.ReferencedBlobs),
+		"copied_blobs":          fmt.Sprintf("%d", summary.CopiedBlobs),
+		"verified_copied_blobs": fmt.Sprintf("%d", summary.VerifiedCopiedBlobs),
+	}
+	if summary.ReferencedBlobs == 0 {
+		adminMigrationMarkDependency(out, adminMigrationDependency{
+			Name:       "blob_integrity_evidence",
+			Status:     "skipped",
+			Backend:    "filesystem",
+			Configured: false,
+			Message:    "backup bundle has no referenced checksum blobs to integrity-check",
+			Details:    details,
+		})
+		return
+	}
+	if summary.VerifiedCopiedBlobs < summary.CopiedBlobs {
+		adminMigrationMarkDependency(out, adminMigrationDependency{
+			Name:       "blob_integrity_evidence",
+			Status:     "error",
+			Backend:    "filesystem",
+			Configured: true,
+			Message:    "backup bundle copied blob payloads were not fully integrity-verified",
+			Details:    details,
+		})
+		adminMigrationMarkFinding(out, adminMigrationFinding{
+			Severity: "error",
+			Code:     adminMigrationFindingBlobMismatch,
+			Family:   "blob",
+			Message:  "backup bundle copied blob payloads were not fully integrity-verified",
+		})
+		return
+	}
+	if summary.CopiedBlobs < summary.ReferencedBlobs {
+		adminMigrationMarkDependency(out, adminMigrationDependency{
+			Name:       "blob_integrity_evidence",
+			Status:     "warning",
+			Backend:    "filesystem",
+			Configured: true,
+			Message:    "backup bundle references checksum blobs that were not all copied; live provider checks must cover the remaining blobs",
+			Details:    details,
+		})
+		return
+	}
+	adminMigrationMarkDependency(out, adminMigrationDependency{
+		Name:       "blob_integrity_evidence",
+		Status:     "ok",
+		Backend:    "filesystem",
+		Configured: true,
+		Message:    "backup bundle checksum blob payloads were integrity-verified",
+		Details:    details,
+	})
+}
+
 // adminMigrationCutoverShadowEvidenceGate reads prior shadow-compare JSON and
 // promotes any mismatch, auth failure, or download failure to a cutover blocker.
 func adminMigrationCutoverShadowEvidenceGate(out *adminMigrationCLIOutput, opts *adminMigrationFlagValues) {
@@ -8942,6 +10056,120 @@ func adminMigrationCutoverShadowEvidenceGate(out *adminMigrationCLIOutput, opts 
 	})
 }
 
+// adminMigrationCutoverMaintenanceEvidenceGate consumes `admin maintenance`
+// status/check JSON so rehearsal can prove the restored OpenCook target was
+// protected by an active write gate during the cutover validation window.
+func adminMigrationCutoverMaintenanceEvidenceGate(out *adminMigrationCLIOutput, opts *adminMigrationFlagValues) {
+	path := strings.TrimSpace(opts.maintenanceResultPath)
+	out.Target.MaintenanceResultPath = adminMigrationRedactMigrationPath(path)
+	if path == "" {
+		adminMigrationMarkDependency(out, adminMigrationDependency{
+			Name:       "maintenance_evidence",
+			Status:     "warning",
+			Backend:    "maintenance",
+			Configured: false,
+			Message:    "OpenCook maintenance evidence was not provided; confirm target writes are blocked during cutover checks",
+		})
+		return
+	}
+	result, err := adminMigrationReadCutoverJSONEvidence(path)
+	if err != nil {
+		adminMigrationMarkDependency(out, adminMigrationDependency{
+			Name:       "maintenance_evidence",
+			Status:     "error",
+			Backend:    "maintenance",
+			Configured: true,
+			Message:    "OpenCook maintenance evidence could not be read",
+			Details:    map[string]string{"result_path": adminMigrationRedactMigrationPath(path)},
+		})
+		adminMigrationMarkFinding(out, adminMigrationFinding{
+			Severity: "error",
+			Code:     adminMigrationFindingMaintenanceInvalid,
+			Family:   "maintenance",
+			Message:  "OpenCook maintenance evidence could not be read",
+		})
+		return
+	}
+	details := adminMigrationCutoverMaintenanceEvidenceDetails(path, result)
+	command := adminMigrationJSONString(result, "command")
+	if (command != "maintenance_status" && command != "maintenance_check") || !adminMigrationJSONBool(result, "ok") || adminMigrationJSONArrayLength(result, "errors") > 0 {
+		adminMigrationMarkDependency(out, adminMigrationDependency{
+			Name:       "maintenance_evidence",
+			Status:     "error",
+			Backend:    "maintenance",
+			Configured: true,
+			Message:    "OpenCook maintenance evidence is not successful maintenance status/check JSON",
+			Details:    details,
+		})
+		adminMigrationMarkFinding(out, adminMigrationFinding{
+			Severity: "error",
+			Code:     adminMigrationFindingMaintenanceInvalid,
+			Family:   "maintenance",
+			Message:  "OpenCook maintenance evidence is not successful maintenance status/check JSON",
+		})
+		return
+	}
+	if !adminMigrationJSONBool(result, "active") || adminMigrationJSONBool(result, "expired") {
+		adminMigrationMarkDependency(out, adminMigrationDependency{
+			Name:       "maintenance_evidence",
+			Status:     "error",
+			Backend:    "maintenance",
+			Configured: true,
+			Message:    "OpenCook maintenance evidence does not show an active unexpired write gate",
+			Details:    details,
+		})
+		adminMigrationMarkFinding(out, adminMigrationFinding{
+			Severity: "error",
+			Code:     adminMigrationFindingMaintenanceInactive,
+			Family:   "maintenance",
+			Message:  "OpenCook maintenance evidence does not show an active unexpired write gate",
+		})
+		return
+	}
+	backend := adminMigrationJSONMap(result, "backend")
+	if !adminMigrationJSONBool(backend, "shared") {
+		adminMigrationMarkDependency(out, adminMigrationDependency{
+			Name:       "maintenance_evidence",
+			Status:     "warning",
+			Backend:    "maintenance",
+			Configured: true,
+			Message:    "OpenCook maintenance evidence is active but not PostgreSQL-shared; verify it protects the live serving process",
+			Details:    details,
+		})
+		adminMigrationMarkFinding(out, adminMigrationFinding{
+			Severity: "warning",
+			Code:     adminMigrationFindingMaintenanceProcessLocal,
+			Family:   "maintenance",
+			Message:  "OpenCook maintenance evidence is active but not PostgreSQL-shared",
+		})
+		return
+	}
+	adminMigrationMarkDependency(out, adminMigrationDependency{
+		Name:       "maintenance_evidence",
+		Status:     "ok",
+		Backend:    "maintenance",
+		Configured: true,
+		Message:    "OpenCook maintenance evidence confirms an active shared write gate",
+		Details:    details,
+	})
+}
+
+// adminMigrationCutoverMaintenanceEvidenceDetails keeps maintenance proof
+// operator-readable while redacting local evidence paths in the shared envelope.
+func adminMigrationCutoverMaintenanceEvidenceDetails(path string, result map[string]any) map[string]string {
+	backend := adminMigrationJSONMap(result, "backend")
+	state := adminMigrationJSONMap(result, "state")
+	return map[string]string{
+		"result_path": adminMigrationRedactMigrationPath(path),
+		"command":     adminMigrationJSONString(result, "command"),
+		"active":      fmt.Sprintf("%t", adminMigrationJSONBool(result, "active")),
+		"expired":     fmt.Sprintf("%t", adminMigrationJSONBool(result, "expired")),
+		"backend":     adminMigrationJSONString(backend, "name"),
+		"shared":      fmt.Sprintf("%t", adminMigrationJSONBool(backend, "shared")),
+		"mode":        adminMigrationJSONString(state, "mode"),
+	}
+}
+
 // adminMigrationCutoverRollbackReadinessGate keeps rollback as an explicit
 // operator acknowledgement instead of inferring it from target health.
 func adminMigrationCutoverRollbackReadinessGate(out *adminMigrationCLIOutput, opts *adminMigrationFlagValues) {
@@ -8969,6 +10197,7 @@ func adminMigrationCutoverRollbackReadinessGate(out *adminMigrationCLIOutput, op
 func adminMigrationApplyCutoverLiveGates(out *adminMigrationCLIOutput, rehearsal adminMigrationRehearsalResult, checks []adminMigrationRehearsalCheck) {
 	adminMigrationCutoverSignedAuthGate(out, rehearsal)
 	adminMigrationCutoverBlobReachabilityGate(out, rehearsal, checks)
+	adminMigrationCutoverRestoredTargetValidationGate(out, rehearsal)
 }
 
 // adminMigrationCutoverSignedAuthGate separates request-signing health from
@@ -9067,6 +10296,43 @@ func adminMigrationExpectedRehearsalDownloads(checks []adminMigrationRehearsalCh
 		}
 	}
 	return count
+}
+
+// adminMigrationCutoverRestoredTargetValidationGate summarizes live read-only
+// target smoke checks separately from signed auth and blob checks so operators
+// can see whether restored PostgreSQL-backed state itself read back cleanly.
+func adminMigrationCutoverRestoredTargetValidationGate(out *adminMigrationCLIOutput, rehearsal adminMigrationRehearsalResult) {
+	details := adminMigrationRehearsalDependencyDetails(rehearsal)
+	if rehearsal.Checks == 0 {
+		adminMigrationMarkDependency(out, adminMigrationDependency{
+			Name:       "restored_target_validation",
+			Status:     "warning",
+			Backend:    "http",
+			Configured: false,
+			Message:    "no restored target read checks were available for cutover validation",
+			Details:    details,
+		})
+		return
+	}
+	if rehearsal.Failed > 0 {
+		adminMigrationMarkDependency(out, adminMigrationDependency{
+			Name:       "restored_target_validation",
+			Status:     "error",
+			Backend:    "http",
+			Configured: true,
+			Message:    "restored target read validation found one or more failed checks",
+			Details:    details,
+		})
+		return
+	}
+	adminMigrationMarkDependency(out, adminMigrationDependency{
+		Name:       "restored_target_validation",
+		Status:     "ok",
+		Backend:    "http",
+		Configured: true,
+		Message:    "restored target read validation passed",
+		Details:    details,
+	})
 }
 
 // adminMigrationCutoverImportProgressPath shares source-import retry defaults
@@ -9176,9 +10442,28 @@ func adminMigrationJSONInventoryFamilyCount(object map[string]any, organization,
 }
 
 // adminMigrationAppendCutoverReadinessSummary records compact blocker/advisory
-// counts after all gates run so humans and shell scripts can read one summary.
+// counts and a derived evidence dependency after all gates run. The derived
+// dependency is appended directly so it summarizes readiness without
+// double-counting itself as a new blocker.
 func adminMigrationAppendCutoverReadinessSummary(out *adminMigrationCLIOutput) {
 	blockers, advisories := adminMigrationCutoverReadinessCounts(out)
+	status := "ok"
+	message := "cutover evidence has no blocking failures"
+	if blockers > 0 {
+		status = "error"
+		message = "cutover evidence contains blocking failures"
+	}
+	out.Dependencies = append(out.Dependencies, adminMigrationDependency{
+		Name:       "cutover_evidence",
+		Status:     status,
+		Backend:    "runbook",
+		Configured: true,
+		Message:    message,
+		Details: map[string]string{
+			"blockers":   fmt.Sprintf("%d", blockers),
+			"advisories": fmt.Sprintf("%d", advisories),
+		},
+	})
 	out.Inventory.Families = append(out.Inventory.Families,
 		adminMigrationInventoryFamily{Family: "cutover_blockers", Count: blockers},
 		adminMigrationInventoryFamily{Family: "cutover_advisories", Count: advisories},
@@ -9333,6 +10618,103 @@ func adminMigrationCookbookRouteName(version bootstrap.CookbookVersion) string {
 	return name
 }
 
+// adminMigrationShadowCookbookNames returns stable cookbook route names for
+// collection checks without duplicating multiple restored versions.
+func adminMigrationShadowCookbookNames(versions []bootstrap.CookbookVersion) []string {
+	seen := map[string]struct{}{}
+	for _, version := range versions {
+		name := adminMigrationCookbookRouteName(version)
+		if strings.TrimSpace(name) != "" {
+			seen[name] = struct{}{}
+		}
+	}
+	return adminMigrationSortedStringSet(seen)
+}
+
+// adminMigrationShadowCookbookArtifactNames returns stable artifact names for
+// named artifact collection checks.
+func adminMigrationShadowCookbookArtifactNames(artifacts []bootstrap.CookbookArtifact) []string {
+	seen := map[string]struct{}{}
+	for _, artifact := range artifacts {
+		if strings.TrimSpace(artifact.Name) != "" {
+			seen[artifact.Name] = struct{}{}
+		}
+	}
+	return adminMigrationSortedStringSet(seen)
+}
+
+// adminMigrationShadowSortedCookbookVersions mirrors the API's latest-first
+// cookbook collection order so shadow comparisons do not fail on import order.
+func adminMigrationShadowSortedCookbookVersions(versions []bootstrap.CookbookVersion) []bootstrap.CookbookVersion {
+	out := append([]bootstrap.CookbookVersion(nil), versions...)
+	sort.Slice(out, func(i, j int) bool {
+		leftName := adminMigrationCookbookRouteName(out[i])
+		rightName := adminMigrationCookbookRouteName(out[j])
+		if leftName != rightName {
+			return leftName < rightName
+		}
+		if cmp := adminMigrationShadowCompareDottedVersions(out[i].Version, out[j].Version); cmp != 0 {
+			return cmp > 0
+		}
+		return out[i].Name < out[j].Name
+	})
+	return out
+}
+
+// adminMigrationShadowSortedCookbookArtifacts mirrors the provider-backed
+// artifact collection order used by the active cookbook repository.
+func adminMigrationShadowSortedCookbookArtifacts(artifacts []bootstrap.CookbookArtifact) []bootstrap.CookbookArtifact {
+	out := append([]bootstrap.CookbookArtifact(nil), artifacts...)
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Name != out[j].Name {
+			return out[i].Name < out[j].Name
+		}
+		if cmp := adminMigrationShadowCompareDottedVersions(out[i].Version, out[j].Version); cmp != 0 {
+			return cmp > 0
+		}
+		return out[i].Identifier < out[j].Identifier
+	})
+	return out
+}
+
+// adminMigrationShadowCompareDottedVersions handles the dotted numeric
+// versions produced by migration fixtures while falling back to string compare.
+func adminMigrationShadowCompareDottedVersions(left, right string) int {
+	leftParts := strings.Split(left, ".")
+	rightParts := strings.Split(right, ".")
+	maxParts := len(leftParts)
+	if len(rightParts) > maxParts {
+		maxParts = len(rightParts)
+	}
+	for i := 0; i < maxParts; i++ {
+		leftPart, rightPart := "", ""
+		if i < len(leftParts) {
+			leftPart = leftParts[i]
+		}
+		if i < len(rightParts) {
+			rightPart = rightParts[i]
+		}
+		leftNumber, leftErr := strconv.Atoi(leftPart)
+		rightNumber, rightErr := strconv.Atoi(rightPart)
+		if leftErr == nil && rightErr == nil {
+			if leftNumber < rightNumber {
+				return -1
+			}
+			if leftNumber > rightNumber {
+				return 1
+			}
+			continue
+		}
+		if leftPart < rightPart {
+			return -1
+		}
+		if leftPart > rightPart {
+			return 1
+		}
+	}
+	return 0
+}
+
 // adminMigrationRunRehearsalChecks executes signed JSON reads and optional
 // unsigned blob downloads, returning only stable counts and redacted findings.
 func adminMigrationRunRehearsalChecks(ctx context.Context, client adminJSONClient, checks []adminMigrationRehearsalCheck) adminMigrationRehearsalResult {
@@ -9374,8 +10756,199 @@ func adminMigrationSourceReadBlobManifest(state adminMigrationSourceImportState,
 	return adminMigrationBackupBlobManifestFromState(state.CoreObjects, state.Cookbooks, copies)
 }
 
+// adminMigrationNormalizeShadowCoverage trims and canonicalizes the coverage
+// flag so command parsing stays forgiving while JSON output stays stable.
+func adminMigrationNormalizeShadowCoverage(value string) string {
+	trimmed := strings.ToLower(strings.TrimSpace(value))
+	if trimmed == "" {
+		return adminMigrationShadowCoverageRepresentative
+	}
+	return trimmed
+}
+
+// adminMigrationValidShadowCoverage keeps the additive scale mode explicit so
+// existing automation does not accidentally fan out into a production sweep.
+func adminMigrationValidShadowCoverage(value string) bool {
+	switch adminMigrationNormalizeShadowCoverage(value) {
+	case adminMigrationShadowCoverageRepresentative, adminMigrationShadowCoverageScale:
+		return true
+	default:
+		return false
+	}
+}
+
+// adminMigrationShadowChecksForCoverage selects either the existing
+// representative read set or the opt-in production-scale read sweep.
+func adminMigrationShadowChecksForCoverage(source adminMigrationSourceImportState, blobManifest adminMigrationBackupBlobManifest, coverage string) ([]adminMigrationRehearsalCheck, int) {
+	switch adminMigrationNormalizeShadowCoverage(coverage) {
+	case adminMigrationShadowCoverageScale:
+		return adminMigrationShadowComparableChecks(adminMigrationScaleShadowChecks(source, blobManifest))
+	default:
+		return adminMigrationShadowComparableChecks(adminMigrationCutoverRehearsalChecks(source.Bootstrap, source.CoreObjects, source.Cookbooks, blobManifest))
+	}
+}
+
+// adminMigrationScaleShadowChecks expands shadow compare from representative
+// reads to deterministic per-family checks across the imported source state.
+func adminMigrationScaleShadowChecks(source adminMigrationSourceImportState, blobManifest adminMigrationBackupBlobManifest) []adminMigrationRehearsalCheck {
+	checks := []adminMigrationRehearsalCheck{
+		adminMigrationReadCheck("users_collection", "users", adminPath("users")),
+		adminMigrationReadCheck("organizations_collection", "organizations", adminPath("organizations")),
+	}
+	for _, username := range adminMigrationSortedMapKeys(source.Bootstrap.Users) {
+		checks = append(checks,
+			adminMigrationReadCheck("users", username, adminPath("users", username)),
+			adminMigrationReadCheck("user_keys", username, adminPath("users", username, "keys")),
+			adminMigrationReadCheck("user_acls", username, adminPath("users", username, "_acl")),
+		)
+		for _, keyName := range adminMigrationSortedMapKeys(source.Bootstrap.UserKeys[username]) {
+			checks = append(checks, adminMigrationReadCheck("user_key_details", username+"/"+keyName, adminPath("users", username, "keys", keyName)))
+		}
+	}
+
+	copiedChecksums := adminMigrationCopiedBackupBlobChecksums(blobManifest)
+	for _, orgName := range adminMigrationOrgNames(source.Bootstrap, source.CoreObjects, adminMigrationCookbookInventoryFromExport(source.Cookbooks), "") {
+		bootstrapOrg := source.Bootstrap.Orgs[orgName]
+		coreOrg := source.CoreObjects.Orgs[orgName]
+		cookbookOrg := source.Cookbooks.Orgs[orgName]
+		checks = append(checks,
+			adminMigrationReadCheck("organizations", orgName, adminPath("organizations", orgName)),
+			adminMigrationReadCheck("organization_acls", orgName, adminPath("organizations", orgName, "_acl")),
+		)
+		checks = append(checks, adminMigrationScaleOrgBootstrapChecks(orgName, bootstrapOrg)...)
+		checks = append(checks, adminMigrationScaleCoreObjectChecks(orgName, coreOrg)...)
+		checks = append(checks, adminMigrationScaleCookbookChecks(orgName, cookbookOrg, copiedChecksums)...)
+		checks = append(checks, adminMigrationScaleSearchChecks(orgName, bootstrapOrg, coreOrg)...)
+		checks = append(checks, adminMigrationPostReadCheck("depsolver", "_default", adminPath("organizations", orgName, "environments", "_default", "cookbook_versions"), map[string]any{"run_list": []any{}}))
+	}
+	return checks
+}
+
+// adminMigrationScaleOrgBootstrapChecks covers organization-scoped bootstrap
+// collections, named reads, key lists/details, and ACL routes.
+func adminMigrationScaleOrgBootstrapChecks(orgName string, org bootstrap.BootstrapCoreOrganizationState) []adminMigrationRehearsalCheck {
+	checks := []adminMigrationRehearsalCheck{
+		adminMigrationReadCheck("clients_collection", "clients", adminPath("organizations", orgName, "clients")),
+		adminMigrationReadCheck("groups_collection", "groups", adminPath("organizations", orgName, "groups")),
+		adminMigrationReadCheck("containers_collection", "containers", adminPath("organizations", orgName, "containers")),
+	}
+	for _, clientName := range adminMigrationSortedMapKeys(org.Clients) {
+		checks = append(checks,
+			adminMigrationReadCheck("clients", clientName, adminPath("organizations", orgName, "clients", clientName)),
+			adminMigrationReadCheck("client_keys", clientName, adminPath("organizations", orgName, "clients", clientName, "keys")),
+			adminMigrationReadCheck("client_acls", clientName, adminPath("organizations", orgName, "clients", clientName, "_acl")),
+		)
+		for _, keyName := range adminMigrationSortedMapKeys(org.ClientKeys[clientName]) {
+			checks = append(checks, adminMigrationReadCheck("client_key_details", clientName+"/"+keyName, adminPath("organizations", orgName, "clients", clientName, "keys", keyName)))
+		}
+	}
+	for _, groupName := range adminMigrationSortedMapKeys(org.Groups) {
+		checks = append(checks, adminMigrationReadCheck("groups", groupName, adminPath("organizations", orgName, "groups", groupName)))
+		if _, ok := org.ACLs[adminMigrationGroupACLKey(groupName)]; ok {
+			checks = append(checks, adminMigrationReadCheck("group_acls", groupName, adminPath("organizations", orgName, "groups", groupName, "_acl")))
+		}
+	}
+	for _, containerName := range adminMigrationSortedMapKeys(org.Containers) {
+		checks = append(checks,
+			adminMigrationReadCheck("containers", containerName, adminPath("organizations", orgName, "containers", containerName)),
+			adminMigrationReadCheck("container_acls", containerName, adminPath("organizations", orgName, "containers", containerName, "_acl")),
+		)
+	}
+	return checks
+}
+
+// adminMigrationScaleCoreObjectChecks covers every implemented core object read
+// surface while avoiding unsupported or write-only compatibility routes.
+func adminMigrationScaleCoreObjectChecks(orgName string, org bootstrap.CoreObjectOrganizationState) []adminMigrationRehearsalCheck {
+	checks := []adminMigrationRehearsalCheck{
+		adminMigrationReadCheck("nodes_collection", "nodes", adminPath("organizations", orgName, "nodes")),
+		adminMigrationReadCheck("environments_collection", "environments", adminPath("organizations", orgName, "environments")),
+		adminMigrationReadCheck("roles_collection", "roles", adminPath("organizations", orgName, "roles")),
+		adminMigrationReadCheck("data_bags_collection", "data", adminPath("organizations", orgName, "data")),
+		adminMigrationReadCheck("policies_collection", "policies", adminPath("organizations", orgName, "policies")),
+		adminMigrationReadCheck("policy_groups_collection", "policy_groups", adminPath("organizations", orgName, "policy_groups")),
+	}
+	for _, name := range adminMigrationSortedMapKeys(org.Nodes) {
+		checks = append(checks, adminMigrationReadCheck("nodes", name, adminPath("organizations", orgName, "nodes", name)))
+	}
+	for _, name := range adminMigrationSortedMapKeys(org.Environments) {
+		checks = append(checks, adminMigrationReadCheck("environments", name, adminPath("organizations", orgName, "environments", name)))
+	}
+	for _, name := range adminMigrationSortedMapKeys(org.Roles) {
+		checks = append(checks, adminMigrationReadCheck("roles", name, adminPath("organizations", orgName, "roles", name)))
+	}
+	for _, name := range adminMigrationSortedMapKeys(org.DataBags) {
+		checks = append(checks, adminMigrationReadCheck("data_bags", name, adminPath("organizations", orgName, "data", name)))
+	}
+	for _, bagName := range adminMigrationSortedMapKeys(org.DataBagItems) {
+		for _, itemName := range adminMigrationSortedMapKeys(org.DataBagItems[bagName]) {
+			checks = append(checks, adminMigrationReadCheck("data_bag_items", bagName+"/"+itemName, adminPath("organizations", orgName, "data", bagName, itemName)))
+		}
+	}
+	for _, policyName := range adminMigrationSortedMapKeys(org.Policies) {
+		checks = append(checks, adminMigrationReadCheck("policies", policyName, adminPath("organizations", orgName, "policies", policyName)))
+		for _, revisionID := range adminMigrationSortedMapKeys(org.Policies[policyName]) {
+			checks = append(checks, adminMigrationReadCheck("policy_revisions", policyName+"/"+revisionID, adminPath("organizations", orgName, "policies", policyName, "revisions", revisionID)))
+		}
+	}
+	for _, groupName := range adminMigrationSortedMapKeys(org.PolicyGroups) {
+		group := org.PolicyGroups[groupName]
+		checks = append(checks, adminMigrationReadCheck("policy_groups", groupName, adminPath("organizations", orgName, "policy_groups", groupName)))
+		for _, policyName := range adminMigrationSortedMapKeys(group.Policies) {
+			checks = append(checks, adminMigrationReadCheck("policy_group_assignments", groupName+"/"+policyName, adminPath("organizations", orgName, "policy_groups", groupName, "policies", policyName)))
+		}
+	}
+	return checks
+}
+
+// adminMigrationScaleCookbookChecks covers cookbook collections, named
+// collections, version/artifact reads, universe views, recipes, and downloads.
+func adminMigrationScaleCookbookChecks(orgName string, org adminMigrationCookbookOrgExport, copiedChecksums map[string]struct{}) []adminMigrationRehearsalCheck {
+	checks := []adminMigrationRehearsalCheck{
+		adminMigrationReadCheck("cookbook_versions_collection", "cookbooks", adminPath("organizations", orgName, "cookbooks")+"?num_versions=all"),
+		adminMigrationReadCheck("cookbook_latest", "_latest", adminPath("organizations", orgName, "cookbooks", "_latest")),
+		adminMigrationReadCheck("cookbook_recipes", "_recipes", adminPath("organizations", orgName, "cookbooks", "_recipes")),
+		adminMigrationReadCheck("universe", "universe", adminPath("organizations", orgName, "universe")),
+		adminMigrationReadCheck("cookbook_artifacts_collection", "cookbook_artifacts", adminPath("organizations", orgName, "cookbook_artifacts")),
+	}
+	for _, name := range adminMigrationShadowCookbookNames(org.Versions) {
+		checks = append(checks, adminMigrationReadCheck("cookbook_versions_named_collection", name, adminPath("organizations", orgName, "cookbooks", name)))
+	}
+	for _, version := range adminMigrationShadowSortedCookbookVersions(org.Versions) {
+		cookbookName := adminMigrationCookbookRouteName(version)
+		check := adminMigrationReadCheck("cookbook_versions", cookbookName+"/"+version.Version, adminPath("organizations", orgName, "cookbooks", cookbookName, version.Version))
+		check.DownloadChecksums = adminMigrationCopiedChecksumsFromFiles(version.AllFiles, copiedChecksums)
+		check.RequireBlobContent = len(check.DownloadChecksums) > 0
+		checks = append(checks, check)
+	}
+	for _, name := range adminMigrationShadowCookbookArtifactNames(org.Artifacts) {
+		checks = append(checks, adminMigrationReadCheck("cookbook_artifacts_named_collection", name, adminPath("organizations", orgName, "cookbook_artifacts", name)))
+	}
+	for _, artifact := range adminMigrationShadowSortedCookbookArtifacts(org.Artifacts) {
+		check := adminMigrationReadCheck("cookbook_artifacts", artifact.Name, adminPath("organizations", orgName, "cookbook_artifacts", artifact.Name, artifact.Identifier))
+		check.DownloadChecksums = adminMigrationCopiedChecksumsFromFiles(artifact.AllFiles, copiedChecksums)
+		check.RequireBlobContent = len(check.DownloadChecksums) > 0
+		checks = append(checks, check)
+	}
+	return checks
+}
+
+// adminMigrationScaleSearchChecks covers every implemented search index with
+// small result windows plus a read-like partial-search POST.
+func adminMigrationScaleSearchChecks(orgName string, bootstrapOrg bootstrap.BootstrapCoreOrganizationState, coreOrg bootstrap.CoreObjectOrganizationState) []adminMigrationRehearsalCheck {
+	var checks []adminMigrationRehearsalCheck
+	for _, index := range adminMigrationShadowSearchIndexes(bootstrapOrg, coreOrg) {
+		count := adminMigrationShadowSearchIndexCount(index, bootstrapOrg, coreOrg)
+		for _, start := range adminMigrationShadowSearchWindowStarts(count) {
+			checks = append(checks, adminMigrationReadCheck("search", index, "/organizations/"+url.PathEscape(orgName)+"/search/"+url.PathEscape(index)+fmt.Sprintf("?q=*:*&start=%d&rows=1", start)))
+		}
+		checks = append(checks, adminMigrationPostReadCheck("partial_search", index, "/organizations/"+url.PathEscape(orgName)+"/search/"+url.PathEscape(index)+"?q=*:*", map[string]any{"name": []string{"name"}}))
+	}
+	return checks
+}
+
 // adminMigrationShadowComparableChecks removes routes that cannot be exercised
-// safely through GET shadow reads, preserving the skipped count for reporting.
+// safely through shadow reads, preserving the skipped count for reporting.
 func adminMigrationShadowComparableChecks(checks []adminMigrationRehearsalCheck) ([]adminMigrationRehearsalCheck, int) {
 	var comparable []adminMigrationRehearsalCheck
 	skipped := 0
@@ -9391,10 +10964,14 @@ func adminMigrationShadowComparableChecks(checks []adminMigrationRehearsalCheck)
 	return comparable, skipped
 }
 
-// adminMigrationRunShadowComparison executes target GETs, compares normalized
-// payloads to source-derived expectations, and follows signed blob downloads.
+// adminMigrationRunShadowComparison executes target read-only checks, compares
+// normalized payloads to source expectations, and follows signed blob downloads.
 func adminMigrationRunShadowComparison(ctx context.Context, client adminJSONClient, source adminMigrationSourceImportState, checks []adminMigrationRehearsalCheck, skipped int) adminMigrationShadowComparisonResult {
-	result := adminMigrationShadowComparisonResult{Checks: len(checks) + skipped, Skipped: skipped}
+	result := adminMigrationShadowComparisonResult{
+		Checks:   len(checks) + skipped,
+		Skipped:  skipped,
+		Families: map[adminMigrationSourcePayloadKey]adminMigrationShadowFamilyResult{},
+	}
 	if skipped > 0 {
 		result.Findings = append(result.Findings, adminMigrationFinding{
 			Severity: "warning",
@@ -9404,24 +10981,39 @@ func adminMigrationRunShadowComparison(ctx context.Context, client adminJSONClie
 		})
 	}
 	for _, check := range checks {
+		adminMigrationShadowRecordFamilyCheck(&result, check)
+		if !adminMigrationShadowReadLikeCheck(check) {
+			result.Skipped++
+			adminMigrationShadowRecordFamilySkipped(&result, check)
+			result.Findings = append(result.Findings, adminMigrationShadowFailureFinding("shadow_write_route_skipped", check, "shadow comparison skipped a route whose method is not read-like"))
+			continue
+		}
 		var targetPayload any
-		if err := client.DoJSON(ctx, http.MethodGet, check.Path, nil, &targetPayload); err != nil {
+		method := check.Method
+		if method == "" {
+			method = http.MethodGet
+		}
+		if err := client.DoJSON(ctx, method, check.Path, check.RequestPayload, &targetPayload); err != nil {
 			result.Failed++
+			adminMigrationShadowRecordFamilyFailed(&result, check)
 			result.Findings = append(result.Findings, adminMigrationShadowFailureFinding(adminMigrationShadowReadErrorCode(err), check, "target read failed during shadow comparison"))
 			continue
 		}
-		if check.Family == "search" {
+		if check.Family == "search" || check.Family == "partial_search" {
 			if !adminMigrationShadowSearchCountMatches(check, source, targetPayload) {
 				result.Failed++
+				adminMigrationShadowRecordFamilyFailed(&result, check)
 				result.Findings = append(result.Findings, adminMigrationShadowFailureFinding("shadow_search_count_mismatch", check, "target search result count differed from source-derived state"))
 				continue
 			}
 			result.Passed++
+			adminMigrationShadowRecordFamilyPassed(&result, check, 0)
 			continue
 		}
 		sourcePayload, ok := adminMigrationShadowSourcePayload(check, source)
 		if !ok {
 			result.Failed++
+			adminMigrationShadowRecordFamilyFailed(&result, check)
 			result.Findings = append(result.Findings, adminMigrationShadowFailureFinding("shadow_source_payload_missing", check, "source state did not contain the expected comparison payload"))
 			continue
 		}
@@ -9429,20 +11021,84 @@ func adminMigrationRunShadowComparison(ctx context.Context, client adminJSONClie
 		targetCanonical, targetErr := adminMigrationShadowCanonicalPayload(check.Family, targetPayload)
 		if sourceErr != nil || targetErr != nil || sourceCanonical != targetCanonical {
 			result.Failed++
+			adminMigrationShadowRecordFamilyFailed(&result, check)
 			result.Findings = append(result.Findings, adminMigrationShadowFailureFinding("shadow_payload_mismatch", check, "target payload differed from source after compatibility normalization"))
 			continue
 		}
 		result.Passed++
+		downloadedForCheck := 0
 		if check.RequireBlobContent {
 			downloaded, findings := adminMigrationValidateShadowDownloads(ctx, client, check, targetPayload)
 			result.Downloads += downloaded
+			downloadedForCheck = downloaded
 			if len(findings) > 0 {
 				result.Failed += len(findings)
+				adminMigrationShadowRecordFamilyFailed(&result, check)
 				result.Findings = append(result.Findings, findings...)
 			}
 		}
+		adminMigrationShadowRecordFamilyPassed(&result, check, downloadedForCheck)
 	}
 	return result
+}
+
+// adminMigrationShadowReadLikeCheck permits only safe shadow methods: GET plus
+// Chef-compatible POST routes whose behavior is read-only.
+func adminMigrationShadowReadLikeCheck(check adminMigrationRehearsalCheck) bool {
+	switch check.Method {
+	case "", http.MethodGet:
+		return check.RequestPayload == nil
+	case http.MethodPost:
+		return check.Family == "partial_search" || check.Family == "depsolver"
+	default:
+		return false
+	}
+}
+
+// adminMigrationShadowFamilyKey scopes per-family counters by organization so
+// large migration reports point operators at the exact drifted family.
+func adminMigrationShadowFamilyKey(check adminMigrationRehearsalCheck) adminMigrationSourcePayloadKey {
+	return adminMigrationSourcePayloadKey{
+		Organization: adminMigrationCheckOrganization(check.Path),
+		Family:       check.Family,
+	}
+}
+
+// adminMigrationShadowRecordFamilyCheck increments the stable denominator for
+// a family before the request is attempted.
+func adminMigrationShadowRecordFamilyCheck(result *adminMigrationShadowComparisonResult, check adminMigrationRehearsalCheck) {
+	key := adminMigrationShadowFamilyKey(check)
+	family := result.Families[key]
+	family.Checks++
+	result.Families[key] = family
+}
+
+// adminMigrationShadowRecordFamilyPassed records successful normalized reads
+// and any checksum-verified signed blob downloads for the same family.
+func adminMigrationShadowRecordFamilyPassed(result *adminMigrationShadowComparisonResult, check adminMigrationRehearsalCheck, downloads int) {
+	key := adminMigrationShadowFamilyKey(check)
+	family := result.Families[key]
+	family.Passed++
+	family.Downloads += downloads
+	result.Families[key] = family
+}
+
+// adminMigrationShadowRecordFamilyFailed records redacted comparison failures
+// without attaching target payload bodies or signed URL details.
+func adminMigrationShadowRecordFamilyFailed(result *adminMigrationShadowComparisonResult, check adminMigrationRehearsalCheck) {
+	key := adminMigrationShadowFamilyKey(check)
+	family := result.Families[key]
+	family.Failed++
+	result.Families[key] = family
+}
+
+// adminMigrationShadowRecordFamilySkipped tracks safety skips caused by routes
+// that are not allowed in shadow-read mode.
+func adminMigrationShadowRecordFamilySkipped(result *adminMigrationShadowComparisonResult, check adminMigrationRehearsalCheck) {
+	key := adminMigrationShadowFamilyKey(check)
+	family := result.Families[key]
+	family.Skipped++
+	result.Families[key] = family
 }
 
 // adminMigrationShadowSourcePayload renders the source import state into the
@@ -9450,12 +11106,25 @@ func adminMigrationRunShadowComparison(ctx context.Context, client adminJSONClie
 func adminMigrationShadowSourcePayload(check adminMigrationRehearsalCheck, source adminMigrationSourceImportState) (any, bool) {
 	orgName := adminMigrationCheckOrganization(check.Path)
 	switch check.Family {
+	case "users_collection":
+		return map[string]any{"users": adminMigrationShadowNamedURLMap(source.Bootstrap.Users, "users")}, true
+	case "organizations_collection":
+		return adminMigrationShadowNamedURLMap(source.Bootstrap.Orgs, "organizations"), true
 	case "users":
 		value, ok := source.Bootstrap.Users[check.Name]
 		return adminMigrationShadowUserPayload(value), ok
 	case "user_keys":
-		keys, ok := source.Bootstrap.UserKeys[check.Name]
-		return adminMigrationShadowKeyListPayload(keys), ok
+		if _, ok := source.Bootstrap.Users[check.Name]; !ok {
+			return nil, false
+		}
+		return adminMigrationShadowKeyListPayload(source.Bootstrap.UserKeys[check.Name]), true
+	case "user_key_details":
+		username, keyName, ok := strings.Cut(check.Name, "/")
+		if !ok {
+			return nil, false
+		}
+		key, ok := source.Bootstrap.UserKeys[username][keyName]
+		return adminMigrationShadowKeyDetailPayload(key), ok
 	case "user_acls":
 		value, ok := source.Bootstrap.UserACLs[check.Name]
 		return value, ok
@@ -9469,6 +11138,12 @@ func adminMigrationShadowSourcePayload(check adminMigrationRehearsalCheck, sourc
 		}
 		value, ok := org.ACLs[adminMigrationOrganizationACLKey()]
 		return value, ok
+	case "clients_collection":
+		org, ok := source.Bootstrap.Orgs[orgName]
+		if !ok {
+			return nil, false
+		}
+		return adminMigrationShadowNamedURLMap(org.Clients, "organizations", orgName, "clients"), true
 	case "clients":
 		org, ok := source.Bootstrap.Orgs[orgName]
 		if !ok {
@@ -9481,8 +11156,21 @@ func adminMigrationShadowSourcePayload(check adminMigrationRehearsalCheck, sourc
 		if !ok {
 			return nil, false
 		}
-		keys, ok := org.ClientKeys[check.Name]
-		return adminMigrationShadowKeyListPayload(keys), ok
+		if _, ok := org.Clients[check.Name]; !ok {
+			return nil, false
+		}
+		return adminMigrationShadowKeyListPayload(org.ClientKeys[check.Name]), true
+	case "client_key_details":
+		org, ok := source.Bootstrap.Orgs[orgName]
+		if !ok {
+			return nil, false
+		}
+		clientName, keyName, ok := strings.Cut(check.Name, "/")
+		if !ok {
+			return nil, false
+		}
+		key, ok := org.ClientKeys[clientName][keyName]
+		return adminMigrationShadowKeyDetailPayload(key), ok
 	case "client_acls":
 		org, ok := source.Bootstrap.Orgs[orgName]
 		if !ok {
@@ -9490,6 +11178,12 @@ func adminMigrationShadowSourcePayload(check adminMigrationRehearsalCheck, sourc
 		}
 		value, ok := org.ACLs[adminMigrationClientACLKey(check.Name)]
 		return value, ok
+	case "groups_collection":
+		org, ok := source.Bootstrap.Orgs[orgName]
+		if !ok {
+			return nil, false
+		}
+		return adminMigrationShadowNamedURLMap(org.Groups, "organizations", orgName, "groups"), true
 	case "groups":
 		org, ok := source.Bootstrap.Orgs[orgName]
 		if !ok {
@@ -9497,6 +11191,19 @@ func adminMigrationShadowSourcePayload(check adminMigrationRehearsalCheck, sourc
 		}
 		value, ok := org.Groups[check.Name]
 		return value, ok
+	case "group_acls":
+		org, ok := source.Bootstrap.Orgs[orgName]
+		if !ok {
+			return nil, false
+		}
+		value, ok := org.ACLs[adminMigrationGroupACLKey(check.Name)]
+		return value, ok
+	case "containers_collection":
+		org, ok := source.Bootstrap.Orgs[orgName]
+		if !ok {
+			return nil, false
+		}
+		return adminMigrationShadowNamedURLMap(org.Containers, "organizations", orgName, "containers"), true
 	case "containers":
 		org, ok := source.Bootstrap.Orgs[orgName]
 		if !ok {
@@ -9518,15 +11225,23 @@ func adminMigrationShadowSourcePayload(check adminMigrationRehearsalCheck, sourc
 		return nil, false
 	}
 	switch check.Family {
+	case "nodes_collection":
+		return adminMigrationShadowNamedURLMap(coreOrg.Nodes, "organizations", orgName, "nodes"), true
 	case "nodes":
 		value, ok := coreOrg.Nodes[check.Name]
 		return value, ok
+	case "environments_collection":
+		return adminMigrationShadowNamedURLMap(coreOrg.Environments, "organizations", orgName, "environments"), true
 	case "environments":
 		value, ok := coreOrg.Environments[check.Name]
 		return value, ok
+	case "roles_collection":
+		return adminMigrationShadowNamedURLMap(coreOrg.Roles, "organizations", orgName, "roles"), true
 	case "roles":
 		value, ok := coreOrg.Roles[check.Name]
 		return value, ok
+	case "data_bags_collection":
+		return adminMigrationShadowNamedURLMap(coreOrg.DataBags, "organizations", orgName, "data"), true
 	case "data_bags":
 		_, ok := coreOrg.DataBags[check.Name]
 		return adminMigrationShadowDataBagPayload(orgName, check.Name, coreOrg.DataBagItems[check.Name]), ok
@@ -9540,6 +11255,11 @@ func adminMigrationShadowSourcePayload(check adminMigrationRehearsalCheck, sourc
 			return nil, false
 		}
 		return item.RawData, true
+	case "policies_collection":
+		return adminMigrationShadowPolicyCollectionPayload(orgName, coreOrg.Policies), true
+	case "policies":
+		revisions, ok := coreOrg.Policies[check.Name]
+		return adminMigrationShadowNamedPolicyPayload(revisions), ok
 	case "policy_revisions":
 		policyName, revisionID, ok := strings.Cut(check.Name, "/")
 		if !ok {
@@ -9550,21 +11270,54 @@ func adminMigrationShadowSourcePayload(check adminMigrationRehearsalCheck, sourc
 			return nil, false
 		}
 		return adminMigrationShadowPolicyRevisionPayload(orgName, revision, source), revision.Payload != nil
+	case "policy_groups_collection":
+		return adminMigrationShadowPolicyGroupCollectionPayload(orgName, coreOrg.PolicyGroups), true
 	case "policy_groups":
 		value, ok := coreOrg.PolicyGroups[check.Name]
 		return adminMigrationShadowPolicyGroupPayload(orgName, value), ok
+	case "policy_group_assignments":
+		groupName, policyName, ok := strings.Cut(check.Name, "/")
+		if !ok {
+			return nil, false
+		}
+		group, ok := coreOrg.PolicyGroups[groupName]
+		if !ok {
+			return nil, false
+		}
+		revisionID, ok := group.Policies[policyName]
+		if !ok {
+			return nil, false
+		}
+		revision, ok := coreOrg.Policies[policyName][revisionID]
+		return revision.Payload, ok
+	case "cookbook_versions_collection":
+		return adminMigrationShadowCookbookVersionCollectionPayload(orgName, source.Cookbooks.Orgs[orgName].Versions, ""), true
+	case "cookbook_versions_named_collection":
+		return adminMigrationShadowCookbookVersionCollectionPayload(orgName, source.Cookbooks.Orgs[orgName].Versions, check.Name), true
+	case "cookbook_latest":
+		return adminMigrationShadowCookbookLatestPayload(orgName, source.Cookbooks.Orgs[orgName].Versions), true
+	case "cookbook_recipes":
+		return adminMigrationShadowCookbookRecipesPayload(source.Cookbooks.Orgs[orgName].Versions), true
+	case "universe":
+		return adminMigrationShadowUniversePayload(orgName, source.Cookbooks.Orgs[orgName].Versions), true
 	case "cookbook_versions":
 		version, ok := adminMigrationShadowCookbookVersion(source.Cookbooks.Orgs[orgName], check.Name)
 		if !ok {
 			return nil, false
 		}
 		return adminMigrationShadowCookbookVersionPayload(version), true
+	case "cookbook_artifacts_collection":
+		return adminMigrationShadowCookbookArtifactCollectionPayload(orgName, source.Cookbooks.Orgs[orgName].Artifacts, ""), true
+	case "cookbook_artifacts_named_collection":
+		return adminMigrationShadowCookbookArtifactCollectionPayload(orgName, source.Cookbooks.Orgs[orgName].Artifacts, check.Name), true
 	case "cookbook_artifacts":
 		artifact, ok := adminMigrationShadowCookbookArtifact(source.Cookbooks.Orgs[orgName], check.Name, adminMigrationLastPathSegment(check.Path))
 		if !ok {
 			return nil, false
 		}
 		return adminMigrationShadowCookbookArtifactPayload(artifact), true
+	case "depsolver":
+		return map[string]any{}, true
 	default:
 		return nil, false
 	}
@@ -9611,6 +11364,28 @@ func adminMigrationShadowKeyListPayload(keys map[string]bootstrap.KeyRecord) []m
 	return out
 }
 
+// adminMigrationShadowKeyDetailPayload mirrors individual key reads while
+// keeping private key material out of expected shadow payloads.
+func adminMigrationShadowKeyDetailPayload(key bootstrap.KeyRecord) map[string]any {
+	return map[string]any{
+		"name":            key.Name,
+		"public_key":      key.PublicKeyPEM,
+		"expiration_date": key.ExpirationDate,
+	}
+}
+
+// adminMigrationShadowNamedURLMap builds Chef collection maps from source
+// records and a route prefix without reflecting over record internals.
+func adminMigrationShadowNamedURLMap[T any](values map[string]T, prefix ...string) map[string]string {
+	out := make(map[string]string, len(values))
+	for _, name := range adminMigrationSortedMapKeys(values) {
+		parts := append([]string{}, prefix...)
+		parts = append(parts, name)
+		out[name] = adminPath(parts...)
+	}
+	return out
+}
+
 // adminMigrationShadowDataBagPayload mirrors named data-bag GET responses,
 // which list item URLs rather than returning the stored data-bag metadata row.
 func adminMigrationShadowDataBagPayload(orgName, bagName string, items map[string]bootstrap.DataBagItem) map[string]string {
@@ -9619,6 +11394,28 @@ func adminMigrationShadowDataBagPayload(orgName, bagName string, items map[strin
 		out[itemID] = adminPath("organizations", orgName, "data", bagName, itemID)
 	}
 	return out
+}
+
+// adminMigrationShadowPolicyCollectionPayload mirrors policy-list responses
+// with stable revision maps for every imported policy.
+func adminMigrationShadowPolicyCollectionPayload(orgName string, policies map[string]map[string]bootstrap.PolicyRevision) map[string]any {
+	out := make(map[string]any, len(policies))
+	basePath := adminPath("organizations", orgName, "policies")
+	for _, policyName := range adminMigrationSortedMapKeys(policies) {
+		out[policyName] = map[string]any{
+			"uri":       basePath + "/" + url.PathEscape(policyName),
+			"revisions": adminMigrationShadowPolicyRevisionIDMap(adminMigrationSortedMapKeys(policies[policyName])),
+		}
+	}
+	return out
+}
+
+// adminMigrationShadowNamedPolicyPayload mirrors `/policies/{name}` reads by
+// returning only the revision-id shell expected by Chef clients.
+func adminMigrationShadowNamedPolicyPayload(revisions map[string]bootstrap.PolicyRevision) map[string]any {
+	return map[string]any{
+		"revisions": adminMigrationShadowPolicyRevisionIDMap(adminMigrationSortedMapKeys(revisions)),
+	}
 }
 
 // adminMigrationShadowPolicyRevisionPayload adds the route-computed
@@ -9633,6 +11430,34 @@ func adminMigrationShadowPolicyRevisionPayload(orgName string, revision bootstra
 		}
 	}
 	out["policy_group_list"] = adminMigrationStringSliceToAny(groups)
+	return out
+}
+
+// adminMigrationShadowPolicyRevisionIDMap builds the empty-object revision map
+// used by policy collection and named-policy responses.
+func adminMigrationShadowPolicyRevisionIDMap(revisionIDs []string) map[string]any {
+	out := make(map[string]any, len(revisionIDs))
+	for _, revisionID := range revisionIDs {
+		out[revisionID] = map[string]any{}
+	}
+	return out
+}
+
+// adminMigrationShadowPolicyGroupCollectionPayload mirrors policy-group list
+// responses and omits empty policy maps just like the API route.
+func adminMigrationShadowPolicyGroupCollectionPayload(orgName string, groups map[string]bootstrap.PolicyGroup) map[string]any {
+	out := make(map[string]any, len(groups))
+	basePath := adminPath("organizations", orgName, "policy_groups")
+	for _, groupName := range adminMigrationSortedMapKeys(groups) {
+		group := groups[groupName]
+		entry := map[string]any{
+			"uri": basePath + "/" + url.PathEscape(groupName),
+		}
+		if len(group.Policies) > 0 {
+			entry["policies"] = adminMigrationShadowPolicyAssignments(group.Policies)
+		}
+		out[groupName] = entry
+	}
 	return out
 }
 
@@ -9728,6 +11553,121 @@ func adminMigrationShadowCookbookArtifactPayload(artifact bootstrap.CookbookArti
 	return value
 }
 
+// adminMigrationShadowCookbookVersionCollectionPayload mirrors cookbook list
+// and named-list responses, using all versions for scale coverage.
+func adminMigrationShadowCookbookVersionCollectionPayload(orgName string, versions []bootstrap.CookbookVersion, onlyName string) map[string]any {
+	grouped := map[string][]bootstrap.CookbookVersion{}
+	for _, version := range adminMigrationShadowSortedCookbookVersions(versions) {
+		name := adminMigrationCookbookRouteName(version)
+		if onlyName != "" && name != onlyName {
+			continue
+		}
+		grouped[name] = append(grouped[name], version)
+	}
+	basePath := adminPath("organizations", orgName, "cookbooks")
+	out := make(map[string]any, len(grouped))
+	for _, name := range adminMigrationSortedMapKeys(grouped) {
+		refs := make([]map[string]any, 0, len(grouped[name]))
+		for _, version := range grouped[name] {
+			refs = append(refs, map[string]any{
+				"version": version.Version,
+				"url":     basePath + "/" + url.PathEscape(name) + "/" + url.PathEscape(version.Version),
+			})
+		}
+		out[name] = map[string]any{
+			"url":      basePath + "/" + url.PathEscape(name),
+			"versions": refs,
+		}
+	}
+	return out
+}
+
+// adminMigrationShadowCookbookLatestPayload mirrors `_latest` responses by
+// selecting the first latest-first version for each cookbook name.
+func adminMigrationShadowCookbookLatestPayload(orgName string, versions []bootstrap.CookbookVersion) map[string]any {
+	grouped := adminMigrationShadowCookbookVersionCollectionPayload(orgName, versions, "")
+	out := make(map[string]any, len(grouped))
+	for _, name := range adminMigrationSortedMapKeys(grouped) {
+		entry, _ := grouped[name].(map[string]any)
+		refs, _ := entry["versions"].([]map[string]any)
+		if len(refs) == 0 {
+			continue
+		}
+		out[name] = refs[0]["url"]
+	}
+	return out
+}
+
+// adminMigrationShadowCookbookRecipesPayload derives the same recipe list as
+// the API from each cookbook's latest imported version.
+func adminMigrationShadowCookbookRecipesPayload(versions []bootstrap.CookbookVersion) []string {
+	recipes := []string{}
+	seen := map[string]struct{}{}
+	for _, version := range adminMigrationShadowSortedCookbookVersions(versions) {
+		name := adminMigrationCookbookRouteName(version)
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		recipes = append(recipes, adminMigrationShadowCookbookRecipeNames(name, version.AllFiles)...)
+	}
+	sort.Strings(recipes)
+	return recipes
+}
+
+// adminMigrationShadowUniversePayload mirrors `/universe` from cookbook
+// metadata dependencies without querying the live target.
+func adminMigrationShadowUniversePayload(orgName string, versions []bootstrap.CookbookVersion) map[string]any {
+	out := map[string]any{}
+	basePath := adminPath("organizations", orgName, "cookbooks")
+	for _, version := range adminMigrationShadowSortedCookbookVersions(versions) {
+		name := adminMigrationCookbookRouteName(version)
+		if _, ok := out[name]; !ok {
+			out[name] = map[string]any{}
+		}
+		dependencies := map[string]any{}
+		if rawMetadata, ok := version.Metadata["dependencies"].(map[string]any); ok {
+			for depName, constraint := range rawMetadata {
+				dependencies[depName] = constraint
+			}
+		}
+		out[name].(map[string]any)[version.Version] = map[string]any{
+			"location_path": basePath + "/" + url.PathEscape(name) + "/" + url.PathEscape(version.Version),
+			"location_type": "chef_server",
+			"dependencies":  dependencies,
+		}
+	}
+	return out
+}
+
+// adminMigrationShadowCookbookArtifactCollectionPayload mirrors artifact
+// collection and named-artifact collection responses.
+func adminMigrationShadowCookbookArtifactCollectionPayload(orgName string, artifacts []bootstrap.CookbookArtifact, onlyName string) map[string]any {
+	grouped := map[string][]bootstrap.CookbookArtifact{}
+	for _, artifact := range adminMigrationShadowSortedCookbookArtifacts(artifacts) {
+		if onlyName != "" && artifact.Name != onlyName {
+			continue
+		}
+		grouped[artifact.Name] = append(grouped[artifact.Name], artifact)
+	}
+	basePath := adminPath("organizations", orgName, "cookbook_artifacts")
+	out := make(map[string]any, len(grouped))
+	for _, name := range adminMigrationSortedMapKeys(grouped) {
+		items := make([]map[string]any, 0, len(grouped[name]))
+		for _, artifact := range grouped[name] {
+			items = append(items, map[string]any{
+				"identifier": artifact.Identifier,
+				"url":        basePath + "/" + url.PathEscape(name) + "/" + url.PathEscape(artifact.Identifier),
+			})
+		}
+		out[name] = map[string]any{
+			"url":      basePath + "/" + url.PathEscape(name),
+			"versions": items,
+		}
+	}
+	return out
+}
+
 var adminMigrationShadowCookbookSegments = []string{"recipes", "definitions", "libraries", "attributes", "files", "templates", "resources", "providers", "root_files"}
 
 // adminMigrationShadowAddLegacyCookbookFiles expands all_files into Chef's
@@ -9801,6 +11741,27 @@ func adminMigrationShadowCookbookLegacyFileName(segment, path string) string {
 		return path[idx+1:]
 	}
 	return path
+}
+
+// adminMigrationShadowCookbookRecipeNames mirrors Chef recipe qualification for
+// `_recipes` and environment recipe shadow-read expectations.
+func adminMigrationShadowCookbookRecipeNames(cookbookName string, files []bootstrap.CookbookFile) []string {
+	out := make([]string, 0)
+	for _, file := range files {
+		if adminMigrationShadowCookbookFileSegment(file.Path) != "recipes" {
+			continue
+		}
+		recipeName := strings.TrimSpace(strings.TrimSuffix(adminMigrationShadowCookbookLegacyFileName("recipes", file.Path), ".rb"))
+		if recipeName == "" {
+			continue
+		}
+		if recipeName == "default" {
+			out = append(out, cookbookName)
+			continue
+		}
+		out = append(out, cookbookName+"::"+recipeName)
+	}
+	return out
 }
 
 // adminMigrationShadowCloneMap copies JSON object maps before adding
@@ -9933,7 +11894,7 @@ func adminMigrationShadowNormalizeValue(family, key string, value any) any {
 // should not decide source-to-target compatibility during read-only shadowing.
 func adminMigrationShadowSkipKey(family, key string) bool {
 	switch key {
-	case "private_key", "created_at", "updated_at", "last_updated", "last_modified", "create_time", "requestor", "authn_status", "storage_status":
+	case "private_key", "created_at", "updated_at", "last_updated", "last_modified", "create_time", "requestor", "authn", "persistence", "authn_status", "storage_status":
 		return true
 	case "uri":
 		return family == "users" || family == "clients" || family == "organizations"
@@ -10022,35 +11983,56 @@ func adminMigrationShadowFailureFinding(code string, check adminMigrationRehears
 		message += " for " + check.Family + " " + check.Name
 	}
 	return adminMigrationFinding{
-		Severity: "error",
-		Code:     code,
-		Family:   check.Family,
-		Message:  message,
+		Severity:     "error",
+		Code:         code,
+		Organization: adminMigrationCheckOrganization(check.Path),
+		Family:       check.Family,
+		Message:      message,
 	}
 }
 
 // adminMigrationShadowInventoryFamilies appends shadow counters to the source
 // inventory so automation can gate cutover on compare outcomes.
 func adminMigrationShadowInventoryFamilies(result adminMigrationShadowComparisonResult) []adminMigrationInventoryFamily {
-	return []adminMigrationInventoryFamily{
+	families := []adminMigrationInventoryFamily{
 		{Family: "shadow_checks", Count: result.Checks},
 		{Family: "shadow_passed", Count: result.Passed},
 		{Family: "shadow_failed", Count: result.Failed},
 		{Family: "shadow_skipped", Count: result.Skipped},
 		{Family: "shadow_downloads", Count: result.Downloads},
 	}
+	keySet := map[adminMigrationSourcePayloadKey]struct{}{}
+	for key := range result.Families {
+		keySet[key] = struct{}{}
+	}
+	for _, key := range adminMigrationSortedSourcePayloadKeys(keySet) {
+		counts := result.Families[key]
+		prefix := "shadow_" + key.Family
+		families = append(families,
+			adminMigrationInventoryFamily{Organization: key.Organization, Family: prefix + "_checks", Count: counts.Checks},
+			adminMigrationInventoryFamily{Organization: key.Organization, Family: prefix + "_passed", Count: counts.Passed},
+			adminMigrationInventoryFamily{Organization: key.Organization, Family: prefix + "_failed", Count: counts.Failed},
+			adminMigrationInventoryFamily{Organization: key.Organization, Family: prefix + "_skipped", Count: counts.Skipped},
+			adminMigrationInventoryFamily{Organization: key.Organization, Family: prefix + "_downloads", Count: counts.Downloads},
+		)
+	}
+	return families
 }
 
 // adminMigrationShadowDependencyDetails mirrors shadow counters in string form
 // for operators scanning dependency blocks.
 func adminMigrationShadowDependencyDetails(result adminMigrationShadowComparisonResult) map[string]string {
-	return map[string]string{
+	details := map[string]string{
 		"checks":    fmt.Sprintf("%d", result.Checks),
 		"passed":    fmt.Sprintf("%d", result.Passed),
 		"failed":    fmt.Sprintf("%d", result.Failed),
 		"skipped":   fmt.Sprintf("%d", result.Skipped),
 		"downloads": fmt.Sprintf("%d", result.Downloads),
 	}
+	if strings.TrimSpace(result.Coverage) != "" {
+		details["coverage"] = result.Coverage
+	}
+	return details
 }
 
 // adminMigrationShadowCompareRecommendations records the remaining runbook
@@ -10209,6 +12191,18 @@ func adminMigrationReadCheck(family, name, path string) adminMigrationRehearsalC
 	}
 }
 
+// adminMigrationPostReadCheck creates a signed POST check only for Chef routes
+// whose POST semantics are read-like, such as partial search and depsolver.
+func adminMigrationPostReadCheck(family, name, path string, payload any) adminMigrationRehearsalCheck {
+	return adminMigrationRehearsalCheck{
+		Family:         family,
+		Name:           name,
+		Method:         http.MethodPost,
+		Path:           path,
+		RequestPayload: payload,
+	}
+}
+
 // adminMigrationFirstMapKey returns the first stable key from a map, avoiding
 // large rehearsal sweeps while keeping representative reads deterministic.
 func adminMigrationFirstMapKey[T any](values map[string]T) (string, bool) {
@@ -10284,6 +12278,60 @@ func adminMigrationSearchIndexForOrg(bootstrapOrg bootstrap.BootstrapCoreOrganiz
 		}
 	}
 	return "", false
+}
+
+// adminMigrationShadowSearchIndexes lists every implemented search family that
+// has source rows, including live per-data-bag indexes.
+func adminMigrationShadowSearchIndexes(bootstrapOrg bootstrap.BootstrapCoreOrganizationState, coreOrg bootstrap.CoreObjectOrganizationState) []string {
+	indexes := []string{}
+	if len(bootstrapOrg.Clients) > 0 {
+		indexes = append(indexes, "client")
+	}
+	if len(coreOrg.Environments) > 0 {
+		indexes = append(indexes, "environment")
+	}
+	if len(coreOrg.Nodes) > 0 {
+		indexes = append(indexes, "node")
+	}
+	if len(coreOrg.Roles) > 0 {
+		indexes = append(indexes, "role")
+	}
+	for _, bagName := range adminMigrationSortedMapKeys(coreOrg.DataBags) {
+		if len(coreOrg.DataBagItems[bagName]) > 0 {
+			indexes = append(indexes, bagName)
+		}
+	}
+	return indexes
+}
+
+// adminMigrationShadowSearchIndexCount derives expected search totals from the
+// imported source state instead of trusting derived OpenSearch artifacts.
+func adminMigrationShadowSearchIndexCount(index string, bootstrapOrg bootstrap.BootstrapCoreOrganizationState, coreOrg bootstrap.CoreObjectOrganizationState) int {
+	switch index {
+	case "client":
+		return len(bootstrapOrg.Clients)
+	case "environment":
+		return len(coreOrg.Environments)
+	case "node":
+		return len(coreOrg.Nodes)
+	case "role":
+		return len(coreOrg.Roles)
+	default:
+		return len(coreOrg.DataBagItems[index])
+	}
+}
+
+// adminMigrationShadowSearchWindowStarts adds deterministic windows so large
+// search indexes exercise pagination without depending on row ordering.
+func adminMigrationShadowSearchWindowStarts(count int) []int {
+	starts := []int{0}
+	if count > 1 {
+		starts = append(starts, 1)
+	}
+	if count > 50 {
+		starts = append(starts, 50)
+	}
+	return starts
 }
 
 // bindAdminMigrationCommonFlags attaches the shared migration flags so every
@@ -11461,6 +13509,7 @@ func applyAdminMigrationConfigOverrides(cfg *config.Config, opts *adminMigration
 // writes the shared migration JSON envelope for implemented commands.
 func (c *command) writeAdminMigrationResult(out adminMigrationCLIOutput, withTiming bool, start time.Time, exitCode int) int {
 	out.Warnings = appendUniqueAdminWarnings(out.Warnings, adminMigrationMaintenancePolicyWarnings(out)...)
+	adminMigrationAppendRetryGuidance(&out)
 	adminMigrationNormalizeOutput(&out)
 	if withTiming {
 		duration := time.Since(start)
@@ -11468,11 +13517,308 @@ func (c *command) writeAdminMigrationResult(out adminMigrationCLIOutput, withTim
 		out.Duration = duration.String()
 		out.DurationMS = &durationMS
 	}
+	out.OperatorReport = adminMigrationBuildOperatorReport(out)
 	if err := writePrettyJSON(c.stdout, out); err != nil {
 		fmt.Fprintf(c.stderr, "write migration output: %v\n", err)
 		return exitDependencyUnavailable
 	}
 	return exitCode
+}
+
+// adminMigrationBuildOperatorReport condenses the verbose migration envelope
+// into the evidence, warning, retry, and next-step view operators need first.
+func adminMigrationBuildOperatorReport(out adminMigrationCLIOutput) *adminMigrationOperatorReport {
+	report := &adminMigrationOperatorReport{
+		Summary: adminMigrationOperatorSummary(out),
+		Inventory: adminMigrationOperatorInventory{
+			Total:         adminMigrationInventoryTotalCount(out.Inventory),
+			FamilyCounts:  len(out.Inventory.Families),
+			Organizations: adminMigrationInventoryOrgNames(out.Inventory),
+		},
+		Findings:  adminMigrationOperatorFindingCounts(out.Findings),
+		Evidence:  adminMigrationOperatorEvidenceItems(out.Dependencies),
+		Guidance:  adminMigrationOperatorGuidance(out),
+		NextSteps: adminMigrationOperatorNextSteps(out),
+	}
+	if report.Inventory.Organizations == nil {
+		report.Inventory.Organizations = []string{}
+	}
+	if report.Evidence == nil {
+		report.Evidence = []adminMigrationOperatorEvidence{}
+	}
+	if report.Guidance == nil {
+		report.Guidance = []string{}
+	}
+	if report.NextSteps == nil {
+		report.NextSteps = []string{}
+	}
+	return report
+}
+
+// adminMigrationOperatorSummary gives one compact status line without requiring
+// callers to inspect dependency and finding arrays by hand.
+func adminMigrationOperatorSummary(out adminMigrationCLIOutput) string {
+	status := "passed"
+	if !out.OK || len(out.Errors) > 0 {
+		status = "blocked"
+	} else if len(out.Warnings) > 0 {
+		status = "passed with warnings"
+	}
+	parts := []string{fmt.Sprintf("%s %s", out.Command, status)}
+	total := adminMigrationInventoryTotalCount(out.Inventory)
+	if total > 0 {
+		parts = append(parts, fmt.Sprintf("%d inventory rows", total))
+	}
+	if out.Duration != "" {
+		parts = append(parts, "duration "+out.Duration)
+	}
+	return strings.Join(parts, "; ")
+}
+
+// adminMigrationOperatorFindingCounts separates blockers from advisories so
+// cutover reports can be triaged without scanning every finding object.
+func adminMigrationOperatorFindingCounts(findings []adminMigrationFinding) adminMigrationOperatorFindings {
+	out := adminMigrationOperatorFindings{Total: len(findings)}
+	for _, finding := range findings {
+		switch finding.Severity {
+		case "error":
+			out.Errors++
+		case "warning":
+			out.Warnings++
+		}
+	}
+	return out
+}
+
+// adminMigrationOperatorEvidenceItems copies dependency gates into a compact report
+// while preserving redacted details such as maintenance or source-freeze status.
+func adminMigrationOperatorEvidenceItems(deps []adminMigrationDependency) []adminMigrationOperatorEvidence {
+	out := make([]adminMigrationOperatorEvidence, 0, len(deps))
+	for _, dep := range deps {
+		item := adminMigrationOperatorEvidence{
+			Name:    dep.Name,
+			Status:  dep.Status,
+			Backend: dep.Backend,
+			Message: dep.Message,
+			Details: adminMigrationCloneStringMap(dep.Details),
+		}
+		if item.Details == nil {
+			item.Details = map[string]string{}
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+// adminMigrationOperatorGuidance lifts warnings, retry findings, and important
+// cutover evidence into a short operator checklist.
+func adminMigrationOperatorGuidance(out adminMigrationCLIOutput) []string {
+	var guidance []string
+	for _, warning := range out.Warnings {
+		if warning = strings.TrimSpace(warning); warning != "" {
+			guidance = append(guidance, "warning: "+warning)
+		}
+	}
+	for _, finding := range out.Findings {
+		switch finding.Code {
+		case adminMigrationFindingRetrySafe, adminMigrationFindingRetryUnsafe, adminMigrationFindingManualCleanupRequired:
+			guidance = append(guidance, "retry: "+finding.Message)
+		default:
+			if strings.TrimSpace(finding.Code) != "" && strings.TrimSpace(finding.Message) != "" {
+				guidance = append(guidance, "finding "+finding.Code+": "+finding.Message)
+			}
+		}
+	}
+	for _, depName := range []string{"source_freeze_evidence", "maintenance_evidence", "rollback_readiness"} {
+		if dep, ok := adminMigrationFindDependency(out.Dependencies, depName); ok {
+			label := strings.ReplaceAll(depName, "_", " ")
+			guidance = append(guidance, fmt.Sprintf("%s: %s - %s", label, dep.Status, dep.Message))
+		}
+	}
+	return adminMigrationUniqueNonEmptyStrings(guidance)
+}
+
+// adminMigrationOperatorNextSteps provides safe follow-up commands or runbook
+// actions based on the command that generated the report.
+func adminMigrationOperatorNextSteps(out adminMigrationCLIOutput) []string {
+	if !out.OK || len(out.Errors) > 0 {
+		return []string{"resolve error dependencies and findings before continuing", "use retry guidance before rerunning mutation-path commands"}
+	}
+	switch out.Command {
+	case "migration_scale_fixture_create":
+		return []string{"run migration source import preflight/apply against the generated bundle", "or run scripts/functional-compose.sh migration-scale-all for the full scale drill"}
+	case "migration_backup_create":
+		return []string{"inspect the backup bundle before restore", "run restore preflight against the intended target"}
+	case "migration_restore_apply":
+		return []string{"restart the restored target", "enable maintenance, reindex OpenSearch, run search check, then cutover rehearsal"}
+	case "migration_source_import_apply":
+		return []string{"run source sync after any later source snapshot", "rebuild OpenSearch and capture search/shadow evidence before cutover"}
+	case "migration_source_sync_apply":
+		return []string{"keep source writes frozen", "run maintenance-gated reindex, search check, shadow compare, and cutover rehearsal"}
+	case "migration_shadow_compare":
+		return []string{"feed this shadow result into cutover rehearsal", "do not proxy writes during shadow comparison"}
+	case "migration_cutover_rehearse":
+		return []string{"switch clients only after source freeze, search, shadow, maintenance, rollback, auth, blob, and smoke gates are acceptable", "keep source Chef available until post-cutover smoke checks pass"}
+	default:
+		return []string{"review dependencies, findings, warnings, and planned mutations before continuing"}
+	}
+}
+
+// adminMigrationFindDependency returns the last matching dependency, mirroring
+// how later evidence can supersede earlier advisory gates in the same report.
+func adminMigrationFindDependency(deps []adminMigrationDependency, name string) (adminMigrationDependency, bool) {
+	for i := len(deps) - 1; i >= 0; i-- {
+		if deps[i].Name == name {
+			return deps[i], true
+		}
+	}
+	return adminMigrationDependency{}, false
+}
+
+// adminMigrationCloneStringMap prevents report callers from mutating dependency
+// details that may be shared with the stable top-level dependency list.
+func adminMigrationCloneStringMap(in map[string]string) map[string]string {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
+}
+
+// adminMigrationUniqueNonEmptyStrings preserves message order while removing
+// duplicate warning/guidance text emitted through multiple output channels.
+func adminMigrationUniqueNonEmptyStrings(values []string) []string {
+	seen := map[string]struct{}{}
+	out := []string{}
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
+}
+
+// adminMigrationAppendRetryGuidance adds one operator-facing retry finding to
+// failed migration outputs so interruption drills tell humans whether to rerun,
+// reconcile progress first, or inspect the target manually.
+func adminMigrationAppendRetryGuidance(out *adminMigrationCLIOutput) {
+	if out == nil || !adminMigrationOutputHasBlocker(*out) || adminMigrationHasRetryGuidance(out.Findings) {
+		return
+	}
+	guidance := adminMigrationRetryGuidance(*out)
+	if guidance.Code == "" {
+		return
+	}
+	adminMigrationMarkFinding(out, guidance)
+}
+
+// adminMigrationOutputHasBlocker detects failed dependencies or findings even
+// before callers normalize the shared migration envelope into top-level errors.
+func adminMigrationOutputHasBlocker(out adminMigrationCLIOutput) bool {
+	if !out.OK || len(out.Errors) > 0 {
+		return true
+	}
+	for _, dep := range out.Dependencies {
+		if dep.Status == "error" {
+			return true
+		}
+	}
+	for _, finding := range out.Findings {
+		if finding.Severity == "error" {
+			return true
+		}
+	}
+	return false
+}
+
+// adminMigrationHasRetryGuidance avoids duplicating retry classification when
+// future commands choose to emit more specific guidance themselves.
+func adminMigrationHasRetryGuidance(findings []adminMigrationFinding) bool {
+	for _, finding := range findings {
+		switch finding.Code {
+		case adminMigrationFindingRetrySafe, adminMigrationFindingRetryUnsafe, adminMigrationFindingManualCleanupRequired:
+			return true
+		}
+	}
+	return false
+}
+
+// adminMigrationRetryGuidance classifies migration failures by side-effect
+// profile rather than provider internals, keeping the guidance stable for
+// scripts and useful during interrupted production cutover drills.
+func adminMigrationRetryGuidance(out adminMigrationCLIOutput) adminMigrationFinding {
+	codes := adminMigrationFindingCodeSet(out.Findings)
+	deps := adminMigrationDependencyStatusSet(out.Dependencies)
+
+	switch out.Command {
+	case "migration_backup_inspect", "migration_restore_preflight", "migration_source_import_preflight", "migration_source_sync_preflight", "migration_shadow_compare", "migration_cutover_rehearse":
+		return adminMigrationRetrySafeFinding("the command is read-only; fix the reported evidence, provider, or target issue and rerun")
+	case "migration_restore_apply":
+		return adminMigrationManualCleanupFinding("restore apply was interrupted or failed after entering an offline mutation path; run restore preflight and inspect target state before retry")
+	case "migration_source_import_apply":
+		if codes["source_import_progress_target_mismatch"] || codes["source_import_progress_invalid"] || deps["source_import_target"] == "error" {
+			return adminMigrationRetryUnsafeFinding("source import progress or target state does not match the normalized source; reconcile the progress file and target before retry")
+		}
+		return adminMigrationRetrySafeFinding("source import apply failed before durable metadata publication or rolled metadata back where possible; fix the dependency and rerun with the same progress file")
+	case "migration_source_sync_apply":
+		if codes["source_sync_progress_invalid"] || codes[adminMigrationFindingRetryProgressDrift] {
+			return adminMigrationRetryUnsafeFinding("source sync progress could not be trusted; reconcile the progress file with the intended source snapshot before retry")
+		}
+		return adminMigrationRetrySafeFinding("source sync apply records the final cursor only after metadata writes succeed; fix the dependency and rerun with the same progress file")
+	default:
+		return adminMigrationRetrySafeFinding("fix the reported dependency or input problem and rerun the command")
+	}
+}
+
+// adminMigrationFindingCodeSet gives retry guidance a compact way to match
+// already-normalized finding codes without depending on message text.
+func adminMigrationFindingCodeSet(findings []adminMigrationFinding) map[string]bool {
+	out := map[string]bool{}
+	for _, finding := range findings {
+		if code := strings.TrimSpace(finding.Code); code != "" {
+			out[code] = true
+		}
+	}
+	return out
+}
+
+// adminMigrationDependencyStatusSet records the last status for each dependency
+// name so retry classification can detect target-conflict gates explicitly.
+func adminMigrationDependencyStatusSet(deps []adminMigrationDependency) map[string]string {
+	out := map[string]string{}
+	for _, dep := range deps {
+		if name := strings.TrimSpace(dep.Name); name != "" {
+			out[name] = strings.TrimSpace(dep.Status)
+		}
+	}
+	return out
+}
+
+// adminMigrationRetrySafeFinding marks a blocked command as safe to rerun after
+// its explicit dependency or input problem is fixed.
+func adminMigrationRetrySafeFinding(message string) adminMigrationFinding {
+	return adminMigrationFinding{Severity: "warning", Code: adminMigrationFindingRetrySafe, Family: "retry", Message: message}
+}
+
+// adminMigrationRetryUnsafeFinding tells operators to reconcile durable progress
+// or target identity before repeating a command that could otherwise mask drift.
+func adminMigrationRetryUnsafeFinding(message string) adminMigrationFinding {
+	return adminMigrationFinding{Severity: "warning", Code: adminMigrationFindingRetryUnsafe, Family: "retry", Message: message}
+}
+
+// adminMigrationManualCleanupFinding highlights mutation-path failures where a
+// human should inspect restored state before trusting another apply attempt.
+func adminMigrationManualCleanupFinding(message string) adminMigrationFinding {
+	return adminMigrationFinding{Severity: "warning", Code: adminMigrationFindingManualCleanupRequired, Family: "retry", Message: message}
 }
 
 // adminMigrationMaintenancePolicyWarnings documents why migration workflows do
@@ -11741,6 +14087,7 @@ func (c *command) printAdminMigrationUsage(w io.Writer) {
   opencook admin migration backup inspect PATH [--json]
   opencook admin migration restore preflight PATH --offline [--json] [--with-timing]
   opencook admin migration restore apply PATH --offline [--dry-run|--yes] [--json] [--with-timing]
+  opencook admin migration scale-fixture create --output PATH [--profile small|medium|large] [--yes] [--json] [--with-timing]
   opencook admin migration source inventory PATH [--json] [--with-timing]
   opencook admin migration source normalize PATH --output PATH [--yes] [--json] [--with-timing]
   opencook admin migration source import preflight PATH --offline [--json] [--with-timing]
@@ -11748,11 +14095,12 @@ func (c *command) printAdminMigrationUsage(w io.Writer) {
   opencook admin migration source sync preflight PATH --offline [--progress PATH] [--json] [--with-timing]
   opencook admin migration source sync apply PATH --offline [--dry-run|--yes] [--progress PATH] [--json] [--with-timing]
   opencook admin migration shadow compare --source PATH --target-server-url URL [--manifest PATH] [--json] [--with-timing]
-  opencook admin migration cutover rehearse --manifest PATH [--source PATH] [--source-import-progress PATH] [--source-sync-progress PATH] [--search-check-result PATH] [--shadow-result PATH] [--rollback-ready] [--server-url URL] [--json] [--with-timing]
+  opencook admin migration cutover rehearse --manifest PATH [--source PATH] [--source-import-progress PATH] [--source-sync-progress PATH] [--search-check-result PATH] [--shadow-result PATH] [--maintenance-result PATH] [--source-frozen] [--rollback-ready] [--server-url URL] [--json] [--with-timing]
 
 Migration commands validate target readiness, write/inspect OpenCook logical
-backup bundles, restore offline targets, and inventory or normalize read-only
-Chef Server source artifacts. Source import preflight validates a normalized
+backup bundles, restore offline targets, generate deterministic production-scale
+validation fixtures, and inventory or normalize read-only Chef Server source
+artifacts. Source import preflight validates a normalized
 bundle and target readiness without writing OpenCook, blob, or search state;
 source import apply copies or verifies blobs before offline PostgreSQL metadata
 writes and records retry progress for non-transactional blob phases. Source
@@ -11760,22 +14108,26 @@ sync preflight/apply compares later normalized snapshots to manifest-covered
 target families and stores cursor metadata after confirmed reconciliation.
 Shadow compare reads a normalized source artifact and a restored target through
 signed GETs, applies compatibility normalizers, and never proxies writes.
-Cutover rehearsal remains read-only but can also consume import, sync, search,
-shadow-read, and rollback evidence to separate blockers from advisories before
-DNS/load-balancer or Chef/Cinc client configuration changes.
+Cutover rehearsal remains read-only but can also consume source-freeze, import,
+sync, search, shadow-read, maintenance, and rollback evidence to separate
+blockers from advisories before DNS/load-balancer or Chef/Cinc client
+configuration changes.
 
 Flags:
   --org ORG
   --all-orgs
   --output PATH
+  --profile small|medium|large
   --manifest PATH
   --source PATH
   --source-import-progress PATH
   --source-sync-progress PATH
   --search-check-result PATH
   --shadow-result PATH
+  --maintenance-result PATH
   --server-url URL
   --target-server-url URL
+  --source-frozen
   --rollback-ready
   --dry-run
   --offline
