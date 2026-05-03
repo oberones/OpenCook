@@ -198,6 +198,162 @@ func TestAdminOperationalSearchCommandsUseProviderCapabilityModes(t *testing.T) 
 	}
 }
 
+// TestAdminScaleOpenSearchReindexCheckAndRepair uses the production-scale
+// migration fixture to prove OpenSearch rebuild, reindex, check, and repair
+// stay correct against multi-org PostgreSQL-shaped state.
+func TestAdminScaleOpenSearchReindexCheckAndRepair(t *testing.T) {
+	fixture := requireAdminMigrationScaleFixture(t, adminMigrationScaleProfileSmall)
+	scaleState := adminScaleSearchBootstrapService(t, fixture)
+	allDocs := adminScaleSearchDocuments(t, scaleState, search.ReindexPlan{AllOrganizations: true})
+	orgDocs := adminScaleSearchDocuments(t, scaleState, search.ReindexPlan{Organization: fixture.DefaultOrganization})
+	nodeDocs := adminScaleSearchDocuments(t, scaleState, search.ReindexPlan{Organization: fixture.DefaultOrganization, Index: "node"})
+	missingDocID := adminScaleFirstDocumentID(t, nodeDocs)
+	staleSupportedID := fixture.DefaultOrganization + "/node/stale-scale-node"
+	staleUnsupportedIDs := adminUnsupportedProviderIDs()
+	staleCount := 1 + len(staleUnsupportedIDs)
+
+	for _, tc := range []struct {
+		name string
+		mode adminCapabilityProviderMode
+	}{
+		{name: "direct delete by query", mode: adminCapabilityDirectDeleteByQuery},
+		{name: "fallback delete with search-after", mode: adminCapabilityFallbackDelete},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := adminScaleSearchStore(fixture)
+			target := newAdminCapabilityOpenSearchTransport(t, tc.mode)
+			if tc.mode == adminCapabilityFallbackDelete {
+				adminSeedScaleFallbackPaginationDocuments(t, target, fixture.DefaultOrganization, 1105)
+			}
+			client, err := adminCapabilityOpenSearchClient(t, "http://opensearch.test", target)
+			if err != nil {
+				t.Fatalf("adminCapabilityOpenSearchClient() error = %v", err)
+			}
+			if err := search.RebuildOpenSearchIndex(context.Background(), client, scaleState); err != nil {
+				t.Fatalf("RebuildOpenSearchIndex(scale) error = %v", err)
+			}
+			if len(target.docs) != len(allDocs) {
+				t.Fatalf("startup rebuild docs = %d, want %d", len(target.docs), len(allDocs))
+			}
+			adminRequireNoUnsupportedOpenSearchDocuments(t, target.documentIDs())
+
+			if tc.mode == adminCapabilityFallbackDelete && target.fallbackDeleteSearches < 2 {
+				t.Fatalf("fallback startup rebuild searches = %d, want paginated delete search-after path", target.fallbackDeleteSearches)
+			}
+			target.resetCapabilityCounters()
+			cmd, stdout, stderr := newAdminCapabilityOpenSearchCommand(t, store, target)
+
+			if code := cmd.Run(context.Background(), []string{"admin", "reindex", "--org", fixture.DefaultOrganization, "--complete", "--with-timing", "--json"}); code != exitOK {
+				t.Fatalf("Run(scale complete reindex %s) exit = %d, want %d; stdout = %s stderr = %s", tc.name, code, exitOK, stdout.String(), stderr.String())
+			}
+			out := decodeAdminReindexOutput(t, stdout.String())
+			assertAdminReindexCount(t, out, "scanned", len(orgDocs))
+			assertAdminReindexCount(t, out, "deleted", len(orgDocs))
+			assertAdminReindexCount(t, out, "upserted", len(orgDocs))
+			if _, ok := out["duration_ms"]; !ok {
+				t.Fatalf("scale complete reindex output missing duration_ms: %v", out)
+			}
+			requireAdminOutputWarningContains(t, out, "active maintenance mode confirmed")
+			requireAdminOutputWarningContains(t, out, "drop-and-reindex mutates derived OpenSearch documents")
+			adminRequireNoUnsupportedOpenSearchDocuments(t, target.documentIDs())
+			switch tc.mode {
+			case adminCapabilityDirectDeleteByQuery:
+				if target.directDeleteByQueries != 1 || target.fallbackDeleteSearches != 0 {
+					t.Fatalf("direct scale delete paths = direct:%d fallback:%d, want direct only", target.directDeleteByQueries, target.fallbackDeleteSearches)
+				}
+			case adminCapabilityFallbackDelete:
+				if target.directDeleteByQueries != 0 || target.fallbackDeleteSearches == 0 {
+					t.Fatalf("fallback scale delete paths = direct:%d fallback:%d, want fallback search/delete path", target.directDeleteByQueries, target.fallbackDeleteSearches)
+				}
+			}
+
+			stdout.Reset()
+			stderr.Reset()
+			if code := cmd.Run(context.Background(), []string{"admin", "reindex", "--org", fixture.DefaultOrganization, "--index", "node", "--no-drop", "--json"}); code != exitOK {
+				t.Fatalf("Run(scale scoped reindex %s) exit = %d, want %d; stdout = %s stderr = %s", tc.name, code, exitOK, stdout.String(), stderr.String())
+			}
+			out = decodeAdminReindexOutput(t, stdout.String())
+			assertAdminReindexCount(t, out, "scanned", len(nodeDocs))
+			assertAdminReindexCount(t, out, "upserted", len(nodeDocs))
+			requireAdminOutputWarningContains(t, out, "active maintenance mode confirmed")
+
+			stdout.Reset()
+			stderr.Reset()
+			if code := cmd.Run(context.Background(), []string{"admin", "search", "check", "--org", fixture.DefaultOrganization, "--with-timing", "--json"}); code != exitOK {
+				t.Fatalf("Run(scale clean search check %s) exit = %d, want %d; stdout = %s stderr = %s", tc.name, code, exitOK, stdout.String(), stderr.String())
+			}
+			out = decodeAdminReindexOutput(t, stdout.String())
+			assertAdminReindexCount(t, out, "expected", len(orgDocs))
+			assertAdminReindexCount(t, out, "observed", len(orgDocs))
+			assertAdminReindexCount(t, out, "clean", 1)
+			if _, ok := out["duration_ms"]; !ok {
+				t.Fatalf("scale search check output missing duration_ms: %v", out)
+			}
+
+			delete(target.docs, missingDocID)
+			target.forceDocument(staleSupportedID)
+			for _, id := range staleUnsupportedIDs {
+				target.forceDocument(id)
+			}
+
+			stdout.Reset()
+			stderr.Reset()
+			if code := cmd.Run(context.Background(), []string{"admin", "search", "check", "--org", fixture.DefaultOrganization, "--json"}); code != exitPartial {
+				t.Fatalf("Run(scale drift search check %s) exit = %d, want %d; stdout = %s stderr = %s", tc.name, code, exitPartial, stdout.String(), stderr.String())
+			}
+			out = decodeAdminReindexOutput(t, stdout.String())
+			assertAdminReindexCount(t, out, "missing", 1)
+			assertAdminReindexCount(t, out, "stale", staleCount)
+			assertAdminReindexCount(t, out, "unsupported", len(adminUnsupportedProviderScopes()))
+			requireAdminOutputStrings(t, out, "missing_documents", []string{missingDocID})
+			requireNoAdminObjectCountsForIndexes(t, out, adminUnsupportedSearchIndexes()...)
+
+			stdout.Reset()
+			stderr.Reset()
+			if code := cmd.Run(context.Background(), []string{"admin", "search", "repair", "--org", fixture.DefaultOrganization, "--dry-run", "--json"}); code != exitPartial {
+				t.Fatalf("Run(scale search repair dry-run %s) exit = %d, want %d; stdout = %s stderr = %s", tc.name, code, exitPartial, stdout.String(), stderr.String())
+			}
+			out = decodeAdminReindexOutput(t, stdout.String())
+			assertAdminReindexCount(t, out, "skipped", 1+staleCount)
+			if _, ok := target.docs[missingDocID]; ok {
+				t.Fatalf("dry-run restored missing doc %s", missingDocID)
+			}
+
+			stdout.Reset()
+			stderr.Reset()
+			if code := cmd.Run(context.Background(), []string{"admin", "search", "repair", "--org", fixture.DefaultOrganization, "--yes", "--with-timing", "--json"}); code != exitOK {
+				t.Fatalf("Run(scale search repair %s) exit = %d, want %d; stdout = %s stderr = %s", tc.name, code, exitOK, stdout.String(), stderr.String())
+			}
+			out = decodeAdminReindexOutput(t, stdout.String())
+			assertAdminReindexCount(t, out, "upserted", 1)
+			assertAdminReindexCount(t, out, "deleted", staleCount)
+			assertAdminReindexCount(t, out, "unsupported", len(adminUnsupportedProviderScopes()))
+			requireAdminOutputWarningContains(t, out, "active maintenance mode confirmed")
+			requireAdminOutputWarningContains(t, out, "search repair mutates derived OpenSearch documents")
+			if _, ok := target.docs[missingDocID]; !ok {
+				t.Fatalf("repair did not restore missing doc %s", missingDocID)
+			}
+			if target.hasDocument(staleSupportedID) {
+				t.Fatalf("repair left stale supported doc %s", staleSupportedID)
+			}
+			for _, id := range staleUnsupportedIDs {
+				if target.hasDocument(id) {
+					t.Fatalf("repair left unsupported stale doc %s", id)
+				}
+			}
+			adminRequireNoUnsupportedOpenSearchDocuments(t, target.documentIDs())
+
+			stdout.Reset()
+			stderr.Reset()
+			if code := cmd.Run(context.Background(), []string{"admin", "search", "check", "--org", fixture.DefaultOrganization, "--json"}); code != exitOK {
+				t.Fatalf("Run(scale search check after repair %s) exit = %d, want %d; stdout = %s stderr = %s", tc.name, code, exitOK, stdout.String(), stderr.String())
+			}
+			out = decodeAdminReindexOutput(t, stdout.String())
+			assertAdminReindexCount(t, out, "clean", 1)
+		})
+	}
+}
+
 func TestAdminReindexDryRunDoesNotRequireOpenSearchOrMutateProvider(t *testing.T) {
 	store := adminReindexTestStore()
 	cmd, stdout, stderr := newTestCommand(t)
@@ -524,6 +680,52 @@ func adminReindexTestStore() *fakeOfflineStore {
 		bootstrap: adminReindexBootstrapState(),
 		objects:   adminReindexCoreObjectState(),
 	}
+}
+
+// adminScaleSearchStore adapts the production-scale fixture to the offline
+// PostgreSQL store shape used by admin reindex and search consistency commands.
+func adminScaleSearchStore(fixture adminMigrationScaleFixture) *fakeOfflineStore {
+	return &fakeOfflineStore{
+		bootstrap: fixture.Bootstrap,
+		objects:   fixture.CoreObjects,
+	}
+}
+
+// adminScaleSearchBootstrapService mirrors command startup rehydration so
+// expected-document counts use the same PostgreSQL-backed state as the CLI.
+func adminScaleSearchBootstrapService(t *testing.T, fixture adminMigrationScaleFixture) *bootstrap.Service {
+	t.Helper()
+	return bootstrap.NewService(nil, bootstrap.Options{
+		SuperuserName:             adminMigrationScaleFixtureSuperuser,
+		InitialBootstrapCoreState: &fixture.Bootstrap,
+		InitialCoreObjectState:    &fixture.CoreObjects,
+	})
+}
+
+// adminScaleSearchDocuments filters the scale fixture through the production
+// search document builder instead of duplicating expected per-family formulas.
+func adminScaleSearchDocuments(t *testing.T, state *bootstrap.Service, plan search.ReindexPlan) []search.Document {
+	t.Helper()
+	docs, err := search.DocumentsFromBootstrapStateForPlan(state, plan)
+	if err != nil {
+		t.Fatalf("DocumentsFromBootstrapStateForPlan(%+v) error = %v", plan, err)
+	}
+	return docs
+}
+
+// adminScaleFirstDocumentID returns a deterministic document ID for drift
+// injection in scale search check/repair tests.
+func adminScaleFirstDocumentID(t *testing.T, docs []search.Document) string {
+	t.Helper()
+	if len(docs) == 0 {
+		t.Fatal("scale fixture produced no searchable documents for drift injection")
+	}
+	ids := make([]string, 0, len(docs))
+	for _, doc := range docs {
+		ids = append(ids, search.OpenSearchDocumentID(doc))
+	}
+	sort.Strings(ids)
+	return ids[0]
 }
 
 func adminReindexBootstrapState() bootstrap.BootstrapCoreState {
@@ -913,7 +1115,7 @@ func (t *adminCapabilityOpenSearchTransport) handleDeleteByQuery(req *http.Reque
 
 func (t *adminCapabilityOpenSearchTransport) handleSearch(req *http.Request, body []byte) *http.Response {
 	org, index := adminCapabilityScopeFromBody(t.t, body)
-	if adminCapabilityBodyUsesDeleteScope(t.t, body) {
+	if adminCapabilityBodyUsesDeleteScope(t.t, body) || adminCapabilityBodyUsesFallbackDeleteSearch(t.t, body) {
 		t.fallbackDeleteSearches++
 	}
 
@@ -1014,6 +1216,13 @@ func (t *adminCapabilityOpenSearchTransport) hasDocument(id string) bool {
 	return ok
 }
 
+// resetCapabilityCounters lets one test reuse the same provider contents while
+// measuring a later admin command's direct-vs-fallback delete behavior.
+func (t *adminCapabilityOpenSearchTransport) resetCapabilityCounters() {
+	t.directDeleteByQueries = 0
+	t.fallbackDeleteSearches = 0
+}
+
 func (t *adminCapabilityOpenSearchTransport) documentIDs() []string {
 	ids := make([]string, 0, len(t.docs))
 	for id := range t.docs {
@@ -1079,6 +1288,26 @@ func adminCapabilityBodyUsesDeleteScope(t *testing.T, body []byte) bool {
 		t.Fatalf("json.Unmarshal(OpenSearch request %s) error = %v", string(body), err)
 	}
 	return adminCapabilityFirstTerm(payload, "organization") != "" || adminCapabilityFirstTerm(payload, "index") != ""
+}
+
+// adminCapabilityBodyUsesFallbackDeleteSearch detects the match-all and
+// filter-only searches used by OpenSearch delete-by-query fallback pagination.
+func adminCapabilityBodyUsesFallbackDeleteSearch(t *testing.T, body []byte) bool {
+	t.Helper()
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("json.Unmarshal(OpenSearch request %s) error = %v", string(body), err)
+	}
+	query, _ := payload["query"].(map[string]any)
+	if _, ok := query["match_all"]; ok {
+		return true
+	}
+	boolQuery, _ := query["bool"].(map[string]any)
+	if len(boolQuery) == 0 {
+		return false
+	}
+	_, hasMust := boolQuery["must"]
+	return !hasMust
 }
 
 func adminCapabilityApplySearchAfterAndSize(t *testing.T, ids []string, body []byte) []string {
@@ -1163,6 +1392,34 @@ func adminCapabilitySplitDocumentID(id string) (string, string, string, bool) {
 		return "", "", "", false
 	}
 	return parts[0], parts[1], parts[2], true
+}
+
+// adminSeedScaleFallbackPaginationDocuments forces enough stale provider IDs to
+// require search_after pagination when delete-by-query fallback is used.
+func adminSeedScaleFallbackPaginationDocuments(t *testing.T, target *adminCapabilityOpenSearchTransport, orgName string, count int) {
+	t.Helper()
+	for i := 0; i < count; i++ {
+		target.forceDocument(fmt.Sprintf("%s/node/stale-scale-%04d", orgName, i))
+	}
+}
+
+// adminRequireNoUnsupportedOpenSearchDocuments verifies cookbook, artifact,
+// policy, policy-group, sandbox, and checksum rows remain non-searchable.
+func adminRequireNoUnsupportedOpenSearchDocuments(t *testing.T, ids []string) {
+	t.Helper()
+	unsupported := make(map[string]struct{})
+	for _, index := range adminUnsupportedSearchIndexes() {
+		unsupported[index] = struct{}{}
+	}
+	for _, id := range ids {
+		_, index, _, ok := adminCapabilitySplitDocumentID(id)
+		if !ok {
+			t.Fatalf("provider document ID %q is not an OpenCook search document ID", id)
+		}
+		if _, blocked := unsupported[index]; blocked {
+			t.Fatalf("provider document IDs = %v, unexpectedly included non-searchable index %q", ids, index)
+		}
+	}
 }
 
 // requireAdminEncryptedDataBagDocument verifies the admin command rebuilt the

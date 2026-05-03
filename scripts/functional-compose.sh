@@ -30,7 +30,11 @@ fi
 
 cleanup() {
   if [[ "${KEEP_STACK:-0}" != "1" ]]; then
-    compose down -v --remove-orphans
+    if [[ "${OPENCOOK_FUNCTIONAL_KEEP_ARTIFACTS:-0}" == "1" ]]; then
+      compose down --remove-orphans
+    else
+      compose down -v --remove-orphans
+    fi
   fi
 }
 
@@ -57,6 +61,7 @@ run_phase() {
 		-e "OPENCOOK_FUNCTIONAL_PHASE=$phase" \
 		-e "KEEP_STACK=${KEEP_STACK:-0}" \
 		-e "OPENCOOK_FUNCTIONAL_KEEP_ARTIFACTS=${OPENCOOK_FUNCTIONAL_KEEP_ARTIFACTS:-${KEEP_STACK:-0}}" \
+		-e "OPENCOOK_FUNCTIONAL_SCALE_PROFILE=${OPENCOOK_FUNCTIONAL_SCALE_PROFILE:-small}" \
 		functional-tests
 }
 

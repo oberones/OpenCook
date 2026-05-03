@@ -350,10 +350,13 @@ curl http://127.0.0.1:4000/metrics
 The first supported migration paths are a logical OpenCook backup/restore drill
 and normalized Chef Server source artifact import/sync. Both paths use
 PostgreSQL-backed state, provider-backed blobs, derived OpenSearch rebuild, and
-live restored-target rehearsal. Backup, restore, source import, and source sync
-remain offline-gated. Run restore, maintenance-gated reindex, and rehearsal
-commands with `OPENCOOK_*` and `OPENCOOK_ADMIN_*` settings pointed at the
-restore target:
+live restored-target rehearsal. Migration command output includes an
+`operator_report` summary with inventory totals, validation finding counts,
+evidence-gate status, retry guidance, warnings, and next steps so operators do
+not need to read raw logs to decide whether to continue. Backup, restore,
+source import, and source sync remain offline-gated. Run restore,
+maintenance-gated reindex, and rehearsal commands with `OPENCOOK_*` and
+`OPENCOOK_ADMIN_*` settings pointed at the restore target:
 
 ```bash
 bin/opencook admin migration preflight --all-orgs --json
@@ -379,9 +382,24 @@ bin/opencook admin migration source sync apply .local/opencook-source --offline 
 bin/opencook admin migration shadow compare --source .local/opencook-source --target-server-url "$OPENCOOK_URL" --json
 ```
 
+For production-scale rehearsal without a live Chef source export, generate a
+deterministic source bundle or run the Docker functional scale flow:
+
+```bash
+bin/opencook admin migration scale-fixture create --profile small --output .local/opencook-scale-source --yes --json
+scripts/functional-compose.sh migration-scale-all
+OPENCOOK_FUNCTIONAL_SCALE_PROFILE=medium scripts/functional-compose.sh migration-scale-all
+OPENCOOK_FUNCTIONAL_SCALE_PROFILE=large scripts/functional-compose.sh migration-scale-all
+DOCKER_HOST=ssh://example-host OPENCOOK_FUNCTIONAL_SCALE_PROFILE=medium scripts/functional-compose.sh migration-scale-all
+```
+
 Before final source sync and client cutover, freeze writes on the source Chef
 Infra Server externally. OpenCook maintenance mode protects the OpenCook target;
-it cannot block writes that still go to the source Chef server.
+it cannot block writes that still go to the source Chef server. Keep the source
+Chef path available for emergency rollback until post-cutover smoke checks pass;
+if the cutover fails, point clients or load balancers back at the source Chef
+server, keep OpenCook target writes frozen, collect the migration reports, and
+re-run rehearsal only after fixing the blocker.
 
 ## Testing
 
