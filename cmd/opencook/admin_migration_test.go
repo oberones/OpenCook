@@ -4011,9 +4011,29 @@ func (s fakeMigrationBlobStore) Get(_ context.Context, key string) ([]byte, erro
 		return append([]byte(nil), body...), nil
 	}
 	if s.exists[key] {
-		return nil, blob.ErrNotFound
+		return nil, blob.ErrUnavailable
 	}
 	return nil, blob.ErrNotFound
+}
+
+func TestFakeMigrationBlobStoreGetDistinguishesMissingFromUnreadable(t *testing.T) {
+	store := fakeMigrationBlobStore{
+		exists: map[string]bool{"present-without-body": true},
+		puts:   map[string][]byte{"present-with-body": []byte("blob body")},
+	}
+	body, err := store.Get(context.Background(), "present-with-body")
+	if err != nil {
+		t.Fatalf("Get(present-with-body) error = %v", err)
+	}
+	if string(body) != "blob body" {
+		t.Fatalf("Get(present-with-body) = %q, want blob body", string(body))
+	}
+	if _, err := store.Get(context.Background(), "present-without-body"); !errors.Is(err, blob.ErrUnavailable) {
+		t.Fatalf("Get(present-without-body) error = %v, want %v", err, blob.ErrUnavailable)
+	}
+	if _, err := store.Get(context.Background(), "missing"); !errors.Is(err, blob.ErrNotFound) {
+		t.Fatalf("Get(missing) error = %v, want %v", err, blob.ErrNotFound)
+	}
 }
 
 // writeAdminMigrationTestBlob writes content under its Chef MD5 checksum so

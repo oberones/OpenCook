@@ -202,11 +202,11 @@ func adminMigrationScaleFixtureAddUser(fixture *adminMigrationScaleFixture, user
 // authorization, core object, cookbook, sandbox, and shared-blob coverage.
 func adminMigrationScaleFixtureAddOrg(fixture *adminMigrationScaleFixture, spec adminMigrationScaleFixtureProfileSpec, orgIndex int, orgName string, blobBodies map[string][]byte, sharedChecksum string) {
 	owner := orgName + "-owner"
-	adminMigrationScaleFixtureAddUser(fixture, owner, strings.Title(strings.ReplaceAll(owner, "-", " ")))
+	adminMigrationScaleFixtureAddUser(fixture, owner, adminMigrationScaleFixtureTitle(owner))
 	extraUsers := []string{}
 	for i := 1; i <= spec.ExtraUsersPerOrg; i++ {
 		username := adminMigrationScaleFixtureName(orgName, "user", i)
-		adminMigrationScaleFixtureAddUser(fixture, username, strings.Title(strings.ReplaceAll(username, "-", " ")))
+		adminMigrationScaleFixtureAddUser(fixture, username, adminMigrationScaleFixtureTitle(username))
 		extraUsers = append(extraUsers, username)
 	}
 
@@ -225,7 +225,7 @@ func adminMigrationScaleFixtureBootstrapOrg(orgName string, orgIndex int, owner 
 	org := bootstrap.BootstrapCoreOrganizationState{
 		Organization: bootstrap.Organization{
 			Name:     orgName,
-			FullName: strings.Title(orgName) + " Scale Fixture",
+			FullName: adminMigrationScaleFixtureTitle(orgName) + " Scale Fixture",
 			OrgType:  "Business",
 			GUID:     adminMigrationScaleFixtureHex(fmt.Sprintf("org-%s-%d", orgName, orgIndex), 32),
 		},
@@ -273,6 +273,23 @@ func adminMigrationScaleFixtureBootstrapOrg(orgName string, orgIndex int, owner 
 	}
 	org.ACLs[adminMigrationOrganizationACLKey()] = adminMigrationScaleFixtureACL([]string{adminMigrationScaleFixtureSuperuser}, []string{"admins", "users"})
 	return org
+}
+
+// adminMigrationScaleFixtureTitle converts deterministic ASCII fixture slugs
+// into display strings without relying on deprecated strings.Title behavior.
+func adminMigrationScaleFixtureTitle(value string) string {
+	words := strings.Fields(strings.ReplaceAll(value, "-", " "))
+	for i, word := range words {
+		if word == "" {
+			continue
+		}
+		bytes := []byte(word)
+		if bytes[0] >= 'a' && bytes[0] <= 'z' {
+			bytes[0] -= 'a' - 'A'
+		}
+		words[i] = string(bytes)
+	}
+	return strings.Join(words, " ")
 }
 
 // adminMigrationScaleFixtureCoreOrg creates persisted core-object families with

@@ -122,19 +122,64 @@ keep_functional_artifacts() {
   [[ "${OPENCOOK_FUNCTIONAL_KEEP_ARTIFACTS:-${KEEP_STACK:-0}}" == "1" ]]
 }
 
+# path_has_parent_segment recognizes explicit traversal before cleanup path
+# checks compare prefixes, avoiding false safety from strings like root/../..
+path_has_parent_segment() {
+  local value="$1"
+  case "$value" in
+    ".." | "../"* | *"/.." | *"/../"*)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+# require_no_symlink_components rejects existing symlink path components before
+# recursive cleanup so an override cannot point through the state dir to outside.
+require_no_symlink_components() {
+  local label="$1"
+  local target="${2%/}"
+  local current="/"
+  local part
+  local parts=()
+  IFS='/' read -r -a parts <<<"${target#/}"
+  for part in "${parts[@]}"; do
+    if [[ -z "$part" || "$part" == "." ]]; then
+      continue
+    fi
+    current="${current%/}/$part"
+    if [[ -L "$current" ]]; then
+      echo "refusing to remove $label through symlink component: $current" >&2
+      return 1
+    fi
+    if [[ ! -e "$current" ]]; then
+      break
+    fi
+  done
+  return 0
+}
+
 # require_state_dir_artifact_path keeps cleanup narrowly scoped to generated
-# functional artifacts so an environment override cannot turn rm -rf dangerous.
+# functional artifacts, rejecting traversal and symlinks before rm -rf.
 require_state_dir_artifact_path() {
   local path="$1"
   local root="${state_dir%/}"
-  if [[ -z "$root" || "$root" == "/" ]]; then
+  if [[ -z "$root" || "$root" == "/" || "$root" != /* ]]; then
     echo "refusing to remove source artifact because functional state dir is unsafe: $state_dir" >&2
     return 1
   fi
-  if [[ -z "$path" || "$path" == "/" ]]; then
-    echo "refusing to remove empty or root source artifact path" >&2
+  if [[ -z "$path" || "$path" == "/" || "$path" != /* ]]; then
+    echo "refusing to remove empty, root, or relative source artifact path: $path" >&2
     return 1
   fi
+  if path_has_parent_segment "$root" || path_has_parent_segment "$path"; then
+    echo "refusing to remove source artifact path with parent traversal: $path" >&2
+    return 1
+  fi
+  require_no_symlink_components "functional state dir" "$root" || return 1
+  require_no_symlink_components "source artifact" "$path" || return 1
   case "$path" in
     "$root"/*)
       return 0

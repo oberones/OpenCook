@@ -51,6 +51,24 @@ func TestAdminMigrationProductionScaleFixtureDeterministic(t *testing.T) {
 	}
 }
 
+func TestAdminMigrationScaleFixtureTitle(t *testing.T) {
+	for _, tc := range []struct {
+		value string
+		want  string
+	}{
+		{value: "ponyville-owner", want: "Ponyville Owner"},
+		{value: "canterlot-user-12", want: "Canterlot User 12"},
+		{value: "  cloudsdale--client  ", want: "Cloudsdale Client"},
+		{value: "Manehattan", want: "Manehattan"},
+	} {
+		t.Run(tc.value, func(t *testing.T) {
+			if got := adminMigrationScaleFixtureTitle(tc.value); got != tc.want {
+				t.Fatalf("adminMigrationScaleFixtureTitle(%q) = %q, want %q", tc.value, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestAdminMigrationProductionScaleFixtureCountsAndCoverage(t *testing.T) {
 	fixture := requireAdminMigrationScaleFixture(t, adminMigrationScaleProfileSmall)
 	spec, err := adminMigrationScaleFixtureSpec(adminMigrationScaleProfileSmall)
