@@ -3149,6 +3149,40 @@ func TestAdminMigrationCutoverRehearseReportsMissingEvidenceWarnings(t *testing.
 	requireAdminMigrationInventoryFamily(t, families, "", "cutover_blockers", 0)
 }
 
+func TestAdminMigrationCutoverRehearseRejectsTrailingEvidenceJSON(t *testing.T) {
+	bundlePath := writeAdminMigrationRestoreTestBundle(t)
+	searchResultPath := filepath.Join(t.TempDir(), "search-check.json")
+	writeAdminMigrationSourceFile(t, searchResultPath, `{"ok":true,"command":"search_check","counts":{"missing":0,"stale":0,"unsupported":0,"failed":0,"clean":1}}{"ok":false}`)
+	cmd, stdout, stderr := newTestCommand(t)
+	cmd.loadAdminConfig = func() admin.Config {
+		return admin.Config{
+			ServerURL:        "http://opencook.test",
+			RequestorName:    "pivotal",
+			RequestorType:    "user",
+			PrivateKeyPath:   "/keys/pivotal.pem",
+			ServerAPIVersion: "1",
+		}
+	}
+	cmd.newAdmin = func(admin.Config) (adminJSONClient, error) {
+		return &fakeMigrationRehearsalClient{}, nil
+	}
+
+	code := cmd.Run(context.Background(), []string{
+		"admin", "migration", "cutover", "rehearse",
+		"--manifest", bundlePath,
+		"--search-check-result", searchResultPath,
+		"--json",
+	})
+	if code != exitDependencyUnavailable {
+		t.Fatalf("Run(migration cutover rehearse trailing evidence) exit = %d, want %d; stdout = %s stderr = %s", code, exitDependencyUnavailable, stdout.String(), stderr.String())
+	}
+	out := decodeAdminMigrationOutput(t, stdout.String())
+	deps := requireAdminMigrationArray(t, out, "dependencies")
+	requireAdminMigrationDependency(t, deps, "search_cleanliness", "error")
+	requireAdminMigrationDependency(t, deps, "cutover_evidence", "error")
+	requireAdminMigrationFinding(t, requireAdminMigrationArray(t, out, "findings"), "cutover_search_check_unreadable")
+}
+
 func TestAdminMigrationCutoverRehearsePromotesEvidenceFailuresToBlockers(t *testing.T) {
 	bundlePath := writeAdminMigrationRestoreTestBundle(t)
 	sourcePath := writeAdminMigrationNormalizedSourceFixture(t)

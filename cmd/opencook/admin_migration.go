@@ -10372,6 +10372,13 @@ func adminMigrationReadCutoverJSONEvidence(path string) (map[string]any, error) 
 	if err := dec.Decode(&out); err != nil {
 		return nil, err
 	}
+	var trailing any
+	if err := dec.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return nil, fmt.Errorf("cutover evidence contains trailing JSON")
+		}
+		return nil, fmt.Errorf("cutover evidence contains trailing content: %w", err)
+	}
 	return out, nil
 }
 
