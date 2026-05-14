@@ -169,7 +169,10 @@ Notes:
 
 Use preflight, source inventory/normalize/import/sync, backup/restore,
 restored-target reindex, shadow comparison, and cutover rehearsal before
-switching clients.
+switching clients. Migration command JSON includes an `operator_report` section
+with inventory totals, finding counts, dependency evidence, retry guidance, and
+safe next steps; read that section first, then drill into `dependencies`,
+`findings`, and `planned_mutations` when a gate is not clear.
 
 Recommended pattern:
 
@@ -186,13 +189,15 @@ opencook admin reindex --all-orgs --complete --json
 opencook admin maintenance disable --yes --json
 opencook admin search check --all-orgs --json > search-check.json
 opencook admin migration shadow compare --source normalized-source --target-server-url URL --json > shadow-compare.json
-opencook admin migration cutover rehearse --manifest PATH --source normalized-source --source-import-progress source-import-progress.json --source-sync-progress source-sync-progress.json --search-check-result search-check.json --shadow-result shadow-compare.json --rollback-ready --server-url URL --json
+opencook admin migration cutover rehearse --manifest PATH --source normalized-source --source-import-progress source-import-progress.json --source-sync-progress source-sync-progress.json --search-check-result search-check.json --shadow-result shadow-compare.json --source-frozen --rollback-ready --server-url URL --json
 ```
 
 Notes:
 
 - Freeze source Chef writes before the final source sync and keep the freeze
-  through post-cutover smoke checks.
+  through post-cutover smoke checks. OpenCook can report whether the operator
+  confirmed the freeze with `--source-frozen`, but it cannot enforce writes
+  still routed to source Chef Infra Server.
 - OpenCook maintenance mode only blocks writes routed to OpenCook. It does not
   block writes still routed to the source Chef Infra Server.
 - Source import and source sync apply remain offline-gated because they mutate
@@ -202,8 +207,30 @@ Notes:
   gates pass.
 - Keep the source Chef Infra Server read/write path available until post-cutover
   smoke checks pass.
+- For emergency rollback, point clients or load balancers back at source Chef,
+  keep OpenCook target writes frozen, preserve the failed migration reports, and
+  rerun source sync/rehearsal only after the blocker is understood.
 - Cutover rehearsal errors are blockers; warnings are advisories that require an
   explicit operator decision.
+
+### Production-Scale Functional Drill
+
+Use the production-scale functional phases before release candidates or operator
+cutover rehearsals. The default `small` profile is CI-friendly; `medium` and
+`large` are opt-in and slower.
+
+```sh
+scripts/functional-compose.sh migration-scale-all
+OPENCOOK_FUNCTIONAL_SCALE_PROFILE=medium scripts/functional-compose.sh migration-scale-all
+OPENCOOK_FUNCTIONAL_SCALE_PROFILE=large scripts/functional-compose.sh migration-scale-all
+DOCKER_HOST=ssh://example-host OPENCOOK_FUNCTIONAL_SCALE_PROFILE=medium scripts/functional-compose.sh migration-scale-all
+```
+
+Scale fixtures, backup bundles, progress files, and JSON reports are generated
+inside the Compose-managed functional state volume. They are removed by default
+with the stack; set `KEEP_STACK=1` to keep containers running or
+`OPENCOOK_FUNCTIONAL_KEEP_ARTIFACTS=1` to remove containers while preserving the
+named volumes for report inspection.
 
 ## Diagnostics
 

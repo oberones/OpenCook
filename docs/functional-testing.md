@@ -14,7 +14,10 @@ The default flow builds the images, starts the stack, creates compatibility obje
 
 Successful default and targeted runs end with a `functional tests passed successfully` footer so CI and humans can distinguish a clean finish from an abrupt final phase log.
 
-By default the script removes containers and volumes on exit. Keep the stack for inspection with:
+By default the script removes containers and volumes on exit. To remove
+containers but preserve named volumes that contain generated diagnostics or
+scale artifacts, set `OPENCOOK_FUNCTIONAL_KEEP_ARTIFACTS=1`. Keep the full
+stack running for inspection with:
 
 ```sh
 KEEP_STACK=1 scripts/functional-compose.sh
@@ -37,10 +40,11 @@ KEEP_STACK=1 scripts/functional-compose.sh operational restart operational-verif
 KEEP_STACK=1 scripts/functional-compose.sh maintenance
 KEEP_STACK=1 scripts/functional-compose.sh migration-preflight migration-backup migration-backup-inspect
 KEEP_STACK=1 scripts/functional-compose.sh migration-source-all
+KEEP_STACK=1 scripts/functional-compose.sh migration-scale-all
 KEEP_STACK=1 scripts/functional-compose.sh delete restart verify-deleted
 ```
 
-Supported phase names are `create`, `verify`, `query-compat`, `invalid`, `search-update`, `verify-search-updated`, `operational`, `operational-verify`, `maintenance`, `migration-preflight`, `migration-backup`, `migration-backup-inspect`, `migration-restore-preflight`, `migration-restore`, `migration-reindex`, `migration-rehearsal`, `migration-source-normalize`, `migration-source-import-preflight`, `migration-source-import`, `migration-source-reindex`, `migration-source-sync-preflight`, `migration-source-sync`, `migration-shadow-compare`, `migration-source-rehearsal`, `migration-source-all`, `migration-all`, `delete`, `verify-deleted`, and `restart`.
+Supported phase names are `create`, `verify`, `query-compat`, `invalid`, `search-update`, `verify-search-updated`, `operational`, `operational-verify`, `maintenance`, `migration-preflight`, `migration-backup`, `migration-backup-inspect`, `migration-restore-preflight`, `migration-restore`, `migration-reindex`, `migration-rehearsal`, `migration-source-normalize`, `migration-source-import-preflight`, `migration-source-import`, `migration-source-reindex`, `migration-source-sync-preflight`, `migration-source-sync`, `migration-shadow-compare`, `migration-source-rehearsal`, `migration-source-all`, `migration-scale-fixtures`, `migration-scale-backup`, `migration-scale-restore`, `migration-scale-reindex`, `migration-scale-shadow`, `migration-scale-rehearsal`, `migration-scale-all`, `migration-all`, `delete`, `verify-deleted`, and `restart`.
 
 To run just the OpenSearch-heavy compatibility phases after a stack already has created fixtures, use:
 
@@ -115,6 +119,30 @@ evidence. Generated source, import, search, shadow, and rehearsal artifacts live
 under the Compose-managed functional state volume and are cleaned unless
 `KEEP_STACK=1` or `OPENCOOK_FUNCTIONAL_KEEP_ARTIFACTS=1` is set.
 
+The production-scale migration phases are also opt-in. `migration-scale-all`
+generates a deterministic normalized source bundle inside the Compose-managed
+functional state volume, imports it into the restore database, creates and
+inspects a logical backup, restores that backup, rebuilds/checks OpenSearch,
+runs scale shadow-read comparison, and finishes with cutover rehearsal evidence.
+Use `OPENCOOK_FUNCTIONAL_SCALE_PROFILE=small|medium|large`; `small` is the
+default and keeps routine local runs tolerable, while `medium` and `large` are
+for slower release or operator drills. Every targeted scale phase and the
+aggregate flow prints an explicit success footer. Generated scale fixtures,
+backup bundles, progress files, and reports are cleaned unless `KEEP_STACK=1`
+or `OPENCOOK_FUNCTIONAL_KEEP_ARTIFACTS=1` is set.
+
+Each migration JSON report includes an `operator_report` section summarizing
+inventory totals, finding counts, dependency evidence, retry guidance, and safe
+next steps. The scale cutover rehearsal report should show source-freeze,
+search-cleanliness, shadow-read, maintenance, rollback, signed-auth, and blob
+reachability evidence before operators treat the drill as cutover-ready.
+
+```sh
+scripts/functional-compose.sh migration-scale-all
+OPENCOOK_FUNCTIONAL_SCALE_PROFILE=medium scripts/functional-compose.sh migration-scale-all
+OPENCOOK_FUNCTIONAL_SCALE_PROFILE=large scripts/functional-compose.sh migration-scale-all
+```
+
 ## Remote Docker
 
 The Compose stack does not rely on bind mounts, so it can run against a remote Docker daemon as long as your Docker client can send the build context.
@@ -129,6 +157,13 @@ To run only the operational phases against a remote Docker daemon:
 DOCKER_HOST=ssh://example-host KEEP_STACK=1 scripts/functional-compose.sh operational restart operational-verify
 ```
 
+To run the production-scale migration drill remotely, rebuild the functional
+image so the generated fixture writer and scripts are baked into the image:
+
+```sh
+DOCKER_HOST=ssh://example-host OPENCOOK_FUNCTIONAL_SCALE_PROFILE=medium scripts/functional-compose.sh migration-scale-all
+```
+
 Useful overrides:
 
 ```sh
@@ -137,6 +172,7 @@ OPENSEARCH_IMAGE=opensearchproject/opensearch:3.5.0
 OPENCOOK_FUNCTIONAL_PORT=4000
 OPENCOOK_FUNCTIONAL_ORG=ponyville
 OPENCOOK_FUNCTIONAL_ACTOR_NAME=pivotal
+OPENCOOK_FUNCTIONAL_SCALE_PROFILE=small
 ```
 
 ## Provider Matrix

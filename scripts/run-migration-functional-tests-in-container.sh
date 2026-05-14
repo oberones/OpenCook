@@ -27,6 +27,24 @@ source_search_result="$state_dir/source-migration-search-check.json"
 source_shadow_result="$state_dir/source-migration-shadow-compare.json"
 source_cutover_result="$state_dir/source-migration-cutover-rehearsal.json"
 source_backup_create_result="$state_dir/source-migration-backup-create.json"
+scale_profile="${OPENCOOK_FUNCTIONAL_SCALE_PROFILE:-small}"
+scale_root="${OPENCOOK_FUNCTIONAL_SCALE_STATE_DIR:-$state_dir/migration-scale/$scale_profile}"
+scale_source_dir="${OPENCOOK_FUNCTIONAL_SCALE_SOURCE_DIR:-$scale_root/source}"
+scale_backup_dir="${OPENCOOK_FUNCTIONAL_SCALE_BACKUP_DIR:-$scale_root/backup}"
+scale_import_progress="$scale_root/opencook-source-import-progress.json"
+scale_sync_progress="$scale_root/opencook-source-sync-progress.json"
+scale_fixture_result="$scale_root/migration-scale-fixture-create.json"
+scale_import_preflight_result="$scale_root/migration-scale-import-preflight.json"
+scale_import_result="$scale_root/migration-scale-import-apply.json"
+scale_backup_create_result="$scale_root/migration-scale-backup-create.json"
+scale_backup_inspect_result="$scale_root/migration-scale-backup-inspect.json"
+scale_restore_result="$scale_root/migration-scale-restore-apply.json"
+scale_reindex_result="$scale_root/migration-scale-reindex.json"
+scale_search_result="$scale_root/migration-scale-search-check.json"
+scale_sync_result="$scale_root/migration-scale-sync-apply.json"
+scale_shadow_result="$scale_root/migration-scale-shadow-compare.json"
+scale_cutover_result="$scale_root/migration-scale-cutover-rehearsal.json"
+scale_import_sentinel="$scale_root/source-import-complete"
 opensearch_url="${OPENCOOK_OPENSEARCH_URL:-http://opensearch:9200}"
 restore_server_pid=""
 
@@ -104,19 +122,64 @@ keep_functional_artifacts() {
   [[ "${OPENCOOK_FUNCTIONAL_KEEP_ARTIFACTS:-${KEEP_STACK:-0}}" == "1" ]]
 }
 
+# path_has_parent_segment recognizes explicit traversal before cleanup path
+# checks compare prefixes, avoiding false safety from strings like root/../..
+path_has_parent_segment() {
+  local value="$1"
+  case "$value" in
+    ".." | "../"* | *"/.." | *"/../"*)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+# require_no_symlink_components rejects existing symlink path components before
+# recursive cleanup so an override cannot point through the state dir to outside.
+require_no_symlink_components() {
+  local label="$1"
+  local target="${2%/}"
+  local current="/"
+  local part
+  local parts=()
+  IFS='/' read -r -a parts <<<"${target#/}"
+  for part in "${parts[@]}"; do
+    if [[ -z "$part" || "$part" == "." ]]; then
+      continue
+    fi
+    current="${current%/}/$part"
+    if [[ -L "$current" ]]; then
+      echo "refusing to remove $label through symlink component: $current" >&2
+      return 1
+    fi
+    if [[ ! -e "$current" ]]; then
+      break
+    fi
+  done
+  return 0
+}
+
 # require_state_dir_artifact_path keeps cleanup narrowly scoped to generated
-# functional artifacts so an environment override cannot turn rm -rf dangerous.
+# functional artifacts, rejecting traversal and symlinks before rm -rf.
 require_state_dir_artifact_path() {
   local path="$1"
   local root="${state_dir%/}"
-  if [[ -z "$root" || "$root" == "/" ]]; then
+  if [[ -z "$root" || "$root" == "/" || "$root" != /* ]]; then
     echo "refusing to remove source artifact because functional state dir is unsafe: $state_dir" >&2
     return 1
   fi
-  if [[ -z "$path" || "$path" == "/" ]]; then
-    echo "refusing to remove empty or root source artifact path" >&2
+  if [[ -z "$path" || "$path" == "/" || "$path" != /* ]]; then
+    echo "refusing to remove empty, root, or relative source artifact path: $path" >&2
     return 1
   fi
+  if path_has_parent_segment "$root" || path_has_parent_segment "$path"; then
+    echo "refusing to remove source artifact path with parent traversal: $path" >&2
+    return 1
+  fi
+  require_no_symlink_components "functional state dir" "$root" || return 1
+  require_no_symlink_components "source artifact" "$path" || return 1
   case "$path" in
     "$root"/*)
       return 0
@@ -148,6 +211,26 @@ clean_source_artifacts() {
     "$source_shadow_result" \
     "$source_cutover_result" \
     "$source_backup_create_result"
+}
+
+# require_scale_artifact_paths keeps production-scale fixture output inside the
+# Compose-managed functional volume even when callers override path variables.
+require_scale_artifact_paths() {
+  require_state_dir_artifact_path "$scale_root"
+  require_state_dir_artifact_path "$scale_source_dir"
+  require_state_dir_artifact_path "$scale_backup_dir"
+}
+
+# clean_scale_artifacts removes generated production-scale bundles and evidence
+# unless the wrapper was asked to keep the functional stack or artifacts.
+clean_scale_artifacts() {
+  require_scale_artifact_paths
+  remove_source_tree_artifact "$scale_root"
+}
+
+print_scale_phase_success() {
+  local phase_name="$1"
+  echo "==> $phase_name passed successfully for scale profile: $scale_profile"
 }
 
 # require_normalized_source lazily creates the normalized source bundle so each
@@ -634,6 +717,307 @@ run_migration_source_all() {
   fi
 }
 
+# require_scale_source lazily creates the generated scale source bundle so each
+# scale phase can run independently in a fresh functional-test container.
+require_scale_source() {
+  if [[ -f "$scale_source_dir/opencook-source-manifest.json" ]]; then
+    return 0
+  fi
+  run_migration_scale_fixtures
+}
+
+# run_migration_scale_fixtures writes a deterministic production-shaped source
+# bundle into the Compose-managed state volume instead of relying on bind mounts.
+run_migration_scale_fixtures() {
+  build_cli
+  require_scale_artifact_paths
+  if ! keep_functional_artifacts; then
+    clean_scale_artifacts
+  fi
+  mkdir -p "$scale_root"
+
+  echo "==> migration production-scale fixture generation ($scale_profile)"
+  if ! admin migration scale-fixture create --profile "$scale_profile" --output "$scale_source_dir" --include-sidecars --yes --with-timing --json >"$scale_fixture_result"; then
+    echo "migration scale fixture command failed; output:" >&2
+    print_file_if_exists "$scale_fixture_result"
+    return 1
+  fi
+  require_json_contains "$scale_fixture_result" '"command": "migration_scale_fixture_create"'
+  require_json_contains "$scale_fixture_result" '"scale_fixture"'
+  require_json_contains "$scale_fixture_result" '"normalized_source_output"'
+  require_json_contains "$scale_fixture_result" "\"scale_profile\": \"$scale_profile\""
+  test -f "$scale_source_dir/opencook-source-manifest.json"
+}
+
+# scale_imported_target_ready checks both a progress sentinel and PostgreSQL so
+# a stale file does not let later scale phases skip their import prerequisite.
+scale_imported_target_ready() {
+  [[ -f "$scale_import_sentinel" ]] && restore_database_has_bootstrap_state
+}
+
+# require_scale_imported_target imports the generated source bundle into the
+# restore database when a later scale phase needs PostgreSQL-backed state.
+require_scale_imported_target() {
+  require_scale_source
+  if scale_imported_target_ready; then
+    return 0
+  fi
+
+  echo "production-scale source import target is missing; importing generated fixture"
+  reset_restore_target
+  rm -f "$scale_import_progress" "$scale_sync_progress" "$scale_search_result" "$scale_shadow_result" "$scale_cutover_result" "$scale_restore_result" "$scale_import_sentinel"
+
+  echo "==> migration production-scale source import preflight"
+  if ! admin_restore_target migration source import preflight "$scale_source_dir" --offline --with-timing --json >"$scale_import_preflight_result"; then
+    echo "migration scale source import preflight command failed; output:" >&2
+    print_file_if_exists "$scale_import_preflight_result"
+    return 1
+  fi
+  require_json_contains "$scale_import_preflight_result" '"command": "migration_source_import_preflight"'
+  require_json_contains "$scale_import_preflight_result" '"source_import_target"'
+
+  echo "==> migration production-scale source import apply"
+  if ! admin_restore_target migration source import apply "$scale_source_dir" --offline --yes --progress "$scale_import_progress" --with-timing --json >"$scale_import_result"; then
+    echo "migration scale source import command failed; output:" >&2
+    print_file_if_exists "$scale_import_result"
+    return 1
+  fi
+  require_json_contains "$scale_import_result" '"command": "migration_source_import_apply"'
+  require_json_contains "$scale_import_result" '"source_import_write"'
+  require_json_contains "$scale_import_progress" '"metadata_imported": true'
+  touch "$scale_import_sentinel"
+}
+
+require_scale_backup_bundle() {
+  if [[ -f "$scale_backup_dir/manifest.json" ]]; then
+    return 0
+  fi
+  run_migration_scale_backup
+}
+
+# run_migration_scale_backup creates and inspects a logical backup from the
+# imported production-scale target so restore phases exercise real CLI IO.
+run_migration_scale_backup() {
+  build_cli
+  require_scale_artifact_paths
+  require_scale_imported_target
+
+  echo "==> migration production-scale backup create"
+  rm -rf "$scale_backup_dir"
+  mkdir -p "$scale_root"
+  if ! admin_restore_target migration backup create --output "$scale_backup_dir" --offline --yes --with-timing --json >"$scale_backup_create_result"; then
+    echo "migration scale backup create command failed; output:" >&2
+    print_file_if_exists "$scale_backup_create_result"
+    return 1
+  fi
+  require_json_contains "$scale_backup_create_result" '"command": "migration_backup_create"'
+  require_json_contains "$scale_backup_create_result" '"write_backup_bundle"'
+  test -f "$scale_backup_dir/manifest.json"
+
+  echo "==> migration production-scale backup inspect"
+  if ! admin migration backup inspect "$scale_backup_dir" --json >"$scale_backup_inspect_result"; then
+    echo "migration scale backup inspect command failed; output:" >&2
+    print_file_if_exists "$scale_backup_inspect_result"
+    return 1
+  fi
+  require_json_contains "$scale_backup_inspect_result" '"command": "migration_backup_inspect"'
+  require_json_contains "$scale_backup_inspect_result" '"required_payloads"'
+  require_json_contains "$scale_backup_inspect_result" '"copied_blobs"'
+}
+
+scale_restored_target_ready() {
+  [[ -f "$scale_restore_result" ]] && restore_database_has_bootstrap_state
+}
+
+# run_migration_scale_restore restores the generated scale backup into the
+# harness-managed restore database and filesystem blob target.
+run_migration_scale_restore() {
+  build_cli
+  require_scale_artifact_paths
+  require_scale_backup_bundle
+  reset_restore_target
+  rm -f "$scale_reindex_result" "$scale_search_result" "$scale_shadow_result" "$scale_cutover_result"
+
+  echo "==> migration production-scale restore apply"
+  if ! admin_restore_target migration restore apply "$scale_backup_dir" --offline --yes --with-timing --json >"$scale_restore_result"; then
+    echo "migration scale restore command failed; output:" >&2
+    print_file_if_exists "$scale_restore_result"
+    return 1
+  fi
+  require_json_contains "$scale_restore_result" '"command": "migration_restore_apply"'
+  require_json_contains "$scale_restore_result" '"restored_backup_bundle"'
+  require_json_contains "$scale_restore_result" '"restored_blob_objects"'
+}
+
+require_scale_restored_target() {
+  require_scale_backup_bundle
+  if scale_restored_target_ready; then
+    return 0
+  fi
+  run_migration_scale_restore
+}
+
+# run_migration_scale_reindex proves OpenSearch can be rebuilt and checked from
+# restored production-scale PostgreSQL state under the maintenance gate.
+run_migration_scale_reindex() {
+  build_cli
+  require_scale_restored_target
+
+  echo "==> migration production-scale complete reindex"
+  if ! run_restore_json_under_maintenance reindex "functional production-scale restored target reindex" "$scale_reindex_result" \
+    admin_restore_target reindex --all-orgs --complete --with-timing --json; then
+    echo "migration scale reindex command failed; output:" >&2
+    print_file_if_exists "$scale_reindex_result"
+    return 1
+  fi
+  require_json_contains "$scale_reindex_result" '"ok": true'
+  require_json_contains "$scale_reindex_result" '"command": "reindex"'
+  require_json_contains "$scale_reindex_result" '"mode": "complete"'
+
+  echo "==> migration production-scale search consistency check"
+  if ! admin_restore_target search check --all-orgs --with-timing --json >"$scale_search_result"; then
+    echo "migration scale search check command failed; output:" >&2
+    print_file_if_exists "$scale_search_result"
+    return 1
+  fi
+  require_json_contains "$scale_search_result" '"ok": true'
+  require_json_contains "$scale_search_result" '"command": "search_check"'
+  require_json_contains "$scale_search_result" '"clean": 1'
+}
+
+require_scale_search_evidence() {
+  require_scale_restored_target
+  if [[ -f "$scale_search_result" ]]; then
+    return 0
+  fi
+  run_migration_scale_reindex
+}
+
+# require_scale_sync_progress records a final no-op sync cursor against the
+# restored target so cutover rehearsal can prove freshness for this fixture.
+require_scale_sync_progress() {
+  require_scale_search_evidence
+  if [[ -f "$scale_sync_progress" ]]; then
+    return 0
+  fi
+
+  echo "==> migration production-scale source sync apply"
+  if ! admin_restore_target migration source sync apply "$scale_source_dir" --offline --yes --progress "$scale_sync_progress" --with-timing --json >"$scale_sync_result"; then
+    echo "migration scale source sync command failed; output:" >&2
+    print_file_if_exists "$scale_sync_result"
+    return 1
+  fi
+  require_json_contains "$scale_sync_result" '"command": "migration_source_sync_apply"'
+  require_json_contains "$scale_sync_result" '"source_sync_write"'
+  require_json_contains "$scale_sync_progress" '"last_status": "applied"'
+}
+
+# run_migration_scale_shadow compares production-scale source reads to the
+# restored OpenCook target using the opt-in scale coverage mode.
+run_migration_scale_shadow() {
+  build_cli
+  require_scale_sync_progress
+
+  echo "==> migration production-scale shadow-read comparison"
+  start_restore_server
+  if ! admin migration shadow compare \
+    --source "$scale_source_dir" \
+    --manifest "$scale_backup_dir/manifest.json" \
+    --target-server-url "$restore_server_url" \
+    --coverage scale \
+    --requestor-name "$admin_requestor" \
+    --requestor-type user \
+    --private-key "$admin_private_key" \
+    --server-api-version "${OPENCOOK_ADMIN_SERVER_API_VERSION:-1}" \
+    --with-timing \
+    --json >"$scale_shadow_result"; then
+    echo "migration scale shadow compare command failed; output:" >&2
+    print_file_if_exists "$scale_shadow_result"
+    echo "restore server log:" >&2
+    print_restore_server_log
+    return 1
+  fi
+  require_json_contains "$scale_shadow_result" '"command": "migration_shadow_compare"'
+  require_json_contains "$scale_shadow_result" '"coverage": "scale"'
+  require_json_contains "$scale_shadow_result" '"family": "shadow_failed"'
+  require_json_contains "$scale_shadow_result" '"count": 0'
+  cleanup_restore_server
+  trap - EXIT
+}
+
+require_scale_shadow_result() {
+  require_scale_sync_progress
+  if [[ -f "$scale_shadow_result" ]]; then
+    return 0
+  fi
+  run_migration_scale_shadow
+}
+
+# run_migration_scale_rehearsal feeds scale source, sync, search, and shadow
+# evidence into the read-only cutover rehearsal against the restored target.
+run_migration_scale_rehearsal() {
+  build_cli
+  require_scale_shadow_result
+
+  echo "==> migration production-scale cutover rehearsal"
+  start_restore_server
+  if ! admin migration cutover rehearse \
+    --manifest "$scale_backup_dir/manifest.json" \
+    --source "$scale_source_dir" \
+    --source-import-progress "$scale_import_progress" \
+    --source-sync-progress "$scale_sync_progress" \
+    --search-check-result "$scale_search_result" \
+    --shadow-result "$scale_shadow_result" \
+    --source-frozen \
+    --rollback-ready \
+    --server-url "$restore_server_url" \
+    --requestor-name "$admin_requestor" \
+    --requestor-type user \
+    --private-key "$admin_private_key" \
+    --server-api-version "${OPENCOOK_ADMIN_SERVER_API_VERSION:-1}" \
+    --with-timing \
+    --json >"$scale_cutover_result"; then
+    echo "migration scale cutover rehearsal command failed; output:" >&2
+    print_file_if_exists "$scale_cutover_result"
+    echo "restore server log:" >&2
+    print_restore_server_log
+    return 1
+  fi
+  require_json_contains "$scale_cutover_result" '"command": "migration_cutover_rehearse"'
+  require_json_contains "$scale_cutover_result" '"source_freeze_evidence"'
+  require_json_contains "$scale_cutover_result" '"source_sync_freshness"'
+  require_json_contains "$scale_cutover_result" '"search_cleanliness"'
+  require_json_contains "$scale_cutover_result" '"shadow_read_evidence"'
+  require_json_contains "$scale_cutover_result" '"family": "cutover_blockers"'
+  require_json_contains "$scale_cutover_result" '"count": 0'
+  cleanup_restore_server
+  trap - EXIT
+}
+
+finish_scale_phase() {
+  local phase_name="$1"
+  print_scale_phase_success "$phase_name"
+  if ! keep_functional_artifacts; then
+    clean_scale_artifacts
+  fi
+}
+
+# run_migration_scale_all keeps production-shaped validation opt-in while still
+# offering one command that exercises fixture, backup, restore, search, shadow,
+# and cutover readiness evidence end to end.
+run_migration_scale_all() {
+  run_migration_scale_fixtures
+  run_migration_scale_backup
+  run_migration_scale_restore
+  run_migration_scale_reindex
+  run_migration_scale_shadow
+  run_migration_scale_rehearsal
+  echo "==> migration production-scale functional flow passed successfully for scale profile: $scale_profile"
+  if ! keep_functional_artifacts; then
+    clean_scale_artifacts
+  fi
+}
+
 run_migration_rehearsal() {
   build_cli
   ensure_restore_target_ready
@@ -720,6 +1104,33 @@ case "$phase" in
     ;;
   migration-source-all)
     run_migration_source_all
+    ;;
+  migration-scale-fixtures)
+    run_migration_scale_fixtures
+    finish_scale_phase "$phase"
+    ;;
+  migration-scale-backup)
+    run_migration_scale_backup
+    finish_scale_phase "$phase"
+    ;;
+  migration-scale-restore)
+    run_migration_scale_restore
+    finish_scale_phase "$phase"
+    ;;
+  migration-scale-reindex)
+    run_migration_scale_reindex
+    finish_scale_phase "$phase"
+    ;;
+  migration-scale-shadow)
+    run_migration_scale_shadow
+    finish_scale_phase "$phase"
+    ;;
+  migration-scale-rehearsal)
+    run_migration_scale_rehearsal
+    finish_scale_phase "$phase"
+    ;;
+  migration-scale-all)
+    run_migration_scale_all
     ;;
   migration-all)
     run_migration_preflight

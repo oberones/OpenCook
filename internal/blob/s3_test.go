@@ -415,6 +415,80 @@ func TestS3CompatibleStoreRetriesTransportErrorThenSucceeds(t *testing.T) {
 	}
 }
 
+// TestS3CompatibleStoreExistsRecoversAfterTransientProviderStatus pins the
+// HEAD/existence recovery path migration blob checks rely on for S3-compatible providers.
+func TestS3CompatibleStoreExistsRecoversAfterTransientProviderStatus(t *testing.T) {
+	attempts := 0
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		attempts++
+		if r.Method != http.MethodHead {
+			t.Fatalf("method = %s, want HEAD for existence recovery", r.Method)
+		}
+		if attempts == 1 {
+			return testHTTPResponse(r, http.StatusServiceUnavailable, "provider body should be discarded"), nil
+		}
+		return testHTTPResponse(r, http.StatusOK, ""), nil
+	})}
+
+	store, err := NewS3CompatibleStore(S3CompatibleConfig{
+		StorageURL:     "s3://chef-bucket/checksums",
+		Endpoint:       "http://s3.test",
+		Region:         "us-east-1",
+		ForcePathStyle: true,
+		AccessKeyID:    "access-key",
+		SecretKey:      "secret-key",
+		MaxRetries:     1,
+		HTTPClient:     client,
+	})
+	if err != nil {
+		t.Fatalf("NewS3CompatibleStore() error = %v", err)
+	}
+
+	exists, err := store.Exists(context.Background(), "abcdef0123456789")
+	if err != nil {
+		t.Fatalf("Exists() error = %v", err)
+	}
+	if !exists {
+		t.Fatal("Exists() = false, want true after transient provider recovery")
+	}
+	if attempts != 2 {
+		t.Fatalf("attempts = %d, want 2", attempts)
+	}
+}
+
+// TestS3CompatibleStoreProviderErrorsDoNotLeakCredentialOrBodyDetails keeps
+// provider failure text safe for operator-facing migration reports.
+func TestS3CompatibleStoreProviderErrorsDoNotLeakCredentialOrBodyDetails(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		return testHTTPResponse(r, http.StatusForbidden, "provider response body with correct horse battery staple and secret-key"), nil
+	})}
+
+	store, err := NewS3CompatibleStore(S3CompatibleConfig{
+		StorageURL:     "s3://chef-bucket/checksums",
+		Endpoint:       "https://access:secret@s3.test/root?X-Amz-Signature=sig-secret&X-Amz-Credential=cred-secret",
+		Region:         "us-east-1",
+		ForcePathStyle: true,
+		AccessKeyID:    "access-secret",
+		SecretKey:      "secret-key",
+		SessionToken:   "session-secret",
+		MaxRetries:     0,
+		HTTPClient:     client,
+	})
+	if err != nil {
+		t.Fatalf("NewS3CompatibleStore() error = %v", err)
+	}
+
+	_, err = store.Get(context.Background(), "abcdef0123456789")
+	if !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("Get() error = %v, want ErrUnavailable", err)
+	}
+	for _, forbidden := range []string{"access:secret", "X-Amz-Signature", "X-Amz-Credential", "correct horse", "secret-key", "access-secret", "session-secret"} {
+		if strings.Contains(err.Error(), forbidden) {
+			t.Fatalf("S3-compatible error leaked %q: %v", forbidden, err)
+		}
+	}
+}
+
 func TestS3CompatibleStoreRetriesTimeoutTransportErrorThenSucceeds(t *testing.T) {
 	attempts := 0
 	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {

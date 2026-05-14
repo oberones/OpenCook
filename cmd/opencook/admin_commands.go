@@ -843,6 +843,7 @@ func (c *command) printAdminUsage(w io.Writer) {
   opencook admin migration backup inspect PATH [--json]
   opencook admin migration restore preflight PATH --offline [--json] [--with-timing]
   opencook admin migration restore apply PATH --offline [--dry-run|--yes] [--json] [--with-timing]
+  opencook admin migration scale-fixture create --output PATH [--profile small|medium|large] [--yes] [--json] [--with-timing]
   opencook admin migration source inventory PATH [--json] [--with-timing]
   opencook admin migration source normalize PATH --output PATH [--yes] [--json] [--with-timing]
   opencook admin migration source import preflight PATH --offline [--json] [--with-timing]
@@ -850,7 +851,7 @@ func (c *command) printAdminUsage(w io.Writer) {
   opencook admin migration source sync preflight PATH --offline [--progress PATH] [--json] [--with-timing]
   opencook admin migration source sync apply PATH --offline [--dry-run|--yes] [--progress PATH] [--json] [--with-timing]
   opencook admin migration shadow compare --source PATH --target-server-url URL [--manifest PATH] [--json] [--with-timing]
-  opencook admin migration cutover rehearse --manifest PATH [--source PATH] [--source-import-progress PATH] [--source-sync-progress PATH] [--search-check-result PATH] [--shadow-result PATH] [--rollback-ready] [--server-url URL] [--json] [--with-timing]
+  opencook admin migration cutover rehearse --manifest PATH [--source PATH] [--source-import-progress PATH] [--source-sync-progress PATH] [--search-check-result PATH] [--shadow-result PATH] [--maintenance-result PATH] [--source-frozen] [--rollback-ready] [--server-url URL] [--json] [--with-timing]
 
 Admin flags:
   --server-url URL
