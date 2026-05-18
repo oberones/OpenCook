@@ -3081,7 +3081,11 @@ func TestAdminMigrationCutoverRehearseValidatesLiveTargetAndDownloadsBlob(t *tes
 		t.Fatalf("target.server_url = %v, want redacted URL", target["server_url"])
 	}
 	requireAdminMigrationDependency(t, requireAdminMigrationArray(t, out, "dependencies"), "backup_bundle", "ok")
-	requireAdminMigrationDependency(t, requireAdminMigrationArray(t, out, "dependencies"), "cutover_source_bundle", "ok")
+	sourceDep := requireAdminMigrationDependency(t, requireAdminMigrationArray(t, out, "dependencies"), "cutover_source_bundle", "ok")
+	sourceDetails := requireAdminMigrationMap(t, sourceDep, "details")
+	if sourceDetails["source_origin"] != "prepared_artifact_bundle" || sourceDetails["source_live_extraction"] != "false" {
+		t.Fatalf("cutover source details = %v, want prepared artifact metadata", sourceDetails)
+	}
 	requireAdminMigrationDependency(t, requireAdminMigrationArray(t, out, "dependencies"), "source_freeze_evidence", "ok")
 	requireAdminMigrationDependency(t, requireAdminMigrationArray(t, out, "dependencies"), "source_import_progress", "ok")
 	requireAdminMigrationDependency(t, requireAdminMigrationArray(t, out, "dependencies"), "source_sync_freshness", "ok")

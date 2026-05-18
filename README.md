@@ -24,12 +24,12 @@ The durable deployment path is now PostgreSQL plus provider-backed blob storage,
 - PostgreSQL-backed maintenance mode that blocks mutating Chef-facing writes while preserving reads, read-like POST routes such as partial search and depsolver, and signed blob downloads.
 - `opencook admin` workflows for signed live inspection/management, maintenance controls, online ACL default repair, offline-gated repair commands, PostgreSQL-backed OpenSearch reindex/check/repair, configuration validation, service status/doctor, log discovery, diagnostics bundles, and runbook discovery.
 - Prometheus-compatible `/metrics`, request IDs, and structured operational request logs that avoid secrets and high-cardinality payload values.
-- Migration/cutover tooling for OpenCook targets, including preflight validation, logical backup create/inspect, offline restore preflight/apply, normalized Chef Server source inventory/import/sync, source-to-target shadow comparison, restored-target reindex, and cutover rehearsal.
+- Migration/cutover tooling for OpenCook targets, including preflight validation, logical backup create/inspect, offline restore preflight/apply, normalized Chef Server source inventory/import/sync, direct read-only live Chef source extraction for implemented PostgreSQL-backed families, source-to-target shadow comparison, restored-target reindex, and cutover rehearsal.
 
 ## Current Limitations
 
 - OpenCook is not production-ready yet.
-- Migration tooling supports OpenCook-to-OpenCook logical backup/restore plus normalized Chef Server source artifact import/sync. Direct live upstream extraction and production-scale cutover validation remain follow-on work.
+- Migration tooling supports OpenCook-to-OpenCook logical backup/restore, normalized Chef Server source artifact import/sync, production-scale cutover drills, and direct live Chef source extraction into the same normalized bundle contract. Live extraction currently targets the implemented PostgreSQL-backed Chef families plus checksum blob evidence; optional live Chef HTTP probes remain narrower than the full API surface.
 - Maintenance mode is implemented for OpenCook write gating, but it does not freeze an upstream Chef Infra Server during migration/cutover. Operators must still freeze source Chef writes externally before final source sync and cutover rehearsal.
 - Direct PostgreSQL repair mutations remain offline-only by default. The current online repair path is intentionally narrow: default ACL repair through the live service during active maintenance mode.
 - In-process service supervision is intentionally out of scope; run OpenCook under systemd, Docker Compose, Kubernetes, launchd, or another external supervisor.
@@ -225,6 +225,79 @@ scripts/functional-compose.sh
 ```
 
 See [Functional Docker Stack](docs/functional-testing.md) for phase-by-phase and remote Docker usage.
+
+## Migration: Live Chef Source Extraction
+
+OpenCook can extract implemented Chef Infra Server source families directly
+from read-only source PostgreSQL access plus Bookshelf checksum blob access,
+then reuse the same normalized source import/sync, reindex, shadow-read, and
+cutover rehearsal pipeline as prepared source artifacts.
+
+Start with a no-mutation source preflight:
+
+```bash
+bin/opencook admin migration source live preflight \
+  --source-postgres-dsn "$CHEF_SOURCE_POSTGRES_DSN" \
+  --source-bookshelf-root /var/opt/opscode/bookshelf/data \
+  --org ponyville \
+  --json
+```
+
+Then write a normalized live-source bundle:
+
+```bash
+bin/opencook admin migration source live extract \
+  --source-postgres-dsn "$CHEF_SOURCE_POSTGRES_DSN" \
+  --source-bookshelf-root /var/opt/opscode/bookshelf/data \
+  --copy-blobs \
+  --org ponyville \
+  --output .local/migration/live-source \
+  --yes \
+  --json
+```
+
+After extraction, treat `.local/migration/live-source` like any other
+normalized source bundle:
+
+```bash
+bin/opencook admin migration source import preflight .local/migration/live-source --offline --json
+bin/opencook admin migration source import apply .local/migration/live-source --offline --yes --progress .local/migration/source-import-progress.json --json
+bin/opencook admin migration source sync apply .local/migration/live-source --offline --yes --progress .local/migration/source-sync-progress.json --json
+bin/opencook admin migration backup create --output .local/migration/backup --offline --yes --json
+bin/opencook admin maintenance enable --mode reindex --reason "post-source-sync reindex" --yes --json
+bin/opencook admin reindex --all-orgs --complete --json
+bin/opencook admin maintenance disable --yes --json
+bin/opencook admin search check --all-orgs --json > .local/migration/search-check.json
+bin/opencook admin migration shadow compare --source .local/migration/live-source --target-server-url "$OPENCOOK_TARGET_URL" --json > .local/migration/shadow-compare.json
+bin/opencook admin migration cutover rehearse \
+  --manifest .local/migration/backup/manifest.json \
+  --source .local/migration/live-source \
+  --source-import-progress .local/migration/source-import-progress.json \
+  --source-sync-progress .local/migration/source-sync-progress.json \
+  --search-check-result .local/migration/search-check.json \
+  --shadow-result .local/migration/shadow-compare.json \
+  --source-frozen \
+  --rollback-ready \
+  --server-url "$OPENCOOK_TARGET_URL" \
+  --json
+```
+
+Operational notes:
+
+- Use `--copy-blobs` with `--source-bookshelf-root` when the operator running
+  extraction can read local Bookshelf checksum files. This produces a
+  self-contained bundle and lets import/cutover verify copied checksum bytes.
+- Use `--reference-blobs` when blob bytes must remain in an external provider.
+  Reference-only bundles require separate provider reachability validation
+  before cutover because checksum content is not packaged into the bundle.
+- Keep source PostgreSQL DSNs, source blob URLs, source Chef private keys, and
+  signed URLs out of shell history, logs, and issue trackers. JSON output
+  redacts known credential fields, but deployment secret handling is still the
+  operator's responsibility.
+- Freeze source Chef writes externally before the final source sync and keep
+  them frozen through shadow-read comparison, cutover rehearsal, client
+  cutover, and post-cutover smoke checks. OpenCook maintenance mode only gates
+  writes routed to OpenCook; it cannot freeze an upstream Chef Infra Server.
 
 ## Container Image
 

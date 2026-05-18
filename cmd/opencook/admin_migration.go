@@ -58,26 +58,35 @@ const (
 )
 
 const (
-	adminMigrationFindingCountMismatch           = "migration_count_mismatch"
-	adminMigrationFindingRestoredObjectMissing   = "migration_restored_object_missing"
-	adminMigrationFindingUnexpectedExtraObject   = "migration_unexpected_extra_object"
-	adminMigrationFindingBlobMismatch            = "migration_blob_mismatch"
-	adminMigrationFindingMissingBlob             = "migration_missing_blob"
-	adminMigrationFindingStaleSearchDocument     = "migration_stale_search_document"
-	adminMigrationFindingMissingSearchDocument   = "migration_missing_search_document"
-	adminMigrationFindingUnsupportedSourceFamily = "migration_unsupported_source_family"
-	adminMigrationFindingRetryProgressDrift      = "migration_retry_progress_drift"
-	adminMigrationFindingRetrySafe               = "migration_retry_safe"
-	adminMigrationFindingRetryUnsafe             = "migration_retry_unsafe"
-	adminMigrationFindingManualCleanupRequired   = "migration_manual_cleanup_required"
-	adminMigrationFindingMaintenanceInvalid      = "cutover_maintenance_evidence_invalid"
-	adminMigrationFindingMaintenanceInactive     = "cutover_maintenance_inactive"
-	adminMigrationFindingMaintenanceProcessLocal = "cutover_maintenance_process_local"
+	adminMigrationFindingCountMismatch               = "migration_count_mismatch"
+	adminMigrationFindingRestoredObjectMissing       = "migration_restored_object_missing"
+	adminMigrationFindingUnexpectedExtraObject       = "migration_unexpected_extra_object"
+	adminMigrationFindingBlobMismatch                = "migration_blob_mismatch"
+	adminMigrationFindingMissingBlob                 = "migration_missing_blob"
+	adminMigrationFindingStaleSearchDocument         = "migration_stale_search_document"
+	adminMigrationFindingMissingSearchDocument       = "migration_missing_search_document"
+	adminMigrationFindingUnsupportedSourceFamily     = "migration_unsupported_source_family"
+	adminMigrationFindingRetryProgressDrift          = "migration_retry_progress_drift"
+	adminMigrationFindingRetrySafe                   = "migration_retry_safe"
+	adminMigrationFindingRetryUnsafe                 = "migration_retry_unsafe"
+	adminMigrationFindingManualCleanupRequired       = "migration_manual_cleanup_required"
+	adminMigrationFindingMaintenanceInvalid          = "cutover_maintenance_evidence_invalid"
+	adminMigrationFindingMaintenanceInactive         = "cutover_maintenance_inactive"
+	adminMigrationFindingMaintenanceProcessLocal     = "cutover_maintenance_process_local"
+	adminMigrationFindingSourcePostgresUnavailable   = "source_postgres_unavailable"
+	adminMigrationFindingSourceSchemaUnsupported     = "source_schema_unsupported"
+	adminMigrationFindingSourceFamilyUnsupported     = "source_family_unsupported"
+	adminMigrationFindingSourceBlobUnavailable       = "source_blob_unavailable"
+	adminMigrationFindingSourceBlobMissing           = "source_blob_missing"
+	adminMigrationFindingSourceBlobChecksumMismatch  = "source_blob_checksum_mismatch"
+	adminMigrationFindingSourceHTTPReadUnavailable   = "source_http_read_unavailable"
+	adminMigrationFindingSourceExtractionInterrupted = "source_extraction_interrupted"
 )
 
 var (
 	errAdminMigrationNormalizeOutputExists   = errors.New("normalized source output already exists")
 	errAdminMigrationNormalizeOutputOverlaps = errors.New("normalized source output overlaps source")
+	errAdminMigrationNormalizeOutputStaleTmp = errors.New("normalized source output has interrupted temporary directories")
 	errAdminMigrationUnsafeSourcePath        = errors.New("unsafe source path")
 	adminMigrationChefNamePattern            = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
 	adminMigrationPolicyRevisionPattern      = regexp.MustCompile(`^[A-Fa-f0-9]{40}$`)
@@ -113,6 +122,15 @@ type adminMigrationFlagValues struct {
 	blobS3AccessKeyID     string
 	blobS3SecretKey       string
 	blobS3SessionToken    string
+	sourcePostgresDSN     string
+	sourceBookshelfRoot   string
+	sourceBlobURL         string
+	sourceServerURL       string
+	sourceRequestorName   string
+	sourceRequestorType   string
+	sourcePrivateKeyPath  string
+	copyBlobs             bool
+	referenceBlobs        bool
 	requestorName         string
 	requestorType         string
 	privateKeyPath        string
@@ -131,6 +149,8 @@ type adminMigrationCLIOutput struct {
 	Offline          bool                            `json:"offline,omitempty"`
 	Confirmed        bool                            `json:"confirmed,omitempty"`
 	Config           map[string]string               `json:"config,omitempty"`
+	LiveSource       *adminMigrationLiveSourceTarget `json:"live_source,omitempty"`
+	Capabilities     []adminMigrationCapability      `json:"capabilities,omitempty"`
 	Dependencies     []adminMigrationDependency      `json:"dependencies"`
 	Inventory        adminMigrationInventory         `json:"inventory"`
 	Findings         []adminMigrationFinding         `json:"findings"`
@@ -156,6 +176,31 @@ type adminMigrationTarget struct {
 	ManifestPath          string `json:"manifest_path,omitempty"`
 	SourcePath            string `json:"source_path,omitempty"`
 	ServerURL             string `json:"server_url,omitempty"`
+}
+
+type adminMigrationLiveSourceTarget struct {
+	AllOrganizations bool   `json:"all_organizations,omitempty"`
+	Organization     string `json:"organization,omitempty"`
+	PostgresDSN      string `json:"postgres_dsn"`
+	BlobMode         string `json:"blob_mode"`
+	BookshelfRoot    string `json:"bookshelf_root,omitempty"`
+	BlobURL          string `json:"blob_url,omitempty"`
+	ServerURL        string `json:"server_url,omitempty"`
+	RequestorName    string `json:"requestor_name,omitempty"`
+	RequestorType    string `json:"requestor_type,omitempty"`
+	PrivateKey       string `json:"private_key,omitempty"`
+	BlobCopyMode     string `json:"blob_copy_mode"`
+	OutputPath       string `json:"output_path,omitempty"`
+}
+
+type adminMigrationCapability struct {
+	Name         string `json:"name"`
+	Status       string `json:"status"`
+	Backend      string `json:"backend,omitempty"`
+	Required     bool   `json:"required,omitempty"`
+	Configured   bool   `json:"configured,omitempty"`
+	MutationFree bool   `json:"mutation_free"`
+	Message      string `json:"message,omitempty"`
 }
 
 type adminMigrationDependency struct {
@@ -213,6 +258,39 @@ type adminMigrationValidationFindingCode struct {
 	Severity string `json:"severity"`
 	Family   string `json:"family"`
 	Message  string `json:"message"`
+}
+
+type adminMigrationLiveSourceFamilyMapping struct {
+	Family             string
+	Scope              string
+	UpstreamService    string
+	UpstreamReferences []string
+	Notes              string
+}
+
+type adminMigrationLiveSourceCapabilityProbe struct {
+	Name         string
+	Backend      string
+	Required     bool
+	MutationFree bool
+	Description  string
+}
+
+type adminMigrationLiveSourceConfig struct {
+	PostgresDSN    string
+	BookshelfRoot  string
+	BlobURL        string
+	ServerURL      string
+	RequestorName  string
+	RequestorType  string
+	PrivateKeyPath string
+	Organization   string
+	AllOrgs        bool
+	CopyBlobs      bool
+	ReferenceBlobs bool
+	OutputPath     string
+	ExtractionMode string
+	PreflightOnly  bool
 }
 
 type adminMigrationPostgresRead struct {
@@ -677,6 +755,651 @@ func adminMigrationValidationRehearsalFamilies() []string {
 	return []string{"rehearsal_checks", "rehearsal_passed", "rehearsal_failed", "rehearsal_skipped", "rehearsal_downloads"}
 }
 
+const (
+	adminMigrationLiveSourceScopeGlobal       = "global"
+	adminMigrationLiveSourceScopeOrganization = "organization"
+	adminMigrationLiveSourceScopeBlob         = "blob"
+	adminMigrationLiveSourceScopeDerived      = "derived"
+	adminMigrationLiveSourceScopeDeferred     = "deferred"
+)
+
+// adminMigrationLiveSourceFamilyMappings freezes the upstream Chef source
+// records that each normalized source family may read during live extraction.
+func adminMigrationLiveSourceFamilyMappings() []adminMigrationLiveSourceFamilyMapping {
+	return []adminMigrationLiveSourceFamilyMapping{
+		{
+			Family:          "users",
+			Scope:           adminMigrationLiveSourceScopeGlobal,
+			UpstreamService: "oc_erchef",
+			UpstreamReferences: []string{
+				"src/oc_erchef/schema/deploy/users.sql",
+				"src/oc_erchef/schema/deploy/opc_users.sql",
+				"src/oc_erchef/schema/deploy/multiple_keys.sql",
+			},
+			Notes: "Chef user identity comes from erchef user rows; public auth keys are exposed separately through the keys family.",
+		},
+		{
+			Family:          "user_acls",
+			Scope:           adminMigrationLiveSourceScopeGlobal,
+			UpstreamService: "oc_bifrost",
+			UpstreamReferences: []string{
+				"src/oc_bifrost/schema/deploy/base.sql",
+				"src/oc_bifrost/schema/deploy/debug_object_acl_view.sql",
+			},
+			Notes: "Global user ACLs are reconstructed from Bifrost actor ACL tables without changing the OpenCook ACL document shape.",
+		},
+		{
+			Family:          "user_keys",
+			Scope:           adminMigrationLiveSourceScopeGlobal,
+			UpstreamService: "oc_erchef",
+			UpstreamReferences: []string{
+				"src/oc_erchef/schema/deploy/multiple_keys.sql",
+				"src/oc_erchef/schema/deploy/users.sql",
+			},
+			Notes: "Only public key metadata is extracted; private key material is never expected in Chef Server PostgreSQL.",
+		},
+		{
+			Family:          "organizations",
+			Scope:           adminMigrationLiveSourceScopeGlobal,
+			UpstreamService: "oc_erchef",
+			UpstreamReferences: []string{
+				"src/oc_erchef/schema/deploy/organizations.sql",
+				"src/oc_erchef/schema/deploy/opc_customers.sql",
+			},
+			Notes: "Organization rows are the source of visible org identity; customer rows remain compatibility metadata where present.",
+		},
+		{
+			Family:          "server_admin_memberships",
+			Scope:           adminMigrationLiveSourceScopeGlobal,
+			UpstreamService: "oc_erchef+oc_bifrost",
+			UpstreamReferences: []string{
+				"src/oc_erchef/schema/deploy/org_user_associations.sql",
+				"src/oc_bifrost/schema/deploy/base.sql",
+			},
+			Notes: "Server-admin membership is derived from upstream user/org association and authorization membership state.",
+		},
+		{
+			Family:          "clients",
+			Scope:           adminMigrationLiveSourceScopeOrganization,
+			UpstreamService: "oc_erchef+oc_bifrost",
+			UpstreamReferences: []string{
+				"src/oc_erchef/schema/baseline/deploy/clients.sql",
+				"src/oc_bifrost/schema/deploy/base.sql",
+			},
+			Notes: "Client records come from erchef while actor presence and permissions come from Bifrost.",
+		},
+		{
+			Family:          "client_keys",
+			Scope:           adminMigrationLiveSourceScopeOrganization,
+			UpstreamService: "oc_erchef",
+			UpstreamReferences: []string{
+				"src/oc_erchef/schema/deploy/multiple_keys.sql",
+				"src/oc_erchef/schema/baseline/deploy/clients.sql",
+			},
+			Notes: "Client key extraction preserves public key metadata and expiration while omitting private key material.",
+		},
+		{
+			Family:          "groups",
+			Scope:           adminMigrationLiveSourceScopeOrganization,
+			UpstreamService: "oc_erchef+oc_bifrost",
+			UpstreamReferences: []string{
+				"src/oc_erchef/schema/deploy/groups.sql",
+				"src/oc_bifrost/schema/deploy/base.sql",
+			},
+			Notes: "Group identity is paired with Bifrost auth groups so default and custom groups keep existing ACL semantics.",
+		},
+		{
+			Family:          "group_memberships",
+			Scope:           adminMigrationLiveSourceScopeOrganization,
+			UpstreamService: "oc_bifrost",
+			UpstreamReferences: []string{
+				"src/oc_bifrost/schema/deploy/base.sql",
+				"src/oc_bifrost/schema/deploy/groups_for_actor.sql",
+			},
+			Notes: "Nested group and actor memberships come from Bifrost relation tables.",
+		},
+		{
+			Family:          "containers",
+			Scope:           adminMigrationLiveSourceScopeOrganization,
+			UpstreamService: "oc_erchef+oc_bifrost",
+			UpstreamReferences: []string{
+				"src/oc_erchef/schema/deploy/containers.sql",
+				"src/oc_bifrost/schema/deploy/base.sql",
+			},
+			Notes: "Container names come from erchef and ACL-bearing container objects come from Bifrost.",
+		},
+		{
+			Family:          "acls",
+			Scope:           adminMigrationLiveSourceScopeOrganization,
+			UpstreamService: "oc_bifrost",
+			UpstreamReferences: []string{
+				"src/oc_bifrost/schema/deploy/base.sql",
+				"src/oc_bifrost/schema/deploy/debug_object_acl_view.sql",
+			},
+			Notes: "Object, actor, group, and container ACL rows are normalized into the current OpenCook ACL document format.",
+		},
+		{
+			Family:          "nodes",
+			Scope:           adminMigrationLiveSourceScopeOrganization,
+			UpstreamService: "oc_erchef",
+			UpstreamReferences: []string{
+				"src/oc_erchef/schema/baseline/deploy/nodes.sql",
+				"src/oc_erchef/schema/deploy/node_policy.sql",
+			},
+			Notes: "Node JSON and policy compatibility fields remain opaque source data and are not treated as foreign keys.",
+		},
+		{
+			Family:          "environments",
+			Scope:           adminMigrationLiveSourceScopeOrganization,
+			UpstreamService: "oc_erchef",
+			UpstreamReferences: []string{
+				"src/oc_erchef/schema/baseline/deploy/environments.sql",
+			},
+			Notes: "Environment rows include cookbook constraints and default-environment compatibility payloads.",
+		},
+		{
+			Family:          "roles",
+			Scope:           adminMigrationLiveSourceScopeOrganization,
+			UpstreamService: "oc_erchef",
+			UpstreamReferences: []string{
+				"src/oc_erchef/schema/baseline/deploy/roles.sql",
+			},
+			Notes: "Role JSON preserves top-level and environment-specific run lists for downstream normalization.",
+		},
+		{
+			Family:          "data_bags",
+			Scope:           adminMigrationLiveSourceScopeOrganization,
+			UpstreamService: "oc_erchef",
+			UpstreamReferences: []string{
+				"src/oc_erchef/schema/baseline/deploy/data_bags.sql",
+			},
+			Notes: "Data bag containers are imported without interpreting encrypted item contents.",
+		},
+		{
+			Family:          "data_bag_items",
+			Scope:           adminMigrationLiveSourceScopeOrganization,
+			UpstreamService: "oc_erchef",
+			UpstreamReferences: []string{
+				"src/oc_erchef/schema/baseline/deploy/data_bag_items.sql",
+			},
+			Notes: "Item JSON remains opaque so encrypted data bag compatibility is preserved.",
+		},
+		{
+			Family:          "policy_revisions",
+			Scope:           adminMigrationLiveSourceScopeOrganization,
+			UpstreamService: "oc_erchef",
+			UpstreamReferences: []string{
+				"src/oc_erchef/schema/deploy/policies.sql",
+				"src/oc_erchef/schema/deploy/policy_revisions.sql",
+			},
+			Notes: "Policy revisions preserve canonical revision payloads and nested lock metadata.",
+		},
+		{
+			Family:          "policy_groups",
+			Scope:           adminMigrationLiveSourceScopeOrganization,
+			UpstreamService: "oc_erchef",
+			UpstreamReferences: []string{
+				"src/oc_erchef/schema/deploy/policy_groups.sql",
+			},
+			Notes: "Policy group names are extracted separately from assignment rows.",
+		},
+		{
+			Family:          "policy_assignments",
+			Scope:           adminMigrationLiveSourceScopeOrganization,
+			UpstreamService: "oc_erchef",
+			UpstreamReferences: []string{
+				"src/oc_erchef/schema/deploy/policy_revisions_policy_groups_association.sql",
+			},
+			Notes: "Policy assignments preserve group-to-policy revision associations.",
+		},
+		{
+			Family:          "sandboxes",
+			Scope:           adminMigrationLiveSourceScopeOrganization,
+			UpstreamService: "oc_erchef",
+			UpstreamReferences: []string{
+				"src/oc_erchef/schema/baseline/deploy/sandboxed_checksums.sql",
+				"src/oc_erchef/schema/baseline/deploy/checksums.sql",
+			},
+			Notes: "Sandbox checksum references feed blob reachability checks without mutating source Bookshelf content.",
+		},
+		{
+			Family:          "checksum_references",
+			Scope:           adminMigrationLiveSourceScopeOrganization,
+			UpstreamService: "oc_erchef",
+			UpstreamReferences: []string{
+				"src/oc_erchef/schema/baseline/deploy/cookbook_version_checksums.sql",
+				"src/oc_erchef/schema/deploy/cookbook_artifact_version_checksums.sql",
+				"src/oc_erchef/schema/baseline/deploy/sandboxed_checksums.sql",
+			},
+			Notes: "Checksum references are unioned across cookbook versions, artifacts, and sandboxes before blob validation.",
+		},
+		{
+			Family:          "cookbook_versions",
+			Scope:           adminMigrationLiveSourceScopeOrganization,
+			UpstreamService: "oc_erchef",
+			UpstreamReferences: []string{
+				"src/oc_erchef/schema/baseline/deploy/cookbooks.sql",
+				"src/oc_erchef/schema/baseline/deploy/cookbook_versions.sql",
+				"src/oc_erchef/schema/baseline/deploy/joined_cookbook_version.sql",
+			},
+			Notes: "Cookbook metadata and file manifests are extracted from erchef while blob bytes remain checksum-addressed.",
+		},
+		{
+			Family:          "cookbook_artifacts",
+			Scope:           adminMigrationLiveSourceScopeOrganization,
+			UpstreamService: "oc_erchef",
+			UpstreamReferences: []string{
+				"src/oc_erchef/schema/deploy/cookbook_artifacts.sql",
+				"src/oc_erchef/schema/deploy/cookbook_artifact_versions.sql",
+				"src/oc_erchef/schema/deploy/cookbook_artifact_version_checksums.sql",
+			},
+			Notes: "Artifact identifiers and manifests stay separate from legacy cookbook version rows.",
+		},
+		{
+			Family:          "referenced_blobs",
+			Scope:           adminMigrationLiveSourceScopeBlob,
+			UpstreamService: "oc_erchef+bookshelf",
+			UpstreamReferences: []string{
+				"src/oc_erchef/schema/baseline/deploy/checksums.sql",
+				"src/bookshelf/schema/deploy/base_schema.sql",
+				"dev-docs/BOOKSHELF.md",
+			},
+			Notes: "Referenced checksum content is verified or copied through Bookshelf/S3-compatible read paths.",
+		},
+		{
+			Family:          "reachable_blobs",
+			Scope:           adminMigrationLiveSourceScopeBlob,
+			UpstreamService: "bookshelf",
+			UpstreamReferences: []string{
+				"src/bookshelf/schema/deploy/base_schema.sql",
+				"dev-docs/BOOKSHELF.md",
+			},
+			Notes: "Reachability is a read-only provider check against checksum-addressed content.",
+		},
+		{
+			Family:          "missing_blobs",
+			Scope:           adminMigrationLiveSourceScopeBlob,
+			UpstreamService: "bookshelf",
+			UpstreamReferences: []string{
+				"src/bookshelf/schema/deploy/base_schema.sql",
+				"dev-docs/BOOKSHELF.md",
+			},
+			Notes: "Missing blob counts are validation findings, not imported Chef objects.",
+		},
+		{
+			Family:          "provider_unavailable_checks",
+			Scope:           adminMigrationLiveSourceScopeBlob,
+			UpstreamService: "bookshelf",
+			UpstreamReferences: []string{
+				"src/bookshelf/schema/deploy/base_schema.sql",
+				"dev-docs/BOOKSHELF.md",
+			},
+			Notes: "Provider failures must be redacted and reported without leaking credentials or response bodies.",
+		},
+		{
+			Family:          "content_verified_blobs",
+			Scope:           adminMigrationLiveSourceScopeBlob,
+			UpstreamService: "bookshelf",
+			UpstreamReferences: []string{
+				"src/bookshelf/schema/deploy/base_schema.sql",
+				"dev-docs/BOOKSHELF.md",
+			},
+			Notes: "Content verification recomputes checksum hashes from read-only bytes.",
+		},
+		{
+			Family:          "checksum_mismatch_blobs",
+			Scope:           adminMigrationLiveSourceScopeBlob,
+			UpstreamService: "bookshelf",
+			UpstreamReferences: []string{
+				"src/bookshelf/schema/deploy/base_schema.sql",
+				"dev-docs/BOOKSHELF.md",
+			},
+			Notes: "Checksum mismatch counts are extraction safety findings and should block trusted copy output.",
+		},
+		{
+			Family:          "candidate_orphan_blobs",
+			Scope:           adminMigrationLiveSourceScopeBlob,
+			UpstreamService: "bookshelf",
+			UpstreamReferences: []string{
+				"src/bookshelf/schema/deploy/base_schema.sql",
+				"dev-docs/BOOKSHELF.md",
+			},
+			Notes: "Provider enumeration may identify unreferenced content, but extraction must not delete source blobs.",
+		},
+		{
+			Family:          "copied_blobs",
+			Scope:           adminMigrationLiveSourceScopeBlob,
+			UpstreamService: "bookshelf",
+			UpstreamReferences: []string{
+				"src/bookshelf/schema/deploy/base_schema.sql",
+				"dev-docs/BOOKSHELF.md",
+			},
+			Notes: "Copied blobs are local bundle sidecars produced only after read and checksum verification succeeds.",
+		},
+		{
+			Family:          "opensearch_documents",
+			Scope:           adminMigrationLiveSourceScopeDerived,
+			UpstreamService: "opensearch",
+			UpstreamReferences: []string{
+				"dev-docs/SEARCH_AND_INDEXING.md",
+			},
+			Notes: "Search documents are derived from erchef PostgreSQL objects and must not be imported as authoritative source data.",
+		},
+	}
+}
+
+// adminMigrationLiveSourceDeferredFamilies documents upstream source families
+// that live extraction should report explicitly instead of silently importing.
+func adminMigrationLiveSourceDeferredFamilies() []adminMigrationLiveSourceFamilyMapping {
+	return []adminMigrationLiveSourceFamilyMapping{
+		{
+			Family:          "oc_id",
+			Scope:           adminMigrationLiveSourceScopeDeferred,
+			UpstreamService: "oc_id",
+			UpstreamReferences: []string{
+				"Chef Server oc-id OAuth application state",
+			},
+			Notes: "OAuth application/session state is outside the implemented Chef-facing OpenCook surface.",
+		},
+		{
+			Family:          "redis",
+			Scope:           adminMigrationLiveSourceScopeDeferred,
+			UpstreamService: "redis",
+			UpstreamReferences: []string{
+				"Chef Server runtime Redis/session state",
+			},
+			Notes: "Runtime cache/session state is not durable Chef object state and is not part of migration import.",
+		},
+		{
+			Family:          "telemetry",
+			Scope:           adminMigrationLiveSourceScopeDeferred,
+			UpstreamService: "oc_erchef",
+			UpstreamReferences: []string{
+				"src/oc_erchef/schema/deploy/telemetry.sql",
+			},
+			Notes: "Telemetry is intentionally outside OpenCook's licensing-free compatibility target.",
+		},
+		{
+			Family:          "licensing",
+			Scope:           adminMigrationLiveSourceScopeDeferred,
+			UpstreamService: "chef-server",
+			UpstreamReferences: []string{
+				"Chef licensing and license-management subsystem",
+			},
+			Notes: "Licensing data is intentionally not implemented or imported by OpenCook.",
+		},
+		{
+			Family:          "service_supervisor",
+			Scope:           adminMigrationLiveSourceScopeDeferred,
+			UpstreamService: "habitat",
+			UpstreamReferences: []string{
+				"Chef Server Habitat supervisor state",
+			},
+			Notes: "Supervisor/runtime state is operational metadata, not Chef object state.",
+		},
+		{
+			Family:          "org_user_invites",
+			Scope:           adminMigrationLiveSourceScopeDeferred,
+			UpstreamService: "oc_erchef",
+			UpstreamReferences: []string{
+				"src/oc_erchef/schema/deploy/org_user_invites.sql",
+			},
+			Notes: "Pending invites are not currently represented by OpenCook APIs and should be reported as unsupported.",
+		},
+		{
+			Family:          "org_migration_state",
+			Scope:           adminMigrationLiveSourceScopeDeferred,
+			UpstreamService: "oc_erchef",
+			UpstreamReferences: []string{
+				"src/oc_erchef/schema/deploy/org_migration_state.sql",
+			},
+			Notes: "Upstream-internal migration bookkeeping should not affect OpenCook source import semantics.",
+		},
+		{
+			Family:          "reporting_schema_info",
+			Scope:           adminMigrationLiveSourceScopeDeferred,
+			UpstreamService: "oc_erchef",
+			UpstreamReferences: []string{
+				"src/oc_erchef/schema/deploy/reporting_schema_info.sql",
+			},
+			Notes: "Legacy reporting metadata is outside the implemented OpenCook compatibility surface.",
+		},
+		{
+			Family:          "opensearch_documents_as_source_of_truth",
+			Scope:           adminMigrationLiveSourceScopeDeferred,
+			UpstreamService: "opensearch",
+			UpstreamReferences: []string{
+				"dev-docs/SEARCH_AND_INDEXING.md",
+			},
+			Notes: "OpenSearch documents can be used for advisory checks only; PostgreSQL remains the source of truth.",
+		},
+	}
+}
+
+// adminMigrationLiveSourceCapabilityProbes lists read-only checks that future
+// live preflight code can run without mutating source Chef or target OpenCook.
+func adminMigrationLiveSourceCapabilityProbes() []adminMigrationLiveSourceCapabilityProbe {
+	return []adminMigrationLiveSourceCapabilityProbe{
+		{
+			Name:         "source_postgres_read_only",
+			Backend:      "postgres",
+			Required:     true,
+			MutationFree: true,
+			Description:  "connect to source PostgreSQL and enter a read-only transaction",
+		},
+		{
+			Name:         "source_erchef_schema",
+			Backend:      "postgres",
+			Required:     true,
+			MutationFree: true,
+			Description:  "verify required oc_erchef tables and views for implemented normalized families",
+		},
+		{
+			Name:         "source_bifrost_schema",
+			Backend:      "postgres",
+			Required:     true,
+			MutationFree: true,
+			Description:  "verify required Bifrost actor, group, container, object, relation, and ACL tables",
+		},
+		{
+			Name:         "visible_organizations",
+			Backend:      "postgres",
+			Required:     true,
+			MutationFree: true,
+			Description:  "list source organizations visible to the configured read-only database role",
+		},
+		{
+			Name:         "source_bookshelf_sql",
+			Backend:      "bookshelf",
+			Required:     false,
+			MutationFree: true,
+			Description:  "detect internal Bookshelf tables for checksum content when SQL-backed blob storage is available",
+		},
+		{
+			Name:         "source_bookshelf_external_s3",
+			Backend:      "bookshelf",
+			Required:     false,
+			MutationFree: true,
+			Description:  "detect external S3-compatible Bookshelf configuration for checksum content reference or copy mode",
+		},
+		{
+			Name:         "source_http_server_api_version",
+			Backend:      "chef_http",
+			Required:     false,
+			MutationFree: true,
+			Description:  "probe read-only Chef HTTP version and signed-read capability when source credentials are provided",
+		},
+		{
+			Name:         "source_search_derived_only",
+			Backend:      "opensearch",
+			Required:     false,
+			MutationFree: true,
+			Description:  "record that upstream search documents are advisory and must be rebuilt from PostgreSQL after import",
+		},
+	}
+}
+
+// adminMigrationLiveSourceConfigFromFlags keeps live Chef source settings
+// scoped to admin migration commands instead of runtime server configuration.
+func adminMigrationLiveSourceConfigFromFlags(opts *adminMigrationFlagValues, preflightOnly bool) adminMigrationLiveSourceConfig {
+	cfg := adminMigrationLiveSourceConfig{
+		PostgresDSN:    strings.TrimSpace(opts.sourcePostgresDSN),
+		BookshelfRoot:  strings.TrimSpace(opts.sourceBookshelfRoot),
+		BlobURL:        strings.TrimSpace(opts.sourceBlobURL),
+		ServerURL:      strings.TrimSpace(opts.sourceServerURL),
+		RequestorName:  strings.TrimSpace(opts.sourceRequestorName),
+		RequestorType:  strings.TrimSpace(opts.sourceRequestorType),
+		PrivateKeyPath: strings.TrimSpace(opts.sourcePrivateKeyPath),
+		Organization:   strings.TrimSpace(opts.orgName),
+		AllOrgs:        opts.allOrgs || strings.TrimSpace(opts.orgName) == "",
+		CopyBlobs:      opts.copyBlobs,
+		ReferenceBlobs: opts.referenceBlobs,
+		OutputPath:     strings.TrimSpace(opts.outputPath),
+		PreflightOnly:  preflightOnly,
+	}
+	if cfg.RequestorType == "" && cfg.ServerURL != "" {
+		cfg.RequestorType = "user"
+	}
+	switch {
+	case cfg.CopyBlobs:
+		cfg.ExtractionMode = "copy_blobs"
+	case cfg.ReferenceBlobs:
+		cfg.ExtractionMode = "reference_blobs"
+	default:
+		cfg.ExtractionMode = "auto"
+	}
+	return cfg
+}
+
+// adminMigrationValidateLiveSourceConfig rejects ambiguous live-source flag
+// combinations before any future extractor has a chance to touch providers.
+func adminMigrationValidateLiveSourceConfig(cfg adminMigrationLiveSourceConfig, requireOutput bool) string {
+	if strings.TrimSpace(cfg.PostgresDSN) == "" {
+		return "admin migration source live requires --source-postgres-dsn DSN"
+	}
+	if cfg.Organization != "" && cfg.AllOrgs {
+		return "admin migration source live cannot combine --all-orgs with --org"
+	}
+	if cfg.BookshelfRoot != "" && cfg.BlobURL != "" {
+		return "admin migration source live cannot combine --source-bookshelf-root with --source-blob-url"
+	}
+	if cfg.CopyBlobs && cfg.ReferenceBlobs {
+		return "admin migration source live cannot combine --copy-blobs with --reference-blobs"
+	}
+	httpPieces := 0
+	for _, value := range []string{cfg.ServerURL, cfg.RequestorName, cfg.PrivateKeyPath} {
+		if strings.TrimSpace(value) != "" {
+			httpPieces++
+		}
+	}
+	if httpPieces != 0 && httpPieces != 3 {
+		return "admin migration source live HTTP probing requires --source-server-url, --source-requestor-name, and --source-private-key together"
+	}
+	if requireOutput && strings.TrimSpace(cfg.OutputPath) == "" {
+		return "admin migration source live extract requires --output PATH"
+	}
+	return ""
+}
+
+// adminMigrationLiveSourceRedactedConfig exposes source settings while avoiding
+// raw DSNs, provider credentials, signed URLs, private key paths, and secret paths.
+func adminMigrationLiveSourceRedactedConfig(cfg adminMigrationLiveSourceConfig) map[string]string {
+	return map[string]string{
+		"source_postgres_dsn":    adminMigrationRedact(cfg.PostgresDSN),
+		"source_blob_mode":       adminMigrationLiveSourceBlobMode(cfg),
+		"source_bookshelf_root":  adminMigrationRedactMigrationPath(cfg.BookshelfRoot),
+		"source_blob_url":        adminMigrationRedact(cfg.BlobURL),
+		"source_server_url":      adminMigrationRedact(cfg.ServerURL),
+		"source_requestor_name":  cfg.RequestorName,
+		"source_requestor_type":  cfg.RequestorType,
+		"source_private_key":     adminMigrationPresence(cfg.PrivateKeyPath),
+		"organization":           cfg.Organization,
+		"all_organizations":      adminMigrationBoolString(cfg.AllOrgs),
+		"source_blob_copy_mode":  cfg.ExtractionMode,
+		"normalized_output_path": adminMigrationRedactMigrationPath(cfg.OutputPath),
+		"preflight_only":         adminMigrationBoolString(cfg.PreflightOnly),
+	}
+}
+
+// adminMigrationLiveSourceTargetFromConfig returns the redacted source target
+// block used by live preflight and the later extractor command.
+func adminMigrationLiveSourceTargetFromConfig(cfg adminMigrationLiveSourceConfig) adminMigrationLiveSourceTarget {
+	return adminMigrationLiveSourceTarget{
+		AllOrganizations: cfg.AllOrgs,
+		Organization:     cfg.Organization,
+		PostgresDSN:      adminMigrationRedact(cfg.PostgresDSN),
+		BlobMode:         adminMigrationLiveSourceBlobMode(cfg),
+		BookshelfRoot:    adminMigrationRedactMigrationPath(cfg.BookshelfRoot),
+		BlobURL:          adminMigrationRedact(cfg.BlobURL),
+		ServerURL:        adminMigrationRedact(cfg.ServerURL),
+		RequestorName:    cfg.RequestorName,
+		RequestorType:    cfg.RequestorType,
+		PrivateKey:       adminMigrationPresence(cfg.PrivateKeyPath),
+		BlobCopyMode:     cfg.ExtractionMode,
+		OutputPath:       adminMigrationRedactMigrationPath(cfg.OutputPath),
+	}
+}
+
+// adminMigrationLiveSourceBlobMode summarizes the source blob configuration
+// without implying that OpenCook has probed the provider yet.
+func adminMigrationLiveSourceBlobMode(cfg adminMigrationLiveSourceConfig) string {
+	switch {
+	case strings.TrimSpace(cfg.BookshelfRoot) != "":
+		return "bookshelf_root"
+	case strings.TrimSpace(cfg.BlobURL) != "":
+		return "provider_url"
+	default:
+		return "unconfigured"
+	}
+}
+
+// adminMigrationLiveSourceCapabilities converts the frozen probe inventory into
+// a mutation-free JSON shape for task-3 preflight output.
+func adminMigrationLiveSourceCapabilities(cfg adminMigrationLiveSourceConfig) []adminMigrationCapability {
+	probes := adminMigrationLiveSourceCapabilityProbes()
+	capabilities := make([]adminMigrationCapability, 0, len(probes))
+	for _, probe := range probes {
+		configured := adminMigrationLiveSourceProbeConfigured(cfg, probe.Name)
+		status := "unconfigured"
+		if configured {
+			status = "planned"
+		}
+		if probe.Name == "source_search_derived_only" {
+			status = "advisory"
+			configured = true
+		}
+		capabilities = append(capabilities, adminMigrationCapability{
+			Name:         probe.Name,
+			Status:       status,
+			Backend:      probe.Backend,
+			Required:     probe.Required,
+			Configured:   configured,
+			MutationFree: probe.MutationFree,
+			Message:      probe.Description,
+		})
+	}
+	return capabilities
+}
+
+// adminMigrationLiveSourceProbeConfigured maps probe names to the redacted live
+// source config fields they need, without opening network or database handles.
+func adminMigrationLiveSourceProbeConfigured(cfg adminMigrationLiveSourceConfig, name string) bool {
+	switch name {
+	case "source_postgres_read_only", "source_erchef_schema", "source_bifrost_schema", "visible_organizations":
+		return strings.TrimSpace(cfg.PostgresDSN) != ""
+	case "source_bookshelf_sql":
+		return strings.TrimSpace(cfg.BookshelfRoot) != ""
+	case "source_bookshelf_external_s3":
+		return strings.TrimSpace(cfg.BlobURL) != ""
+	case "source_http_server_api_version":
+		return strings.TrimSpace(cfg.ServerURL) != "" && strings.TrimSpace(cfg.RequestorName) != "" && strings.TrimSpace(cfg.PrivateKeyPath) != ""
+	case "source_search_derived_only":
+		return true
+	default:
+		return false
+	}
+}
+
 // adminMigrationValidationFindingCodes centralizes the new production-scale
 // finding vocabulary so future task slices can reuse the same stable codes.
 func adminMigrationValidationFindingCodes() []adminMigrationValidationFindingCode {
@@ -917,6 +1640,13 @@ func adminMigrationEnsureScaleFixtureOutputAllowed(outputPath string, overwrite 
 		return errAdminMigrationNormalizeOutputExists
 	} else if err != nil && !os.IsNotExist(err) {
 		return err
+	}
+	stale, err := adminMigrationInterruptedNormalizedSourceOutputDirs(outputPath)
+	if err != nil {
+		return err
+	}
+	if len(stale) > 0 && !overwrite {
+		return errAdminMigrationNormalizeOutputStaleTmp
 	}
 	return nil
 }
@@ -2524,7 +3254,7 @@ func adminMigrationRestoreCompletedMutations(manifest adminMigrationBackupManife
 // future apply behavior behind the stricter offline mutation gates.
 func (c *command) runAdminMigrationSource(ctx context.Context, args []string, inheritedJSON bool) int {
 	if len(args) == 0 {
-		return c.adminUsageError("admin migration source requires inventory, normalize, import, or sync\n\n")
+		return c.adminUsageError("admin migration source requires inventory, normalize, live, import, or sync\n\n")
 	}
 	if len(args) == 1 && (args[0] == "help" || args[0] == "-h" || args[0] == "--help") {
 		c.printAdminMigrationUsage(c.stdout)
@@ -2535,6 +3265,8 @@ func (c *command) runAdminMigrationSource(ctx context.Context, args []string, in
 		return c.runAdminMigrationSourceInventory(args[1:], inheritedJSON)
 	case "normalize":
 		return c.runAdminMigrationSourceNormalize(args[1:], inheritedJSON)
+	case "live":
+		return c.runAdminMigrationSourceLive(ctx, args[1:], inheritedJSON)
 	case "import":
 		return c.runAdminMigrationSourceImport(ctx, args[1:], inheritedJSON)
 	case "sync":
@@ -2542,6 +3274,272 @@ func (c *command) runAdminMigrationSource(ctx context.Context, args []string, in
 	default:
 		return c.adminUsageError("unknown admin migration source command %q\n\n", args[0])
 	}
+}
+
+// runAdminMigrationSourceLive dispatches live Chef source commands while
+// preserving the bucket boundary that source Chef remains read-only.
+func (c *command) runAdminMigrationSourceLive(ctx context.Context, args []string, inheritedJSON bool) int {
+	_ = ctx
+	if len(args) == 0 {
+		return c.adminUsageError("admin migration source live requires preflight or extract\n\n")
+	}
+	if len(args) == 1 && (args[0] == "help" || args[0] == "-h" || args[0] == "--help") {
+		c.printAdminMigrationUsage(c.stdout)
+		return exitOK
+	}
+	switch args[0] {
+	case "preflight":
+		return c.runAdminMigrationSourceLivePreflight(ctx, args[1:], inheritedJSON)
+	case "extract":
+		return c.runAdminMigrationSourceLiveExtract(ctx, args[1:], inheritedJSON)
+	default:
+		return c.adminUsageError("unknown admin migration source live command %q\n\n", args[0])
+	}
+}
+
+// runAdminMigrationSourceLivePreflight parses live-source settings and emits a
+// mutation-free shape for later source PostgreSQL/blob/HTTP probe tasks.
+func (c *command) runAdminMigrationSourceLivePreflight(ctx context.Context, args []string, inheritedJSON bool) int {
+	start := time.Now()
+	fs := flag.NewFlagSet("opencook admin migration source live preflight", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	opts := bindAdminMigrationCommonFlags(fs, inheritedJSON)
+	bindAdminMigrationScopeFlags(fs, opts)
+	bindAdminMigrationLiveSourceFlags(fs, opts)
+	if err := fs.Parse(args); err != nil {
+		return c.adminFlagError("admin migration source live preflight", err)
+	}
+	if fs.NArg() != 0 {
+		return c.adminUsageError("usage: opencook admin migration source live preflight --source-postgres-dsn DSN [--source-bookshelf-root PATH|--source-blob-url URL] [--source-server-url URL --source-requestor-name NAME --source-private-key PATH] [--org ORG|--all-orgs] [--json] [--with-timing]\n\n")
+	}
+	cfg := adminMigrationLiveSourceConfigFromFlags(opts, true)
+	if message := adminMigrationValidateLiveSourceConfig(cfg, false); message != "" {
+		return c.adminUsageError("%s\n\n", message)
+	}
+
+	result := buildAdminMigrationSourceLivePreflight(cfg, c.newLiveSource(cfg).Preflight(ctx, cfg))
+	return c.writeAdminMigrationResult(result, opts.withTiming, start, adminMigrationExitCode(result))
+}
+
+// runAdminMigrationSourceLiveExtract reserves the documented extract command
+// shape while keeping real extraction behind later read-only extractor tasks.
+func (c *command) runAdminMigrationSourceLiveExtract(ctx context.Context, args []string, inheritedJSON bool) int {
+	start := time.Now()
+	fs := flag.NewFlagSet("opencook admin migration source live extract", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	opts := bindAdminMigrationCommonFlags(fs, inheritedJSON)
+	bindAdminMigrationScopeFlags(fs, opts)
+	bindAdminMigrationLiveSourceFlags(fs, opts)
+	fs.StringVar(&opts.outputPath, "output", "", "normalized live source output path")
+	if err := fs.Parse(args); err != nil {
+		return c.adminFlagError("admin migration source live extract", err)
+	}
+	if fs.NArg() != 0 {
+		return c.adminUsageError("usage: opencook admin migration source live extract --source-postgres-dsn DSN --output PATH [--source-bookshelf-root PATH|--source-blob-url URL] [--source-server-url URL --source-requestor-name NAME --source-private-key PATH] [--org ORG|--all-orgs] [--copy-blobs|--reference-blobs] [--dry-run] [--yes] [--json] [--with-timing]\n\n")
+	}
+	cfg := adminMigrationLiveSourceConfigFromFlags(opts, false)
+	if message := adminMigrationValidateLiveSourceConfig(cfg, true); message != "" {
+		return c.adminUsageError("%s\n\n", message)
+	}
+	if !opts.dryRun {
+		if err := adminMigrationEnsureScaleFixtureOutputAllowed(cfg.OutputPath, opts.yes); err != nil {
+			result := adminMigrationLiveSourceBaseOutput("migration_source_live_extract", cfg)
+			result.DryRun = opts.dryRun
+			result.Confirmed = opts.yes
+			adminMigrationMarkDependency(&result, adminMigrationDependency{
+				Name:       "normalized_source_output",
+				Status:     "error",
+				Backend:    "filesystem",
+				Configured: true,
+				Message:    "live source normalized output path is not safe to write",
+			})
+			adminMigrationMarkFinding(&result, adminMigrationNormalizeOutputFinding(err))
+			return c.writeAdminMigrationResult(result, opts.withTiming, start, adminMigrationExitCode(result))
+		}
+	}
+
+	extracted := c.newLiveSource(cfg).Extract(ctx, cfg)
+	result := buildAdminMigrationSourceLiveExtractShape(cfg, opts, extracted)
+	if result.OK {
+		result = applyAdminMigrationSourceLiveExtractBundle(cfg, extracted, result, opts)
+	}
+	return c.writeAdminMigrationResult(result, opts.withTiming, start, adminMigrationExitCode(result))
+}
+
+// buildAdminMigrationSourceLivePreflight returns the live-source JSON envelope
+// using an injected extractor result so tests never need network dependencies.
+func buildAdminMigrationSourceLivePreflight(cfg adminMigrationLiveSourceConfig, extracted adminMigrationLiveSourceExtractorResult) adminMigrationCLIOutput {
+	out := adminMigrationLiveSourceBaseOutput("migration_source_live_preflight", cfg)
+	adminMigrationApplyLiveSourceExtractorResult(&out, extracted)
+	return out
+}
+
+// buildAdminMigrationSourceLiveExtractShape reports extraction output before
+// publishing any local bundle files.
+func buildAdminMigrationSourceLiveExtractShape(cfg adminMigrationLiveSourceConfig, opts *adminMigrationFlagValues, extracted adminMigrationLiveSourceExtractorResult) adminMigrationCLIOutput {
+	out := adminMigrationLiveSourceBaseOutput("migration_source_live_extract", cfg)
+	out.DryRun = opts.dryRun
+	out.Confirmed = opts.yes
+	adminMigrationApplyLiveSourceExtractorResult(&out, extracted)
+	return out
+}
+
+// applyAdminMigrationSourceLiveExtractBundle publishes a fake or future real
+// extractor bundle only after the extractor result has no blocking failures.
+func applyAdminMigrationSourceLiveExtractBundle(cfg adminMigrationLiveSourceConfig, extracted adminMigrationLiveSourceExtractorResult, out adminMigrationCLIOutput, opts *adminMigrationFlagValues) adminMigrationCLIOutput {
+	if extracted.Bundle == nil {
+		adminMigrationMarkFinding(&out, adminMigrationFinding{
+			Severity: "error",
+			Code:     adminMigrationFindingSourceExtractionInterrupted,
+			Family:   "live_source",
+			Message:  "live source extractor did not return a normalized bundle to publish",
+		})
+		return out
+	}
+	if opts.dryRun {
+		adminMigrationMarkDependency(&out, adminMigrationDependency{
+			Name:       "normalized_source_output",
+			Status:     "skipped",
+			Backend:    "filesystem",
+			Configured: false,
+			Message:    "dry run requested; live source normalized bundle was not written",
+			Details:    adminMigrationLiveSourceOutputDetails(*extracted.Bundle),
+		})
+		out.PlannedMutations = append(out.PlannedMutations, adminMigrationPlannedMutation{
+			Action:  "write_live_source_bundle",
+			Family:  "source_manifest",
+			Count:   len(extracted.Bundle.Manifest.Payloads),
+			Message: "would write local normalized live Chef source bundle atomically after verification",
+		})
+		return out
+	}
+	if err := adminMigrationWriteNormalizedSourceBundle(cfg.OutputPath, *extracted.Bundle, opts.yes); err != nil {
+		adminMigrationMarkDependency(&out, adminMigrationDependency{
+			Name:       "normalized_source_output",
+			Status:     "error",
+			Backend:    "filesystem",
+			Configured: true,
+			Message:    "live source normalized bundle could not be published after integrity verification",
+		})
+		findings := adminMigrationNormalizedSourceBundleWriteFindings(err)
+		if len(findings) == 0 {
+			findings = []adminMigrationFinding{{
+				Severity: "error",
+				Code:     adminMigrationFindingSourceExtractionInterrupted,
+				Family:   "source_manifest",
+				Message:  "live source extraction was interrupted before bundle publication",
+			}}
+		}
+		for _, finding := range findings {
+			adminMigrationMarkFinding(&out, finding)
+		}
+		return out
+	}
+	adminMigrationMarkDependency(&out, adminMigrationDependency{
+		Name:       "normalized_source_output",
+		Status:     "ok",
+		Backend:    "filesystem",
+		Configured: true,
+		Message:    "live source normalized bundle was verified and written atomically",
+		Details:    adminMigrationLiveSourceOutputDetails(*extracted.Bundle),
+	})
+	out.PlannedMutations = append(out.PlannedMutations, adminMigrationPlannedMutation{
+		Action:  "write_live_source_bundle",
+		Family:  "source_manifest",
+		Count:   len(extracted.Bundle.Manifest.Payloads),
+		Message: "wrote local normalized live Chef source bundle atomically after verification",
+	})
+	return out
+}
+
+// adminMigrationLiveSourceBaseOutput centralizes the redacted live-source
+// target/config/capability shape shared by preflight and extract.
+func adminMigrationLiveSourceBaseOutput(commandName string, cfg adminMigrationLiveSourceConfig) adminMigrationCLIOutput {
+	return adminMigrationCLIOutput{
+		OK:      true,
+		Command: commandName,
+		Target: adminMigrationTarget{
+			AllOrganizations: cfg.AllOrgs,
+			Organization:     cfg.Organization,
+			OutputPath:       adminMigrationRedactMigrationPath(cfg.OutputPath),
+		},
+		Config:           adminMigrationLiveSourceRedactedConfig(cfg),
+		LiveSource:       adminMigrationLiveSourceTargetPtr(cfg),
+		Capabilities:     adminMigrationLiveSourceCapabilities(cfg),
+		Dependencies:     []adminMigrationDependency{},
+		Inventory:        adminMigrationInventory{Families: []adminMigrationInventoryFamily{}},
+		Findings:         []adminMigrationFinding{},
+		PlannedMutations: []adminMigrationPlannedMutation{},
+	}
+}
+
+// adminMigrationLiveSourceTargetPtr keeps pointer construction close to the
+// base output so non-live commands omit the live_source JSON field entirely.
+func adminMigrationLiveSourceTargetPtr(cfg adminMigrationLiveSourceConfig) *adminMigrationLiveSourceTarget {
+	target := adminMigrationLiveSourceTargetFromConfig(cfg)
+	return &target
+}
+
+// adminMigrationLiveSourceDependencies describes configured live source inputs
+// without opening source PostgreSQL, blob providers, Chef HTTP, or OpenCook state.
+func adminMigrationLiveSourceDependencies(cfg adminMigrationLiveSourceConfig) []adminMigrationDependency {
+	return append([]adminMigrationDependency{
+		{
+			Name:       "source_postgres",
+			Status:     "skipped",
+			Backend:    "postgres",
+			Configured: strings.TrimSpace(cfg.PostgresDSN) != "",
+			Message:    "source PostgreSQL is configured for read-only live-source probes",
+			Details: map[string]string{
+				"read_only_required": "true",
+			},
+		},
+	}, adminMigrationLiveSourceNonPostgresDependencies(cfg)...)
+}
+
+// adminMigrationLiveSourceNonPostgresDependencies keeps blob, HTTP, and command
+// contract reporting reusable without opening optional providers during preflight.
+func adminMigrationLiveSourceNonPostgresDependencies(cfg adminMigrationLiveSourceConfig) []adminMigrationDependency {
+	deps := []adminMigrationDependency{}
+	blobMode := adminMigrationLiveSourceBlobMode(cfg)
+	blobStatus := "unconfigured"
+	blobMessage := "source blob provider is not configured; extraction will be metadata/reference-only until blob input is provided"
+	if blobMode != "unconfigured" {
+		blobStatus = "skipped"
+		blobMessage = "source blob provider is configured; live extract will validate copy/reference behavior without source mutation"
+	}
+	deps = append(deps, adminMigrationDependency{
+		Name:       "source_blob",
+		Status:     blobStatus,
+		Backend:    blobMode,
+		Configured: blobMode != "unconfigured",
+		Message:    blobMessage,
+		Details: map[string]string{
+			"copy_mode": cfg.ExtractionMode,
+		},
+	})
+	httpConfigured := strings.TrimSpace(cfg.ServerURL) != "" && strings.TrimSpace(cfg.RequestorName) != "" && strings.TrimSpace(cfg.PrivateKeyPath) != ""
+	httpStatus := "unconfigured"
+	httpMessage := "source Chef HTTP signed-read probing is not configured"
+	if httpConfigured {
+		httpStatus = "skipped"
+		httpMessage = "source Chef HTTP signed-read probe is configured for future read-only capability checks"
+	}
+	deps = append(deps, adminMigrationDependency{
+		Name:       "source_http",
+		Status:     httpStatus,
+		Backend:    "chef_http",
+		Configured: httpConfigured,
+		Message:    httpMessage,
+	})
+	deps = append(deps, adminMigrationDependency{
+		Name:       "live_source_contract",
+		Status:     "ok",
+		Backend:    "internal",
+		Configured: true,
+		Message:    "live source command shape is read-only and feeds the normalized source bundle contract",
+	})
+	return deps
 }
 
 // runAdminMigrationSourceImport dispatches normalized source import preflight
@@ -5890,12 +6888,17 @@ func adminMigrationNormalizeSourceEntries(sourceType string, entries []adminMigr
 }
 
 // adminMigrationWriteNormalizedSourceBundle writes through a sibling temporary
-// directory so failed writes do not leave a half-normalized source bundle.
+// directory, verifies the staged manifest, and only then publishes the bundle.
 func adminMigrationWriteNormalizedSourceBundle(outputPath string, bundle adminMigrationSourceNormalizeBundle, overwrite bool) error {
 	outputPath = strings.TrimSpace(outputPath)
 	parent := filepath.Dir(outputPath)
 	if err := os.MkdirAll(parent, 0o755); err != nil {
 		return err
+	}
+	if overwrite {
+		if err := adminMigrationRemoveInterruptedNormalizedSourceOutputDirs(outputPath); err != nil {
+			return err
+		}
 	}
 	tempDir, err := os.MkdirTemp(parent, "."+filepath.Base(outputPath)+"-normalize-*")
 	if err != nil {
@@ -5920,6 +6923,13 @@ func adminMigrationWriteNormalizedSourceBundle(outputPath string, bundle adminMi
 	if err := adminMigrationWriteNormalizedSourceFile(tempDir, adminMigrationSourceManifestPath, manifestData); err != nil {
 		return err
 	}
+	if read, err := adminMigrationReadSourceImportBundle(tempDir); err != nil {
+		findings := read.Bundle.Findings
+		if len(findings) == 0 {
+			findings = []adminMigrationFinding{adminMigrationSourceErrorFinding("source_bundle_invalid", "normalized source bundle failed integrity inspection before publication")}
+		}
+		return adminMigrationNormalizedSourceBundleWriteError{Findings: findings, Err: err}
+	}
 	if overwrite {
 		if err := os.RemoveAll(outputPath); err != nil {
 			return err
@@ -5929,6 +6939,30 @@ func adminMigrationWriteNormalizedSourceBundle(outputPath string, bundle adminMi
 		return err
 	}
 	cleanup = false
+	return nil
+}
+
+type adminMigrationNormalizedSourceBundleWriteError struct {
+	Findings []adminMigrationFinding
+	Err      error
+}
+
+func (e adminMigrationNormalizedSourceBundleWriteError) Error() string {
+	if e.Err != nil {
+		return e.Err.Error()
+	}
+	return "normalized source bundle failed integrity inspection before publication"
+}
+
+func (e adminMigrationNormalizedSourceBundleWriteError) Unwrap() error {
+	return e.Err
+}
+
+func adminMigrationNormalizedSourceBundleWriteFindings(err error) []adminMigrationFinding {
+	var writeErr adminMigrationNormalizedSourceBundleWriteError
+	if errors.As(err, &writeErr) {
+		return append([]adminMigrationFinding(nil), writeErr.Findings...)
+	}
 	return nil
 }
 
@@ -8493,6 +9527,60 @@ func adminMigrationEnsureNormalizeOutputAllowed(sourcePath, outputPath string, o
 	} else if err != nil && !os.IsNotExist(err) {
 		return err
 	}
+	stale, err := adminMigrationInterruptedNormalizedSourceOutputDirs(outputPath)
+	if err != nil {
+		return err
+	}
+	if len(stale) > 0 && !overwrite {
+		return errAdminMigrationNormalizeOutputStaleTmp
+	}
+	return nil
+}
+
+// adminMigrationInterruptedNormalizedSourceOutputDirs finds sibling temp
+// directories left by interrupted atomic source-bundle publications.
+func adminMigrationInterruptedNormalizedSourceOutputDirs(outputPath string) ([]string, error) {
+	outputPath = strings.TrimSpace(outputPath)
+	if outputPath == "" {
+		return nil, nil
+	}
+	parent := filepath.Dir(outputPath)
+	entries, err := os.ReadDir(parent)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	base := filepath.Base(outputPath)
+	prefixes := []string{"." + base + "-normalize-", "." + base + "-live-"}
+	var stale []string
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		for _, prefix := range prefixes {
+			if strings.HasPrefix(name, prefix) {
+				stale = append(stale, filepath.Join(parent, name))
+				break
+			}
+		}
+	}
+	sort.Strings(stale)
+	return stale, nil
+}
+
+func adminMigrationRemoveInterruptedNormalizedSourceOutputDirs(outputPath string) error {
+	stale, err := adminMigrationInterruptedNormalizedSourceOutputDirs(outputPath)
+	if err != nil {
+		return err
+	}
+	for _, path := range stale {
+		if err := os.RemoveAll(path); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -8504,6 +9592,8 @@ func adminMigrationNormalizeOutputFinding(err error) adminMigrationFinding {
 		return adminMigrationSourceErrorFinding("source_normalize_output_exists", "normalized source output already exists; pass --yes to replace it")
 	case errors.Is(err, errAdminMigrationNormalizeOutputOverlaps):
 		return adminMigrationSourceErrorFinding("source_normalize_output_overlaps_source", "normalized source output must not be written inside the source artifact")
+	case errors.Is(err, errAdminMigrationNormalizeOutputStaleTmp):
+		return adminMigrationSourceErrorFinding("source_normalize_output_interrupted", "normalized source output has interrupted temporary directories; inspect or remove them, or pass --yes to replace them")
 	default:
 		return adminMigrationSourceErrorFinding("source_normalize_output_unsafe", "normalized source output path is not safe to write")
 	}
@@ -9656,12 +10746,34 @@ func adminMigrationCutoverSourceBundleGate(out *adminMigrationCLIOutput, opts *a
 		Configured: true,
 		Message:    "normalized source evidence is readable for cutover freshness checks",
 		Details: map[string]string{
-			"source_path":   adminMigrationRedactMigrationPath(sourcePath),
-			"source_cursor": adminMigrationSourceSyncCursor(read),
-			"payloads":      fmt.Sprintf("%d", len(read.Bundle.Manifest.Payloads)),
+			"source_path":            adminMigrationRedactMigrationPath(sourcePath),
+			"source_cursor":          adminMigrationSourceSyncCursor(read),
+			"source_type":            read.Bundle.SourceType,
+			"source_origin":          adminMigrationSourceBundleOrigin(read.Bundle.SourceType),
+			"source_live_extraction": fmt.Sprintf("%t", adminMigrationSourceBundleIsLiveExtraction(read.Bundle.SourceType)),
+			"format_version":         read.Bundle.FormatVersion,
+			"payloads":               fmt.Sprintf("%d", len(read.Bundle.Manifest.Payloads)),
 		},
 	})
 	return read, true
+}
+
+// adminMigrationSourceBundleOrigin keeps cutover evidence explicit about
+// whether the source cursor came from direct live extraction or prepared files.
+func adminMigrationSourceBundleOrigin(sourceType string) string {
+	if adminMigrationSourceBundleIsLiveExtraction(sourceType) {
+		return "live_extraction"
+	}
+	if strings.TrimSpace(sourceType) == "" {
+		return "unknown"
+	}
+	return "prepared_artifact_bundle"
+}
+
+// adminMigrationSourceBundleIsLiveExtraction centralizes the live-source marker
+// used by extraction, source import/sync, shadow comparison, and cutover gates.
+func adminMigrationSourceBundleIsLiveExtraction(sourceType string) bool {
+	return strings.TrimSpace(sourceType) == "live_chef_infra_server"
 }
 
 // adminMigrationCutoverSourceFreezeGate records the explicit source-freeze
@@ -10581,9 +11693,9 @@ func adminMigrationFirstCoreObjectChecks(orgName string, org bootstrap.CoreObjec
 	if name, ok := adminMigrationFirstMapKey(org.PolicyGroups); ok {
 		checks = append(checks, adminMigrationReadCheck("policy_groups", name, adminPath("organizations", orgName, "policy_groups", name)))
 	}
-	if id, ok := adminMigrationFirstMapKey(org.Sandboxes); ok {
-		checks = append(checks, adminMigrationReadCheck("sandboxes", id, adminPath("organizations", orgName, "sandboxes", id)))
-	}
+	// Sandbox rows are restored and counted, but Chef's supported sandbox HTTP
+	// surface is create/commit-oriented; rehearsing a GET would invent a route
+	// that OpenCook correctly reports as method-not-allowed.
 	return checks
 }
 
@@ -12369,6 +13481,20 @@ func bindAdminMigrationScopeFlags(fs *flag.FlagSet, opts *adminMigrationFlagValu
 	fs.BoolVar(&opts.allOrgs, "all-orgs", false, "validate all organizations")
 }
 
+// bindAdminMigrationLiveSourceFlags keeps source Chef connection settings
+// command-local so normal OpenCook runtime config never points at source Chef.
+func bindAdminMigrationLiveSourceFlags(fs *flag.FlagSet, opts *adminMigrationFlagValues) {
+	fs.StringVar(&opts.sourcePostgresDSN, "source-postgres-dsn", "", "read-only Chef Server PostgreSQL source DSN")
+	fs.StringVar(&opts.sourceBookshelfRoot, "source-bookshelf-root", "", "read-only local Bookshelf checksum root")
+	fs.StringVar(&opts.sourceBlobURL, "source-blob-url", "", "read-only source blob provider URL")
+	fs.StringVar(&opts.sourceServerURL, "source-server-url", "", "optional read-only Chef Server HTTP URL")
+	fs.StringVar(&opts.sourceRequestorName, "source-requestor-name", "", "optional source Chef requestor name for signed reads")
+	fs.StringVar(&opts.sourceRequestorType, "source-requestor-type", "", "optional source Chef requestor type for signed reads")
+	fs.StringVar(&opts.sourcePrivateKeyPath, "source-private-key", "", "optional source Chef private key path for signed reads")
+	fs.BoolVar(&opts.copyBlobs, "copy-blobs", false, "copy checksum blob bytes into the normalized source bundle")
+	fs.BoolVar(&opts.referenceBlobs, "reference-blobs", false, "record checksum blob references without copying blob bytes")
+}
+
 // validateAdminMigrationScope keeps org scoping compatible with existing admin
 // commands by rejecting ambiguous one-org plus all-org requests.
 func validateAdminMigrationScope(opts *adminMigrationFlagValues) (int, bool) {
@@ -13658,6 +14784,8 @@ func adminMigrationOperatorNextSteps(out adminMigrationCLIOutput) []string {
 		return []string{"inspect the backup bundle before restore", "run restore preflight against the intended target"}
 	case "migration_restore_apply":
 		return []string{"restart the restored target", "enable maintenance, reindex OpenSearch, run search check, then cutover rehearsal"}
+	case "migration_source_live_extract":
+		return []string{"run source import preflight/apply against the verified live-extracted bundle", "then run source sync, search, shadow, and cutover rehearsal evidence before client cutover"}
 	case "migration_source_import_apply":
 		return []string{"run source sync after any later source snapshot", "rebuild OpenSearch and capture search/shadow evidence before cutover"}
 	case "migration_source_sync_apply":
@@ -14097,6 +15225,8 @@ func (c *command) printAdminMigrationUsage(w io.Writer) {
   opencook admin migration scale-fixture create --output PATH [--profile small|medium|large] [--yes] [--json] [--with-timing]
   opencook admin migration source inventory PATH [--json] [--with-timing]
   opencook admin migration source normalize PATH --output PATH [--yes] [--json] [--with-timing]
+  opencook admin migration source live preflight --source-postgres-dsn DSN [--source-bookshelf-root PATH|--source-blob-url URL] [--source-server-url URL --source-requestor-name NAME --source-private-key PATH] [--org ORG|--all-orgs] [--json] [--with-timing]
+  opencook admin migration source live extract --source-postgres-dsn DSN --output PATH [--source-bookshelf-root PATH|--source-blob-url URL] [--source-server-url URL --source-requestor-name NAME --source-private-key PATH] [--org ORG|--all-orgs] [--copy-blobs|--reference-blobs] [--dry-run] [--yes] [--json] [--with-timing]
   opencook admin migration source import preflight PATH --offline [--json] [--with-timing]
   opencook admin migration source import apply PATH --offline [--dry-run|--yes] [--progress PATH] [--json] [--with-timing]
   opencook admin migration source sync preflight PATH --offline [--progress PATH] [--json] [--with-timing]
@@ -14106,8 +15236,8 @@ func (c *command) printAdminMigrationUsage(w io.Writer) {
 
 Migration commands validate target readiness, write/inspect OpenCook logical
 backup bundles, restore offline targets, generate deterministic production-scale
-validation fixtures, and inventory or normalize read-only Chef Server source
-artifacts. Source import preflight validates a normalized
+validation fixtures, and inventory, normalize, or plan read-only live Chef
+Server source extraction. Source import preflight validates a normalized
 bundle and target readiness without writing OpenCook, blob, or search state;
 source import apply copies or verifies blobs before offline PostgreSQL metadata
 writes and records retry progress for non-transactional blob phases. Source
@@ -14127,6 +15257,15 @@ Flags:
   --profile small|medium|large
   --manifest PATH
   --source PATH
+  --source-postgres-dsn DSN
+  --source-bookshelf-root PATH
+  --source-blob-url URL
+  --source-server-url URL
+  --source-requestor-name NAME
+  --source-requestor-type user|client
+  --source-private-key PATH
+  --copy-blobs
+  --reference-blobs
   --source-import-progress PATH
   --source-sync-progress PATH
   --search-check-result PATH

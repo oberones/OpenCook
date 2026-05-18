@@ -27,6 +27,27 @@ source_search_result="$state_dir/source-migration-search-check.json"
 source_shadow_result="$state_dir/source-migration-shadow-compare.json"
 source_cutover_result="$state_dir/source-migration-cutover-rehearsal.json"
 source_backup_create_result="$state_dir/source-migration-backup-create.json"
+live_source_root="${OPENCOOK_FUNCTIONAL_LIVE_SOURCE_STATE_DIR:-$state_dir/live-source}"
+live_source_db="${OPENCOOK_FUNCTIONAL_LIVE_SOURCE_DB:-opencook_live_source}"
+live_source_admin_dsn="${OPENCOOK_FUNCTIONAL_LIVE_SOURCE_POSTGRES_ADMIN_DSN:-$restore_admin_dsn}"
+live_source_dsn="${OPENCOOK_FUNCTIONAL_LIVE_SOURCE_POSTGRES_DSN:-postgres://opencook:opencook@postgres:5432/$live_source_db?sslmode=disable}"
+live_source_dir="${OPENCOOK_FUNCTIONAL_LIVE_SOURCE_DIR:-$live_source_root/source}"
+live_source_bookshelf_dir="${OPENCOOK_FUNCTIONAL_LIVE_SOURCE_BOOKSHELF_ROOT:-$live_source_root/bookshelf}"
+live_source_backup_dir="${OPENCOOK_FUNCTIONAL_LIVE_SOURCE_BACKUP_DIR:-$live_source_root/backup}"
+live_source_import_progress="$live_source_root/opencook-source-import-progress.json"
+live_source_sync_progress="$live_source_root/opencook-source-sync-progress.json"
+live_source_import_sentinel="$live_source_root/source-import-complete"
+live_source_preflight_result="$live_source_root/migration-live-source-preflight.json"
+live_source_extract_result="$live_source_root/migration-live-source-extract.json"
+live_source_import_preflight_result="$live_source_root/migration-live-source-import-preflight.json"
+live_source_import_result="$live_source_root/migration-live-source-import-apply.json"
+live_source_reindex_result="$live_source_root/migration-live-source-reindex.json"
+live_source_search_result="$live_source_root/migration-live-source-search-check.json"
+live_source_sync_result="$live_source_root/migration-live-source-sync-apply.json"
+live_source_shadow_result="$live_source_root/migration-live-source-shadow-compare.json"
+live_source_backup_create_result="$live_source_root/migration-live-source-backup-create.json"
+live_source_cutover_result="$live_source_root/migration-live-source-cutover-rehearsal.json"
+live_source_checksum="2bf4a922bbf40fb1ae4268646116853c"
 scale_profile="${OPENCOOK_FUNCTIONAL_SCALE_PROFILE:-small}"
 scale_root="${OPENCOOK_FUNCTIONAL_SCALE_STATE_DIR:-$state_dir/migration-scale/$scale_profile}"
 scale_source_dir="${OPENCOOK_FUNCTIONAL_SCALE_SOURCE_DIR:-$scale_root/source}"
@@ -213,6 +234,22 @@ clean_source_artifacts() {
     "$source_backup_create_result"
 }
 
+# require_live_source_artifact_paths keeps live-source fixture outputs inside
+# the Compose-managed functional state volume, matching scale fixture safety.
+require_live_source_artifact_paths() {
+  require_state_dir_artifact_path "$live_source_root"
+  require_state_dir_artifact_path "$live_source_dir"
+  require_state_dir_artifact_path "$live_source_bookshelf_dir"
+  require_state_dir_artifact_path "$live_source_backup_dir"
+}
+
+# clean_live_source_artifacts removes generated live-source fixtures and
+# evidence unless the caller explicitly keeps the functional stack artifacts.
+clean_live_source_artifacts() {
+  require_live_source_artifact_paths
+  remove_source_tree_artifact "$live_source_root"
+}
+
 # require_scale_artifact_paths keeps production-scale fixture output inside the
 # Compose-managed functional volume even when callers override path variables.
 require_scale_artifact_paths() {
@@ -270,6 +307,152 @@ restore_database_has_bootstrap_state() {
   fi
   org_count="${org_count//[[:space:]]/}"
   [[ "$org_count" != "0" ]]
+}
+
+prepare_live_source_fixture() {
+  require_live_source_artifact_paths
+  mkdir -p "$live_source_root" "$live_source_bookshelf_dir"
+  printf 'live source cookbook blob bytes' >"$live_source_bookshelf_dir/$live_source_checksum"
+
+  local public_key
+  public_key="$(cat /src/test/functional/fixtures/bootstrap_public.pem)"
+
+  psql "$live_source_admin_dsn" -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS \"$live_source_db\" WITH (FORCE)"
+  psql "$live_source_admin_dsn" -v ON_ERROR_STOP=1 -c "CREATE DATABASE \"$live_source_db\""
+
+  # This intentionally tiny schema is a deterministic stand-in for live Chef
+  # Server PostgreSQL. It includes only the columns the read-only extractor uses.
+  psql "$live_source_dsn" -v ON_ERROR_STOP=1 \
+    -v org="$org" \
+    -v public_key="$public_key" \
+    -v checksum="$live_source_checksum" <<'SQL'
+CREATE TABLE users (id text PRIMARY KEY, username text NOT NULL, email text, serialized_object jsonb NOT NULL DEFAULT '{}'::jsonb, admin boolean NOT NULL DEFAULT false, authz_id text NOT NULL);
+CREATE TABLE keys (id text NOT NULL, key_name text NOT NULL, public_key text NOT NULL, expires_at timestamptz NOT NULL);
+CREATE TABLE orgs (id text PRIMARY KEY, name text NOT NULL, full_name text NOT NULL, authz_id text NOT NULL);
+CREATE TABLE org_user_associations (org_id text, user_id text);
+CREATE TABLE clients (id text PRIMARY KEY, org_id text NOT NULL, name text NOT NULL, validator boolean NOT NULL DEFAULT false, admin boolean NOT NULL DEFAULT false, public_key text, authz_id text NOT NULL);
+CREATE TABLE groups (id text PRIMARY KEY, org_id text NOT NULL, name text NOT NULL, authz_id text NOT NULL);
+CREATE TABLE containers (id text PRIMARY KEY, org_id text NOT NULL, name text NOT NULL, authz_id text NOT NULL);
+CREATE TABLE auth_container (id text PRIMARY KEY, authz_id text NOT NULL);
+CREATE TABLE auth_actor (id text PRIMARY KEY, authz_id text NOT NULL);
+CREATE TABLE auth_group (id text PRIMARY KEY, authz_id text NOT NULL);
+CREATE TABLE auth_object (id text PRIMARY KEY, authz_id text NOT NULL);
+CREATE TABLE object_acl_group (target text NOT NULL, authorizee text NOT NULL, permission text NOT NULL);
+CREATE TABLE object_acl_actor (target text NOT NULL, authorizee text NOT NULL, permission text NOT NULL);
+CREATE TABLE actor_acl_group (target text NOT NULL, authorizee text NOT NULL, permission text NOT NULL);
+CREATE TABLE actor_acl_actor (target text NOT NULL, authorizee text NOT NULL, permission text NOT NULL);
+CREATE TABLE group_acl_group (target text NOT NULL, authorizee text NOT NULL, permission text NOT NULL);
+CREATE TABLE group_acl_actor (target text NOT NULL, authorizee text NOT NULL, permission text NOT NULL);
+CREATE TABLE container_acl_group (target text NOT NULL, authorizee text NOT NULL, permission text NOT NULL);
+CREATE TABLE container_acl_actor (target text NOT NULL, authorizee text NOT NULL, permission text NOT NULL);
+CREATE TABLE group_group_relations (parent text NOT NULL, child text NOT NULL);
+CREATE TABLE group_actor_relations (parent text NOT NULL, child text NOT NULL);
+CREATE TABLE nodes (id text PRIMARY KEY, org_id text NOT NULL, authz_id text NOT NULL, name text NOT NULL, environment text NOT NULL, policy_name text, policy_group text, serialized_object bytea NOT NULL);
+CREATE TABLE environments (id text PRIMARY KEY, org_id text NOT NULL, authz_id text NOT NULL, name text NOT NULL, serialized_object bytea NOT NULL);
+CREATE TABLE roles (id text PRIMARY KEY, org_id text NOT NULL, authz_id text NOT NULL, name text NOT NULL, serialized_object bytea NOT NULL);
+CREATE TABLE data_bags (id text PRIMARY KEY, org_id text NOT NULL, authz_id text NOT NULL, name text NOT NULL);
+CREATE TABLE data_bag_items (id text PRIMARY KEY, org_id text NOT NULL, data_bag_name text NOT NULL, item_name text NOT NULL, serialized_object bytea NOT NULL);
+CREATE TABLE policies (id text PRIMARY KEY, org_id text NOT NULL, authz_id text NOT NULL, name text NOT NULL);
+CREATE TABLE policy_revisions (id text PRIMARY KEY, org_id text NOT NULL, name text NOT NULL, revision_id text NOT NULL, serialized_object bytea NOT NULL);
+CREATE TABLE policy_groups (id text PRIMARY KEY, org_id text NOT NULL, authz_id text NOT NULL, name text NOT NULL, serialized_object bytea NOT NULL);
+CREATE TABLE policy_revisions_policy_groups_association (org_id text NOT NULL, policy_group_name text NOT NULL, policy_revision_name text NOT NULL, policy_revision_revision_id text NOT NULL);
+CREATE TABLE checksums (org_id text NOT NULL, checksum text NOT NULL);
+CREATE TABLE sandboxed_checksums (org_id text NOT NULL, sandbox_id text NOT NULL, checksum text NOT NULL);
+CREATE TABLE cookbooks (id text PRIMARY KEY, org_id text NOT NULL, name text NOT NULL);
+CREATE TABLE cookbook_versions (id text PRIMARY KEY, org_id text NOT NULL, serialized_object bytea NOT NULL, metadata bytea NOT NULL, name text NOT NULL, major integer NOT NULL, minor integer NOT NULL, patch integer NOT NULL);
+CREATE TABLE cookbook_version_checksums (cookbook_version_id text NOT NULL, org_id text NOT NULL, checksum text NOT NULL);
+CREATE TABLE cookbook_artifacts (id text PRIMARY KEY, org_id text NOT NULL, name text NOT NULL);
+CREATE TABLE cookbook_artifact_versions (id text PRIMARY KEY, cookbook_artifact_id text NOT NULL, serialized_object bytea NOT NULL, metadata bytea NOT NULL, identifier text NOT NULL);
+CREATE TABLE cookbook_artifact_version_checksums (cookbook_artifact_version_id text NOT NULL, org_id text NOT NULL, checksum text NOT NULL);
+
+INSERT INTO users VALUES ('user-pivotal', 'pivotal', 'pivotal@example.test', jsonb_build_object('display_name', 'Pivotal User'), true, 'actor-pivotal');
+INSERT INTO auth_actor VALUES ('actor-row-pivotal', 'actor-pivotal');
+INSERT INTO keys VALUES ('user-pivotal', 'default', :'public_key', 'infinity'::timestamptz);
+
+INSERT INTO orgs VALUES ('org-' || :'org', :'org', 'Ponyville', 'object-org-' || :'org');
+INSERT INTO org_user_associations VALUES ('org-' || :'org', 'user-pivotal');
+INSERT INTO auth_object VALUES ('object-row-org', 'object-org-' || :'org');
+
+INSERT INTO clients VALUES ('client-validator', 'org-' || :'org', :'org' || '-validator', true, false, :'public_key', 'actor-validator');
+INSERT INTO auth_actor VALUES ('actor-row-validator', 'actor-validator');
+INSERT INTO keys VALUES ('client-validator', 'default', :'public_key', 'infinity'::timestamptz);
+
+INSERT INTO groups
+SELECT 'group-' || name, 'org-' || :'org', name, 'group-' || name
+FROM unnest(ARRAY['admins','billing-admins','users','clients']) AS name;
+INSERT INTO auth_group
+SELECT 'auth-group-' || name, 'group-' || name
+FROM unnest(ARRAY['admins','billing-admins','users','clients']) AS name;
+
+INSERT INTO containers
+SELECT 'container-' || name, 'org-' || :'org', name, 'container-' || name
+FROM unnest(ARRAY['clients','containers','cookbooks','data','environments','groups','nodes','roles','sandboxes','policies','policy_groups','cookbook_artifacts']) AS name;
+INSERT INTO auth_container
+SELECT 'auth-container-' || name, 'container-' || name
+FROM unnest(ARRAY['clients','containers','cookbooks','data','environments','groups','nodes','roles','sandboxes','policies','policy_groups','cookbook_artifacts']) AS name;
+
+INSERT INTO group_actor_relations
+SELECT admins.id, pivotal.id
+FROM auth_group admins, auth_actor pivotal
+WHERE admins.authz_id = 'group-admins' AND pivotal.authz_id = 'actor-pivotal';
+INSERT INTO group_actor_relations
+SELECT clients.id, validator.id
+FROM auth_group clients, auth_actor validator
+WHERE clients.authz_id = 'group-clients' AND validator.authz_id = 'actor-validator';
+
+INSERT INTO nodes VALUES ('node-web01', 'org-' || :'org', 'object-node-web01', 'web01', '_default', 'base', 'prod',
+	convert_to(jsonb_build_object('name', 'web01', 'chef_environment', '_default', 'run_list', jsonb_build_array('role[web]'), 'normal', jsonb_build_object('app', 'opencook'), 'default', '{}'::jsonb, 'override', '{}'::jsonb, 'automatic', '{}'::jsonb, 'policy_name', 'base', 'policy_group', 'prod')::text, 'UTF8'));
+INSERT INTO environments VALUES ('env-default', 'org-' || :'org', 'object-env-default', '_default',
+	convert_to(jsonb_build_object('name', '_default', 'description', 'The default Chef environment', 'cookbook_versions', '{}'::jsonb)::text, 'UTF8'));
+INSERT INTO roles VALUES ('role-web', 'org-' || :'org', 'object-role-web', 'web',
+	convert_to(jsonb_build_object('name', 'web', 'run_list', jsonb_build_array('recipe[base]'), 'env_run_lists', jsonb_build_object('_default', jsonb_build_array('recipe[base]')))::text, 'UTF8'));
+INSERT INTO data_bags VALUES ('bag-secrets', 'org-' || :'org', 'object-bag-secrets', 'secrets');
+INSERT INTO data_bag_items VALUES ('item-secrets-db', 'org-' || :'org', 'secrets', 'db',
+	convert_to(jsonb_build_object('id', 'db', 'encrypted_data', 'fixture', 'iv', 'still-opaque')::text, 'UTF8'));
+INSERT INTO policies VALUES ('policy-base', 'org-' || :'org', 'object-policy-base', 'base');
+INSERT INTO policy_revisions VALUES ('policy-base-rev', 'org-' || :'org', 'base', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+	convert_to(jsonb_build_object('name', 'base', 'revision_id', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'run_list', jsonb_build_array('recipe[base]'), 'named_run_lists', '{}'::jsonb, 'cookbook_locks', '{}'::jsonb, 'solution_dependencies', '{}'::jsonb)::text, 'UTF8'));
+INSERT INTO policy_groups VALUES ('policy-group-prod', 'org-' || :'org', 'object-policy-group-prod', 'prod',
+	convert_to(jsonb_build_object('name', 'prod')::text, 'UTF8'));
+INSERT INTO policy_revisions_policy_groups_association VALUES ('org-' || :'org', 'prod', 'base', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
+INSERT INTO checksums VALUES ('org-' || :'org', :'checksum');
+INSERT INTO sandboxed_checksums VALUES ('org-' || :'org', 'sandbox-fixture', :'checksum');
+
+INSERT INTO cookbooks VALUES ('cookbook-base', 'org-' || :'org', 'base');
+INSERT INTO cookbook_versions VALUES ('cookbook-base-1', 'org-' || :'org',
+	convert_to(jsonb_build_object('name', 'base-1.0.0', 'cookbook_name', 'base', 'version', '1.0.0', 'all_files', jsonb_build_array(jsonb_build_object('name', 'default.rb', 'path', 'recipes/default.rb', 'checksum', :'checksum', 'specificity', 'default')), 'recipes', jsonb_build_array(jsonb_build_object('name', 'default.rb', 'path', 'recipes/default.rb', 'checksum', :'checksum', 'specificity', 'default')))::text, 'UTF8'),
+	convert_to(jsonb_build_object('name', 'base', 'version', '1.0.0', 'dependencies', '{}'::jsonb, 'platforms', '{}'::jsonb)::text, 'UTF8'),
+	'base', 1, 0, 0);
+INSERT INTO cookbook_version_checksums VALUES ('cookbook-base-1', 'org-' || :'org', :'checksum');
+INSERT INTO cookbook_artifacts VALUES ('artifact-base', 'org-' || :'org', 'base');
+INSERT INTO cookbook_artifact_versions VALUES ('artifact-base-1', 'artifact-base',
+	convert_to(jsonb_build_object('name', 'base', 'identifier', 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 'version', '1.0.0', 'all_files', jsonb_build_array(jsonb_build_object('name', 'default.rb', 'path', 'recipes/default.rb', 'checksum', :'checksum', 'specificity', 'default')), 'recipes', jsonb_build_array(jsonb_build_object('name', 'default.rb', 'path', 'recipes/default.rb', 'checksum', :'checksum', 'specificity', 'default')))::text, 'UTF8'),
+	convert_to(jsonb_build_object('name', 'base', 'version', '1.0.0', 'dependencies', '{}'::jsonb, 'platforms', '{}'::jsonb)::text, 'UTF8'),
+	'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb');
+INSERT INTO cookbook_artifact_version_checksums VALUES ('artifact-base-1', 'org-' || :'org', :'checksum');
+
+INSERT INTO auth_object
+SELECT id, authz_id
+FROM (VALUES
+	('object-row-node-web01', 'object-node-web01'),
+	('object-row-env-default', 'object-env-default'),
+	('object-row-role-web', 'object-role-web'),
+	('object-row-bag-secrets', 'object-bag-secrets'),
+	('object-row-policy-base', 'object-policy-base'),
+	('object-row-policy-group-prod', 'object-policy-group-prod')
+) AS objects(id, authz_id);
+
+CREATE TEMP TABLE live_acl_permissions(permission text);
+INSERT INTO live_acl_permissions VALUES ('create'), ('read'), ('update'), ('delete'), ('grant');
+INSERT INTO actor_acl_actor SELECT id, 'actor-row-pivotal', permission FROM auth_actor CROSS JOIN live_acl_permissions WHERE authz_id IN ('actor-pivotal', 'actor-validator');
+INSERT INTO actor_acl_group SELECT id, 'auth-group-admins', permission FROM auth_actor CROSS JOIN live_acl_permissions WHERE authz_id IN ('actor-pivotal', 'actor-validator');
+INSERT INTO group_acl_actor SELECT id, 'actor-row-pivotal', permission FROM auth_group CROSS JOIN live_acl_permissions;
+INSERT INTO group_acl_group SELECT id, 'auth-group-admins', permission FROM auth_group CROSS JOIN live_acl_permissions;
+INSERT INTO container_acl_actor SELECT id, 'actor-row-pivotal', permission FROM auth_container CROSS JOIN live_acl_permissions;
+INSERT INTO container_acl_group SELECT id, 'auth-group-admins', permission FROM auth_container CROSS JOIN live_acl_permissions;
+INSERT INTO object_acl_actor SELECT id, 'actor-row-pivotal', permission FROM auth_object CROSS JOIN live_acl_permissions;
+INSERT INTO object_acl_group SELECT id, 'auth-group-admins', permission FROM auth_object CROSS JOIN live_acl_permissions;
+SQL
 }
 
 ensure_restore_target_ready() {
@@ -717,6 +900,275 @@ run_migration_source_all() {
   fi
 }
 
+# require_live_source_bundle lazily prepares and extracts the deterministic
+# live-source PostgreSQL fixture so each phase can run independently.
+require_live_source_bundle() {
+  if [[ -f "$live_source_dir/opencook-source-manifest.json" ]]; then
+    return 0
+  fi
+  run_migration_live_source_extract
+}
+
+live_source_imported_target_ready() {
+  [[ -f "$live_source_import_sentinel" ]] && restore_database_has_bootstrap_state
+}
+
+# require_live_source_imported_target imports the live-extracted bundle into the
+# restore target when a later phase needs PostgreSQL-backed OpenCook state.
+require_live_source_imported_target() {
+  require_live_source_bundle
+  if live_source_imported_target_ready; then
+    return 0
+  fi
+  echo "live source import target is missing; importing extracted source before continuing"
+  run_migration_live_source_import
+}
+
+require_live_source_search_evidence() {
+  require_live_source_imported_target
+  if [[ -f "$live_source_search_result" ]]; then
+    return 0
+  fi
+  run_migration_live_source_reindex
+}
+
+require_live_source_sync_progress() {
+  require_live_source_imported_target
+  if [[ -f "$live_source_sync_progress" ]]; then
+    return 0
+  fi
+
+  echo "==> migration live source sync apply"
+  if ! admin_restore_target migration source sync apply "$live_source_dir" --offline --yes --progress "$live_source_sync_progress" --with-timing --json >"$live_source_sync_result"; then
+    echo "migration live source sync command failed; output:" >&2
+    print_file_if_exists "$live_source_sync_result"
+    return 1
+  fi
+  require_json_contains "$live_source_sync_result" '"command": "migration_source_sync_apply"'
+  require_json_contains "$live_source_sync_result" '"source_sync_write"'
+  require_json_contains "$live_source_sync_progress" '"last_status": "applied"'
+}
+
+require_live_source_shadow_result() {
+  require_live_source_search_evidence
+  if [[ -f "$live_source_shadow_result" ]]; then
+    return 0
+  fi
+  run_migration_live_source_shadow
+}
+
+ensure_live_source_cutover_manifest() {
+  require_live_source_imported_target
+  if [[ -f "$live_source_backup_dir/manifest.json" ]]; then
+    return 0
+  fi
+
+  echo "==> migration live source backup manifest for cutover rehearsal"
+  rm -rf "$live_source_backup_dir"
+  if ! admin_restore_target migration backup create --output "$live_source_backup_dir" --offline --yes --with-timing --json >"$live_source_backup_create_result"; then
+    echo "migration live source backup create command failed; output:" >&2
+    print_file_if_exists "$live_source_backup_create_result"
+    return 1
+  fi
+  require_json_contains "$live_source_backup_create_result" '"command": "migration_backup_create"'
+  require_json_contains "$live_source_backup_create_result" '"write_backup_bundle"'
+  test -f "$live_source_backup_dir/manifest.json"
+}
+
+run_migration_live_source_preflight() {
+  build_cli
+  require_live_source_artifact_paths
+  if ! keep_functional_artifacts; then
+    clean_live_source_artifacts
+  fi
+  prepare_live_source_fixture
+
+  echo "==> migration live source preflight"
+  if ! admin migration source live preflight \
+    --source-postgres-dsn "$live_source_dsn" \
+    --source-bookshelf-root "$live_source_bookshelf_dir" \
+    --org "$org" \
+    --with-timing \
+    --json >"$live_source_preflight_result"; then
+    echo "migration live source preflight command failed; output:" >&2
+    print_file_if_exists "$live_source_preflight_result"
+    return 1
+  fi
+  require_json_contains "$live_source_preflight_result" '"command": "migration_source_live_preflight"'
+  require_json_contains "$live_source_preflight_result" '"source_postgres"'
+  require_json_contains "$live_source_preflight_result" '"source_schema"'
+  require_json_contains "$live_source_preflight_result" '"read_only": "true"'
+}
+
+run_migration_live_source_extract() {
+  build_cli
+  require_live_source_artifact_paths
+  if ! keep_functional_artifacts; then
+    clean_live_source_artifacts
+  fi
+  prepare_live_source_fixture
+
+  echo "==> migration live source extract"
+  if ! admin migration source live extract \
+    --source-postgres-dsn "$live_source_dsn" \
+    --source-bookshelf-root "$live_source_bookshelf_dir" \
+    --copy-blobs \
+    --org "$org" \
+    --output "$live_source_dir" \
+    --yes \
+    --with-timing \
+    --json >"$live_source_extract_result"; then
+    echo "migration live source extract command failed; output:" >&2
+    print_file_if_exists "$live_source_extract_result"
+    return 1
+  fi
+  require_json_contains "$live_source_extract_result" '"command": "migration_source_live_extract"'
+  require_json_contains "$live_source_extract_result" '"source_bootstrap"'
+  require_json_contains "$live_source_extract_result" '"source_blob"'
+  require_json_contains "$live_source_extract_result" '"normalized_source_output"'
+  require_json_contains "$live_source_extract_result" '"source_type": "live_chef_infra_server"'
+  test -f "$live_source_dir/opencook-source-manifest.json"
+}
+
+run_migration_live_source_import() {
+  build_cli
+  require_live_source_bundle
+  reset_restore_target
+  rm -rf "$live_source_backup_dir"
+  rm -f "$live_source_import_progress" "$live_source_sync_progress" "$live_source_search_result" "$live_source_reindex_result" "$live_source_shadow_result" "$live_source_cutover_result" "$live_source_backup_create_result"
+
+  echo "==> migration live source import preflight"
+  if ! admin_restore_target migration source import preflight "$live_source_dir" --offline --with-timing --json >"$live_source_import_preflight_result"; then
+    echo "migration live source import preflight command failed; output:" >&2
+    print_file_if_exists "$live_source_import_preflight_result"
+    return 1
+  fi
+  require_json_contains "$live_source_import_preflight_result" '"command": "migration_source_import_preflight"'
+  require_json_contains "$live_source_import_preflight_result" '"source_type": "live_chef_infra_server"'
+  require_json_contains "$live_source_import_preflight_result" '"source_import_target"'
+
+  echo "==> migration live source import apply"
+  if ! admin_restore_target migration source import apply "$live_source_dir" --offline --yes --progress "$live_source_import_progress" --with-timing --json >"$live_source_import_result"; then
+    echo "migration live source import command failed; output:" >&2
+    print_file_if_exists "$live_source_import_result"
+    return 1
+  fi
+  require_json_contains "$live_source_import_result" '"command": "migration_source_import_apply"'
+  require_json_contains "$live_source_import_result" '"source_import_blobs"'
+  require_json_contains "$live_source_import_result" '"source_import_write"'
+  require_json_contains "$live_source_import_progress" '"metadata_imported": true'
+  touch "$live_source_import_sentinel"
+}
+
+run_migration_live_source_reindex() {
+  build_cli
+  require_live_source_imported_target
+
+  echo "==> migration live source complete reindex"
+  if ! run_restore_json_under_maintenance reindex "functional live source imported target reindex" "$live_source_reindex_result" \
+    admin_restore_target reindex --all-orgs --complete --with-timing --json; then
+    echo "migration live source reindex command failed; output:" >&2
+    print_file_if_exists "$live_source_reindex_result"
+    return 1
+  fi
+  require_json_contains "$live_source_reindex_result" '"ok": true'
+  require_json_contains "$live_source_reindex_result" '"command": "reindex"'
+  require_json_contains "$live_source_reindex_result" '"mode": "complete"'
+
+  echo "==> migration live source search consistency check"
+  if ! admin_restore_target search check --all-orgs --with-timing --json >"$live_source_search_result"; then
+    echo "migration live source search check command failed; output:" >&2
+    print_file_if_exists "$live_source_search_result"
+    return 1
+  fi
+  require_json_contains "$live_source_search_result" '"ok": true'
+  require_json_contains "$live_source_search_result" '"command": "search_check"'
+  require_json_contains "$live_source_search_result" '"clean": 1'
+}
+
+run_migration_live_source_shadow() {
+  build_cli
+  require_live_source_search_evidence
+
+  echo "==> migration live source shadow-read comparison"
+  start_restore_server
+  if ! admin migration shadow compare \
+    --source "$live_source_dir" \
+    --target-server-url "$restore_server_url" \
+    --requestor-name "$admin_requestor" \
+    --requestor-type user \
+    --private-key "$admin_private_key" \
+    --server-api-version "${OPENCOOK_ADMIN_SERVER_API_VERSION:-1}" \
+    --with-timing \
+    --json >"$live_source_shadow_result"; then
+    echo "migration live source shadow compare command failed; output:" >&2
+    print_file_if_exists "$live_source_shadow_result"
+    echo "restore server log:" >&2
+    print_restore_server_log
+    return 1
+  fi
+  require_json_contains "$live_source_shadow_result" '"command": "migration_shadow_compare"'
+  require_json_contains "$live_source_shadow_result" '"shadow_read_compare"'
+  require_json_contains "$live_source_shadow_result" '"family": "shadow_failed"'
+  require_json_contains "$live_source_shadow_result" '"count": 0'
+  cleanup_restore_server
+  trap - EXIT
+}
+
+run_migration_live_source_rehearsal() {
+  build_cli
+  require_live_source_sync_progress
+  require_live_source_search_evidence
+  require_live_source_shadow_result
+  ensure_live_source_cutover_manifest
+
+  echo "==> migration live source cutover rehearsal"
+  start_restore_server
+  if ! admin migration cutover rehearse \
+    --manifest "$live_source_backup_dir/manifest.json" \
+    --source "$live_source_dir" \
+    --source-import-progress "$live_source_import_progress" \
+    --source-sync-progress "$live_source_sync_progress" \
+    --search-check-result "$live_source_search_result" \
+    --shadow-result "$live_source_shadow_result" \
+    --source-frozen \
+    --rollback-ready \
+    --server-url "$restore_server_url" \
+    --requestor-name "$admin_requestor" \
+    --requestor-type user \
+    --private-key "$admin_private_key" \
+    --server-api-version "${OPENCOOK_ADMIN_SERVER_API_VERSION:-1}" \
+    --with-timing \
+    --json >"$live_source_cutover_result"; then
+    echo "migration live source cutover rehearsal command failed; output:" >&2
+    print_file_if_exists "$live_source_cutover_result"
+    echo "restore server log:" >&2
+    print_restore_server_log
+    return 1
+  fi
+  require_json_contains "$live_source_cutover_result" '"command": "migration_cutover_rehearse"'
+  require_json_contains "$live_source_cutover_result" '"source_origin": "live_extraction"'
+  require_json_contains "$live_source_cutover_result" '"source_freeze_evidence"'
+  require_json_contains "$live_source_cutover_result" '"rollback_readiness"'
+  require_json_contains "$live_source_cutover_result" '"family": "cutover_blockers"'
+  require_json_contains "$live_source_cutover_result" '"count": 0'
+  cleanup_restore_server
+  trap - EXIT
+}
+
+run_migration_live_source_all() {
+  run_migration_live_source_preflight
+  run_migration_live_source_extract
+  run_migration_live_source_import
+  run_migration_live_source_reindex
+  run_migration_live_source_shadow
+  run_migration_live_source_rehearsal
+  echo "==> migration live-source functional flow passed successfully"
+  if ! keep_functional_artifacts; then
+    clean_live_source_artifacts
+  fi
+}
+
 # require_scale_source lazily creates the generated scale source bundle so each
 # scale phase can run independently in a fresh functional-test container.
 require_scale_source() {
@@ -1104,6 +1556,27 @@ case "$phase" in
     ;;
   migration-source-all)
     run_migration_source_all
+    ;;
+  migration-live-source-preflight)
+    run_migration_live_source_preflight
+    ;;
+  migration-live-source-extract)
+    run_migration_live_source_extract
+    ;;
+  migration-live-source-import)
+    run_migration_live_source_import
+    ;;
+  migration-live-source-reindex)
+    run_migration_live_source_reindex
+    ;;
+  migration-live-source-shadow)
+    run_migration_live_source_shadow
+    ;;
+  migration-live-source-rehearsal)
+    run_migration_live_source_rehearsal
+    ;;
+  migration-live-source-all)
+    run_migration_live_source_all
     ;;
   migration-scale-fixtures)
     run_migration_scale_fixtures
