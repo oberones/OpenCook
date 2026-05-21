@@ -44,12 +44,7 @@ func (s *server) handleNodes(w http.ResponseWriter, r *http.Request) {
 	case http.MethodDelete:
 		s.handleNodeDelete(w, r, state, org, basePath)
 	default:
-		writeJSON(w, http.StatusNotImplemented, map[string]any{
-			"error":   "not_implemented",
-			"message": "node method is not implemented yet",
-			"method":  r.Method,
-			"path":    r.URL.Path,
-		})
+		writeCoreObjectMethodNotAllowed(w, r.URL.Path, basePath, "method not allowed for nodes route", "method not allowed for node route")
 	}
 }
 
@@ -179,6 +174,11 @@ func (s *server) handleNodePost(w http.ResponseWriter, r *http.Request, state *b
 }
 
 func (s *server) handleNodePut(w http.ResponseWriter, r *http.Request, state *bootstrap.Service, org, basePath string) {
+	if matchesCollectionPath(r.URL.Path, basePath) {
+		writeMethodNotAllowed(w, "method not allowed for nodes route", http.MethodGet, http.MethodHead, http.MethodPost)
+		return
+	}
+
 	name, ok := pathTail(r.URL.Path, basePath+"/")
 	if !ok {
 		writeJSON(w, http.StatusNotFound, apiError{
@@ -222,6 +222,11 @@ func (s *server) handleNodePut(w http.ResponseWriter, r *http.Request, state *bo
 }
 
 func (s *server) handleNodeDelete(w http.ResponseWriter, r *http.Request, state *bootstrap.Service, org, basePath string) {
+	if matchesCollectionPath(r.URL.Path, basePath) {
+		writeMethodNotAllowed(w, "method not allowed for nodes route", http.MethodGet, http.MethodHead, http.MethodPost)
+		return
+	}
+
 	name, ok := pathTail(r.URL.Path, basePath+"/")
 	if !ok {
 		writeJSON(w, http.StatusNotFound, apiError{

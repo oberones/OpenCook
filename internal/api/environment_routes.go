@@ -45,10 +45,7 @@ func (s *server) handleEnvironments(w http.ResponseWriter, r *http.Request) {
 	case http.MethodDelete:
 		s.handleEnvironmentDelete(w, r, state, org, basePath)
 	default:
-		writeJSON(w, http.StatusMethodNotAllowed, apiError{
-			Error:   "method_not_allowed",
-			Message: "method not allowed for environments route",
-		})
+		writeCoreObjectMethodNotAllowed(w, r.URL.Path, basePath, "method not allowed for environments route", "method not allowed for environment route")
 	}
 }
 
@@ -131,10 +128,7 @@ func (s *server) handleEnvironmentNodes(w http.ResponseWriter, r *http.Request) 
 
 		w.WriteHeader(http.StatusOK)
 	default:
-		writeJSON(w, http.StatusMethodNotAllowed, apiError{
-			Error:   "method_not_allowed",
-			Message: "method not allowed for environment nodes route",
-		})
+		writeMethodNotAllowed(w, "method not allowed for environment nodes route", http.MethodGet, http.MethodHead)
 	}
 }
 
@@ -164,10 +158,7 @@ func (s *server) handleEnvironmentCookbooks(w http.ResponseWriter, r *http.Reque
 	}
 
 	if r.Method != http.MethodGet {
-		writeJSON(w, http.StatusMethodNotAllowed, apiError{
-			Error:   "method_not_allowed",
-			Message: "method not allowed for environment cookbooks route",
-		})
+		writeMethodNotAllowed(w, "method not allowed for environment cookbooks route", http.MethodGet)
 		return
 	}
 
@@ -213,10 +204,7 @@ func (s *server) handleEnvironmentRecipes(w http.ResponseWriter, r *http.Request
 	}
 
 	if r.Method != http.MethodGet {
-		writeJSON(w, http.StatusMethodNotAllowed, apiError{
-			Error:   "method_not_allowed",
-			Message: "method not allowed for environment recipes route",
-		})
+		writeMethodNotAllowed(w, "method not allowed for environment recipes route", http.MethodGet)
 		return
 	}
 	if !matchesCollectionPath(r.URL.Path, recipesPath) {
@@ -543,10 +531,7 @@ func (s *server) handleEnvironmentPost(w http.ResponseWriter, r *http.Request, s
 
 func (s *server) handleEnvironmentPut(w http.ResponseWriter, r *http.Request, state *bootstrap.Service, org, basePath string) {
 	if matchesCollectionPath(r.URL.Path, basePath) {
-		writeJSON(w, http.StatusMethodNotAllowed, apiError{
-			Error:   "method_not_allowed",
-			Message: "method not allowed on environments collection",
-		})
+		writeMethodNotAllowed(w, "method not allowed on environments collection", http.MethodGet, http.MethodHead, http.MethodPost)
 		return
 	}
 
@@ -599,10 +584,7 @@ func (s *server) handleEnvironmentPut(w http.ResponseWriter, r *http.Request, st
 
 func (s *server) handleEnvironmentDelete(w http.ResponseWriter, r *http.Request, state *bootstrap.Service, org, basePath string) {
 	if matchesCollectionPath(r.URL.Path, basePath) {
-		writeJSON(w, http.StatusMethodNotAllowed, apiError{
-			Error:   "method_not_allowed",
-			Message: "method not allowed on environments collection",
-		})
+		writeMethodNotAllowed(w, "method not allowed on environments collection", http.MethodGet, http.MethodHead, http.MethodPost)
 		return
 	}
 
