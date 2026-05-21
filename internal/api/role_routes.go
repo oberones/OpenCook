@@ -45,10 +45,7 @@ func (s *server) handleRoles(w http.ResponseWriter, r *http.Request) {
 	case http.MethodDelete:
 		s.handleRoleDelete(w, r, state, org, basePath)
 	default:
-		writeJSON(w, http.StatusMethodNotAllowed, apiError{
-			Error:   "method_not_allowed",
-			Message: "method not allowed for roles route",
-		})
+		writeCoreObjectMethodNotAllowed(w, r.URL.Path, basePath, "method not allowed for roles route", "method not allowed for role route")
 	}
 }
 
@@ -265,10 +262,7 @@ func (s *server) handleRolePost(w http.ResponseWriter, r *http.Request, state *b
 
 func (s *server) handleRolePut(w http.ResponseWriter, r *http.Request, state *bootstrap.Service, org, basePath string) {
 	if matchesCollectionPath(r.URL.Path, basePath) {
-		writeJSON(w, http.StatusMethodNotAllowed, apiError{
-			Error:   "method_not_allowed",
-			Message: "method not allowed on roles collection",
-		})
+		writeMethodNotAllowed(w, "method not allowed on roles collection", http.MethodGet, http.MethodHead, http.MethodPost)
 		return
 	}
 
@@ -316,10 +310,7 @@ func (s *server) handleRolePut(w http.ResponseWriter, r *http.Request, state *bo
 
 func (s *server) handleRoleDelete(w http.ResponseWriter, r *http.Request, state *bootstrap.Service, org, basePath string) {
 	if matchesCollectionPath(r.URL.Path, basePath) {
-		writeJSON(w, http.StatusMethodNotAllowed, apiError{
-			Error:   "method_not_allowed",
-			Message: "method not allowed on roles collection",
-		})
+		writeMethodNotAllowed(w, "method not allowed on roles collection", http.MethodGet, http.MethodHead, http.MethodPost)
 		return
 	}
 

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -8,6 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/oberones/OpenCook/internal/authz"
+	"github.com/oberones/OpenCook/internal/bootstrap"
 	"github.com/oberones/OpenCook/internal/search"
 	"github.com/oberones/OpenCook/internal/store/pg/pgtest"
 )
@@ -129,6 +132,129 @@ func TestAPIVersionNodeOmittedFieldsDefaultOnExplicitOrgAlias(t *testing.T) {
 	}
 	if _, ok := payload["policy_group"]; ok {
 		t.Fatalf("minimal node unexpectedly included policy_group: %v", payload)
+	}
+}
+
+func TestAPIVersionNodeValidationFailuresKeepExistingState(t *testing.T) {
+	router := newTestRouter(t)
+	name := "validated-node"
+	current := nodePayloadExpectation{
+		Name:            name,
+		JSONClass:       "Chef::Node",
+		ChefType:        "node",
+		ChefEnvironment: "_default",
+		Override:        map[string]any{"origin": "create"},
+		Normal:          map[string]any{"team": "friendship"},
+		Default:         map[string]any{"build": "055"},
+		Automatic:       map[string]any{"platform": "equestria"},
+		RunList:         []string{"base", "role[web]"},
+		PolicyName:      "delivery-app",
+		PolicyGroup:     "prod-blue",
+	}
+	createRec := serveSignedAPIVersionRequest(t, router, "pivotal", http.MethodPost, "/nodes", mustMarshalAPIVersionNodePayload(t, current), "2")
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("create baseline node status = %d, want %d, body = %s", createRec.Code, http.StatusCreated, createRec.Body.String())
+	}
+
+	for _, tc := range []struct {
+		name          string
+		method        string
+		path          string
+		body          []byte
+		wantMessages  []string
+		wantAPIError  string
+		wantMessage   string
+		assertMissing string
+	}{
+		{
+			name:          "create rejects invalid route payload name",
+			method:        http.MethodPost,
+			path:          "/nodes",
+			body:          mustMarshalNodeMap(t, map[string]any{"name": "bad node"}),
+			wantMessages:  []string{"Field 'name' invalid"},
+			assertMissing: "/nodes/bad-node",
+		},
+		{
+			name:          "create rejects unsupported top level fields",
+			method:        http.MethodPost,
+			path:          "/nodes",
+			body:          mustMarshalNodeMap(t, map[string]any{"name": "unsupported-node", "bogus": true}),
+			wantMessages:  []string{"Invalid key bogus in request body"},
+			assertMissing: "/nodes/unsupported-node",
+		},
+		{
+			name:         "create rejects missing name",
+			method:       http.MethodPost,
+			path:         "/nodes",
+			body:         mustMarshalNodeMap(t, map[string]any{"normal": map[string]any{"team": "missing-name"}}),
+			wantMessages: []string{"Field 'name' missing"},
+		},
+		{
+			name:         "create rejects malformed JSON",
+			method:       http.MethodPost,
+			path:         "/nodes",
+			body:         []byte(`{"name":"bad-json"`),
+			wantAPIError: "invalid_json",
+			wantMessage:  "request body must be valid JSON",
+		},
+		{
+			name:          "create rejects trailing JSON",
+			method:        http.MethodPost,
+			path:          "/nodes",
+			body:          []byte(`{"name":"trailing-node"} {"name":"extra"}`),
+			wantAPIError:  "invalid_json",
+			wantMessage:   "request body must contain exactly one JSON document",
+			assertMissing: "/nodes/trailing-node",
+		},
+		{
+			name:         "update rejects route and payload name mismatch",
+			method:       http.MethodPut,
+			path:         "/nodes/" + name,
+			body:         mustMarshalNodeMap(t, map[string]any{"name": "other-node"}),
+			wantMessages: []string{"Node name mismatch."},
+		},
+		{
+			name:         "update rejects non object normal attributes",
+			method:       http.MethodPut,
+			path:         "/nodes/" + name,
+			body:         mustMarshalNodeMap(t, map[string]any{"name": name, "normal": "bad"}),
+			wantMessages: []string{"Field 'normal' is not a hash"},
+		},
+		{
+			name:         "update rejects invalid run list shapes",
+			method:       http.MethodPut,
+			path:         "/nodes/" + name,
+			body:         mustMarshalNodeMap(t, map[string]any{"name": name, "run_list": []any{"recipe[base]", 123}}),
+			wantMessages: []string{"Field 'run_list' is not a valid run list"},
+		},
+		{
+			name:         "update rejects invalid json_class",
+			method:       http.MethodPut,
+			path:         "/nodes/" + name,
+			body:         mustMarshalNodeMap(t, map[string]any{"name": name, "json_class": "Chef::Role"}),
+			wantMessages: []string{"Field 'json_class' invalid"},
+		},
+		{
+			name:         "update rejects invalid policy field",
+			method:       http.MethodPut,
+			path:         "/nodes/" + name,
+			body:         mustMarshalNodeMap(t, map[string]any{"name": name, "policy_name": ""}),
+			wantMessages: []string{"Field 'policy_name' invalid"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := serveSignedAPIVersionRequest(t, router, "pivotal", tc.method, tc.path, tc.body, "2")
+			if tc.wantAPIError != "" {
+				assertNodeAPIError(t, rec, http.StatusBadRequest, tc.wantAPIError, tc.wantMessage)
+			} else {
+				assertNodeValidationError(t, rec, http.StatusBadRequest, tc.wantMessages...)
+			}
+
+			assertNodePayload(t, readNodePayloadWithVersion(t, router, "/nodes/"+name, "2"), current)
+			if tc.assertMissing != "" {
+				assertNodeMissingWithVersion(t, router, tc.assertMissing, "2")
+			}
+		})
 	}
 }
 
@@ -272,6 +398,130 @@ func TestActivePostgresOpenSearchNodeAPIVersionFieldsAndInvalidVersionNoMutation
 	assertActiveOpenSearchFullRows(t, fixture.router, searchPath("/search/node", "team:friendship"), "/search/node", []string{name})
 }
 
+func TestActivePostgresOpenSearchNodeFailuresAndRestartsPreserveStateSearchAndACLs(t *testing.T) {
+	transport := newStatefulAPIOpenSearchTransport(t)
+	client, err := search.NewOpenSearchClient("http://opensearch.example", search.WithOpenSearchTransport(transport))
+	if err != nil {
+		t.Fatalf("NewOpenSearchClient() error = %v", err)
+	}
+	fixture := newActivePostgresOpenSearchIndexingFixture(t, pgtest.NewState(pgtest.Seed{}), client, nil)
+	fixture.createOrganizationWithValidator("ponyville")
+	publicKeyPEM := mustMarshalPublicKeyPEM(t, &mustParsePrivateKey(t).PublicKey)
+	if _, _, err := fixture.state.CreateUser(bootstrap.CreateUserInput{
+		Username:    "outside-user",
+		DisplayName: "Outside User",
+		PublicKey:   publicKeyPEM,
+	}); err != nil {
+		t.Fatalf("CreateUser(outside-user) error = %v", err)
+	}
+
+	name := "durable-search-node"
+	current := nodePayloadExpectation{
+		Name:            name,
+		JSONClass:       "Chef::Node",
+		ChefType:        "node",
+		ChefEnvironment: "_default",
+		Override:        map[string]any{"origin": "active-pg-create"},
+		Normal:          map[string]any{"team": "friendship"},
+		Default:         map[string]any{"build": "060"},
+		Automatic:       map[string]any{"platform": "equestria"},
+		RunList:         []string{"base", "role[web]"},
+		PolicyName:      "delivery-app",
+		PolicyGroup:     "prod-blue",
+	}
+	createRec := serveSignedAPIVersionRequest(t, fixture.router, "pivotal", http.MethodPost, "/nodes", mustMarshalAPIVersionNodePayload(t, current), "2")
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("OpenSearch-backed node create status = %d, want %d, body = %s", createRec.Code, http.StatusCreated, createRec.Body.String())
+	}
+	assertActiveOpenSearchFullRows(t, fixture.router, searchPath("/search/node", "team:friendship AND build:060"), "/search/node", []string{name})
+	assertActiveOpenSearchFullRows(t, fixture.router, searchPath("/search/node", "policy_name:delivery-app AND policy_group:prod-blue"), "/search/node", []string{name})
+
+	snapshot := transport.SnapshotDocuments()
+	aclBefore := readNodeACLForTest(t, fixture, "ponyville", name)
+	assertNodePayload(t, readNodePayloadWithVersion(t, fixture.router, "/organizations/ponyville/nodes/"+name, "2"), current)
+
+	badUpdate := current
+	badUpdate.Name = "mismatched-search-node"
+	badUpdate.Normal = map[string]any{"team": "bad-validation"}
+	badUpdateRec := serveSignedAPIVersionRequest(t, fixture.router, "pivotal", http.MethodPut, "/nodes/"+name, mustMarshalAPIVersionNodePayload(t, badUpdate), "2")
+	assertNodeValidationError(t, badUpdateRec, http.StatusBadRequest, "Node name mismatch.")
+
+	outsideCreate := current
+	outsideCreate.Name = "outside-blocked-node"
+	outsideCreate.Normal = map[string]any{"team": "outside"}
+	outsideCreateRec := serveSignedAPIVersionRequest(t, fixture.router, "outside-user", http.MethodPost, "/nodes", mustMarshalAPIVersionNodePayload(t, outsideCreate), "2")
+	if outsideCreateRec.Code != http.StatusForbidden {
+		t.Fatalf("outside node create status = %d, want %d, body = %s", outsideCreateRec.Code, http.StatusForbidden, outsideCreateRec.Body.String())
+	}
+	outsideUpdate := current
+	outsideUpdate.Normal = map[string]any{"team": "outside-update"}
+	outsideUpdateRec := serveSignedAPIVersionRequest(t, fixture.router, "outside-user", http.MethodPut, "/nodes/"+name, mustMarshalAPIVersionNodePayload(t, outsideUpdate), "2")
+	if outsideUpdateRec.Code != http.StatusForbidden {
+		t.Fatalf("outside node update status = %d, want %d, body = %s", outsideUpdateRec.Code, http.StatusForbidden, outsideUpdateRec.Body.String())
+	}
+	outsideDeleteRec := serveSignedAPIVersionRequest(t, fixture.router, "outside-user", http.MethodDelete, "/nodes/"+name, nil, "2")
+	if outsideDeleteRec.Code != http.StatusForbidden {
+		t.Fatalf("outside node delete status = %d, want %d, body = %s", outsideDeleteRec.Code, http.StatusForbidden, outsideDeleteRec.Body.String())
+	}
+
+	invalidCreateRec := serveSignedAPIVersionRequest(t, fixture.router, "invalid-user", http.MethodPost, "/nodes", mustMarshalAPIVersionNodePayload(t, outsideCreate), "2")
+	if invalidCreateRec.Code != http.StatusUnauthorized {
+		t.Fatalf("invalid-user node create status = %d, want %d, body = %s", invalidCreateRec.Code, http.StatusUnauthorized, invalidCreateRec.Body.String())
+	}
+	invalidUpdateRec := serveSignedAPIVersionRequest(t, fixture.router, "invalid-user", http.MethodPut, "/nodes/"+name, mustMarshalAPIVersionNodePayload(t, outsideUpdate), "2")
+	if invalidUpdateRec.Code != http.StatusUnauthorized {
+		t.Fatalf("invalid-user node update status = %d, want %d, body = %s", invalidUpdateRec.Code, http.StatusUnauthorized, invalidUpdateRec.Body.String())
+	}
+	invalidDeleteRec := serveSignedAPIVersionRequest(t, fixture.router, "invalid-user", http.MethodDelete, "/nodes/"+name, nil, "2")
+	if invalidDeleteRec.Code != http.StatusUnauthorized {
+		t.Fatalf("invalid-user node delete status = %d, want %d, body = %s", invalidDeleteRec.Code, http.StatusUnauthorized, invalidDeleteRec.Body.String())
+	}
+
+	transport.RequireDocuments(t, snapshot)
+	assertNodePayload(t, readNodePayloadWithVersion(t, fixture.router, "/nodes/"+name, "2"), current)
+	assertNodeACLEqual(t, readNodeACLForTest(t, fixture, "ponyville", name), aclBefore)
+	assertNodeMissingWithVersion(t, fixture.router, "/nodes/outside-blocked-node", "2")
+	assertActiveOpenSearchFullRows(t, fixture.router, searchPath("/search/node", "team:bad-validation"), "/search/node", []string{})
+	assertActiveOpenSearchFullRows(t, fixture.router, searchPath("/search/node", "team:outside"), "/search/node", []string{})
+	assertActiveOpenSearchFullRows(t, fixture.router, searchPath("/search/node", "team:outside-update"), "/search/node", []string{})
+	assertActiveOpenSearchFullRows(t, fixture.router, searchPath("/search/node", "team:friendship"), "/search/node", []string{name})
+
+	restarted := newActivePostgresOpenSearchIndexingFixture(t, fixture.pgState, client, nil)
+	assertNodePayload(t, readNodePayloadWithVersion(t, restarted.router, "/organizations/ponyville/nodes/"+name, "2"), current)
+	assertNodeACLEqual(t, readNodeACLForTest(t, restarted, "ponyville", name), aclBefore)
+	assertActiveOpenSearchFullRows(t, restarted.router, searchPath("/search/node", "team:friendship"), "/search/node", []string{name})
+
+	updated := current
+	updated.Override = map[string]any{"origin": "active-pg-update"}
+	updated.Normal = map[string]any{"team": "weather"}
+	updated.Default = map[string]any{"build": "070"}
+	updated.PolicyGroup = "prod-green"
+	updateRec := serveSignedAPIVersionRequest(t, restarted.router, "pivotal", http.MethodPut, "/organizations/ponyville/nodes/"+name, mustMarshalAPIVersionNodePayload(t, updated), "2")
+	if updateRec.Code != http.StatusOK {
+		t.Fatalf("rehydrated OpenSearch-backed node update status = %d, want %d, body = %s", updateRec.Code, http.StatusOK, updateRec.Body.String())
+	}
+	assertNodePayload(t, mustDecodeObject(t, updateRec), updated)
+	assertActiveOpenSearchFullRows(t, restarted.router, searchPath("/search/node", "team:friendship"), "/search/node", []string{})
+	assertActiveOpenSearchFullRows(t, restarted.router, searchPath("/search/node", "team:weather AND build:070"), "/search/node", []string{name})
+
+	afterUpdateRestart := newActivePostgresOpenSearchIndexingFixture(t, fixture.pgState, client, nil)
+	assertNodePayload(t, readNodePayloadWithVersion(t, afterUpdateRestart.router, "/nodes/"+name, "2"), updated)
+	assertNodeACLEqual(t, readNodeACLForTest(t, afterUpdateRestart, "ponyville", name), aclBefore)
+	assertActiveOpenSearchFullRows(t, afterUpdateRestart.router, searchPath("/search/node", "team:weather AND build:070"), "/search/node", []string{name})
+
+	deleteRec := serveSignedAPIVersionRequest(t, afterUpdateRestart.router, "pivotal", http.MethodDelete, "/nodes/"+name, nil, "2")
+	if deleteRec.Code != http.StatusOK {
+		t.Fatalf("rehydrated OpenSearch-backed node delete status = %d, want %d, body = %s", deleteRec.Code, http.StatusOK, deleteRec.Body.String())
+	}
+	assertNodePayload(t, mustDecodeObject(t, deleteRec), updated)
+	assertActiveOpenSearchFullRows(t, afterUpdateRestart.router, searchPath("/search/node", "team:weather"), "/search/node", []string{})
+
+	afterDeleteRestart := newActivePostgresOpenSearchIndexingFixture(t, fixture.pgState, client, nil)
+	assertNodeMissingWithVersion(t, afterDeleteRestart.router, "/organizations/ponyville/nodes/"+name, "2")
+	assertNodeACLMissingForTest(t, afterDeleteRestart, "ponyville", name)
+	assertActiveOpenSearchFullRows(t, afterDeleteRestart.router, searchPath("/search/node", "team:weather"), "/search/node", []string{})
+}
+
 type nodePayloadExpectation struct {
 	Name            string
 	JSONClass       string
@@ -410,6 +660,88 @@ func assertNodeMissingWithVersion(t *testing.T, router http.Handler, path, serve
 	rec := serveSignedAPIVersionRequest(t, router, "pivotal", http.MethodGet, path, nil, serverAPIVersion)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("missing node %s status = %d, want %d, body = %s", path, rec.Code, http.StatusNotFound, rec.Body.String())
+	}
+}
+
+func mustMarshalNodeMap(t *testing.T, payload map[string]any) []byte {
+	t.Helper()
+
+	body, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("json.Marshal(node map) error = %v", err)
+	}
+	return body
+}
+
+func assertNodeValidationError(t *testing.T, rec *httptest.ResponseRecorder, wantStatus int, wantMessages ...string) {
+	t.Helper()
+
+	if rec.Code != wantStatus {
+		t.Fatalf("node validation status = %d, want %d, body = %s", rec.Code, wantStatus, rec.Body.String())
+	}
+	var payload struct {
+		Error []string `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal(node validation error) error = %v; body = %s", err, rec.Body.String())
+	}
+	if !reflect.DeepEqual(payload.Error, wantMessages) {
+		t.Fatalf("node validation errors = %v, want %v", payload.Error, wantMessages)
+	}
+}
+
+func assertNodeAPIError(t *testing.T, rec *httptest.ResponseRecorder, wantStatus int, wantError, wantMessage string) {
+	t.Helper()
+
+	if rec.Code != wantStatus {
+		t.Fatalf("node API error status = %d, want %d, body = %s", rec.Code, wantStatus, rec.Body.String())
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal(node API error) error = %v; body = %s", err, rec.Body.String())
+	}
+	if payload["error"] != wantError {
+		t.Fatalf("node API error = %v, want %q", payload["error"], wantError)
+	}
+	if payload["message"] != wantMessage {
+		t.Fatalf("node API message = %v, want %q", payload["message"], wantMessage)
+	}
+}
+
+func readNodeACLForTest(t *testing.T, fixture *activePostgresBootstrapFixture, org, name string) authz.ACL {
+	t.Helper()
+
+	acl, ok, err := fixture.state.ResolveACL(context.Background(), authz.Resource{
+		Type:         "node",
+		Name:         name,
+		Organization: org,
+	})
+	if err != nil {
+		t.Fatalf("ResolveACL(node %s/%s) error = %v", org, name, err)
+	}
+	if !ok {
+		t.Fatalf("ResolveACL(node %s/%s) missing", org, name)
+	}
+	return acl
+}
+
+func assertNodeACLEqual(t *testing.T, got, want authz.ACL) {
+	t.Helper()
+
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("node ACL = %+v, want %+v", got, want)
+	}
+}
+
+func assertNodeACLMissingForTest(t *testing.T, fixture *activePostgresBootstrapFixture, org, name string) {
+	t.Helper()
+
+	if acl, ok, err := fixture.state.ResolveACL(context.Background(), authz.Resource{
+		Type:         "node",
+		Name:         name,
+		Organization: org,
+	}); err != nil || ok {
+		t.Fatalf("ResolveACL(node %s/%s after delete) = %+v, ok %t, err %v; want missing nil", org, name, acl, ok, err)
 	}
 }
 
