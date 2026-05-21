@@ -568,7 +568,7 @@ func adminMigrationLiveSourceReadUserKeys(ctx context.Context, tx pgx.Tx, payloa
 	return adminMigrationLiveSourceAppendQuery(ctx, tx, payloadValues, adminMigrationSourcePayloadKey{Family: "user_keys"}, `
 SELECT u.username, k.key_name, k.public_key,
        CASE WHEN k.expires_at::text = 'infinity' THEN 'infinity'
-            ELSE to_char(k.expires_at, 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
+            ELSE to_char(k.expires_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
        END AS expiration_date
 FROM users u
 JOIN keys k ON k.id = u.id
@@ -604,7 +604,7 @@ func adminMigrationLiveSourceReadClientKeys(ctx context.Context, tx pgx.Tx, cfg 
 	return adminMigrationLiveSourceAppendOrgQuery(ctx, tx, payloadValues, "client_keys", `
 SELECT o.name AS orgname, c.name AS client, c.name AS clientname, k.key_name, k.public_key,
        CASE WHEN k.expires_at::text = 'infinity' THEN 'infinity'
-            ELSE to_char(k.expires_at, 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
+            ELSE to_char(k.expires_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
        END AS expiration_date
 FROM clients c
 JOIN orgs o ON o.id = c.org_id
