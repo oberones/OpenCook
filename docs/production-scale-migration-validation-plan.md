@@ -606,16 +606,20 @@ Task status: complete.
 - Update `AGENTS.md`.
 - Mark this bucket complete once implementation and functional coverage land.
 - Point the next bucket at direct live upstream extraction or the highest-risk
-  Chef compatibility gap discovered by production-scale validation.
+  Chef compatibility gap discovered by production-scale validation. This
+  follow-on has since been satisfied by the live-source extraction bucket.
 
 Implementation notes:
 
 - The roadmap, milestones, compatibility matrix, and agent guidance now mark
   production-scale migration validation and cutover readiness as complete for
   the current normalized OpenCook source/import path.
-- The next recommended bucket is direct live Chef Infra Server source
-  extraction beyond normalized artifacts, while still allowing
-  deployment-test-discovered Chef compatibility gaps to interrupt if they prove
+- The direct live Chef Infra Server source extraction bucket has since closed
+  this follow-on recommendation by feeding live-source-derived bundles through
+  the same import/sync, reindex, shadow-read, and cutover pipeline.
+- The next recommended bucket now returns to remaining core Chef object
+  compatibility hardening, while still allowing deployment-test-discovered or
+  live-source-discovered Chef compatibility gaps to interrupt if they prove
   higher risk.
 
 ## Test Plan

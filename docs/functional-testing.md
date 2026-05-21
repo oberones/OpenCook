@@ -40,11 +40,12 @@ KEEP_STACK=1 scripts/functional-compose.sh operational restart operational-verif
 KEEP_STACK=1 scripts/functional-compose.sh maintenance
 KEEP_STACK=1 scripts/functional-compose.sh migration-preflight migration-backup migration-backup-inspect
 KEEP_STACK=1 scripts/functional-compose.sh migration-source-all
+KEEP_STACK=1 scripts/functional-compose.sh migration-live-source-all
 KEEP_STACK=1 scripts/functional-compose.sh migration-scale-all
 KEEP_STACK=1 scripts/functional-compose.sh delete restart verify-deleted
 ```
 
-Supported phase names are `create`, `verify`, `query-compat`, `invalid`, `search-update`, `verify-search-updated`, `operational`, `operational-verify`, `maintenance`, `migration-preflight`, `migration-backup`, `migration-backup-inspect`, `migration-restore-preflight`, `migration-restore`, `migration-reindex`, `migration-rehearsal`, `migration-source-normalize`, `migration-source-import-preflight`, `migration-source-import`, `migration-source-reindex`, `migration-source-sync-preflight`, `migration-source-sync`, `migration-shadow-compare`, `migration-source-rehearsal`, `migration-source-all`, `migration-scale-fixtures`, `migration-scale-backup`, `migration-scale-restore`, `migration-scale-reindex`, `migration-scale-shadow`, `migration-scale-rehearsal`, `migration-scale-all`, `migration-all`, `delete`, `verify-deleted`, and `restart`.
+Supported phase names are `create`, `verify`, `query-compat`, `invalid`, `search-update`, `verify-search-updated`, `operational`, `operational-verify`, `maintenance`, `migration-preflight`, `migration-backup`, `migration-backup-inspect`, `migration-restore-preflight`, `migration-restore`, `migration-reindex`, `migration-rehearsal`, `migration-source-normalize`, `migration-source-import-preflight`, `migration-source-import`, `migration-source-reindex`, `migration-source-sync-preflight`, `migration-source-sync`, `migration-shadow-compare`, `migration-source-rehearsal`, `migration-source-all`, `migration-live-source-preflight`, `migration-live-source-extract`, `migration-live-source-import`, `migration-live-source-reindex`, `migration-live-source-shadow`, `migration-live-source-rehearsal`, `migration-live-source-all`, `migration-scale-fixtures`, `migration-scale-backup`, `migration-scale-restore`, `migration-scale-reindex`, `migration-scale-shadow`, `migration-scale-rehearsal`, `migration-scale-all`, `migration-all`, `delete`, `verify-deleted`, and `restart`.
 
 To run just the OpenSearch-heavy compatibility phases after a stack already has created fixtures, use:
 
@@ -119,6 +120,25 @@ evidence. Generated source, import, search, shadow, and rehearsal artifacts live
 under the Compose-managed functional state volume and are cleaned unless
 `KEEP_STACK=1` or `OPENCOOK_FUNCTIONAL_KEEP_ARTIFACTS=1` is set.
 
+The live-source migration phases are also opt-in. `migration-live-source-all`
+creates a tiny Chef-shaped source PostgreSQL database and filesystem Bookshelf
+checksum root inside the Compose stack, runs live preflight/extract, imports the
+normalized bundle into the restore target, rebuilds/search-checks OpenSearch,
+runs shadow-read comparison, records source-sync cursor progress, and finishes
+with cutover rehearsal evidence that proves the source came from live
+extraction. Generated live-source databases, bundles, progress files, search
+reports, shadow reports, backup manifests, and rehearsal outputs stay in the
+Compose-managed state volume and are cleaned unless `KEEP_STACK=1` or
+`OPENCOOK_FUNCTIONAL_KEEP_ARTIFACTS=1` is set.
+
+The functional live-source phases do not require a real Chef Infra Server. They
+seed a deterministic source database and Bookshelf checksum root with
+Compose-provided `OPENCOOK_FUNCTIONAL_LIVE_SOURCE_*` variables, then exercise
+the same read-only `opencook admin migration source live ...` command surface
+operators use against live sources. This keeps remote Docker runs reproducible
+while still proving credential redaction, copied-blob mode, source cursor
+freshness, shadow-read evidence, and cutover rehearsal gates.
+
 The production-scale migration phases are also opt-in. `migration-scale-all`
 generates a deterministic normalized source bundle inside the Compose-managed
 functional state volume, imports it into the restore database, creates and
@@ -164,6 +184,13 @@ image so the generated fixture writer and scripts are baked into the image:
 DOCKER_HOST=ssh://example-host OPENCOOK_FUNCTIONAL_SCALE_PROFILE=medium scripts/functional-compose.sh migration-scale-all
 ```
 
+To run the live-source extraction drill remotely, rebuild the functional image
+so the live-source fixture schema and scripts are baked into the image:
+
+```sh
+DOCKER_HOST=ssh://example-host scripts/functional-compose.sh migration-live-source-all
+```
+
 Useful overrides:
 
 ```sh
@@ -173,6 +200,9 @@ OPENCOOK_FUNCTIONAL_PORT=4000
 OPENCOOK_FUNCTIONAL_ORG=ponyville
 OPENCOOK_FUNCTIONAL_ACTOR_NAME=pivotal
 OPENCOOK_FUNCTIONAL_SCALE_PROFILE=small
+OPENCOOK_FUNCTIONAL_LIVE_SOURCE_DB=opencook_live_source
+OPENCOOK_FUNCTIONAL_LIVE_SOURCE_STATE_DIR=/var/lib/opencook-functional/live-source
+OPENCOOK_FUNCTIONAL_LIVE_SOURCE_BOOKSHELF_ROOT=/var/lib/opencook-functional/live-source/bookshelf
 ```
 
 ## Provider Matrix

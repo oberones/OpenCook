@@ -167,14 +167,15 @@ Notes:
 
 ## Migration And Cutover
 
-Use preflight, source inventory/normalize/import/sync, backup/restore,
-restored-target reindex, shadow comparison, and cutover rehearsal before
-switching clients. Migration command JSON includes an `operator_report` section
-with inventory totals, finding counts, dependency evidence, retry guidance, and
-safe next steps; read that section first, then drill into `dependencies`,
-`findings`, and `planned_mutations` when a gate is not clear.
+Use preflight, source inventory/normalize or live source extraction,
+import/sync, backup/restore, restored-target reindex, shadow comparison, and
+cutover rehearsal before switching clients. Migration command JSON includes an
+`operator_report` section with inventory totals, finding counts, dependency
+evidence, retry guidance, and safe next steps; read that section first, then
+drill into `dependencies`, `findings`, and `planned_mutations` when a gate is
+not clear.
 
-Recommended pattern:
+Prepared artifact pattern:
 
 ```sh
 opencook admin migration preflight --all-orgs --json
@@ -192,17 +193,51 @@ opencook admin migration shadow compare --source normalized-source --target-serv
 opencook admin migration cutover rehearse --manifest PATH --source normalized-source --source-import-progress source-import-progress.json --source-sync-progress source-sync-progress.json --search-check-result search-check.json --shadow-result shadow-compare.json --source-frozen --rollback-ready --server-url URL --json
 ```
 
+Direct live source pattern:
+
+```sh
+opencook admin migration source live preflight --source-postgres-dsn DSN --source-bookshelf-root PATH --org ORG --json
+opencook admin migration source live extract --source-postgres-dsn DSN --source-bookshelf-root PATH --copy-blobs --org ORG --output live-source --yes --json
+opencook admin migration source import preflight live-source --offline --json
+opencook admin migration source import apply live-source --offline --yes --progress source-import-progress.json --json
+opencook admin migration source sync apply live-source --offline --yes --progress source-sync-progress.json --json
+opencook admin migration backup create --output restored-target-backup --offline --yes --json
+opencook admin maintenance enable --mode reindex --reason "post-source-sync reindex" --yes --json
+opencook admin reindex --all-orgs --complete --json
+opencook admin maintenance disable --yes --json
+opencook admin search check --all-orgs --json > search-check.json
+opencook admin migration shadow compare --source live-source --target-server-url URL --json > shadow-compare.json
+opencook admin migration cutover rehearse --manifest restored-target-backup/manifest.json --source live-source --source-import-progress source-import-progress.json --source-sync-progress source-sync-progress.json --search-check-result search-check.json --shadow-result shadow-compare.json --source-frozen --rollback-ready --server-url URL --json
+```
+
 Notes:
 
+- Live source preflight and extract use read-only source PostgreSQL access and
+  do not mutate source Chef or the OpenCook target. Import/sync still mutate
+  the target and therefore remain `--offline` workflows.
 - Freeze source Chef writes before the final source sync and keep the freeze
-  through post-cutover smoke checks. OpenCook can report whether the operator
-  confirmed the freeze with `--source-frozen`, but it cannot enforce writes
-  still routed to source Chef Infra Server.
+  through shadow-read comparison, cutover rehearsal, client cutover, and
+  post-cutover smoke checks. OpenCook can report whether the operator confirmed
+  the freeze with `--source-frozen`, but it cannot enforce writes still routed
+  to source Chef Infra Server.
 - OpenCook maintenance mode only blocks writes routed to OpenCook. It does not
   block writes still routed to the source Chef Infra Server.
 - Source import and source sync apply remain offline-gated because they mutate
   target PostgreSQL/blob state directly. Run them against a stopped OpenCook
   target or under an externally frozen target window.
+- Use live extraction `--copy-blobs` with a local `--source-bookshelf-root` when
+  the migration operator can read checksum blob bytes. This creates the most
+  self-contained normalized bundle and lets import/cutover verify copied
+  checksum content.
+- Use live extraction `--reference-blobs` when checksum bytes must remain in an
+  external source provider. Reference-only bundles require separate provider
+  reachability and checksum-content validation before cutover because OpenCook
+  cannot prove blob bytes from the bundle alone.
+- Treat source PostgreSQL DSNs, source blob URLs, source Chef HTTP private keys,
+  signed URLs, and provider responses as secrets. OpenCook redacts known
+  credential fields in JSON output, diagnostics, and runbook summaries, but
+  operators should still pass secrets through environment files, secret
+  managers, or shell-safe mechanisms instead of pasteable command history.
 - Switch DNS/load balancers or Chef/Cinc `chef_server_url` only after blocker
   gates pass.
 - Keep the source Chef Infra Server read/write path available until post-cutover
@@ -295,8 +330,9 @@ implemented:
   `opencook admin config check --json` and restart through the supervisor.
 - Licensing and license telemetry: OpenCook is Apache-2.0 software and has no
   licensing subsystem or license-management endpoints.
-- Redis-backed or omnibus-specific maintenance-mode wrappers: use
-  `opencook admin maintenance ...` and deployment-platform supervision instead.
+- Redis-backed or omnibus-specific maintenance-mode wrappers: use OpenCook's
+  maintenance-mode traffic blocking gate through `opencook admin maintenance
+  ...` and deployment-platform supervision instead.
 - Interactive `psql` wrapper: direct database access remains an
   operator/platform concern; supported unsafe mutations are exposed as explicit
   offline admin commands.

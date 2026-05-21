@@ -83,7 +83,9 @@ Status: in progress
 - migration/cutover tooling is now complete for OpenCook-to-OpenCook logical backup/restore, normalized Chef Server source inventory/normalize/import/sync, source-to-target shadow-read comparison, restored-target reindex, and cutover rehearsal
 - `chef-server-ctl`-style operational parity is now complete for config validation, service status/doctor, metrics, request IDs, structured logs, log discovery, diagnostics bundles, runbook discovery, and Docker functional coverage
 - maintenance-mode request blocking, shared maintenance state, cache-safe reload seams, and the first narrow online repair path are now pinned
-- production-scale migration validation and cutover readiness are now pinned with deterministic scale fixtures, small/medium/large profiles, scale-aware functional phases, operator reports, retry-safe guidance, and remote Docker workflows; direct live Chef Infra Server source extraction beyond normalized artifacts is the next recommended operational bucket unless deployment testing identifies a higher-risk Chef compatibility gap
+- production-scale migration validation and cutover readiness are now pinned with deterministic scale fixtures, small/medium/large profiles, scale-aware functional phases, operator reports, retry-safe guidance, and remote Docker workflows
+- direct live Chef Infra Server source extraction is now pinned for the implemented PostgreSQL-backed Chef families and checksum blob evidence, with copied/reference blob modes, source cursor freshness, shadow-read/cutover evidence, and remote Docker functional coverage through the existing normalized import/sync pipeline
+- remaining core Chef object compatibility hardening is the next recommended bucket unless deployment testing or live-source extraction evidence identifies a higher-risk Chef compatibility gap
 
 ## Milestone 6: Cookbook and Blob Workflows
 
@@ -231,4 +233,6 @@ Status: in progress
 - live maintenance mode now blocks mutating Chef-facing writes during operator-controlled windows while preserving reads, read-like POST routes, and signed blob downloads
 - maintenance state is PostgreSQL-shared in durable deployments, process-local in standalone mode, and visible through admin maintenance commands, `/status`, service doctor, metrics, structured logs, functional tests, and operator runbooks
 - cache-invalidation and reload seams now exist for PostgreSQL-backed bootstrap/core/cookbook state, with default ACL repair as the first narrow online repair path under active maintenance
-- production-scale validation now covers migration, reindex, source sync, shadow-read comparison, rollback readiness, cutover rehearsal guidance, and operator-facing report summaries; direct live Chef Infra Server source extraction beyond normalized artifacts is the next recommended follow-on bucket
+- production-scale validation now covers migration, reindex, source sync, shadow-read comparison, rollback readiness, cutover rehearsal guidance, and operator-facing report summaries
+- direct live Chef Infra Server source extraction now feeds the same source import/sync, reindex, shadow-read, and cutover rehearsal pipeline for implemented source families without proxying source writes
+- remaining core Chef object compatibility hardening is the next recommended follow-on bucket, with deployment-test or live-source-discovered compatibility gaps allowed to interrupt if they prove higher risk

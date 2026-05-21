@@ -231,6 +231,7 @@ func newTestCommand(t *testing.T) (*command, *bytes.Buffer, *bytes.Buffer) {
 			t.Fatal("unexpected search consistency target construction")
 			return nil, nil
 		},
+		newLiveSource: newAdminMigrationPendingLiveSourceExtractor,
 		runServer: func(context.Context, config.Config, *log.Logger, version.Info) error {
 			t.Fatal("unexpected server run")
 			return nil

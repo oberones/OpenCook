@@ -38,6 +38,7 @@ type command struct {
 	newBlobStore        func(config.Config) (blob.Store, error)
 	newReindexTarget    func(string) (search.ReindexTarget, error)
 	newSearchTarget     func(string) (search.ConsistencyTarget, error)
+	newLiveSource       func(adminMigrationLiveSourceConfig) adminMigrationLiveSourceExtractor
 	runServer           func(context.Context, config.Config, *log.Logger, version.Info) error
 }
 
@@ -62,7 +63,8 @@ func newCommand(stdout, stderr io.Writer) *command {
 		newSearchTarget: func(raw string) (search.ConsistencyTarget, error) {
 			return search.NewOpenSearchClient(raw)
 		},
-		runServer: runServer,
+		newLiveSource: newAdminMigrationPendingLiveSourceExtractor,
+		runServer:     runServer,
 	}
 }
 
