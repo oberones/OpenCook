@@ -44,6 +44,7 @@ As of 2026-05-02, OpenCook has moved past pure scaffolding and into the first co
 - `chef-server-ctl`-style operational parity is now live for config validation, service status/doctor, Prometheus-compatible metrics, request IDs, structured logs, log discovery, redacted diagnostics bundles, runbook discovery, service-management docs, and Docker functional coverage
 - maintenance mode and online repair safety are now live with PostgreSQL-shared maintenance state, process-local standalone truthfulness, Chef-style `503` blocking for mutating Chef-facing writes, preserved reads/read-like POSTs/signed downloads, admin maintenance commands, status/doctor/metrics/log visibility, maintenance-gated reindex/search repair, and the first narrow online default ACL repair path
 - the core object API persistence slice is now live with PostgreSQL-backed durability for nodes, environments, roles, data bags/items, policy revisions/groups/assignments, sandbox metadata/checksum references, and object ACLs when PostgreSQL is configured, while preserving the existing in-memory fallback
+- the core Chef object compatibility hardening bucket is now complete for the current implemented surfaces, with route semantics, payload/API-version exactness, auth/ACL no-mutation coverage, active PostgreSQL restart/rehydration, OpenSearch source-of-truth behavior, unsupported search-family stability, cookbook/blob edge coverage, and Docker `object-compat` functional coverage pinned
 - the adjacent environment slice is now live with `_default`, list/get/head/create/update/delete, and rename-capable `PUT`
 - environment-scoped node listing is implemented via `/environments/{name}/nodes`
 - environment-scoped cookbook and recipe views are now implemented via `/environments/{name}/cookbooks`, `/environments/{name}/cookbooks/{cookbook}`, and `/environments/{name}/recipes`
@@ -188,9 +189,9 @@ As of 2026-05-02, OpenCook has moved past pure scaffolding and into the first co
 
 Current focus:
 
-- direct live Chef Infra Server source extraction is now complete for the implemented PostgreSQL-backed Chef families and checksum blob evidence, feeding the existing normalized source import/sync, reindex, shadow-read, and cutover rehearsal pipeline
-- preserve the completed API-version, search-route, unsupported-index, encrypted-data-bag, provider capability, migration/cutover, source import/sync, live-source extraction, maintenance-mode, operational parity, production-scale validation, and PostgreSQL-source-of-truth contracts while hardening remaining Chef object compatibility
-- treat deployment-test and live-source-discovered compatibility gaps as interrupt-worthy if they are higher-risk than the planned core object compatibility hardening
+- direct live Chef Infra Server source extraction is complete for the implemented PostgreSQL-backed Chef families and checksum blob evidence, feeding the existing normalized source import/sync, reindex, shadow-read, and cutover rehearsal pipeline
+- preserve the completed API-version, search-route, unsupported-index, encrypted-data-bag, provider capability, migration/cutover, source import/sync, live-source extraction, maintenance-mode, operational parity, production-scale validation, core object compatibility hardening, and PostgreSQL-source-of-truth contracts while planning the next operations/admin safety slice
+- treat deployment-test and live-source-discovered Chef compatibility gaps as interrupt-worthy if they prove higher risk than broader online repair/admin mutation parity
 
 ## What Exists Upstream
 
@@ -685,13 +686,14 @@ Exit criteria:
 
 ## Recommended Next Step
 
-Plan and implement remaining core Chef object compatibility hardening now that PostgreSQL persistence, provider-backed blobs, validator bootstrap, core object persistence, encrypted data bag compatibility, operational admin/reindex/repair tooling, migration/cutover tooling, source import/sync plus shadow-read/cutover hardening, direct live Chef source extraction, maintenance-mode write gating, production-scale migration validation, broader Lucene/query-string compatibility, cookbook/policy/sandbox/checksum negative search compatibility, API-version-specific object semantics, OpenSearch provider capability/version hardening, and `chef-server-ctl`-style operational parity are pinned.
+Plan and implement broader online repair/admin mutation parity now that PostgreSQL persistence, provider-backed blobs, validator bootstrap, core object persistence, encrypted data bag compatibility, operational admin/reindex/repair tooling, migration/cutover tooling, source import/sync plus shadow-read/cutover hardening, direct live Chef source extraction, maintenance-mode write gating, production-scale migration validation, broader Lucene/query-string compatibility, cookbook/policy/sandbox/checksum negative search compatibility, API-version-specific object semantics, OpenSearch provider capability/version hardening, `chef-server-ctl`-style operational parity, and the core Chef object compatibility hardening bucket are pinned.
 
 The recommended next bucket should:
 
-1. Mine the remaining pedant evidence, local Chef Server references, live-source fixture findings, and functional-deployment feedback for the highest-risk object behavior gaps across implemented nodes, environments, roles, data bags, policies, sandboxes, cookbooks, and ACL-linked reads.
-2. Pin route semantics, payload exactness, auth/ACL precedence, invalid-write no-mutation behavior, default-org aliases, API-version-sensitive shapes, and PostgreSQL restart/rehydration for those gaps without broadening into new storage architecture.
-3. Keep the completed PostgreSQL, blob, OpenSearch, migration/cutover, live-source extraction, maintenance, operational, API-version, and search compatibility contracts as regression boundaries.
-4. Keep deployment-test-discovered Chef compatibility gaps interrupt-worthy when they prove higher risk than the planned object-hardening checklist.
+1. Inventory the offline-gated direct PostgreSQL repair commands and identify which mutations can safely gain live, maintenance-gated service seams without bypassing caches, verifier state, ACL documents, or OpenSearch derived indexes.
+2. Add route/admin tests that prove successful live repairs update PostgreSQL-backed service state, search/verifier projections, and audit/status output atomically, while failed repairs do not partially mutate state.
+3. Keep unsafe direct database repair commands offline-gated unless they have a narrow live seam, active-maintenance requirement, cache/search invalidation coverage, and operator-facing rollback guidance.
+4. Preserve the completed Chef-facing API contracts, PostgreSQL activation model, blob provider behavior, OpenSearch source-of-truth behavior, migration/cutover flows, maintenance gate semantics, and `chef-server-ctl` operational parity while adding the new repair/admin mutation coverage.
+5. Keep deployment-test-discovered Chef compatibility gaps interrupt-worthy when they prove higher risk than the planned repair/admin checklist.
 
-That sequence builds on the completed identity, cookbook/blob, core object, validator bootstrap, active OpenSearch, operational tooling, migration/cutover, source import/sync, live-source extraction, production-scale validation, maintenance-mode, encrypted data bag, Lucene/query-string, API-version, cookbook/policy/sandbox search, provider capability, and operational parity contracts without reopening their Chef-facing behavior.
+That sequence builds on the completed identity, cookbook/blob, core object, validator bootstrap, active OpenSearch, operational tooling, migration/cutover, source import/sync, live-source extraction, production-scale validation, maintenance-mode, encrypted data bag, Lucene/query-string, API-version, cookbook/policy/sandbox search, provider capability, operational parity, and object-compatibility hardening contracts without reopening their Chef-facing behavior.

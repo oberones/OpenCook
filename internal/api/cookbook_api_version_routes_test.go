@@ -187,6 +187,30 @@ func TestCookbookAPIVersionInvalidAndProviderFailuresDoNotMutate(t *testing.T) {
 	stableChecksum := uploadCookbookChecksum(t, fixture.router, []byte("puts 'stable api version body'"))
 	createCookbookVersion(t, fixture.router, "stable-api-matrix", "1.0.0", stableChecksum, nil)
 
+	badJSONCreate := serveSignedAPIVersionRequest(t, fixture.router, "pivotal", http.MethodPut, "/cookbooks/bad-json-api-matrix/1.0.0", []byte(`{"cookbook_name":`), "2")
+	assertCookbookAPIVersionStatus(t, badJSONCreate, http.StatusBadRequest, "bad JSON cookbook create")
+	assertCookbookAPIError(t, badJSONCreate.Body.Bytes(), "invalid_json", "request body must be valid JSON")
+	assertCookbookMissing(t, fixture.router, "/cookbooks/bad-json-api-matrix/1.0.0")
+	assertPersistedCookbookVersionMissing(t, fixture.postgres, "ponyville", "bad-json-api-matrix")
+
+	trailingUpdateBody := append(mustMarshalSandboxJSON(t, cookbookVersionPayload("stable-api-matrix", "1.0.0", stableChecksum, nil)), []byte(` {"extra":true}`)...)
+	trailingUpdate := serveSignedAPIVersionRequest(t, fixture.router, "pivotal", http.MethodPut, "/cookbooks/stable-api-matrix/1.0.0", trailingUpdateBody, "2")
+	assertCookbookAPIVersionStatus(t, trailingUpdate, http.StatusBadRequest, "trailing JSON cookbook update")
+	assertCookbookAPIError(t, trailingUpdate.Body.Bytes(), "invalid_json", "request body must contain exactly one JSON document")
+	assertCookbookDownloadBody(t, fixture.router, cookbookFileURL(t, fixture.router, "/cookbooks/stable-api-matrix/1.0.0"), "puts 'stable api version body'")
+
+	badJSONArtifactCreate := serveSignedAPIVersionRequest(t, fixture.router, "pivotal", http.MethodPut, "/cookbook_artifacts/bad-json-artifact/5555555555555555555555555555555555555555", []byte(`{"name":`), "2")
+	assertCookbookAPIVersionStatus(t, badJSONArtifactCreate, http.StatusBadRequest, "bad JSON artifact create")
+	assertCookbookAPIError(t, badJSONArtifactCreate.Body.Bytes(), "invalid_json", "request body must be valid JSON")
+	assertCookbookArtifactMissing(t, fixture.router, "/cookbook_artifacts/bad-json-artifact/5555555555555555555555555555555555555555")
+
+	trailingArtifactChecksum := uploadCookbookChecksum(t, fixture.router, []byte("puts 'trailing artifact body'"))
+	trailingArtifactBody := append(mustMarshalSandboxJSON(t, cookbookArtifactPayload("trailing-artifact", "6666666666666666666666666666666666666666", "1.0.0", trailingArtifactChecksum, nil)), []byte(` {"extra":true}`)...)
+	trailingArtifactCreate := serveSignedAPIVersionRequest(t, fixture.router, "pivotal", http.MethodPut, "/cookbook_artifacts/trailing-artifact/6666666666666666666666666666666666666666", trailingArtifactBody, "2")
+	assertCookbookAPIVersionStatus(t, trailingArtifactCreate, http.StatusBadRequest, "trailing JSON artifact create")
+	assertCookbookAPIError(t, trailingArtifactCreate.Body.Bytes(), "invalid_json", "request body must contain exactly one JSON document")
+	assertCookbookArtifactMissing(t, fixture.router, "/cookbook_artifacts/trailing-artifact/6666666666666666666666666666666666666666")
+
 	blockedChecksum := uploadCookbookChecksum(t, fixture.router, []byte("puts 'blocked api version body'"))
 	blockedCreate := serveSignedAPIVersionRequest(t, fixture.router, "pivotal", http.MethodPut, "/cookbooks/blocked-api-matrix/1.0.0",
 		mustMarshalSandboxJSON(t, cookbookVersionPayload("blocked-api-matrix", "1.0.0", blockedChecksum, nil)), "3")

@@ -112,6 +112,88 @@ func TestAPIVersionDataBagCRUDPayloadSemantics(t *testing.T) {
 	}
 }
 
+// TestAPIVersionDataBagValidationFailuresKeepExistingState freezes malformed
+// data bag and item writes while proving rejected bodies do not leak into reads
+// or search projections.
+func TestAPIVersionDataBagValidationFailuresKeepExistingState(t *testing.T) {
+	router := newTestRouter(t)
+	bagName := "validation_bag"
+	itemID := "visible"
+	bagPath := "/data/" + bagName
+	itemPath := bagPath + "/" + itemID
+	current := map[string]any{
+		"id":       itemID,
+		"category": "visible",
+		"nested": map[string]any{
+			"owner":   "platform",
+			"enabled": true,
+		},
+	}
+
+	createBag := serveSignedAPIVersionRequest(t, router, "silent-bob", http.MethodPost, "/data", mustMarshalDataBagJSON(t, map[string]any{"name": bagName}), "2")
+	if createBag.Code != http.StatusCreated {
+		t.Fatalf("create validation data bag status = %d, want %d, body = %s", createBag.Code, http.StatusCreated, createBag.Body.String())
+	}
+	createItem := serveSignedAPIVersionRequest(t, router, "silent-bob", http.MethodPost, bagPath, mustMarshalDataBagJSON(t, current), "2")
+	if createItem.Code != http.StatusCreated {
+		t.Fatalf("create validation data bag item status = %d, want %d, body = %s", createItem.Code, http.StatusCreated, createItem.Body.String())
+	}
+
+	duplicateBag := serveSignedAPIVersionRequest(t, router, "silent-bob", http.MethodPost, "/data", mustMarshalDataBagJSON(t, map[string]any{"name": bagName}), "2")
+	assertDataBagError(t, duplicateBag, http.StatusConflict, "Data bag already exists")
+
+	missingName := serveSignedAPIVersionRequest(t, router, "silent-bob", http.MethodPost, "/data", mustMarshalDataBagJSON(t, map[string]any{}), "2")
+	assertDataBagError(t, missingName, http.StatusBadRequest, "Field 'name' missing")
+
+	invalidName := serveSignedAPIVersionRequest(t, router, "silent-bob", http.MethodPost, "/data", mustMarshalDataBagJSON(t, map[string]any{"name": "bad/name"}), "2")
+	assertDataBagError(t, invalidName, http.StatusBadRequest, "Field 'name' invalid")
+
+	badJSONBag := serveSignedAPIVersionRequest(t, router, "silent-bob", http.MethodPost, "/data", []byte(`{"name":"broken"`), "2")
+	assertDataBagAPIError(t, badJSONBag, http.StatusBadRequest, "invalid_json", "request body must be valid JSON")
+
+	trailingJSONBag := serveSignedAPIVersionRequest(t, router, "silent-bob", http.MethodPost, "/data", []byte(`{"name":"trailing_bag"} {"name":"extra"}`), "2")
+	assertDataBagAPIError(t, trailingJSONBag, http.StatusBadRequest, "invalid_json", "request body must contain exactly one JSON document")
+
+	listBags := serveSignedAPIVersionRequest(t, router, "silent-bob", http.MethodGet, "/data", nil, "2")
+	if listBags.Code != http.StatusOK {
+		t.Fatalf("list data bags after failed creates status = %d, want %d, body = %s", listBags.Code, http.StatusOK, listBags.Body.String())
+	}
+	if got := mustDecodeStringMap(t, listBags); len(got) != 1 || got[bagName] != bagPath {
+		t.Fatalf("data bag list after failed creates = %v, want only %s => %s", got, bagName, bagPath)
+	}
+	assertObjectMissingWithVersion(t, router, "/data/trailing_bag", "2")
+
+	missingBagItem := serveSignedAPIVersionRequest(t, router, "silent-bob", http.MethodPost, "/data/missing_bag", mustMarshalDataBagJSON(t, map[string]any{"id": "ghost", "category": "missing-bag"}), "2")
+	assertDataBagError(t, missingBagItem, http.StatusNotFound, "No data bag 'missing_bag' could be found. Please create this data bag before adding items to it.")
+
+	duplicateItem := serveSignedAPIVersionRequest(t, router, "silent-bob", http.MethodPost, bagPath, mustMarshalDataBagJSON(t, current), "2")
+	assertDataBagError(t, duplicateItem, http.StatusConflict, "Data Bag Item 'visible' already exists in Data Bag 'validation_bag'.")
+
+	missingID := serveSignedAPIVersionRequest(t, router, "silent-bob", http.MethodPost, bagPath, mustMarshalDataBagJSON(t, map[string]any{"category": "missing-id"}), "2")
+	assertDataBagError(t, missingID, http.StatusBadRequest, "Field 'id' missing")
+
+	invalidID := serveSignedAPIVersionRequest(t, router, "silent-bob", http.MethodPost, bagPath, mustMarshalDataBagJSON(t, map[string]any{"id": "bad/item", "category": "invalid"}), "2")
+	assertDataBagError(t, invalidID, http.StatusBadRequest, "Field 'id' invalid")
+
+	badJSONItem := serveSignedAPIVersionRequest(t, router, "silent-bob", http.MethodPost, bagPath, []byte(`{"id":"broken"`), "2")
+	assertDataBagAPIError(t, badJSONItem, http.StatusBadRequest, "invalid_json", "request body must be valid JSON")
+
+	trailingJSONItem := serveSignedAPIVersionRequest(t, router, "silent-bob", http.MethodPut, itemPath, []byte(`{"category":"trailing"} {"id":"extra"}`), "2")
+	assertDataBagAPIError(t, trailingJSONItem, http.StatusBadRequest, "invalid_json", "request body must contain exactly one JSON document")
+
+	mismatchedUpdate := serveSignedAPIVersionRequest(t, router, "silent-bob", http.MethodPut, itemPath, mustMarshalDataBagJSON(t, map[string]any{"id": "other", "category": "mismatch"}), "2")
+	assertDataBagError(t, mismatchedUpdate, http.StatusBadRequest, "DataBagItem name mismatch.")
+
+	invalidUpdateID := serveSignedAPIVersionRequest(t, router, "silent-bob", http.MethodPut, itemPath, mustMarshalDataBagJSON(t, map[string]any{"id": []any{"visible"}, "category": "invalid-update"}), "2")
+	assertDataBagError(t, invalidUpdateID, http.StatusBadRequest, "Field 'id' invalid")
+
+	assertRawDataBagItemWithVersion(t, router, itemPath, "2", current)
+	assertDataBagSearchTotal(t, router, searchPath("/search/"+bagName, "category:visible"), "/search/"+bagName, 1)
+	for _, query := range []string{"category:missing-bag", "category:mismatch", "category:invalid", "category:invalid-update", "id:ghost", "id:other"} {
+		assertDataBagSearchTotal(t, router, searchPath("/search/"+bagName, query), "/search/"+bagName, 0)
+	}
+}
+
 func TestAPIVersionEncryptedDataBagItemOpacityAndACLFiltering(t *testing.T) {
 	router := newTestRouter(t)
 	bagName := testfixtures.EncryptedDataBagName()
@@ -384,8 +466,109 @@ func TestActivePostgresOpenSearchDataBagAPIVersionFieldsAndRejectedWritesNoMutat
 	assertRawDataBagItemWithVersion(t, fixture.router, itemPath, "2", current)
 	assertActiveOpenSearchFullRows(t, fixture.router, searchPath("/search/"+bagName, "category:outside"), "/search/"+bagName, []string{})
 
-	restarted := fixture.restart()
+	restarted := newActivePostgresOpenSearchIndexingFixture(t, fixture.pgState, client, nil)
 	assertRawDataBagItemWithVersion(t, restarted.router, "/organizations/ponyville/data/"+bagName+"/"+itemID, "2", current)
+	assertActiveOpenSearchFullRows(t, restarted.router, searchPath("/search/"+bagName, "category:visible AND kind:api-version"), "/search/"+bagName, []string{"data_bag_item_" + bagName + "_" + itemID})
+	assertActiveOpenSearchPartialData(t, restarted.router, searchPath("/organizations/ponyville/search/"+bagName, "category:visible"), "/organizations/ponyville/search/"+bagName, []byte(`{"category":["category"],"kind":["details","kind"]}`), "/organizations/ponyville/data/"+bagName+"/"+itemID, map[string]any{
+		"category": "visible",
+		"kind":     "api-version",
+	})
+
+	updatedRaw := map[string]any{
+		"category": "updated",
+		"details":  map[string]any{"kind": "after-restart"},
+	}
+	wantUpdated := testfixtures.CloneDataBagPayload(updatedRaw)
+	wantUpdated["id"] = itemID
+	updateItem := serveSignedAPIVersionRequest(t, restarted.router, "pivotal", http.MethodPut, itemPath, mustMarshalDataBagJSON(t, updatedRaw), "2")
+	if updateItem.Code != http.StatusOK {
+		t.Fatalf("OpenSearch-backed data bag item update after restart status = %d, want %d, body = %s", updateItem.Code, http.StatusOK, updateItem.Body.String())
+	}
+	assertDataBagItemContainsPayload(t, decodeDataBagPayload(t, updateItem), wantUpdated)
+	assertActiveOpenSearchFullRows(t, restarted.router, searchPath("/search/"+bagName, "category:visible"), "/search/"+bagName, []string{})
+	assertActiveOpenSearchFullRows(t, restarted.router, searchPath("/search/"+bagName, "category:updated AND kind:after-restart"), "/search/"+bagName, []string{"data_bag_item_" + bagName + "_" + itemID})
+
+	afterUpdateRestart := newActivePostgresOpenSearchIndexingFixture(t, fixture.pgState, client, nil)
+	assertRawDataBagItemWithVersion(t, afterUpdateRestart.router, "/organizations/ponyville/data/"+bagName+"/"+itemID, "2", wantUpdated)
+	assertActiveOpenSearchFullRows(t, afterUpdateRestart.router, searchPath("/search/"+bagName, "category:updated AND kind:after-restart"), "/search/"+bagName, []string{"data_bag_item_" + bagName + "_" + itemID})
+
+	deleteItem := serveSignedAPIVersionRequest(t, afterUpdateRestart.router, "pivotal", http.MethodDelete, "/organizations/ponyville/data/"+bagName+"/"+itemID, nil, "2")
+	if deleteItem.Code != http.StatusOK {
+		t.Fatalf("OpenSearch-backed data bag item delete status = %d, want %d, body = %s", deleteItem.Code, http.StatusOK, deleteItem.Body.String())
+	}
+	assertDeletedDataBagItemPayload(t, decodeDataBagPayload(t, deleteItem), bagName, itemID, wantUpdated)
+	assertActiveOpenSearchFullRows(t, afterUpdateRestart.router, searchPath("/search/"+bagName, "category:updated"), "/search/"+bagName, []string{})
+
+	afterDeleteRestart := newActivePostgresOpenSearchIndexingFixture(t, fixture.pgState, client, nil)
+	assertObjectMissingWithVersion(t, afterDeleteRestart.router, itemPath, "2")
+	assertActiveOpenSearchFullRows(t, afterDeleteRestart.router, searchPath("/search/"+bagName, "category:updated"), "/search/"+bagName, []string{})
+
+	secretBag := testfixtures.EncryptedDataBagName()
+	secretItemID := testfixtures.EncryptedDataBagItemID()
+	secretBagPath := "/organizations/ponyville/data/" + secretBag
+	secretItemPath := secretBagPath + "/" + secretItemID
+	createSecretBag := serveSignedAPIVersionRequest(t, afterDeleteRestart.router, "pivotal", http.MethodPost, "/organizations/ponyville/data", mustMarshalDataBagJSON(t, map[string]any{"name": secretBag}), "2")
+	if createSecretBag.Code != http.StatusCreated {
+		t.Fatalf("OpenSearch-backed encrypted data bag create status = %d, want %d, body = %s", createSecretBag.Code, http.StatusCreated, createSecretBag.Body.String())
+	}
+	createSecretItem := serveSignedAPIVersionRequest(t, afterDeleteRestart.router, "pivotal", http.MethodPost, secretBagPath, mustMarshalDataBagJSON(t, testfixtures.EncryptedDataBagItem()), "2")
+	if createSecretItem.Code != http.StatusCreated {
+		t.Fatalf("OpenSearch-backed encrypted data bag item create status = %d, want %d, body = %s", createSecretItem.Code, http.StatusCreated, createSecretItem.Body.String())
+	}
+	assertActiveOpenSearchFullRows(t, afterDeleteRestart.router, searchPath("/search/"+secretBag, "environment:production AND *_encrypted_data:*"), "/search/"+secretBag, []string{"data_bag_item_" + secretBag + "_" + secretItemID})
+	assertActiveOpenSearchPartialData(t, afterDeleteRestart.router, searchPath("/organizations/ponyville/search/"+secretBag, "*_encrypted_data:*"), "/organizations/ponyville/search/"+secretBag, encryptedDataBagPartialSearchBody(t), secretItemPath, encryptedDataBagPartialExpectation(t, testfixtures.EncryptedDataBagItem()))
+
+	secretRestarted := newActivePostgresOpenSearchIndexingFixture(t, fixture.pgState, client, nil)
+	assertRawDataBagItemWithVersion(t, secretRestarted.router, secretItemPath, "2", testfixtures.EncryptedDataBagItem())
+	assertActiveOpenSearchFullRows(t, secretRestarted.router, searchPath("/search/"+secretBag, "environment:production AND *_encrypted_data:*"), "/search/"+secretBag, []string{"data_bag_item_" + secretBag + "_" + secretItemID})
+
+	updatedSecret := testfixtures.UpdatedEncryptedDataBagItem()
+	wantUpdatedSecret := testfixtures.CloneDataBagPayload(updatedSecret)
+	wantUpdatedSecret["id"] = secretItemID
+	updateSecret := serveSignedAPIVersionRequest(t, secretRestarted.router, "pivotal", http.MethodPut, secretItemPath, mustMarshalDataBagJSON(t, updatedSecret), "2")
+	if updateSecret.Code != http.StatusOK {
+		t.Fatalf("OpenSearch-backed encrypted data bag item update status = %d, want %d, body = %s", updateSecret.Code, http.StatusOK, updateSecret.Body.String())
+	}
+	assertDataBagItemContainsPayload(t, decodeDataBagPayload(t, updateSecret), wantUpdatedSecret)
+	assertActiveOpenSearchFullRows(t, secretRestarted.router, searchPath("/search/"+secretBag, "environment:production"), "/search/"+secretBag, []string{})
+	assertActiveOpenSearchFullRows(t, secretRestarted.router, searchPath("/search/"+secretBag, "environment:staging AND *_encrypted_data:*"), "/search/"+secretBag, []string{"data_bag_item_" + secretBag + "_" + secretItemID})
+	assertActiveOpenSearchPartialData(t, secretRestarted.router, searchPath("/organizations/ponyville/search/"+secretBag, "*_encrypted_data:*"), "/organizations/ponyville/search/"+secretBag, encryptedDataBagPartialSearchBody(t), secretItemPath, encryptedDataBagPartialExpectation(t, wantUpdatedSecret))
+
+	afterSecretUpdateRestart := newActivePostgresOpenSearchIndexingFixture(t, fixture.pgState, client, nil)
+	assertRawDataBagItemWithVersion(t, afterSecretUpdateRestart.router, secretItemPath, "2", wantUpdatedSecret)
+	assertActiveOpenSearchFullRows(t, afterSecretUpdateRestart.router, searchPath("/search/"+secretBag, "environment:staging AND *_encrypted_data:*"), "/search/"+secretBag, []string{"data_bag_item_" + secretBag + "_" + secretItemID})
+
+	deleteSecret := serveSignedAPIVersionRequest(t, afterSecretUpdateRestart.router, "pivotal", http.MethodDelete, secretItemPath, nil, "2")
+	if deleteSecret.Code != http.StatusOK {
+		t.Fatalf("OpenSearch-backed encrypted data bag item delete status = %d, want %d, body = %s", deleteSecret.Code, http.StatusOK, deleteSecret.Body.String())
+	}
+	assertDeletedDataBagItemPayload(t, decodeDataBagPayload(t, deleteSecret), secretBag, secretItemID, wantUpdatedSecret)
+	assertActiveOpenSearchFullRows(t, afterSecretUpdateRestart.router, searchPath("/search/"+secretBag, "*_encrypted_data:*"), "/search/"+secretBag, []string{})
+
+	afterSecretDeleteRestart := newActivePostgresOpenSearchIndexingFixture(t, fixture.pgState, client, nil)
+	assertObjectMissingWithVersion(t, afterSecretDeleteRestart.router, secretItemPath, "2")
+	assertActiveOpenSearchFullRows(t, afterSecretDeleteRestart.router, searchPath("/search/"+secretBag, "*_encrypted_data:*"), "/search/"+secretBag, []string{})
+}
+
+// encryptedDataBagPartialExpectation derives the partial-search assertion body
+// from a fixture payload so updated opaque envelope values stay easy to verify.
+func encryptedDataBagPartialExpectation(t *testing.T, payload map[string]any) map[string]any {
+	t.Helper()
+
+	password, ok := payload["password"].(map[string]any)
+	if !ok {
+		t.Fatalf("encrypted data bag payload password = %T, want object", payload["password"])
+	}
+	apiKey, ok := payload["api_key"].(map[string]any)
+	if !ok {
+		t.Fatalf("encrypted data bag payload api_key = %T, want object", payload["api_key"])
+	}
+	return map[string]any{
+		"password_ciphertext": password["encrypted_data"],
+		"password_iv":         password["iv"],
+		"api_auth_tag":        apiKey["auth_tag"],
+		"environment":         payload["environment"],
+	}
 }
 
 func assertRawDataBagItemWithVersion(t *testing.T, router http.Handler, path, serverAPIVersion string, want map[string]any) {

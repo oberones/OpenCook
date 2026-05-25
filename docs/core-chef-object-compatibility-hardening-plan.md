@@ -349,6 +349,8 @@ Implementation notes:
 
 ### Task 6: Harden Data Bag And Data Bag Item Compatibility
 
+Task status: complete.
+
 - Pin data bag list/create/read/delete behavior, including empty bags,
   duplicate creates, invalid names, bad JSON, trailing JSON, and method
   semantics.
@@ -361,7 +363,27 @@ Implementation notes:
 - Preserve encrypted payload opacity. Do not add decrypt/reencrypt behavior in
   this bucket.
 
+Implementation notes:
+
+- Existing route coverage already pinned empty-bag reads, create/list/get/update
+  delete shapes, explicit-org aliases, encrypted-looking payload opacity,
+  nested arbitrary JSON preservation, method `Allow` headers, duplicate item
+  conflicts, and item-level malformed JSON/trailing JSON errors.
+- Added focused API-version route coverage for duplicate data bag creates,
+  missing/invalid bag names, malformed/trailing bag JSON, missing data bags,
+  duplicate items, missing/invalid item IDs, malformed/trailing item JSON,
+  route/payload item ID mismatches, and failed-write no-mutation guarantees.
+- Expanded active PostgreSQL plus OpenSearch coverage so ordinary data bag
+  item search projections are proven after create, restart, update, delete,
+  and a second restart.
+- Expanded active PostgreSQL plus OpenSearch coverage for encrypted-looking
+  data bag items so opaque envelope fields survive restart, update, partial
+  search, delete, and post-delete rehydration without adding decrypt or
+  reencrypt behavior.
+
 ### Task 7: Harden Policyfile Object Compatibility
+
+Task status: complete.
 
 - Pin policy revision create/read/delete behavior for identifier, name,
   cookbook locks, default attributes, override attributes, named run lists,
@@ -376,7 +398,29 @@ Implementation notes:
   searchable through Chef search indexes except for node policy compatibility
   fields.
 
+Implementation notes:
+
+- Existing policy coverage already pinned revision create/read/delete,
+  duplicate revision conflicts, named policy reads, assignment create/update/
+  delete, default-org and explicit-org alias URI shaping, API-version payload
+  parity, active PostgreSQL restart/rehydration, and node policy search fields.
+- Added richer canonical revision assertions for default attributes, override
+  attributes, named run lists, cookbook-lock metadata, and solution dependency
+  preservation.
+- Added policy group delete coverage, including the empty-group response shape
+  after assignment deletion and missing-group reads after deletion.
+- Added active PostgreSQL plus OpenSearch validation/no-mutation coverage for
+  invalid revision identifiers, malformed JSON, trailing JSON, route/payload
+  policy-name mismatches, missing assignments, missing groups, failed
+  assignment deletes, restart/rehydration, and unchanged baseline assignments.
+- Reconfirmed policy and policy-group state remains absent from public Chef
+  search indexes, including unsupported singular/plural search routes, while
+  node `policy_name`/`policy_group` search compatibility remains the supported
+  policy-facing search surface.
+
 ### Task 8: Harden Sandbox And Checksum Metadata Compatibility
+
+Task status: complete.
 
 - Pin sandbox create/commit/read behavior for route semantics, checksum maps,
   upload URL shape, completed/failed commit behavior, bad JSON, trailing JSON,
@@ -388,7 +432,25 @@ Implementation notes:
 - Keep blob provider behavior stable and avoid adding new blob repair/admin
   flows in this bucket.
 
+Implementation notes:
+
+- Added focused sandbox validation coverage for invalid JSON, trailing JSON,
+  invalid checksum maps, missing sandbox commits, and no-mutation behavior. The
+  same sandbox can still be uploaded, committed, and reused after those failed
+  requests.
+- Extended API-version sandbox coverage so active PostgreSQL-backed sandbox
+  commits reject bad JSON and trailing JSON with the current `invalid_json`
+  shape without deleting or completing the pending sandbox.
+- Strengthened active PostgreSQL plus filesystem-backed blob retention coverage
+  so sandbox-held checksums protect both cookbook-version blobs and
+  cookbook-artifact blobs after restart, metadata deletion, and a second
+  rehydration pass.
+- Kept provider behavior unchanged: no new blob route, repair command, admin
+  flow, or signed URL shape was introduced for this task.
+
 ### Task 9: Sweep Cookbook And Cookbook-Artifact Object Edges
+
+Task status: complete.
 
 - Mine pedant and local Chef references for cookbook/cookbook-artifact object
   edges not already covered by the cookbook/blob hardening buckets.
@@ -399,7 +461,27 @@ Implementation notes:
   added object edge could affect it.
 - Keep signed download URL shape and provider-backed blob behavior unchanged.
 
+Implementation notes:
+
+- Confirmed from local Chef Server references that named cookbook-version reads
+  accept both `_latest` and `latest`, then pinned the `latest` alias on default
+  and explicit-org active PostgreSQL read paths after restart.
+- Added active PostgreSQL read-edge coverage for `num_versions=0`,
+  `num_versions=all`, missing named cookbook and cookbook-artifact collections,
+  multi-identifier cookbook-artifact collection ordering, and deleting through
+  the `latest` alias.
+- Reconfirmed cleanup only where the new read edge could affect it: deleting
+  the latest alias removes the released unique blob while the next-latest
+  cookbook version remains available after rehydration.
+- Added API-version-aware invalid JSON and trailing JSON no-mutation coverage
+  for cookbook version creates/updates and cookbook-artifact creates on the
+  active PostgreSQL path.
+- Kept signed download URL shapes, provider behavior, and public route shapes
+  unchanged.
+
 ### Task 10: Pin Cross-Surface Auth, ACL, And No-Mutation Precedence
+
+Task status: complete.
 
 - Add a matrix that proves outside users, invalid users, normal org members,
   admins, clients, validators, and missing ACL grants behave consistently on
@@ -416,7 +498,24 @@ Implementation notes:
 - Preserve current Chef-shaped `401`, `403`, `404`, `405`, `409`, and `400`
   response shapes unless upstream evidence requires a targeted correction.
 
+Implementation notes:
+
+- Added an active PostgreSQL plus OpenSearch cross-surface auth matrix covering
+  admin, normal org-member, registered client, generated validator, outside
+  user, invalid user, and denied-ACL-grant cases across node, data bag, policy,
+  and search-visible state.
+- Pinned the current auth-before-body precedence where implemented route code is
+  known to authorize before JSON decoding, without changing any error shape.
+- Proved denied writes preserve live service reads, PostgreSQL-backed restart
+  state, OpenSearch documents, and object ACL documents.
+- Added active PostgreSQL plus filesystem-backed cookbook coverage showing
+  normal org-member cookbook updates remain allowed while outside-user,
+  client, and invalid-user attempts do not replace persisted cookbook metadata
+  or signed-download blob content.
+
 ### Task 11: Add Active PostgreSQL And OpenSearch Regression Coverage
+
+Task status: complete.
 
 - For each object family touched in Tasks 3-9, add restart/rehydration coverage
   on the active PostgreSQL path.
@@ -428,7 +527,25 @@ Implementation notes:
 - Keep OpenSearch provider documents derived from PostgreSQL; do not add
   direct provider-as-truth reads.
 
+Implementation notes:
+
+- Added an active PostgreSQL plus OpenSearch complete-reindex regression that
+  seeds supported and unsupported object families, restarts through the
+  PostgreSQL-backed activation path, and rebuilds the provider index from
+  rehydrated service state.
+- Proved complete reindex removes stale provider-only documents, does not
+  synthesize policy/cookbook/sandbox/checksum documents for unsupported search
+  families, and still advertises only supported indexes plus data bags.
+- Reconfirmed provider-backed search routes hydrate node and data bag rows from
+  PostgreSQL after the rebuild and that unsupported indexes continue to return
+  the Chef-shaped unsupported-index response without consulting the provider.
+- Reconfirmed post-restart mutation indexing by updating a node and deleting a
+  role after the rebuild, proving OpenSearch documents remain derived from the
+  active PostgreSQL-backed service state.
+
 ### Task 12: Extend Functional Coverage For The Hardened Object Paths
+
+Task status: complete.
 
 - Extend the Docker functional harness with a focused object-compatibility
   phase that exercises representative node, environment, role, data bag,
@@ -441,7 +558,27 @@ Implementation notes:
   and local functional checks remain enough unless a later task explicitly
   needs upstream shadow evidence.
 
+Implementation notes:
+
+- Added `object-compat` as a first-class functional phase in the in-container
+  dispatcher, the Go functional phase switch, and the default Compose flow after
+  the first restart-backed verification leg.
+- The phase creates or refreshes a deterministic cross-object graph covering
+  organization bootstrap, validator-created clients, environments, nodes, roles,
+  ordinary data bags, encrypted-looking data bags, policies, sandboxes,
+  cookbooks, cookbook artifacts, and derived OpenSearch state.
+- The phase verifies persisted reads, linked environment/node/role routes,
+  cookbook signed-file shapes, sandbox/checksum reuse, supported search rows,
+  node policy search fields, encrypted-looking data bag full/partial search,
+  and unsupported cookbook/policy/sandbox/checksum search-index behavior.
+- Documented targeted local and remote-friendly invocation as
+  `scripts/functional-compose.sh object-compat restart object-compat`, which
+  proves the same assertions before and after an OpenCook restart without an
+  upstream Chef Server dependency.
+
 ### Task 13: Sync Docs And Close The Bucket
+
+Task status: complete.
 
 - Update:
   - `docs/chef-infra-server-rewrite-roadmap.md`
@@ -454,6 +591,29 @@ Implementation notes:
 - Point the next bucket at the highest-risk remaining Chef compatibility gap
   found during this slice, or at broader online repair/admin mutation parity if
   object compatibility hardening does not expose a higher-risk blocker.
+
+Implementation notes:
+
+- Updated the roadmap, milestones, compatibility matrix, `AGENTS.md`, and this
+  plan to record the core Chef object compatibility hardening bucket as
+  complete for the current implemented Chef-facing surfaces.
+- Preserved the completed Chef-facing API, PostgreSQL activation, blob provider,
+  OpenSearch source-of-truth, API-version, maintenance, migration, functional,
+  and operational parity contracts as regression boundaries for future slices.
+- Pointed the next recommended bucket at broader online repair/admin mutation
+  parity, with deployment-test or live-source-discovered Chef compatibility gaps
+  still allowed to interrupt if they prove higher risk.
+- Kept the functional closeout command focused on
+  `scripts/functional-compose.sh object-compat restart object-compat`, which is
+  the representative Docker proof added by this bucket.
+
+## Bucket Status
+
+Complete. This bucket closes the planned core Chef object compatibility
+hardening work for the implemented surfaces. Future object behavior fixes should
+be evidence-driven from pedant, upstream Chef Server references, deployment
+testing, or live-source extraction rather than treated as an open checklist from
+this plan.
 
 ## Test Plan
 
@@ -478,7 +638,7 @@ Functional verification:
 ```text
 scripts/functional-compose.sh create verify query-compat search-update verify-search-updated restart
 scripts/functional-compose.sh migration-live-source-all
-scripts/functional-compose.sh object-compat
+scripts/functional-compose.sh object-compat restart object-compat
 ```
 
 Required scenarios:

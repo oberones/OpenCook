@@ -221,6 +221,78 @@ func TestActivePostgresOpenSearchUnsupportedObjectFamilyIndexesStayUnsupportedWi
 	}
 }
 
+// TestActivePostgresOpenSearchCompleteReindexAfterRestartPinsPostgresAsTruth
+// exercises the production cutover shape: PostgreSQL state is rehydrated first,
+// complete reindex drops stale provider documents, and supported route reads are
+// still hydrated from PostgreSQL instead of trusting provider-side _source data.
+func TestActivePostgresOpenSearchCompleteReindexAfterRestartPinsPostgresAsTruth(t *testing.T) {
+	persisted := newActivePostgresBootstrapFixture(t, pgtest.NewState(pgtest.Seed{}))
+	seedActivePostgresOpenSearchState(t, persisted)
+	seedUnsupportedSearchObjectFamilies(t, persisted.router)
+
+	transport := newStatefulAPIOpenSearchTransport(t)
+	client, err := search.NewOpenSearchClient("http://opensearch.example", search.WithOpenSearchTransport(transport))
+	if err != nil {
+		t.Fatalf("NewOpenSearchClient() error = %v", err)
+	}
+	transport.ForceDocument("ponyville/node/stale-after-restart", map[string]any{
+		"organization": "ponyville",
+		"index":        "node",
+		"name":         "stale-after-restart",
+	})
+	transport.ForceDocument("ponyville/policy/search-policy", map[string]any{
+		"organization": "ponyville",
+		"index":        "policy",
+		"name":         "search-policy",
+	})
+
+	restarted := newActivePostgresOpenSearchIndexingFixture(t, persisted.pgState, client, nil)
+	result, err := search.NewReindexService(restarted.state, client).Run(context.Background(), search.ReindexPlan{
+		Mode:             search.ReindexModeComplete,
+		AllOrganizations: true,
+	})
+	if err != nil {
+		t.Fatalf("complete reindex after restart error = %v, result = %+v", err, result)
+	}
+	if result.Counts.Upserted == 0 || result.Counts.Failed != 0 {
+		t.Fatalf("complete reindex counts = %+v, want upserts and no failures", result.Counts)
+	}
+
+	assertOpenSearchDocumentsPresent(t, transport, []string{
+		"ponyville/client/ponyville-validator",
+		"ponyville/environment/_default",
+		"ponyville/environment/production",
+		"ponyville/node/rainbow",
+		"ponyville/node/twilight",
+		"ponyville/role/web",
+		"ponyville/ponies/alice",
+	}, []string{
+		"ponyville/node/stale-after-restart",
+		"ponyville/policy/search-policy",
+	})
+	assertOpenSearchDocumentsOmitUnsupportedIndexes(t, transport)
+
+	assertActiveOpenSearchIndexURLs(t, restarted.router, "/organizations/ponyville/search", map[string]string{
+		"client":                            "/organizations/ponyville/search/client",
+		"environment":                       "/organizations/ponyville/search/environment",
+		"node":                              "/organizations/ponyville/search/node",
+		"role":                              "/organizations/ponyville/search/role",
+		"ponies":                            "/organizations/ponyville/search/ponies",
+		testfixtures.EncryptedDataBagName(): "/organizations/ponyville/search/" + testfixtures.EncryptedDataBagName(),
+	})
+	assertActiveOpenSearchFullRows(t, restarted.router, searchPath("/search/node", "name:twi*"), "/search/node", []string{"twilight"})
+	assertActiveOpenSearchFullRows(t, restarted.router, searchPath("/search/ponies", `note:"hello world"`), "/search/ponies", []string{"data_bag_item_ponies_alice"})
+	for _, index := range unsupportedObjectFamilySearchIndexes() {
+		assertUnsupportedSearchIndex(t, restarted.router, http.MethodGet, searchPath("/search/"+index, "*:*"), "/search/"+index, nil, index)
+	}
+
+	sendActivePostgresPivotalJSON(t, restarted.router, http.MethodPut, "/nodes/twilight", mustMarshalSearchNodePayload(t, "twilight", map[string]any{}, map[string]any{"team": "library"}, []string{"base"}), http.StatusOK)
+	assertActiveOpenSearchFullRows(t, restarted.router, searchPath("/search/node", "team:friendship"), "/search/node", []string{})
+	assertActiveOpenSearchFullRows(t, restarted.router, searchPath("/search/node", "team:library"), "/search/node", []string{"twilight"})
+	sendActivePostgresPivotalJSON(t, restarted.router, http.MethodDelete, "/roles/web", nil, http.StatusOK)
+	assertActiveOpenSearchFullRows(t, restarted.router, searchPath("/search/role", "name:web"), "/search/role", []string{})
+}
+
 // TestActivePostgresOpenSearchIndirectFieldsRemainSearchableWithUnsupportedObjectsPresent
 // proves provider-backed search still treats cookbook/policy concepts as fields
 // on supported indexes after PostgreSQL rehydration, not as searchable joins.
@@ -927,6 +999,41 @@ func assertActiveOpenSearchPageNames(t *testing.T, router http.Handler, userID, 
 	}
 }
 
+// assertOpenSearchDocumentsPresent checks provider document IDs directly for
+// rebuild tests, where the important contract is the derived index contents.
+func assertOpenSearchDocumentsPresent(t *testing.T, transport *statefulAPIOpenSearchTransport, present, absent []string) {
+	t.Helper()
+
+	docs := transport.SnapshotDocuments()
+	for _, id := range present {
+		if _, ok := docs[id]; !ok {
+			t.Fatalf("OpenSearch document %q missing after rebuild; documents = %#v", id, docs)
+		}
+	}
+	for _, id := range absent {
+		if _, ok := docs[id]; ok {
+			t.Fatalf("OpenSearch document %q unexpectedly present after rebuild; documents = %#v", id, docs)
+		}
+	}
+}
+
+// assertOpenSearchDocumentsOmitUnsupportedIndexes proves complete rebuilds do
+// not synthesize provider documents for API-visible but non-searchable families.
+func assertOpenSearchDocumentsOmitUnsupportedIndexes(t *testing.T, transport *statefulAPIOpenSearchTransport) {
+	t.Helper()
+
+	unsupported := make(map[string]struct{}, len(unsupportedObjectFamilySearchIndexes()))
+	for _, index := range unsupportedObjectFamilySearchIndexes() {
+		unsupported[index] = struct{}{}
+	}
+	for id, doc := range transport.SnapshotDocuments() {
+		index := openSearchSourceString(doc, "index")
+		if _, ok := unsupported[index]; ok {
+			t.Fatalf("OpenSearch document %q used unsupported index %q: %#v", id, index, doc)
+		}
+	}
+}
+
 func performActiveOpenSearchRequest(t *testing.T, router http.Handler, method, rawPath, signPath string, body []byte) *httptest.ResponseRecorder {
 	t.Helper()
 
@@ -1039,6 +1146,65 @@ func apiOpenSearchSearchIdentity(t *testing.T, payload map[string]any) (string, 
 	index := apiOpenSearchCompatFilterValue(t, boolQuery["filter"], "__index")
 	query := apiOpenSearchCompatQueryString(t, boolQuery["must"])
 	return org, index, query
+}
+
+func apiOpenSearchDeleteByQueryScope(t *testing.T, payload map[string]any) (string, string, bool) {
+	t.Helper()
+
+	queryRaw, ok := payload["query"]
+	if !ok {
+		t.Fatalf("OpenSearch delete-by-query payload missing query: %v", payload)
+	}
+	query, ok := queryRaw.(map[string]any)
+	if !ok {
+		t.Fatalf("OpenSearch delete-by-query query = %T %v, want object", queryRaw, queryRaw)
+	}
+	if matchAllRaw, ok := query["match_all"]; ok {
+		if _, ok := matchAllRaw.(map[string]any); !ok {
+			t.Fatalf("OpenSearch delete-by-query match_all = %T %v, want object", matchAllRaw, matchAllRaw)
+		}
+		return "", "", true
+	}
+	boolRaw, ok := query["bool"]
+	if !ok {
+		t.Fatalf("OpenSearch delete-by-query query = %v, want match_all or bool", query)
+	}
+	boolQuery, ok := boolRaw.(map[string]any)
+	if !ok {
+		t.Fatalf("OpenSearch delete-by-query bool query = %T %v, want object", boolRaw, boolRaw)
+	}
+	filterRaw, ok := boolQuery["filter"]
+	if !ok {
+		t.Fatalf("OpenSearch delete-by-query bool query missing filter: %v", boolQuery)
+	}
+	filters, ok := filterRaw.([]any)
+	if !ok {
+		t.Fatalf("OpenSearch delete-by-query filter = %T %v, want array", filterRaw, filterRaw)
+	}
+	var org, index string
+	for i, raw := range filters {
+		filter, ok := raw.(map[string]any)
+		if !ok {
+			t.Fatalf("OpenSearch delete-by-query filter[%d] = %T %v, want object", i, raw, raw)
+		}
+		termRaw, ok := filter["term"]
+		if !ok {
+			t.Fatalf("OpenSearch delete-by-query filter[%d] missing term: %v", i, filter)
+		}
+		term, ok := termRaw.(map[string]any)
+		if !ok {
+			t.Fatalf("OpenSearch delete-by-query filter[%d].term = %T %v, want object", i, termRaw, termRaw)
+		}
+		for key, value := range term {
+			switch key {
+			case "organization":
+				org = fmt.Sprint(value)
+			case "index":
+				index = fmt.Sprint(value)
+			}
+		}
+	}
+	return org, index, false
 }
 
 func apiOpenSearchCompatFilterValue(t *testing.T, raw any, field string) string {
@@ -1359,6 +1525,18 @@ func (tr *statefulAPIOpenSearchTransport) RequireDocuments(t *testing.T, want ma
 
 func (t *statefulAPIOpenSearchTransport) Do(req *http.Request) (*http.Response, error) {
 	switch {
+	case req.Method == http.MethodGet && req.URL.Path == "/":
+		return apiOpenSearchJSONResponse(req, http.StatusOK, map[string]any{
+			"tagline": "The OpenSearch Project",
+			"version": map[string]any{
+				"distribution": "opensearch",
+				"number":       "2.12.0",
+			},
+		}), nil
+	case req.Method == http.MethodHead && req.URL.Path == "/chef":
+		return apiOpenSearchJSONResponse(req, http.StatusNotFound, map[string]any{}), nil
+	case req.Method == http.MethodPut && req.URL.Path == "/chef":
+		return apiOpenSearchJSONResponse(req, http.StatusCreated, map[string]any{"acknowledged": true}), nil
 	case req.Method == http.MethodPost && req.URL.Path == "/_bulk":
 		return t.handleBulk(req)
 	case req.Method == http.MethodPut && req.URL.Path == "/chef/_mapping":
@@ -1366,12 +1544,14 @@ func (t *statefulAPIOpenSearchTransport) Do(req *http.Request) (*http.Response, 
 	case req.Method == http.MethodPost && req.URL.Path == "/chef/_refresh":
 		t.recordRefresh()
 		return apiOpenSearchJSONResponse(req, http.StatusOK, map[string]any{"refreshed": true}), nil
+	case req.Method == http.MethodPost && req.URL.Path == "/chef/_delete_by_query":
+		return t.handleDeleteByQuery(req)
 	case req.Method == http.MethodDelete && strings.HasPrefix(req.URL.EscapedPath(), "/chef/_doc/"):
 		return t.handleDelete(req)
 	case req.Method == http.MethodPost && req.URL.Path == "/chef/_search":
 		return t.handleSearch(req)
 	default:
-		t.t.Fatalf("OpenSearch request = %s %s, want bulk/refresh/delete/search", req.Method, req.URL.String())
+		t.t.Fatalf("OpenSearch request = %s %s, want root/index/bulk/refresh/delete/search", req.Method, req.URL.String())
 		return nil, nil
 	}
 }
@@ -1424,6 +1604,34 @@ func (t *statefulAPIOpenSearchTransport) handleDelete(req *http.Request) (*http.
 	t.deleteRequests++
 	delete(t.docs, id)
 	return apiOpenSearchJSONResponse(req, http.StatusOK, map[string]any{"result": "deleted"}), nil
+}
+
+func (t *statefulAPIOpenSearchTransport) handleDeleteByQuery(req *http.Request) (*http.Response, error) {
+	body, err := io.ReadAll(req.Body)
+	if err != nil {
+		t.t.Fatalf("ReadAll(delete-by-query request) error = %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.t.Fatalf("json.Unmarshal(delete-by-query request) error = %v, body = %s", err, string(body))
+	}
+	org, index, matchAll := apiOpenSearchDeleteByQueryScope(t.t, payload)
+
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.deleteRequests++
+	deleted := 0
+	for id, source := range t.docs {
+		if !matchAll && org != "" && openSearchSourceString(source, "organization") != org {
+			continue
+		}
+		if !matchAll && index != "" && openSearchSourceString(source, "index") != index {
+			continue
+		}
+		delete(t.docs, id)
+		deleted++
+	}
+	return apiOpenSearchJSONResponse(req, http.StatusOK, map[string]any{"deleted": deleted}), nil
 }
 
 func (t *statefulAPIOpenSearchTransport) recordRefresh() {
