@@ -1151,20 +1151,50 @@ func apiOpenSearchSearchIdentity(t *testing.T, payload map[string]any) (string, 
 func apiOpenSearchDeleteByQueryScope(t *testing.T, payload map[string]any) (string, string, bool) {
 	t.Helper()
 
-	query, ok := payload["query"].(map[string]any)
+	queryRaw, ok := payload["query"]
 	if !ok {
 		t.Fatalf("OpenSearch delete-by-query payload missing query: %v", payload)
 	}
-	if _, ok := query["match_all"].(map[string]any); ok {
+	query, ok := queryRaw.(map[string]any)
+	if !ok {
+		t.Fatalf("OpenSearch delete-by-query query = %T %v, want object", queryRaw, queryRaw)
+	}
+	if matchAllRaw, ok := query["match_all"]; ok {
+		if _, ok := matchAllRaw.(map[string]any); !ok {
+			t.Fatalf("OpenSearch delete-by-query match_all = %T %v, want object", matchAllRaw, matchAllRaw)
+		}
 		return "", "", true
 	}
-	boolQuery, ok := query["bool"].(map[string]any)
+	boolRaw, ok := query["bool"]
 	if !ok {
 		t.Fatalf("OpenSearch delete-by-query query = %v, want match_all or bool", query)
 	}
+	boolQuery, ok := boolRaw.(map[string]any)
+	if !ok {
+		t.Fatalf("OpenSearch delete-by-query bool query = %T %v, want object", boolRaw, boolRaw)
+	}
+	filterRaw, ok := boolQuery["filter"]
+	if !ok {
+		t.Fatalf("OpenSearch delete-by-query bool query missing filter: %v", boolQuery)
+	}
+	filters, ok := filterRaw.([]any)
+	if !ok {
+		t.Fatalf("OpenSearch delete-by-query filter = %T %v, want array", filterRaw, filterRaw)
+	}
 	var org, index string
-	for _, raw := range boolQuery["filter"].([]any) {
-		term := raw.(map[string]any)["term"].(map[string]any)
+	for i, raw := range filters {
+		filter, ok := raw.(map[string]any)
+		if !ok {
+			t.Fatalf("OpenSearch delete-by-query filter[%d] = %T %v, want object", i, raw, raw)
+		}
+		termRaw, ok := filter["term"]
+		if !ok {
+			t.Fatalf("OpenSearch delete-by-query filter[%d] missing term: %v", i, filter)
+		}
+		term, ok := termRaw.(map[string]any)
+		if !ok {
+			t.Fatalf("OpenSearch delete-by-query filter[%d].term = %T %v, want object", i, termRaw, termRaw)
+		}
 		for key, value := range term {
 			switch key {
 			case "organization":
