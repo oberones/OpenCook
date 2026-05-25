@@ -168,6 +168,32 @@ func TestPoliciesAndPolicyGroupsEndpointsSupportCoreLifecycle(t *testing.T) {
 	if len(emptyPolicies) != 0 {
 		t.Fatalf("empty group policies = %v, want empty object", emptyPolicies)
 	}
+
+	deleteGroupReq := newSignedJSONRequest(t, http.MethodDelete, "/policy_groups/dev", nil)
+	deleteGroupRec := httptest.NewRecorder()
+	router.ServeHTTP(deleteGroupRec, deleteGroupReq)
+	if deleteGroupRec.Code != http.StatusOK {
+		t.Fatalf("delete empty policy group status = %d, want %d, body = %s", deleteGroupRec.Code, http.StatusOK, deleteGroupRec.Body.String())
+	}
+
+	var deletedGroupPayload map[string]any
+	if err := json.Unmarshal(deleteGroupRec.Body.Bytes(), &deletedGroupPayload); err != nil {
+		t.Fatalf("json.Unmarshal(deleted group) error = %v", err)
+	}
+	if deletedGroupPayload["uri"] != "/policy_groups/dev" {
+		t.Fatalf("deleted group uri = %v, want %q", deletedGroupPayload["uri"], "/policy_groups/dev")
+	}
+	deletedPolicies := deletedGroupPayload["policies"].(map[string]any)
+	if len(deletedPolicies) != 0 {
+		t.Fatalf("deleted group policies = %v, want empty object", deletedPolicies)
+	}
+
+	missingGroupReq := newSignedJSONRequest(t, http.MethodGet, "/policy_groups/dev", nil)
+	missingGroupRec := httptest.NewRecorder()
+	router.ServeHTTP(missingGroupRec, missingGroupReq)
+	if missingGroupRec.Code != http.StatusNotFound {
+		t.Fatalf("get deleted policy group status = %d, want %d, body = %s", missingGroupRec.Code, http.StatusNotFound, missingGroupRec.Body.String())
+	}
 }
 
 func TestPoliciesEndpointSupportsRevisionLifecycle(t *testing.T) {
@@ -453,7 +479,18 @@ func TestPolicyEndpointsRoundTripCanonicalPayload(t *testing.T) {
 	router := newTestRouter(t)
 
 	revisionID := "ecececececececececececececececececececec"
-	body := mustMarshalPolicyJSON(t, canonicalPolicyPayloadForAPI("appserver", revisionID))
+	input := canonicalPolicyPayloadForAPI("appserver", revisionID)
+	input["default_attributes"] = map[string]any{
+		"app": map[string]any{
+			"port": float64(443),
+		},
+	}
+	input["override_attributes"] = map[string]any{
+		"app": map[string]any{
+			"workers": float64(4),
+		},
+	}
+	body := mustMarshalPolicyJSON(t, input)
 	createReq := newSignedJSONRequest(t, http.MethodPost, "/policies/appserver/revisions", body)
 	createRec := httptest.NewRecorder()
 	router.ServeHTTP(createRec, createReq)
@@ -496,6 +533,16 @@ func TestPolicyEndpointsRoundTripCanonicalPayload(t *testing.T) {
 	}
 	if _, ok := payload["solution_dependencies"].(map[string]any); !ok {
 		t.Fatalf("solution_dependencies = %T, want map[string]any", payload["solution_dependencies"])
+	}
+	defaultAttributes := payload["default_attributes"].(map[string]any)
+	defaultApp := defaultAttributes["app"].(map[string]any)
+	if defaultApp["port"] != float64(443) {
+		t.Fatalf("default_attributes.app.port = %v, want 443", defaultApp["port"])
+	}
+	overrideAttributes := payload["override_attributes"].(map[string]any)
+	overrideApp := overrideAttributes["app"].(map[string]any)
+	if overrideApp["workers"] != float64(4) {
+		t.Fatalf("override_attributes.app.workers = %v, want 4", overrideApp["workers"])
 	}
 	groupList := stringSliceFromAny(t, payload["policy_group_list"])
 	if len(groupList) != 0 {

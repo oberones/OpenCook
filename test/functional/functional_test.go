@@ -88,7 +88,7 @@ func TestFunctional(t *testing.T) {
 
 	phases := []string{cfg.phase}
 	if cfg.phase == "all" {
-		phases = []string{"create", "verify", "query-compat", "invalid", "search-update", "verify-search-updated", "query-compat", "delete", "verify-deleted"}
+		phases = []string{"create", "verify", "query-compat", "object-compat", "invalid", "search-update", "verify-search-updated", "query-compat", "delete", "verify-deleted"}
 	}
 
 	for _, phase := range phases {
@@ -102,6 +102,8 @@ func TestFunctional(t *testing.T) {
 				runVerifyPhase(t, client, cfg)
 			case "query-compat":
 				runQueryCompatibilityPhase(t, client, cfg)
+			case "object-compat":
+				runObjectCompatibilityPhase(t, client, cfg)
 			case "invalid":
 				runInvalidPhase(t, client, cfg)
 			case "search-update":
@@ -308,6 +310,15 @@ func runQueryCompatibilityPhase(t *testing.T, client *functionalClient, cfg func
 	case functionalSearchBeta:
 		requireFunctionalSearchWidenedOldTermsAbsent(t, client, cfg, functionalSearchAlpha)
 	}
+}
+
+// runObjectCompatibilityPhase layers a compact cross-family fixture over the
+// active stack, then verifies the same routes after PostgreSQL/OpenSearch
+// activation that operators use during restart and rehydration drills.
+func runObjectCompatibilityPhase(t *testing.T, client *functionalClient, cfg functionalConfig) {
+	requireOperationalStatus(t, client)
+	ensureFunctionalObjectCompatibilityFixtures(t, client, cfg)
+	requireFunctionalObjectCompatibilityState(t, client, cfg)
 }
 
 func runInvalidPhase(t *testing.T, client *functionalClient, cfg functionalConfig) {
@@ -543,6 +554,108 @@ func requireFunctionalMaintenanceBlocked(t *testing.T, resp apiResponse) {
 	if payload["error"] != functionalMaintenanceBlockedError {
 		t.Fatalf("maintenance blocked payload = %v, want static Chef 503 error", payload)
 	}
+}
+
+// ensureFunctionalObjectCompatibilityFixtures creates the compact cross-object
+// graph used by the object-compat phase and resets mutable search fixtures so
+// the phase is safe to run on a fresh stack or after a previous restart.
+func ensureFunctionalObjectCompatibilityFixtures(t *testing.T, client *functionalClient, cfg functionalConfig) {
+	t.Helper()
+
+	orgPayload := ensureOrganization(t, client, cfg.org)
+	requireOrganizationBootstrap(t, client, cfg.org)
+	ensureValidatorBootstrapRegistration(t, client, cfg, orgPayload)
+
+	client.expectJSON(t, http.MethodPost, "/environments", environmentPayload("production"), http.StatusCreated, http.StatusConflict)
+	client.expectJSON(t, http.MethodPut, "/environments/production", environmentPayload("production"), http.StatusOK)
+	client.expectJSON(t, http.MethodPost, "/organizations/"+cfg.org+"/roles", rolePayload("web"), http.StatusCreated, http.StatusConflict)
+	client.expectJSON(t, http.MethodPut, "/organizations/"+cfg.org+"/roles/web", rolePayload("web"), http.StatusOK)
+	client.expectJSON(t, http.MethodPost, "/nodes", nodePayload("twilight", "production"), http.StatusCreated, http.StatusConflict)
+	client.expectJSON(t, http.MethodPut, "/nodes/twilight", nodePayload("twilight", "production"), http.StatusOK)
+
+	client.expectJSON(t, http.MethodPost, "/organizations/"+cfg.org+"/data", map[string]any{"name": "ponies"}, http.StatusCreated, http.StatusConflict)
+	resp := client.expectJSON(t, http.MethodPost, "/organizations/"+cfg.org+"/data/ponies", map[string]any{
+		"id":   "twilight",
+		"kind": "unicorn",
+		"nested": map[string]any{
+			"assistant": "spike",
+		},
+	}, http.StatusCreated, http.StatusConflict)
+	if resp.Status == http.StatusConflict {
+		client.expectJSON(t, http.MethodPut, "/organizations/"+cfg.org+"/data/ponies/twilight", map[string]any{
+			"id":   "twilight",
+			"kind": "unicorn",
+			"nested": map[string]any{
+				"assistant": "spike",
+			},
+		}, http.StatusOK)
+	}
+
+	ensureFunctionalSearchFixtures(t, client, functionalSearchAlpha)
+	ensureFunctionalEncryptedDataBagFixture(t, client, cfg, testfixtures.EncryptedDataBagItem())
+	client.expectJSON(t, http.MethodPut, "/policy_groups/"+policyGroupName+"/policies/"+policyName, policyPayload(policyName, policyRevisionID), http.StatusCreated, http.StatusOK)
+	createPendingSandbox(t, client, cfg)
+	commitPendingSandboxIfNeeded(t, client, cfg)
+	requireSandboxBlobReuse(t, client, cfg.org)
+	ensureFunctionalUnsupportedSearchFixtures(t, client, cfg)
+}
+
+// requireFunctionalObjectCompatibilityState proves the object-compat fixture is
+// readable after PostgreSQL activation and that OpenSearch stays a derived index
+// for supported object families only.
+func requireFunctionalObjectCompatibilityState(t *testing.T, client *functionalClient, cfg functionalConfig) {
+	t.Helper()
+
+	requireOrganizationBootstrap(t, client, cfg.org)
+	requireValidatorBootstrapRegisteredClient(t, client, cfg)
+
+	envPayload := asMap(t, client.expectJSON(t, http.MethodGet, "/organizations/"+cfg.org+"/environments/production", nil, http.StatusOK).JSON)
+	if envPayload["name"] != "production" {
+		t.Fatalf("object-compat environment = %v, want production", envPayload)
+	}
+	client.expectJSON(t, http.MethodHead, "/environments/production", nil, http.StatusOK)
+
+	nodePayload := asMap(t, client.expectJSON(t, http.MethodGet, "/nodes/twilight", nil, http.StatusOK).JSON)
+	if nodePayload["chef_environment"] != "production" {
+		t.Fatalf("object-compat node = %v, want production environment", nodePayload)
+	}
+	envNodes := asMap(t, client.expectJSON(t, http.MethodGet, "/environments/production/nodes", nil, http.StatusOK).JSON)
+	if _, ok := envNodes["twilight"]; !ok {
+		t.Fatalf("object-compat environment nodes = %v, want twilight", envNodes)
+	}
+
+	rolePayload := asMap(t, client.expectJSON(t, http.MethodGet, "/organizations/"+cfg.org+"/roles/web", nil, http.StatusOK).JSON)
+	if rolePayload["name"] != "web" {
+		t.Fatalf("object-compat role = %v, want web", rolePayload)
+	}
+	envRole := asMap(t, client.expectJSON(t, http.MethodGet, "/roles/web/environments/production", nil, http.StatusOK).JSON)
+	if envRole["run_list"] == nil {
+		t.Fatalf("object-compat environment role = %v, want run_list", envRole)
+	}
+
+	dataBagItems := asMap(t, client.expectJSON(t, http.MethodGet, "/organizations/"+cfg.org+"/data/ponies", nil, http.StatusOK).JSON)
+	if _, ok := dataBagItems["twilight"]; !ok {
+		t.Fatalf("object-compat data bag items = %v, want twilight", dataBagItems)
+	}
+	itemPayload := asMap(t, client.expectJSON(t, http.MethodGet, "/data/ponies/twilight", nil, http.StatusOK).JSON)
+	if itemPayload["kind"] != "unicorn" {
+		t.Fatalf("object-compat data bag item = %v, want unicorn", itemPayload)
+	}
+	requireFunctionalEncryptedDataBagFixture(t, client, cfg, encryptedPayloadWithID(testfixtures.EncryptedDataBagItem()))
+
+	assignment := asMap(t, client.expectJSON(t, http.MethodGet, "/organizations/"+cfg.org+"/policy_groups/"+policyGroupName+"/policies/"+policyName, nil, http.StatusOK).JSON)
+	if assignment["revision_id"] != policyRevisionID {
+		t.Fatalf("object-compat policy assignment = %v, want %s", assignment, policyRevisionID)
+	}
+	revision := asMap(t, client.expectJSON(t, http.MethodGet, "/policies/"+policyName+"/revisions/"+policyRevisionID, nil, http.StatusOK).JSON)
+	if revision["name"] != policyName {
+		t.Fatalf("object-compat policy revision = %v, want %s", revision, policyName)
+	}
+
+	requireFunctionalCookbookAPIVersionFileShapes(t, client, cfg)
+	requireFunctionalUnsupportedSearchFixtures(t, client, cfg)
+	requireFunctionalSearchFixtures(t, client, cfg, functionalSearchAlpha)
+	requireFunctionalSearchQueryCompatibility(t, client, cfg, functionalSearchAlpha)
 }
 
 func ensureFunctionalSearchFixtures(t *testing.T, client *functionalClient, marker string) {

@@ -25,7 +25,7 @@ case "$phase" in
   migration-*)
     exec bash /src/scripts/run-migration-functional-tests-in-container.sh "$phase"
     ;;
-  create|verify|query-compat|invalid|search-update|verify-search-updated|delete|verify-deleted|all)
+  create|verify|query-compat|object-compat|invalid|search-update|verify-search-updated|delete|verify-deleted|all)
     ;;
   *)
     echo "unknown functional test phase: $phase" >&2

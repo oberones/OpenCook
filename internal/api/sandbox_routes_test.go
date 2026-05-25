@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -182,6 +183,113 @@ func TestSandboxesEndpointRejectsInvalidPayloads(t *testing.T) {
 				t.Fatalf("error messages = %v, want %q", messages, tt.message)
 			}
 		})
+	}
+}
+
+func TestSandboxValidationFailuresDoNotMutateExistingSandboxOrBlobState(t *testing.T) {
+	router := newTestRouter(t)
+
+	content := []byte("sandbox validation baseline")
+	checksum := checksumHex(content)
+	createReq := newSignedJSONRequest(t, http.MethodPost, "/sandboxes", mustMarshalSandboxJSON(t, map[string]any{
+		"checksums": map[string]any{
+			checksum: nil,
+		},
+	}))
+	createRec := httptest.NewRecorder()
+	router.ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("create sandbox status = %d, want %d, body = %s", createRec.Code, http.StatusCreated, createRec.Body.String())
+	}
+
+	var createPayload map[string]any
+	if err := json.Unmarshal(createRec.Body.Bytes(), &createPayload); err != nil {
+		t.Fatalf("json.Unmarshal(create sandbox) error = %v", err)
+	}
+	sandboxID := createPayload["sandbox_id"].(string)
+	uploadURL := createPayload["checksums"].(map[string]any)[checksum].(map[string]any)["url"].(string)
+
+	badCreate := httptest.NewRecorder()
+	router.ServeHTTP(badCreate, newSignedJSONRequest(t, http.MethodPost, "/sandboxes", []byte(`{"checksums":`)))
+	assertSandboxAPIError(t, badCreate, http.StatusBadRequest, "invalid_json", "request body must be valid JSON")
+
+	trailingCreateBody := append(mustMarshalSandboxJSON(t, map[string]any{
+		"checksums": map[string]any{
+			checksumHex([]byte("trailing create checksum")): nil,
+		},
+	}), []byte(` {"extra":true}`)...)
+	trailingCreate := httptest.NewRecorder()
+	router.ServeHTTP(trailingCreate, newSignedJSONRequest(t, http.MethodPost, "/sandboxes", trailingCreateBody))
+	assertSandboxAPIError(t, trailingCreate, http.StatusBadRequest, "invalid_json", "request body must contain exactly one JSON document")
+
+	invalidChecksumCreate := httptest.NewRecorder()
+	router.ServeHTTP(invalidChecksumCreate, newSignedJSONRequest(t, http.MethodPost, "/sandboxes", mustMarshalSandboxJSON(t, map[string]any{
+		"checksums": map[string]any{
+			"not-a-checksum": nil,
+		},
+	})))
+	assertSandboxErrorMessages(t, invalidChecksumCreate, http.StatusBadRequest, "Bad checksums!")
+
+	uploadReq := httptest.NewRequest(http.MethodPut, uploadURL, bytes.NewReader(content))
+	uploadReq.Header.Set("Content-Type", "application/x-binary")
+	uploadReq.Header.Set("Content-MD5", checksumBase64(content))
+	uploadRec := httptest.NewRecorder()
+	router.ServeHTTP(uploadRec, uploadReq)
+	if uploadRec.Code != http.StatusNoContent {
+		t.Fatalf("upload checksum status = %d, want %d, body = %s", uploadRec.Code, http.StatusNoContent, uploadRec.Body.String())
+	}
+
+	badCommit := httptest.NewRecorder()
+	router.ServeHTTP(badCommit, newSignedJSONRequest(t, http.MethodPut, "/sandboxes/"+sandboxID, []byte(`{`)))
+	assertSandboxAPIError(t, badCommit, http.StatusBadRequest, "invalid_json", "request body must be valid JSON")
+
+	trailingCommitBody := append(mustMarshalSandboxJSON(t, map[string]any{
+		"is_completed": true,
+	}), []byte(` {"extra":true}`)...)
+	trailingCommit := httptest.NewRecorder()
+	router.ServeHTTP(trailingCommit, newSignedJSONRequest(t, http.MethodPut, "/sandboxes/"+sandboxID, trailingCommitBody))
+	assertSandboxAPIError(t, trailingCommit, http.StatusBadRequest, "invalid_json", "request body must contain exactly one JSON document")
+
+	missingCommit := httptest.NewRecorder()
+	router.ServeHTTP(missingCommit, newSignedJSONRequest(t, http.MethodPut, "/sandboxes/missing-sandbox", mustMarshalSandboxJSON(t, map[string]any{
+		"is_completed": true,
+	})))
+	assertSandboxErrorMessages(t, missingCommit, http.StatusNotFound, "No such sandbox 'missing-sandbox'.")
+
+	commitRec := httptest.NewRecorder()
+	router.ServeHTTP(commitRec, newSignedJSONRequest(t, http.MethodPut, "/sandboxes/"+sandboxID, mustMarshalSandboxJSON(t, map[string]any{
+		"is_completed": true,
+	})))
+	if commitRec.Code != http.StatusOK {
+		t.Fatalf("commit sandbox status = %d, want %d, body = %s", commitRec.Code, http.StatusOK, commitRec.Body.String())
+	}
+
+	var commitPayload map[string]any
+	if err := json.Unmarshal(commitRec.Body.Bytes(), &commitPayload); err != nil {
+		t.Fatalf("json.Unmarshal(commit sandbox) error = %v", err)
+	}
+	committedChecksums := stringSliceFromAny(t, commitPayload["checksums"])
+	if len(committedChecksums) != 1 || committedChecksums[0] != checksum {
+		t.Fatalf("committed checksums = %v, want [%s]", committedChecksums, checksum)
+	}
+
+	reuseRec := httptest.NewRecorder()
+	router.ServeHTTP(reuseRec, newSignedJSONRequest(t, http.MethodPost, "/sandboxes", mustMarshalSandboxJSON(t, map[string]any{
+		"checksums": map[string]any{
+			checksum: nil,
+		},
+	})))
+	if reuseRec.Code != http.StatusCreated {
+		t.Fatalf("reuse sandbox status = %d, want %d, body = %s", reuseRec.Code, http.StatusCreated, reuseRec.Body.String())
+	}
+
+	var reusePayload map[string]any
+	if err := json.Unmarshal(reuseRec.Body.Bytes(), &reusePayload); err != nil {
+		t.Fatalf("json.Unmarshal(reuse sandbox) error = %v", err)
+	}
+	reuseEntry := reusePayload["checksums"].(map[string]any)[checksum].(map[string]any)
+	if reuseEntry["needs_upload"] != false {
+		t.Fatalf("reuse needs_upload = %v, want false", reuseEntry["needs_upload"])
 	}
 }
 
@@ -700,6 +808,36 @@ func mustMarshalSandboxJSON(t *testing.T, payload map[string]any) []byte {
 		t.Fatalf("json.Marshal() error = %v", err)
 	}
 	return body
+}
+
+func assertSandboxAPIError(t *testing.T, rec *httptest.ResponseRecorder, status int, wantError, wantMessage string) {
+	t.Helper()
+
+	if rec.Code != status {
+		t.Fatalf("sandbox API error status = %d, want %d, body = %s", rec.Code, status, rec.Body.String())
+	}
+	var payload apiError
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal(sandbox API error) error = %v", err)
+	}
+	if payload.Error != wantError || payload.Message != wantMessage {
+		t.Fatalf("sandbox API error payload = %+v, want error=%q message=%q", payload, wantError, wantMessage)
+	}
+}
+
+func assertSandboxErrorMessages(t *testing.T, rec *httptest.ResponseRecorder, status int, wantMessages ...string) {
+	t.Helper()
+
+	if rec.Code != status {
+		t.Fatalf("sandbox error status = %d, want %d, body = %s", rec.Code, status, rec.Body.String())
+	}
+	var payload map[string][]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal(sandbox error) error = %v", err)
+	}
+	if !reflect.DeepEqual(payload["error"], wantMessages) {
+		t.Fatalf("sandbox error messages = %v, want %v", payload["error"], wantMessages)
+	}
 }
 
 func checksumHex(body []byte) string {

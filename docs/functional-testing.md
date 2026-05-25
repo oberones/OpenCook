@@ -10,7 +10,7 @@ The tests intentionally talk to OpenCook over HTTP with Chef-style signed reques
 scripts/functional-compose.sh
 ```
 
-The default flow builds the images, starts the stack, creates compatibility objects including encrypted-looking data bag items, restarts OpenCook, verifies rehydration through active OpenSearch-backed search, runs the targeted Lucene/query-string compatibility phase, runs invalid-write/no-mutation checks, updates searchable fields and verifies old search terms disappear, restarts again, reruns the query compatibility phase against updated persisted state, runs the operational admin/config/service/metrics/logs/diagnostics/runbook/reindex/search-repair phases, restarts after repair, verifies operational state, runs the maintenance-mode phase, runs migration preflight plus backup create/inspect against the active stack, deletes the objects, restarts one more time, and verifies deletion persisted.
+The default flow builds the images, starts the stack, creates compatibility objects including encrypted-looking data bag items, restarts OpenCook, verifies rehydration through active OpenSearch-backed search, runs the targeted Lucene/query-string compatibility phase, runs the object-compatibility phase across representative Chef object families, runs invalid-write/no-mutation checks, updates searchable fields and verifies old search terms disappear, restarts again, reruns the query compatibility phase against updated persisted state, runs the operational admin/config/service/metrics/logs/diagnostics/runbook/reindex/search-repair phases, restarts after repair, verifies operational state, runs the maintenance-mode phase, runs migration preflight plus backup create/inspect against the active stack, deletes the objects, restarts one more time, and verifies deletion persisted.
 
 Successful default and targeted runs end with a `functional tests passed successfully` footer so CI and humans can distinguish a clean finish from an abrupt final phase log.
 
@@ -34,6 +34,7 @@ docker compose -p opencook-functional -f deploy/functional/docker-compose.yml do
 ```sh
 KEEP_STACK=1 scripts/functional-compose.sh create restart verify
 KEEP_STACK=1 scripts/functional-compose.sh query-compat
+KEEP_STACK=1 scripts/functional-compose.sh object-compat restart object-compat
 KEEP_STACK=1 scripts/functional-compose.sh invalid restart verify
 KEEP_STACK=1 scripts/functional-compose.sh search-update verify-search-updated restart verify-search-updated
 KEEP_STACK=1 scripts/functional-compose.sh operational restart operational-verify
@@ -45,7 +46,7 @@ KEEP_STACK=1 scripts/functional-compose.sh migration-scale-all
 KEEP_STACK=1 scripts/functional-compose.sh delete restart verify-deleted
 ```
 
-Supported phase names are `create`, `verify`, `query-compat`, `invalid`, `search-update`, `verify-search-updated`, `operational`, `operational-verify`, `maintenance`, `migration-preflight`, `migration-backup`, `migration-backup-inspect`, `migration-restore-preflight`, `migration-restore`, `migration-reindex`, `migration-rehearsal`, `migration-source-normalize`, `migration-source-import-preflight`, `migration-source-import`, `migration-source-reindex`, `migration-source-sync-preflight`, `migration-source-sync`, `migration-shadow-compare`, `migration-source-rehearsal`, `migration-source-all`, `migration-live-source-preflight`, `migration-live-source-extract`, `migration-live-source-import`, `migration-live-source-reindex`, `migration-live-source-shadow`, `migration-live-source-rehearsal`, `migration-live-source-all`, `migration-scale-fixtures`, `migration-scale-backup`, `migration-scale-restore`, `migration-scale-reindex`, `migration-scale-shadow`, `migration-scale-rehearsal`, `migration-scale-all`, `migration-all`, `delete`, `verify-deleted`, and `restart`.
+Supported phase names are `create`, `verify`, `query-compat`, `object-compat`, `invalid`, `search-update`, `verify-search-updated`, `operational`, `operational-verify`, `maintenance`, `migration-preflight`, `migration-backup`, `migration-backup-inspect`, `migration-restore-preflight`, `migration-restore`, `migration-reindex`, `migration-rehearsal`, `migration-source-normalize`, `migration-source-import-preflight`, `migration-source-import`, `migration-source-reindex`, `migration-source-sync-preflight`, `migration-source-sync`, `migration-shadow-compare`, `migration-source-rehearsal`, `migration-source-all`, `migration-live-source-preflight`, `migration-live-source-extract`, `migration-live-source-import`, `migration-live-source-reindex`, `migration-live-source-shadow`, `migration-live-source-rehearsal`, `migration-live-source-all`, `migration-scale-fixtures`, `migration-scale-backup`, `migration-scale-restore`, `migration-scale-reindex`, `migration-scale-shadow`, `migration-scale-rehearsal`, `migration-scale-all`, `migration-all`, `delete`, `verify-deleted`, and `restart`.
 
 To run just the OpenSearch-heavy compatibility phases after a stack already has created fixtures, use:
 
@@ -57,6 +58,13 @@ To run only the Lucene/query-string search compatibility phase against the curre
 
 ```sh
 KEEP_STACK=1 REBUILD=0 scripts/functional-compose.sh query-compat
+```
+
+To run only the cross-object compatibility phase, including a restart-backed
+rehydration check, use:
+
+```sh
+KEEP_STACK=1 scripts/functional-compose.sh object-compat restart object-compat
 ```
 
 To run only the operational admin/reindex/search-repair phases, use:
@@ -236,6 +244,7 @@ rehearsal coverage.
 - Validator-created clients persist key material across restart, authenticate signed follow-up requests, retain default key metadata, appear in the `clients` group, expose their client ACL read side effect, and show up in client search rows.
 - Searchable clients, environments, nodes, roles, ordinary data bag items, and encrypted-looking data bag items are visible through active OpenSearch-backed search after OpenCook restarts.
 - The targeted `query-compat` phase covers representative grouped boolean, quoted phrase, escaped slash, wildcard field, wildcard value, range, full search, and partial search behavior against active PostgreSQL plus OpenSearch.
+- The targeted `object-compat` phase creates or refreshes a compact node, environment, role, data bag, encrypted-looking data bag, policy, sandbox, cookbook, and cookbook-artifact graph, then verifies those reads and derived search rows after PostgreSQL/OpenSearch activation and across restart when paired with the `restart` phase.
 - Cookbook versions, cookbook artifacts, policy groups, policy revisions, sandboxes, and checksum-backed blobs can exist in persisted PostgreSQL/blob state while cookbook/policy/sandbox/checksum-style search indexes remain absent from index listings and return Chef-style unsupported-index responses.
 - Node `policy_name` and `policy_group` fields remain searchable and selectable through the supported node index; policy objects themselves are not exposed as search indexes.
 - Encrypted-looking data bag partial search can select encrypted envelope fields and clear metadata without requiring a data bag secret.

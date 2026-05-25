@@ -118,6 +118,80 @@ func (f *activePostgresCookbookRouteFixture) assertBlobExists(checksum string, w
 	}
 }
 
+// newFullActivePostgresFilesystemCookbookFixture uses the full PostgreSQL
+// activation path so sandbox checksum references are rehydrated with cookbook
+// metadata before cleanup decisions run.
+func newFullActivePostgresFilesystemCookbookFixture(t *testing.T) (*activePostgresBootstrapFixture, string) {
+	t.Helper()
+
+	root := t.TempDir()
+	fileStore, err := blob.NewFileStore(root)
+	if err != nil {
+		t.Fatalf("NewFileStore() error = %v", err)
+	}
+	fixture := newActivePostgresBootstrapFixtureWithBlob(t, pgtest.NewState(pgtest.Seed{}), fileStore)
+	fixture.createOrganizationWithValidator("ponyville")
+	return fixture, root
+}
+
+func restartFullActivePostgresFilesystemCookbookFixture(t *testing.T, pgState *pgtest.State, root string) *activePostgresBootstrapFixture {
+	t.Helper()
+
+	fileStore, err := blob.NewFileStore(root)
+	if err != nil {
+		t.Fatalf("NewFileStore(restart) error = %v", err)
+	}
+	return newActivePostgresBootstrapFixtureWithBlob(t, pgState, fileStore)
+}
+
+func assertFilesystemBlobExists(t *testing.T, root, checksum string, want bool) {
+	t.Helper()
+
+	fileStore, err := blob.NewFileStore(root)
+	if err != nil {
+		t.Fatalf("NewFileStore(assert) error = %v", err)
+	}
+	exists, err := fileStore.Exists(context.Background(), checksum)
+	if err != nil {
+		t.Fatalf("Exists(%q) error = %v", checksum, err)
+	}
+	if exists != want {
+		t.Fatalf("Exists(%q) = %t, want %t", checksum, exists, want)
+	}
+}
+
+func createActivePostgresCookbookArtifact(t *testing.T, router http.Handler, name, identifier, version, checksum string) {
+	t.Helper()
+
+	req := newSignedJSONRequestAs(t, "pivotal", http.MethodPut, "/cookbook_artifacts/"+name+"/"+identifier, mustMarshalSandboxJSON(t, cookbookArtifactPayload(name, identifier, version, checksum, nil)))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create cookbook artifact %s/%s status = %d, want %d, body = %s", name, identifier, rec.Code, http.StatusCreated, rec.Body.String())
+	}
+}
+
+func activePostgresCookbookArtifactFileURL(t *testing.T, router http.Handler, path string) string {
+	t.Helper()
+
+	req := newSignedJSONRequestAs(t, "pivotal", http.MethodGet, path, nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET %s status = %d, want %d, body = %s", path, rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal(%s) error = %v", path, err)
+	}
+	recipes := payload["recipes"].([]any)
+	if len(recipes) == 0 {
+		t.Fatalf("%s recipes = %v, want at least one entry", path, payload["recipes"])
+	}
+	return recipes[0].(map[string]any)["url"].(string)
+}
+
 type cookbookRouteBlobFaultControl struct {
 	mu         sync.Mutex
 	existsErr  error
@@ -443,6 +517,78 @@ func TestActivePostgresFilesystemCookbookReadDownloadParityAfterRestart(t *testi
 	assertCookbookDownloadBody(t, restarted.router, orgArtifactURL, "puts 'org postgres provider body'")
 }
 
+func TestActivePostgresFilesystemCookbookReadEdgesAfterRestart(t *testing.T) {
+	fixture := newActivePostgresFilesystemCookbookRouteFixture(t)
+
+	v1Checksum := uploadCookbookChecksum(t, fixture.router, []byte("puts 'edge v1 body'"))
+	v2Checksum := uploadCookbookChecksum(t, fixture.router, []byte("puts 'edge v2 body'"))
+	orgChecksum := uploadCookbookChecksum(t, fixture.router, []byte("puts 'org edge v3 body'"))
+	artifactV1Checksum := uploadCookbookChecksum(t, fixture.router, []byte("puts 'edge artifact v1 body'"))
+	artifactV2Checksum := uploadCookbookChecksum(t, fixture.router, []byte("puts 'edge artifact v2 body'"))
+
+	createCookbookVersion(t, fixture.router, "edge-demo", "1.0.0", v1Checksum, map[string]string{"base": ">= 1.0.0"})
+	createCookbookVersion(t, fixture.router, "edge-demo", "2.0.0", v2Checksum, map[string]string{"base": ">= 2.0.0"})
+	createOrgCookbookVersion(t, fixture.router, "ponyville", "org-edge-demo", "3.1.0", orgChecksum, nil)
+	createCookbookArtifact(t, fixture.router, "edge-artifact", "5555555555555555555555555555555555555555", "1.0.0", artifactV1Checksum, nil)
+	createCookbookArtifact(t, fixture.router, "edge-artifact", "6666666666666666666666666666666666666666", "2.0.0", artifactV2Checksum, nil)
+
+	restarted := fixture.restart()
+
+	zeroRec := serveSignedQueryAPIVersionRequest(t, restarted.router, "pivotal", http.MethodGet, "/cookbooks?num_versions=0", "/cookbooks", nil, "2")
+	assertCookbookAPIVersionStatus(t, zeroRec, http.StatusOK, "cookbook collection num_versions=0")
+	if versions := cookbookVersionListForName(t, mustDecodeObject(t, zeroRec), "edge-demo"); len(versions) != 0 {
+		t.Fatalf("num_versions=0 edge-demo versions = %v, want empty list", versions)
+	}
+
+	allRec := serveSignedQueryAPIVersionRequest(t, restarted.router, "pivotal", http.MethodGet, "/cookbooks?num_versions=all", "/cookbooks", nil, "2")
+	assertCookbookAPIVersionStatus(t, allRec, http.StatusOK, "cookbook collection num_versions=all")
+	allVersions := cookbookVersionListForName(t, mustDecodeObject(t, allRec), "edge-demo")
+	if len(allVersions) != 2 || allVersions[0].(map[string]any)["version"] != "2.0.0" || allVersions[1].(map[string]any)["version"] != "1.0.0" {
+		t.Fatalf("num_versions=all edge-demo versions = %v, want 2.0.0 then 1.0.0", allVersions)
+	}
+
+	latestPayload := mustGetCookbookObjectForAPIVersion(t, restarted.router, "/cookbooks/edge-demo/latest", "2")
+	if latestPayload["version"] != "2.0.0" {
+		t.Fatalf("latest alias version = %v, want 2.0.0", latestPayload["version"])
+	}
+	orgLatestPayload := mustGetCookbookObjectForAPIVersion(t, restarted.router, "/organizations/ponyville/cookbooks/org-edge-demo/latest", "2")
+	if orgLatestPayload["version"] != "3.1.0" {
+		t.Fatalf("org latest alias version = %v, want 3.1.0", orgLatestPayload["version"])
+	}
+
+	artifactNamedRec := serveSignedAPIVersionRequest(t, restarted.router, "pivotal", http.MethodGet, "/cookbook_artifacts/edge-artifact", nil, "2")
+	assertCookbookAPIVersionStatus(t, artifactNamedRec, http.StatusOK, "artifact named collection")
+	artifactVersions := cookbookVersionListForName(t, mustDecodeObject(t, artifactNamedRec), "edge-artifact")
+	if len(artifactVersions) != 2 {
+		t.Fatalf("edge-artifact versions len = %d, want 2 (%v)", len(artifactVersions), artifactVersions)
+	}
+	if artifactVersions[0].(map[string]any)["identifier"] != "6666666666666666666666666666666666666666" {
+		t.Fatalf("edge-artifact first identifier = %v, want v2 identifier (%v)", artifactVersions[0], artifactVersions)
+	}
+
+	missingCookbook := serveSignedAPIVersionRequest(t, restarted.router, "pivotal", http.MethodGet, "/cookbooks/missing-edge", nil, "2")
+	assertCookbookAPIVersionStatus(t, missingCookbook, http.StatusNotFound, "missing named cookbook")
+	assertCookbookErrorList(t, missingCookbook.Body.Bytes(), []string{"Cannot find a cookbook named missing-edge"})
+	missingArtifact := serveSignedAPIVersionRequest(t, restarted.router, "pivotal", http.MethodGet, "/cookbook_artifacts/missing-edge", nil, "2")
+	assertCookbookAPIVersionStatus(t, missingArtifact, http.StatusNotFound, "missing named artifact")
+	assertCookbookErrorList(t, missingArtifact.Body.Bytes(), []string{"not_found"})
+
+	deletedLatestURL := cookbookFileURL(t, restarted.router, "/cookbooks/edge-demo/2.0.0")
+	deleteLatest := serveSignedAPIVersionRequest(t, restarted.router, "pivotal", http.MethodDelete, "/cookbooks/edge-demo/latest", nil, "2")
+	assertCookbookAPIVersionStatus(t, deleteLatest, http.StatusOK, "delete latest alias")
+	deletedPayload := mustDecodeObject(t, deleteLatest)
+	if deletedPayload["version"] != "2.0.0" {
+		t.Fatalf("deleted latest alias version = %v, want 2.0.0", deletedPayload["version"])
+	}
+	assertBlobDownloadStatus(t, restarted.router, deletedLatestURL, http.StatusNotFound)
+
+	afterDelete := restarted.restart()
+	remainingLatest := mustGetCookbookObjectForAPIVersion(t, afterDelete.router, "/cookbooks/edge-demo/latest", "2")
+	if remainingLatest["version"] != "1.0.0" {
+		t.Fatalf("remaining latest alias version = %v, want 1.0.0", remainingLatest["version"])
+	}
+}
+
 func TestActivePostgresFilesystemCookbookMutationParityAndPersistence(t *testing.T) {
 	fixture := newActivePostgresFilesystemCookbookRouteFixture(t)
 
@@ -626,21 +772,49 @@ func TestActivePostgresFilesystemChecksumCleanupRetention(t *testing.T) {
 	})
 
 	t.Run("sandbox_reference_preserves_blob", func(t *testing.T) {
-		fixture := newActivePostgresFilesystemCookbookRouteFixture(t)
+		fixture, root := newFullActivePostgresFilesystemCookbookFixture(t)
 
-		checksum := uploadCookbookChecksumWithoutCommit(t, fixture.router, []byte("puts 'sandbox held body'"))
-		createCookbookVersion(t, fixture.router, "sandbox-held", "1.0.0", checksum, nil)
+		checksum := uploadActivePostgresCookbookChecksumWithoutCommit(t, fixture.router, []byte("puts 'sandbox held body'"))
+		createActivePostgresCookbookVersion(t, fixture.router, "sandbox-held", "1.0.0", checksum)
 
-		downloadURL := cookbookFileURL(t, fixture.router, "/cookbooks/sandbox-held/1.0.0")
+		restarted := restartFullActivePostgresFilesystemCookbookFixture(t, fixture.pgState, root)
+		downloadURL := activePostgresCookbookFileURL(t, restarted.router, "/cookbooks/sandbox-held/1.0.0")
 
-		deleteReq := newSignedJSONRequest(t, http.MethodDelete, "/cookbooks/sandbox-held/1.0.0", nil)
+		deleteReq := newSignedJSONRequestAs(t, "pivotal", http.MethodDelete, "/cookbooks/sandbox-held/1.0.0", nil)
 		deleteRec := httptest.NewRecorder()
-		fixture.router.ServeHTTP(deleteRec, deleteReq)
+		restarted.router.ServeHTTP(deleteRec, deleteReq)
 		if deleteRec.Code != http.StatusOK {
 			t.Fatalf("delete sandbox-held cookbook status = %d, want %d, body = %s", deleteRec.Code, http.StatusOK, deleteRec.Body.String())
 		}
-		assertCookbookDownloadBody(t, fixture.router, downloadURL, "puts 'sandbox held body'")
-		fixture.assertBlobExists(checksum, true)
+		assertCookbookDownloadBody(t, restarted.router, downloadURL, "puts 'sandbox held body'")
+		assertFilesystemBlobExists(t, root, checksum, true)
+
+		afterDelete := restartFullActivePostgresFilesystemCookbookFixture(t, fixture.pgState, root)
+		assertCookbookDownloadBody(t, afterDelete.router, downloadURL, "puts 'sandbox held body'")
+		assertFilesystemBlobExists(t, root, checksum, true)
+	})
+
+	t.Run("sandbox_reference_preserves_artifact_blob_after_restart", func(t *testing.T) {
+		fixture, root := newFullActivePostgresFilesystemCookbookFixture(t)
+
+		checksum := uploadActivePostgresCookbookChecksumWithoutCommit(t, fixture.router, []byte("puts 'sandbox held artifact body'"))
+		createActivePostgresCookbookArtifact(t, fixture.router, "sandbox-held-artifact", "4444444444444444444444444444444444444444", "1.0.0", checksum)
+
+		restarted := restartFullActivePostgresFilesystemCookbookFixture(t, fixture.pgState, root)
+		downloadURL := activePostgresCookbookArtifactFileURL(t, restarted.router, "/cookbook_artifacts/sandbox-held-artifact/4444444444444444444444444444444444444444")
+
+		deleteReq := newSignedJSONRequestAs(t, "pivotal", http.MethodDelete, "/cookbook_artifacts/sandbox-held-artifact/4444444444444444444444444444444444444444", nil)
+		deleteRec := httptest.NewRecorder()
+		restarted.router.ServeHTTP(deleteRec, deleteReq)
+		if deleteRec.Code != http.StatusOK {
+			t.Fatalf("delete sandbox-held artifact status = %d, want %d, body = %s", deleteRec.Code, http.StatusOK, deleteRec.Body.String())
+		}
+		assertCookbookDownloadBody(t, restarted.router, downloadURL, "puts 'sandbox held artifact body'")
+		assertFilesystemBlobExists(t, root, checksum, true)
+
+		afterDelete := restartFullActivePostgresFilesystemCookbookFixture(t, fixture.pgState, root)
+		assertCookbookDownloadBody(t, afterDelete.router, downloadURL, "puts 'sandbox held artifact body'")
+		assertFilesystemBlobExists(t, root, checksum, true)
 	})
 }
 

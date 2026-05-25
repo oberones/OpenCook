@@ -114,6 +114,7 @@ run_phase create
 restart_opencook
 run_phase verify
 run_phase query-compat
+run_phase object-compat
 run_phase invalid
 restart_opencook
 run_phase verify

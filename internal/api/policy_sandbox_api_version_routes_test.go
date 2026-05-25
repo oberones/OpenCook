@@ -183,6 +183,17 @@ func TestPolicySandboxAPIVersionInvalidWritesDoNotMutate(t *testing.T) {
 	blockedCommit := serveSignedAPIVersionRequest(t, restarted.router, "pivotal", http.MethodPut, "/sandboxes/"+sandboxID, []byte(`{`), "3")
 	assertInvalidServerAPIVersionResponse(t, blockedCommit, "3")
 
+	badJSONCommit := serveSignedAPIVersionRequest(t, restarted.router, "pivotal", http.MethodPut, "/sandboxes/"+sandboxID, []byte(`{`), "2")
+	assertPolicyAPIError(t, badJSONCommit, http.StatusBadRequest, "invalid_json", "request body must be valid JSON")
+
+	trailingCommitBody := append(mustMarshalSandboxJSON(t, map[string]any{"is_completed": true}), []byte(` {"extra":true}`)...)
+	trailingCommit := serveSignedAPIVersionRequest(t, restarted.router, "pivotal", http.MethodPut, "/sandboxes/"+sandboxID, trailingCommitBody, "2")
+	assertPolicyAPIError(t, trailingCommit, http.StatusBadRequest, "invalid_json", "request body must contain exactly one JSON document")
+
+	missingSandboxCommit := serveSignedAPIVersionRequest(t, restarted.router, "pivotal", http.MethodPut, "/sandboxes/missing-api-version-sandbox",
+		mustMarshalSandboxJSON(t, map[string]any{"is_completed": true}), "2")
+	assertPolicyErrorMessages(t, missingSandboxCommit, http.StatusNotFound, "No such sandbox 'missing-api-version-sandbox'.")
+
 	validCommit := serveSignedAPIVersionRequest(t, restarted.router, "pivotal", http.MethodPut, "/sandboxes/"+sandboxID,
 		mustMarshalSandboxJSON(t, map[string]any{"is_completed": true}), "2")
 	assertPolicySandboxAPIVersionStatus(t, validCommit, http.StatusOK, "commit sandbox after invalid-version rejection")
@@ -193,6 +204,85 @@ func TestPolicySandboxAPIVersionInvalidWritesDoNotMutate(t *testing.T) {
 
 	blockedSearch := serveSignedQueryAPIVersionRequest(t, restarted.router, "pivotal", http.MethodGet, searchPath("/search/policy_groups", "*:*"), "/search/policy_groups", nil, "3")
 	assertInvalidServerAPIVersionResponse(t, blockedSearch, "3")
+}
+
+// TestPolicyAPIVersionValidationFailuresDoNotMutateStateOrSearch pins policy
+// validation failures against the active PostgreSQL path while proving policy
+// objects remain intentionally absent from Chef search indexes.
+func TestPolicyAPIVersionValidationFailuresDoNotMutateStateOrSearch(t *testing.T) {
+	transport := newStatefulAPIOpenSearchTransport(t)
+	client, err := search.NewOpenSearchClient("http://opensearch.example", search.WithOpenSearchTransport(transport))
+	if err != nil {
+		t.Fatalf("NewOpenSearchClient() error = %v", err)
+	}
+	fixture := newActivePostgresOpenSearchIndexingFixture(t, pgtest.NewState(pgtest.Seed{}), client, nil)
+	fixture.createOrganizationWithValidator("ponyville")
+	primeActiveOpenSearchCoreObjectIndexer(t, fixture.router)
+
+	wantDocs := transport.SnapshotDocuments()
+	wantMutations := transport.SnapshotMutationRequests()
+
+	revisionID := "6969696969696969696969696969696969696969"
+	createAssignment := serveSignedAPIVersionRequest(t, fixture.router, "pivotal", http.MethodPut, "/organizations/ponyville/policy_groups/dev/policies/immutable_policy",
+		mustMarshalPolicyJSON(t, canonicalPolicyPayloadForAPI("immutable_policy", revisionID)), "2")
+	assertPolicySandboxAPIVersionStatus(t, createAssignment, http.StatusCreated, "create immutable policy assignment")
+	assertPolicyAssignmentRevisionForAPIVersion(t, fixture.router, "/policy_groups/dev/policies/immutable_policy", "2", revisionID)
+	transport.RequireDocuments(t, wantDocs)
+	transport.RequireMutationRequests(t, wantMutations)
+
+	invalidRevisionID := serveSignedAPIVersionRequest(t, fixture.router, "pivotal", http.MethodPost, "/policies/immutable_policy/revisions",
+		mustMarshalPolicyJSON(t, canonicalPolicyPayloadForAPI("immutable_policy", "bad/revision")), "2")
+	assertPolicyErrorMessages(t, invalidRevisionID, http.StatusBadRequest, "Field 'revision_id' invalid")
+
+	badJSONCreate := serveSignedAPIVersionRequest(t, fixture.router, "pivotal", http.MethodPost, "/policies/bad_json_policy/revisions", []byte(`{"name":"bad_json_policy"`), "2")
+	assertPolicyAPIError(t, badJSONCreate, http.StatusBadRequest, "invalid_json", "request body must be valid JSON")
+
+	trailingCreateBody := append(mustMarshalPolicyJSON(t, canonicalPolicyPayloadForAPI("trailing_policy", "7070707070707070707070707070707070707070")), []byte(` {"name":"extra"}`)...)
+	trailingCreate := serveSignedAPIVersionRequest(t, fixture.router, "pivotal", http.MethodPost, "/policies/trailing_policy/revisions", trailingCreateBody, "2")
+	assertPolicyAPIError(t, trailingCreate, http.StatusBadRequest, "invalid_json", "request body must contain exactly one JSON document")
+
+	blockedRevisionID := "7171717171717171717171717171717171717171"
+	mismatchedAssignment := serveSignedAPIVersionRequest(t, fixture.router, "pivotal", http.MethodPut, "/policy_groups/dev/policies/immutable_policy",
+		mustMarshalPolicyJSON(t, canonicalPolicyPayloadForAPI("other_policy", blockedRevisionID)), "2")
+	assertPolicyErrorMessages(t, mismatchedAssignment, http.StatusBadRequest, "Field 'name' invalid : immutable_policy does not match other_policy")
+
+	invalidAssignmentRevisionID := serveSignedAPIVersionRequest(t, fixture.router, "pivotal", http.MethodPut, "/policy_groups/dev/policies/immutable_policy",
+		mustMarshalPolicyJSON(t, canonicalPolicyPayloadForAPI("immutable_policy", "bad/revision")), "2")
+	assertPolicyErrorMessages(t, invalidAssignmentRevisionID, http.StatusBadRequest, "Field 'revision_id' invalid")
+
+	badJSONAssignment := serveSignedAPIVersionRequest(t, fixture.router, "pivotal", http.MethodPut, "/policy_groups/dev/policies/immutable_policy", []byte(`{"name":"immutable_policy"`), "2")
+	assertPolicyAPIError(t, badJSONAssignment, http.StatusBadRequest, "invalid_json", "request body must be valid JSON")
+
+	trailingAssignmentBody := append(mustMarshalPolicyJSON(t, canonicalPolicyPayloadForAPI("immutable_policy", blockedRevisionID)), []byte(` {"name":"extra"}`)...)
+	trailingAssignment := serveSignedAPIVersionRequest(t, fixture.router, "pivotal", http.MethodPut, "/policy_groups/dev/policies/immutable_policy", trailingAssignmentBody, "2")
+	assertPolicyAPIError(t, trailingAssignment, http.StatusBadRequest, "invalid_json", "request body must contain exactly one JSON document")
+
+	missingAssignment := serveSignedAPIVersionRequest(t, fixture.router, "pivotal", http.MethodGet, "/policy_groups/dev/policies/missing_policy", nil, "2")
+	assertPolicyAPIError(t, missingAssignment, http.StatusNotFound, "not_found", "policy group assignment not found")
+
+	missingAssignmentDelete := serveSignedAPIVersionRequest(t, fixture.router, "pivotal", http.MethodDelete, "/policy_groups/dev/policies/missing_policy", nil, "2")
+	assertPolicyAPIError(t, missingAssignmentDelete, http.StatusNotFound, "not_found", "policy resource not found")
+
+	missingGroupDelete := serveSignedAPIVersionRequest(t, fixture.router, "pivotal", http.MethodDelete, "/policy_groups/missing_group/policies/immutable_policy", nil, "2")
+	assertPolicyAPIError(t, missingGroupDelete, http.StatusNotFound, "not_found", "policy group not found")
+
+	assertPolicyAssignmentRevisionForAPIVersion(t, fixture.router, "/organizations/ponyville/policy_groups/dev/policies/immutable_policy", "2", revisionID)
+	assertPolicyAPIError(t, serveSignedAPIVersionRequest(t, fixture.router, "pivotal", http.MethodGet, "/policies/immutable_policy/revisions/"+blockedRevisionID, nil, "2"), http.StatusNotFound, "not_found", "policy revision not found")
+	assertPolicyAPIError(t, serveSignedAPIVersionRequest(t, fixture.router, "pivotal", http.MethodGet, "/policies/trailing_policy", nil, "2"), http.StatusNotFound, "not_found", "policy not found")
+	assertPolicyAPIError(t, serveSignedAPIVersionRequest(t, fixture.router, "pivotal", http.MethodGet, "/policies/other_policy", nil, "2"), http.StatusNotFound, "not_found", "policy not found")
+	transport.RequireDocuments(t, wantDocs)
+	transport.RequireMutationRequests(t, wantMutations)
+
+	restarted := newActivePostgresOpenSearchIndexingFixture(t, fixture.pgState, client, nil)
+	assertPolicyAssignmentRevisionForAPIVersion(t, restarted.router, "/policy_groups/dev/policies/immutable_policy", "2", revisionID)
+	assertPolicyAPIError(t, serveSignedAPIVersionRequest(t, restarted.router, "pivotal", http.MethodGet, "/policies/immutable_policy/revisions/"+blockedRevisionID, nil, "2"), http.StatusNotFound, "not_found", "policy revision not found")
+	transport.RequireDocuments(t, wantDocs)
+	transport.RequireMutationRequests(t, wantMutations)
+
+	assertSearchIndexListExcludesForAPIVersion(t, restarted.router, "/search", "2", "policy", "policies", "policy_group", "policy_groups")
+	assertUnsupportedSearchIndexForAPIVersion(t, restarted.router, http.MethodGet, searchPath("/search/policy", "*:*"), "/search/policy", nil, "policy", "2")
+	assertUnsupportedSearchIndexForAPIVersion(t, restarted.router, http.MethodGet, searchPath("/search/policies", "*:*"), "/search/policies", nil, "policies", "2")
+	assertUnsupportedSearchIndexForAPIVersion(t, restarted.router, http.MethodPost, searchPath("/organizations/ponyville/search/policy_groups", "*:*"), "/organizations/ponyville/search/policy_groups", []byte(`{"name":["name"]}`), "policy_groups", "2")
 }
 
 func TestPolicySandboxAPIVersionOpenSearchSemantics(t *testing.T) {
@@ -261,6 +351,36 @@ func assertPolicySandboxAPIVersionStatus(t *testing.T, rec *httptest.ResponseRec
 
 	if rec.Code != want {
 		t.Fatalf("%s status = %d, want %d, body = %s", context, rec.Code, want, rec.Body.String())
+	}
+}
+
+func assertPolicyAPIError(t *testing.T, rec *httptest.ResponseRecorder, status int, wantError, wantMessage string) {
+	t.Helper()
+
+	if rec.Code != status {
+		t.Fatalf("policy API error status = %d, want %d, body = %s", rec.Code, status, rec.Body.String())
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal(policy API error) error = %v", err)
+	}
+	if payload["error"] != wantError || payload["message"] != wantMessage {
+		t.Fatalf("policy API error payload = %v, want error=%q message=%q", payload, wantError, wantMessage)
+	}
+}
+
+func assertPolicyErrorMessages(t *testing.T, rec *httptest.ResponseRecorder, status int, wantMessages ...string) {
+	t.Helper()
+
+	if rec.Code != status {
+		t.Fatalf("policy error status = %d, want %d, body = %s", rec.Code, status, rec.Body.String())
+	}
+	var payload map[string][]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal(policy error) error = %v", err)
+	}
+	if !reflect.DeepEqual(payload["error"], wantMessages) {
+		t.Fatalf("policy error messages = %v, want %v", payload["error"], wantMessages)
 	}
 }
 

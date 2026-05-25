@@ -85,7 +85,7 @@ Status: in progress
 - maintenance-mode request blocking, shared maintenance state, cache-safe reload seams, and the first narrow online repair path are now pinned
 - production-scale migration validation and cutover readiness are now pinned with deterministic scale fixtures, small/medium/large profiles, scale-aware functional phases, operator reports, retry-safe guidance, and remote Docker workflows
 - direct live Chef Infra Server source extraction is now pinned for the implemented PostgreSQL-backed Chef families and checksum blob evidence, with copied/reference blob modes, source cursor freshness, shadow-read/cutover evidence, and remote Docker functional coverage through the existing normalized import/sync pipeline
-- remaining core Chef object compatibility hardening is the next recommended bucket unless deployment testing or live-source extraction evidence identifies a higher-risk Chef compatibility gap
+- core Chef object compatibility hardening is now complete for the current implemented surfaces, including API-version-specific object semantics, restart/rehydration, auth/ACL no-mutation behavior, OpenSearch source-of-truth regressions, unsupported search-family stability, and Docker `object-compat` functional coverage
 
 ## Milestone 6: Cookbook and Blob Workflows
 
@@ -235,4 +235,4 @@ Status: in progress
 - cache-invalidation and reload seams now exist for PostgreSQL-backed bootstrap/core/cookbook state, with default ACL repair as the first narrow online repair path under active maintenance
 - production-scale validation now covers migration, reindex, source sync, shadow-read comparison, rollback readiness, cutover rehearsal guidance, and operator-facing report summaries
 - direct live Chef Infra Server source extraction now feeds the same source import/sync, reindex, shadow-read, and cutover rehearsal pipeline for implemented source families without proxying source writes
-- remaining core Chef object compatibility hardening is the next recommended follow-on bucket, with deployment-test or live-source-discovered compatibility gaps allowed to interrupt if they prove higher risk
+- broader online repair/admin mutation parity is the next recommended follow-on bucket, with deployment-test or live-source-discovered Chef compatibility gaps allowed to interrupt if they prove higher risk
