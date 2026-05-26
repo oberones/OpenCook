@@ -119,6 +119,14 @@ blocked object writes, blocked cookbook writes, and blocked checksum uploads,
 then disables maintenance before exit. The phase prints
 `==> maintenance functional tests passed successfully` when it completes.
 
+The `admin-repair` phase can also run against a fresh stack. It creates stable
+repair users, enables PostgreSQL-backed maintenance around each online mutation,
+exercises `opencook admin orgs add-user --online --yes`, `opencook admin groups
+add-actor --online --yes`, and `opencook admin server-admins grant/revoke
+--online --yes`, verifies signed server-admin listing, then disables
+maintenance. Use `scripts/functional-compose.sh admin-repair restart
+admin-repair` to prove the repaired membership state survives restart.
+
 The source-import migration phases are opt-in to keep the default flow quick.
 `migration-source-all` normalizes the baked Chef source fixture, validates and
 applies source import into the restore database, rebuilds/search-checks

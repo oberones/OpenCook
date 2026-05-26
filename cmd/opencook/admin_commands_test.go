@@ -446,6 +446,133 @@ func TestAdminACLRepairOnlineRequiresConfirmationBeforeRequest(t *testing.T) {
 	}
 }
 
+func TestAdminMembershipOnlineCommandsCallMaintenanceRepairRoutes(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		args        []string
+		wantMethod  string
+		wantPath    string
+		wantPayload map[string]any
+	}{
+		{
+			name:       "org add user",
+			args:       []string{"admin", "orgs", "add-user", "ponyville", "rarity", "--online", "--yes", "--admin"},
+			wantMethod: http.MethodPost,
+			wantPath:   maintenanceRepairOrgMembershipAdminPath,
+			wantPayload: map[string]any{
+				"yes":    true,
+				"action": "add-user",
+				"org":    "ponyville",
+				"user":   "rarity",
+				"admin":  true,
+			},
+		},
+		{
+			name:       "group add client",
+			args:       []string{"admin", "groups", "add-actor", "ponyville", "clients", "web01", "--actor-type", "client", "--online", "--yes"},
+			wantMethod: http.MethodPost,
+			wantPath:   maintenanceRepairGroupMembershipAdminPath,
+			wantPayload: map[string]any{
+				"yes":        true,
+				"action":     "add-actor",
+				"org":        "ponyville",
+				"group":      "clients",
+				"actor":      "web01",
+				"actor_type": "client",
+			},
+		},
+		{
+			name:       "server admins list defaults online",
+			args:       []string{"admin", "server-admins", "list"},
+			wantMethod: http.MethodGet,
+			wantPath:   internalAdminServerAdminsAdminPath,
+		},
+		{
+			name:       "server admin grant",
+			args:       []string{"admin", "server-admins", "grant", "rarity", "--online", "--yes"},
+			wantMethod: http.MethodPost,
+			wantPath:   maintenanceRepairServerAdminsAdminPath,
+			wantPayload: map[string]any{
+				"yes":    true,
+				"action": "grant",
+				"user":   "rarity",
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd, _, stderr := newTestCommand(t)
+			fake := &fakeAdminClient{response: map[string]any{"mode": "online", "changed": true}}
+			cmd.loadAdminConfig = func() admin.Config {
+				return admin.Config{ServerURL: "http://opencook.test", RequestorName: "pivotal", PrivateKeyPath: "redacted.pem"}
+			}
+			cmd.newAdmin = func(admin.Config) (adminJSONClient, error) {
+				return fake, nil
+			}
+
+			code := cmd.Run(context.Background(), tc.args)
+			if code != exitOK {
+				t.Fatalf("Run(%v) exit = %d, want %d; stderr = %s", tc.args, code, exitOK, stderr.String())
+			}
+			if len(fake.calls) != 1 {
+				t.Fatalf("admin calls = %d, want 1", len(fake.calls))
+			}
+			call := fake.calls[0]
+			if call.method != tc.wantMethod || call.path != tc.wantPath {
+				t.Fatalf("call = %s %s, want %s %s", call.method, call.path, tc.wantMethod, tc.wantPath)
+			}
+			if tc.wantPayload != nil && !payloadEqual(call.payload, tc.wantPayload) {
+				t.Fatalf("payload = %#v, want %#v", call.payload, tc.wantPayload)
+			}
+		})
+	}
+}
+
+func TestAdminMembershipOnlineCommandsRequireExplicitModeAndConfirmation(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{
+			name: "org no mode",
+			args: []string{"admin", "orgs", "add-user", "ponyville", "rarity", "--yes"},
+			want: "requires exactly one mode",
+		},
+		{
+			name: "group no confirmation",
+			args: []string{"admin", "groups", "add-actor", "ponyville", "clients", "web01", "--online"},
+			want: "--online requires --yes",
+		},
+		{
+			name: "server admin both modes",
+			args: []string{"admin", "server-admins", "grant", "rarity", "--online", "--offline", "--yes"},
+			want: "requires exactly one mode",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd, _, stderr := newTestCommand(t)
+			fake := &fakeAdminClient{}
+			cmd.loadAdminConfig = func() admin.Config {
+				return admin.Config{ServerURL: "http://opencook.test", RequestorName: "pivotal", PrivateKeyPath: "redacted.pem"}
+			}
+			cmd.newAdmin = func(admin.Config) (adminJSONClient, error) {
+				return fake, nil
+			}
+
+			code := cmd.Run(context.Background(), tc.args)
+			if code != exitUsage {
+				t.Fatalf("Run(%v) exit = %d, want %d", tc.args, code, exitUsage)
+			}
+			if len(fake.calls) != 0 {
+				t.Fatalf("admin calls = %d, want no request", len(fake.calls))
+			}
+			if !strings.Contains(stderr.String(), tc.want) {
+				t.Fatalf("stderr = %q, want %q", stderr.String(), tc.want)
+			}
+		})
+	}
+}
+
 func TestAdminOfflineMembershipFailuresDoNotSave(t *testing.T) {
 	cmd, _, stderr := newTestCommand(t)
 	initial := adminOfflineTestState()

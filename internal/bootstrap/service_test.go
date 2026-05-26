@@ -367,6 +367,178 @@ func TestRepairDefaultACLsRollsBackWhenCoreObjectPersistenceFails(t *testing.T) 
 	}
 }
 
+func TestRepairOrgMembershipUpdatesLiveStateThroughStore(t *testing.T) {
+	bootstrapState := membershipRepairBootstrapState()
+	bootstrapStore := NewMemoryBootstrapCoreStore(bootstrapState)
+	service := NewService(authn.NewMemoryKeyStore(), Options{
+		SuperuserName:             "pivotal",
+		InitialBootstrapCoreState: &bootstrapState,
+		BootstrapCoreStoreFactory: func(*Service) BootstrapCoreStore {
+			return bootstrapStore
+		},
+	})
+
+	result, err := service.RepairOrgMembership(RepairOrgMembershipInput{
+		Action:       "add-user",
+		Organization: "ponyville",
+		Username:     "rarity",
+		Admin:        true,
+	})
+	if err != nil {
+		t.Fatalf("RepairOrgMembership(add-user) error = %v", err)
+	}
+	if !result.Changed || !contains(result.Members, "admins/user:rarity") || !contains(result.Members, "users/user:rarity") {
+		t.Fatalf("RepairOrgMembership(add-user) = %#v, want admins and users memberships", result)
+	}
+	assertSubjectGroups(t, service, authz.Subject{Type: "user", Name: "rarity", Organization: "ponyville"}, []string{"admins", "users"})
+
+	persisted, err := bootstrapStore.LoadBootstrapCore()
+	if err != nil {
+		t.Fatalf("LoadBootstrapCore() error = %v", err)
+	}
+	if !contains(persisted.Orgs["ponyville"].Groups["admins"].Users, "rarity") || !contains(persisted.Orgs["ponyville"].Groups["users"].Users, "rarity") {
+		t.Fatalf("persisted ponyville groups = %#v, want rarity persisted", persisted.Orgs["ponyville"].Groups)
+	}
+
+	idempotent, err := service.RepairOrgMembership(RepairOrgMembershipInput{
+		Action:       "add-user",
+		Organization: "ponyville",
+		Username:     "rarity",
+		Admin:        true,
+	})
+	if err != nil {
+		t.Fatalf("RepairOrgMembership(idempotent add-user) error = %v", err)
+	}
+	if idempotent.Changed || len(idempotent.Members) != 0 {
+		t.Fatalf("RepairOrgMembership(idempotent add-user) = %#v, want no change", idempotent)
+	}
+
+	removed, err := service.RepairOrgMembership(RepairOrgMembershipInput{
+		Action:       "remove-user",
+		Organization: "ponyville",
+		Username:     "rarity",
+	})
+	if err != nil {
+		t.Fatalf("RepairOrgMembership(remove-user) error = %v", err)
+	}
+	if !removed.Changed || !contains(removed.Members, "admins/user:rarity") || !contains(removed.Members, "users/user:rarity") {
+		t.Fatalf("RepairOrgMembership(remove-user) = %#v, want removed memberships", removed)
+	}
+	assertSubjectGroups(t, service, authz.Subject{Type: "user", Name: "rarity", Organization: "ponyville"}, []string{})
+}
+
+func TestRepairGroupMembershipUpdatesLiveStateThroughStore(t *testing.T) {
+	bootstrapState := membershipRepairBootstrapState()
+	bootstrapStore := NewMemoryBootstrapCoreStore(bootstrapState)
+	service := NewService(authn.NewMemoryKeyStore(), Options{
+		SuperuserName:             "pivotal",
+		InitialBootstrapCoreState: &bootstrapState,
+		BootstrapCoreStoreFactory: func(*Service) BootstrapCoreStore {
+			return bootstrapStore
+		},
+	})
+
+	result, err := service.RepairGroupMembership(RepairGroupMembershipInput{
+		Action:       "add-actor",
+		Organization: "ponyville",
+		Group:        "clients",
+		ActorType:    "client",
+		Actor:        "web01",
+	})
+	if err != nil {
+		t.Fatalf("RepairGroupMembership(add-actor client) error = %v", err)
+	}
+	if !result.Changed || !contains(result.Members, "client:web01") {
+		t.Fatalf("RepairGroupMembership(add-actor client) = %#v, want client membership", result)
+	}
+	assertSubjectGroups(t, service, authz.Subject{Type: "client", Name: "web01", Organization: "ponyville"}, []string{"clients"})
+
+	nested, err := service.RepairGroupMembership(RepairGroupMembershipInput{
+		Action:       "add-actor",
+		Organization: "ponyville",
+		Group:        "admins",
+		ActorType:    "group",
+		Actor:        "clients",
+	})
+	if err != nil {
+		t.Fatalf("RepairGroupMembership(add-actor group) error = %v", err)
+	}
+	if !nested.Changed || !contains(nested.Members, "group:clients") {
+		t.Fatalf("RepairGroupMembership(add-actor group) = %#v, want nested group membership", nested)
+	}
+
+	removed, err := service.RepairGroupMembership(RepairGroupMembershipInput{
+		Action:       "remove-actor",
+		Organization: "ponyville",
+		Group:        "clients",
+		ActorType:    "client",
+		Actor:        "web01",
+	})
+	if err != nil {
+		t.Fatalf("RepairGroupMembership(remove-actor client) error = %v", err)
+	}
+	if !removed.Changed || !contains(removed.Members, "client:web01") {
+		t.Fatalf("RepairGroupMembership(remove-actor client) = %#v, want removed membership", removed)
+	}
+	assertSubjectGroups(t, service, authz.Subject{Type: "client", Name: "web01", Organization: "ponyville"}, []string{})
+}
+
+func TestRepairServerAdminMembershipUpdatesAllOrgAdmins(t *testing.T) {
+	bootstrapState := membershipRepairBootstrapState()
+	bootstrapStore := NewMemoryBootstrapCoreStore(bootstrapState)
+	service := NewService(authn.NewMemoryKeyStore(), Options{
+		SuperuserName:             "pivotal",
+		InitialBootstrapCoreState: &bootstrapState,
+		BootstrapCoreStoreFactory: func(*Service) BootstrapCoreStore {
+			return bootstrapStore
+		},
+	})
+
+	result, err := service.RepairServerAdminMembership(RepairServerAdminMembershipInput{Action: "grant", Username: "rarity"})
+	if err != nil {
+		t.Fatalf("RepairServerAdminMembership(grant) error = %v", err)
+	}
+	if !result.Changed || !contains(result.Members, "canterlot/admins/user:rarity") || !contains(result.Members, "ponyville/admins/user:rarity") {
+		t.Fatalf("RepairServerAdminMembership(grant) = %#v, want all org admin memberships", result)
+	}
+	if admins := service.ListServerAdmins(); !reflect.DeepEqual(admins, []string{"pivotal", "rarity"}) {
+		t.Fatalf("ListServerAdmins() = %v, want pivotal and rarity", admins)
+	}
+	assertSubjectGroups(t, service, authz.Subject{Type: "user", Name: "rarity", Organization: "canterlot"}, []string{"admins"})
+
+	removed, err := service.RepairServerAdminMembership(RepairServerAdminMembershipInput{Action: "revoke", Username: "rarity"})
+	if err != nil {
+		t.Fatalf("RepairServerAdminMembership(revoke) error = %v", err)
+	}
+	if !removed.Changed || !contains(removed.Members, "canterlot/admins/user:rarity") || !contains(removed.Members, "ponyville/admins/user:rarity") {
+		t.Fatalf("RepairServerAdminMembership(revoke) = %#v, want removed all org admin memberships", removed)
+	}
+	if admins := service.ListServerAdmins(); !reflect.DeepEqual(admins, []string{"pivotal"}) {
+		t.Fatalf("ListServerAdmins() = %v, want pivotal after revoke", admins)
+	}
+}
+
+func TestRepairMembershipRollsBackWhenPersistenceFails(t *testing.T) {
+	bootstrapState := membershipRepairBootstrapState()
+	service := NewService(authn.NewMemoryKeyStore(), Options{
+		SuperuserName:             "pivotal",
+		InitialBootstrapCoreState: &bootstrapState,
+		BootstrapCoreStoreFactory: func(*Service) BootstrapCoreStore {
+			return failingBootstrapCoreStore{}
+		},
+	})
+
+	_, err := service.RepairOrgMembership(RepairOrgMembershipInput{
+		Action:       "add-user",
+		Organization: "ponyville",
+		Username:     "rarity",
+	})
+	if !errors.Is(err, errBootstrapCoreStoreFailed) {
+		t.Fatalf("RepairOrgMembership() error = %v, want bootstrap store failure", err)
+	}
+	assertSubjectGroups(t, service, authz.Subject{Type: "user", Name: "rarity", Organization: "ponyville"}, []string{})
+}
+
 func TestDeleteClientFailsBeforeMutatingStateWhenKeyDeletionFails(t *testing.T) {
 	service := NewService(authn.NewMemoryKeyStore(), Options{SuperuserName: "pivotal"})
 	publicKeyPEM := mustGeneratePublicKeyPEM(t)
@@ -534,6 +706,21 @@ func assertClientACL(t *testing.T, service *Service, clientName string, want aut
 	}
 	if !reflect.DeepEqual(acl, want) {
 		t.Fatalf("ResolveACL(client/%s) = %#v, want %#v", clientName, acl, want)
+	}
+}
+
+func assertSubjectGroups(t *testing.T, service *Service, subject authz.Subject, want []string) {
+	t.Helper()
+
+	groups, err := service.GroupsFor(context.Background(), subject)
+	if err != nil {
+		t.Fatalf("GroupsFor(%#v) error = %v", subject, err)
+	}
+	if groups == nil {
+		groups = []string{}
+	}
+	if !reflect.DeepEqual(groups, want) {
+		t.Fatalf("GroupsFor(%#v) = %v, want %v", subject, groups, want)
 	}
 }
 
@@ -766,6 +953,66 @@ func aclRepairCoreObjectStateWithoutACLs() CoreObjectState {
 				ACLs:         map[string]authz.ACL{},
 			},
 		},
+	}
+}
+
+// membershipRepairBootstrapState provides two orgs sharing the default admin
+// topology so membership repair tests can verify live authz and persistence.
+func membershipRepairBootstrapState() BootstrapCoreState {
+	return BootstrapCoreState{
+		Users: map[string]User{
+			"pivotal": {Username: "pivotal", DisplayName: "pivotal"},
+			"rarity":  {Username: "rarity", DisplayName: "rarity"},
+		},
+		UserACLs: map[string]authz.ACL{
+			"pivotal": defaultUserACL("pivotal", "pivotal"),
+			"rarity":  defaultUserACL("pivotal", "rarity"),
+		},
+		UserKeys: map[string]map[string]KeyRecord{},
+		Orgs: map[string]BootstrapCoreOrganizationState{
+			"ponyville": membershipRepairOrgState("ponyville"),
+			"canterlot": membershipRepairOrgState("canterlot"),
+		},
+	}
+}
+
+func membershipRepairOrgState(name string) BootstrapCoreOrganizationState {
+	return BootstrapCoreOrganizationState{
+		Organization: Organization{
+			Name:     name,
+			FullName: name,
+			OrgType:  "Business",
+			GUID:     name,
+		},
+		Clients: map[string]Client{
+			"web01": {
+				Name:         "web01",
+				ClientName:   "web01",
+				Organization: name,
+			},
+		},
+		ClientKeys: map[string]map[string]KeyRecord{},
+		Groups: map[string]Group{
+			"admins": {
+				Name:         "admins",
+				GroupName:    "admins",
+				Organization: name,
+				Users:        []string{"pivotal"},
+				Actors:       []string{"pivotal"},
+			},
+			"users": {
+				Name:         "users",
+				GroupName:    "users",
+				Organization: name,
+			},
+			"clients": {
+				Name:         "clients",
+				GroupName:    "clients",
+				Organization: name,
+			},
+		},
+		Containers: map[string]Container{},
+		ACLs:       map[string]authz.ACL{organizationACLKey(): defaultOrganizationACL("pivotal")},
 	}
 }
 

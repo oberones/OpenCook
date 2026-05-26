@@ -14,12 +14,46 @@ type AdminRepairResult struct {
 	Repaired []string
 }
 
+// RepairMembershipResult reports membership changes made through live repair
+// seams. Members contains stable labels for the memberships touched.
+type RepairMembershipResult struct {
+	Changed bool
+	Members []string
+}
+
 // RepairDefaultACLsInput scopes a default-ACL repair to one organization when
 // requested. DryRun is used by tests and future previews to reuse the same
 // normalization path without persisting changes.
 type RepairDefaultACLsInput struct {
 	Organization string
 	DryRun       bool
+}
+
+// RepairOrgMembershipInput describes an org user-membership repair. Action is
+// intentionally aligned with the admin CLI verbs: add-user or remove-user.
+type RepairOrgMembershipInput struct {
+	Action       string
+	Organization string
+	Username     string
+	Admin        bool
+	Force        bool
+}
+
+// RepairGroupMembershipInput describes a group actor-membership repair. Action
+// is intentionally aligned with the admin CLI verbs: add-actor or remove-actor.
+type RepairGroupMembershipInput struct {
+	Action       string
+	Organization string
+	Group        string
+	ActorType    string
+	Actor        string
+}
+
+// RepairServerAdminMembershipInput describes global server-admin repair. The
+// current compatibility model maps server-admins onto each org's admins group.
+type RepairServerAdminMembershipInput struct {
+	Action   string
+	Username string
 }
 
 // RepairDefaultACLsResult reports the two ACL families repaired by the live
@@ -81,6 +115,145 @@ func (s *Service) RepairDefaultACLs(input RepairDefaultACLsInput) (RepairDefault
 		return RepairDefaultACLsResult{}, fmt.Errorf("save repaired core object ACLs: %w", err)
 	}
 	return result, nil
+}
+
+// RepairOrgMembership updates org user membership through live service state
+// and the configured bootstrap persistence seam. It rolls live state back if
+// persistence fails so authorization decisions cannot observe a failed repair.
+func (s *Service) RepairOrgMembership(input RepairOrgMembershipInput) (RepairMembershipResult, error) {
+	if s == nil {
+		return RepairMembershipResult{}, fmt.Errorf("%w: bootstrap service is required", ErrInvalidInput)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	previous := s.snapshotBootstrapCoreLocked()
+	next, members, err := repairOrgMembershipState(previous, input)
+	if err != nil {
+		return RepairMembershipResult{}, err
+	}
+	result := membershipRepairResult(members)
+	if !result.Changed {
+		return result, nil
+	}
+	s.restoreBootstrapCoreLocked(next)
+	if err := s.persistBootstrapCoreLocked(); err != nil {
+		s.restoreBootstrapCoreLocked(previous)
+		return RepairMembershipResult{}, fmt.Errorf("save repaired org membership: %w", err)
+	}
+	return result, nil
+}
+
+// RepairGroupMembership updates group actor membership through live service
+// state and the configured bootstrap persistence seam.
+func (s *Service) RepairGroupMembership(input RepairGroupMembershipInput) (RepairMembershipResult, error) {
+	if s == nil {
+		return RepairMembershipResult{}, fmt.Errorf("%w: bootstrap service is required", ErrInvalidInput)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	previous := s.snapshotBootstrapCoreLocked()
+	next, members, err := repairGroupMembershipState(previous, input)
+	if err != nil {
+		return RepairMembershipResult{}, err
+	}
+	result := membershipRepairResult(members)
+	if !result.Changed {
+		return result, nil
+	}
+	s.restoreBootstrapCoreLocked(next)
+	if err := s.persistBootstrapCoreLocked(); err != nil {
+		s.restoreBootstrapCoreLocked(previous)
+		return RepairMembershipResult{}, fmt.Errorf("save repaired group membership: %w", err)
+	}
+	return result, nil
+}
+
+// RepairServerAdminMembership updates the compatibility server-admin set. The
+// implementation intentionally reuses admins-group membership so Chef-facing
+// authorization behavior remains unchanged.
+func (s *Service) RepairServerAdminMembership(input RepairServerAdminMembershipInput) (RepairMembershipResult, error) {
+	if s == nil {
+		return RepairMembershipResult{}, fmt.Errorf("%w: bootstrap service is required", ErrInvalidInput)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	previous := s.snapshotBootstrapCoreLocked()
+	next, members, err := repairServerAdminMembershipState(previous, input)
+	if err != nil {
+		return RepairMembershipResult{}, err
+	}
+	result := membershipRepairResult(members)
+	if !result.Changed {
+		return result, nil
+	}
+	s.restoreBootstrapCoreLocked(next)
+	if err := s.persistBootstrapCoreLocked(); err != nil {
+		s.restoreBootstrapCoreLocked(previous)
+		return RepairMembershipResult{}, fmt.Errorf("save repaired server-admin membership: %w", err)
+	}
+	return result, nil
+}
+
+// ListServerAdmins returns the current compatibility server-admin set from live
+// service state. It is read-only and does not require maintenance.
+func (s *Service) ListServerAdmins() []string {
+	if s == nil {
+		return []string{}
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	return ListBootstrapServerAdmins(s.snapshotBootstrapCoreLocked())
+}
+
+func repairOrgMembershipState(state BootstrapCoreState, input RepairOrgMembershipInput) (BootstrapCoreState, []string, error) {
+	switch strings.TrimSpace(input.Action) {
+	case "add-user":
+		return AddUserToBootstrapCoreOrg(state, input.Organization, input.Username, input.Admin)
+	case "remove-user":
+		return RemoveUserFromBootstrapCoreOrg(state, input.Organization, input.Username, input.Force)
+	default:
+		return state, nil, fmt.Errorf("%w: unsupported org membership action", ErrInvalidInput)
+	}
+}
+
+func repairGroupMembershipState(state BootstrapCoreState, input RepairGroupMembershipInput) (BootstrapCoreState, []string, error) {
+	switch strings.TrimSpace(input.Action) {
+	case "add-actor":
+		return AddActorToBootstrapCoreGroup(state, input.Organization, input.Group, input.ActorType, input.Actor)
+	case "remove-actor":
+		return RemoveActorFromBootstrapCoreGroup(state, input.Organization, input.Group, input.ActorType, input.Actor)
+	default:
+		return state, nil, fmt.Errorf("%w: unsupported group membership action", ErrInvalidInput)
+	}
+}
+
+func repairServerAdminMembershipState(state BootstrapCoreState, input RepairServerAdminMembershipInput) (BootstrapCoreState, []string, error) {
+	switch strings.TrimSpace(input.Action) {
+	case "grant":
+		return GrantBootstrapServerAdmin(state, input.Username)
+	case "revoke":
+		return RevokeBootstrapServerAdmin(state, input.Username)
+	default:
+		return state, nil, fmt.Errorf("%w: unsupported server-admin action", ErrInvalidInput)
+	}
+}
+
+func membershipRepairResult(members []string) RepairMembershipResult {
+	if members == nil {
+		members = []string{}
+	}
+	return RepairMembershipResult{
+		Changed: len(members) > 0,
+		Members: append([]string(nil), members...),
+	}
 }
 
 func AddUserToBootstrapCoreOrg(state BootstrapCoreState, orgName, username string, admin bool) (BootstrapCoreState, []string, error) {

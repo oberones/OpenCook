@@ -310,14 +310,29 @@ opencook admin --json acls get org ORG
 opencook admin maintenance disable --yes --json
 ```
 
+For bootstrap membership repair, use the same explicit maintenance window and
+the signed online commands:
+
+```sh
+opencook admin maintenance enable --mode repair --reason "repair membership" --yes --json
+opencook admin --json orgs add-user ORG USER --online --yes [--admin]
+opencook admin --json groups add-actor ORG GROUP ACTOR --online --yes --actor-type user
+opencook admin --json server-admins grant USER --online --yes
+opencook admin --json server-admins list
+opencook admin maintenance disable --yes --json
+```
+
 Notes:
 
 - The online default ACL repair route requires signed superuser authorization,
   active maintenance mode, and explicit `--yes`.
-- The repair response reports whether bootstrap ACLs or core-object ACLs
-  changed and states that verifier key cache state is unchanged.
-- Other direct PostgreSQL membership and ACL repair commands remain
-  offline-gated until they have equally narrow live cache/search safety seams.
+- Online membership repair also requires signed superuser authorization, active
+  maintenance mode, and explicit `--yes`.
+- The repair responses report changed ACLs or memberships and state that
+  verifier key cache state is unchanged.
+- Offline direct PostgreSQL repair commands remain available for stopped-server
+  repair and inspection, while broad migration restore/import/sync workflows
+  remain offline-gated.
 
 ## Unsupported Omnibus Workflows
 

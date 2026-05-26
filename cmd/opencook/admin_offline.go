@@ -370,11 +370,11 @@ func adminCommandIsOffline(args []string) bool {
 	}
 	switch args[0] {
 	case "server-admins":
-		return true
+		return adminArgsContainTruthyFlag(args, "offline") && !adminArgsContainTruthyFlag(args, "online")
 	case "orgs", "organizations":
-		return len(args) > 1 && (args[1] == "add-user" || args[1] == "remove-user")
+		return len(args) > 1 && (args[1] == "add-user" || args[1] == "remove-user") && adminArgsContainTruthyFlag(args, "offline") && !adminArgsContainTruthyFlag(args, "online")
 	case "groups":
-		return len(args) > 1 && (args[1] == "add-actor" || args[1] == "remove-actor")
+		return len(args) > 1 && (args[1] == "add-actor" || args[1] == "remove-actor") && adminArgsContainTruthyFlag(args, "offline") && !adminArgsContainTruthyFlag(args, "online")
 	case "acls":
 		return len(args) > 1 && args[1] == "repair-defaults" && !adminArgsContainTruthyFlag(args, "online")
 	default:
@@ -433,6 +433,7 @@ func (c *command) runAdminOrgMembershipOffline(ctx context.Context, args []strin
 	fs := flag.NewFlagSet("opencook admin orgs "+action, flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	opts := bindOfflineMutationFlags(fs)
+	online := fs.Bool("online", false, "use the signed online repair path instead")
 	adminUser := fs.Bool("admin", false, "also add the user to the admins group")
 	force := fs.Bool("force", false, "allow removal even if the user record is missing")
 	if err := fs.Parse(args[3:]); err != nil {
@@ -440,6 +441,9 @@ func (c *command) runAdminOrgMembershipOffline(ctx context.Context, args []strin
 	}
 	if fs.NArg() != 0 {
 		return c.adminUsageError("admin orgs %s received unexpected arguments: %v\n\n", action, fs.Args())
+	}
+	if *online {
+		return c.adminUsageError("admin orgs %s --online must be run through the signed live repair path\n\n", action)
 	}
 	if !opts.offline || !opts.yes {
 		return c.adminUsageError("admin orgs %s is offline-only and requires --offline --yes\n\n", action)
@@ -468,12 +472,16 @@ func (c *command) runAdminGroupMembershipOffline(ctx context.Context, args []str
 	fs := flag.NewFlagSet("opencook admin groups "+action, flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	opts := bindOfflineMutationFlags(fs)
+	online := fs.Bool("online", false, "use the signed online repair path instead")
 	actorType := fs.String("actor-type", "user", "actor type: user, client, or group")
 	if err := fs.Parse(args[4:]); err != nil {
 		return c.adminFlagError("admin groups "+action, err)
 	}
 	if fs.NArg() != 0 {
 		return c.adminUsageError("admin groups %s received unexpected arguments: %v\n\n", action, fs.Args())
+	}
+	if *online {
+		return c.adminUsageError("admin groups %s --online must be run through the signed live repair path\n\n", action)
 	}
 	if !opts.offline || !opts.yes {
 		return c.adminUsageError("admin groups %s is offline-only and requires --offline --yes\n\n", action)
@@ -503,11 +511,15 @@ func (c *command) runAdminServerAdminsOffline(ctx context.Context, args []string
 		fs := flag.NewFlagSet("opencook admin server-admins list", flag.ContinueOnError)
 		fs.SetOutput(io.Discard)
 		opts := bindOfflineReadFlags(fs)
+		online := fs.Bool("online", false, "use the signed online listing path instead")
 		if err := fs.Parse(args[1:]); err != nil {
 			return c.adminFlagError("admin server-admins list", err)
 		}
 		if fs.NArg() != 0 {
 			return c.adminUsageError("admin server-admins list received unexpected arguments: %v\n\n", fs.Args())
+		}
+		if *online {
+			return c.adminUsageError("admin server-admins list --online must be run through the signed live path\n\n")
 		}
 		if !opts.offline {
 			return c.adminUsageError("admin server-admins list is offline-only and requires --offline\n\n")
@@ -534,11 +546,15 @@ func (c *command) runAdminServerAdminsOffline(ctx context.Context, args []string
 		fs := flag.NewFlagSet("opencook admin server-admins "+action, flag.ContinueOnError)
 		fs.SetOutput(io.Discard)
 		opts := bindOfflineMutationFlags(fs)
+		online := fs.Bool("online", false, "use the signed online repair path instead")
 		if err := fs.Parse(args[2:]); err != nil {
 			return c.adminFlagError("admin server-admins "+action, err)
 		}
 		if fs.NArg() != 0 {
 			return c.adminUsageError("admin server-admins %s received unexpected arguments: %v\n\n", action, fs.Args())
+		}
+		if *online {
+			return c.adminUsageError("admin server-admins %s --online must be run through the signed live repair path\n\n", action)
 		}
 		if !opts.offline || !opts.yes {
 			return c.adminUsageError("admin server-admins %s is offline-only and requires --offline --yes\n\n", action)

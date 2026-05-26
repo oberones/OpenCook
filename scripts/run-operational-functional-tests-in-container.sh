@@ -9,6 +9,7 @@ cli="${OPENCOOK_FUNCTIONAL_CLI:-/tmp/opencook-functional-cli}"
 admin_private_key="${OPENCOOK_ADMIN_PRIVATE_KEY_PATH:-${OPENCOOK_FUNCTIONAL_PRIVATE_KEY_PATH:-/src/test/functional/fixtures/bootstrap_private.pem}}"
 admin_requestor="${OPENCOOK_ADMIN_REQUESTOR_NAME:-${OPENCOOK_FUNCTIONAL_ACTOR_NAME:-pivotal}}"
 operational_user="${OPENCOOK_FUNCTIONAL_ADMIN_USER:-functional-admin-user}"
+repair_server_admin_user="${OPENCOOK_FUNCTIONAL_REPAIR_SERVER_ADMIN_USER:-functional-server-admin-user}"
 operational_org="${OPENCOOK_FUNCTIONAL_ADMIN_ORG:-functional-admin-org}"
 operational_key_name="${OPENCOOK_FUNCTIONAL_ADMIN_KEY_NAME:-functional-operational-key}"
 operational_key_path="$state_dir/$operational_key_name.pem"
@@ -248,6 +249,24 @@ ensure_user() {
     --private-key-out "$state_dir/$operational_user.pem" >/tmp/opencook-admin-user-create.json
 }
 
+ensure_user_named() {
+  local username="$1"
+  local first_name="$2"
+  local last_name="$3"
+  local email="$4"
+  local key_path="$state_dir/$username.pem"
+  mkdir -p "$state_dir"
+  if admin_json users show "$username" >/tmp/opencook-admin-user-"$username".json 2>/tmp/opencook-admin-user-"$username".err; then
+    return 0
+  fi
+  rm -f "$key_path"
+  admin_json users create "$username" \
+    --first-name "$first_name" \
+    --last-name "$last_name" \
+    --email "$email" \
+    --private-key-out "$key_path" >/tmp/opencook-admin-user-create-"$username".json
+}
+
 ensure_org_named() {
   local name="$1"
   local full_name="$2"
@@ -471,6 +490,54 @@ run_operational_verify_phase() {
   fi
 }
 
+run_admin_repair_phase() {
+  build_cli
+
+  echo "==> admin repair fixture setup"
+  ensure_org_named "$org" "Ponyville"
+  ensure_user_named "$operational_user" Functional Admin functional-admin@example.test
+  ensure_user_named "$repair_server_admin_user" Functional ServerAdmin functional-server-admin@example.test
+
+  echo "==> admin repair requires explicit online mode"
+  expect_exit 1 admin_json orgs add-user "$org" "$operational_user" --yes >/tmp/opencook-admin-repair-org-missing-mode.json 2>&1
+  require_json_contains /tmp/opencook-admin-repair-org-missing-mode.json 'requires exactly one mode'
+
+  echo "==> admin repair org membership"
+  run_admin_json_under_maintenance repair "functional org membership repair" /tmp/opencook-admin-repair-org-membership.json \
+    admin_json orgs add-user "$org" "$operational_user" --online --yes
+  require_json_contains /tmp/opencook-admin-repair-org-membership.json '"operation": "org-membership-repair"'
+  require_json_contains /tmp/opencook-admin-repair-org-membership.json '"mode": "online"'
+  require_json_contains /tmp/opencook-admin-repair-org-membership.json 'restart is not required'
+  admin_json groups show "$org" users >/tmp/opencook-admin-repair-users-group.json
+  require_json_contains /tmp/opencook-admin-repair-users-group.json "$operational_user"
+
+  echo "==> admin repair group membership"
+  run_admin_json_under_maintenance repair "functional group membership repair" /tmp/opencook-admin-repair-group-membership.json \
+    admin_json groups add-actor "$org" clients "$operational_user" --actor-type user --online --yes
+  require_json_contains /tmp/opencook-admin-repair-group-membership.json '"operation": "group-membership-repair"'
+  require_json_contains /tmp/opencook-admin-repair-group-membership.json '"mode": "online"'
+  admin_json groups show "$org" clients >/tmp/opencook-admin-repair-clients-group.json
+  require_json_contains /tmp/opencook-admin-repair-clients-group.json "$operational_user"
+
+  echo "==> admin repair server-admin grant/list/revoke"
+  admin_json server-admins list >/tmp/opencook-admin-repair-server-admins-before.json
+  require_json_contains /tmp/opencook-admin-repair-server-admins-before.json '"operation": "server-admin-list"'
+  run_admin_json_under_maintenance repair "functional server-admin grant" /tmp/opencook-admin-repair-server-admin-grant.json \
+    admin_json server-admins grant "$repair_server_admin_user" --online --yes
+  require_json_contains /tmp/opencook-admin-repair-server-admin-grant.json '"operation": "server-admin-repair"'
+  admin_json server-admins list >/tmp/opencook-admin-repair-server-admins-granted.json
+  require_json_contains /tmp/opencook-admin-repair-server-admins-granted.json "$repair_server_admin_user"
+  run_admin_json_under_maintenance repair "functional server-admin revoke" /tmp/opencook-admin-repair-server-admin-revoke.json \
+    admin_json server-admins revoke "$repair_server_admin_user" --online --yes
+  require_json_contains /tmp/opencook-admin-repair-server-admin-revoke.json '"operation": "server-admin-repair"'
+  admin_json server-admins list >/tmp/opencook-admin-repair-server-admins-revoked.json
+  require_not_contains /tmp/opencook-admin-repair-server-admins-revoked.json "$repair_server_admin_user"
+
+  echo "==> admin repair signed smoke check"
+  admin_json users show "$operational_user" >/tmp/opencook-admin-repair-user-smoke.json
+  require_json_contains /tmp/opencook-admin-repair-user-smoke.json "\"username\": \"$operational_user\""
+}
+
 export OPENCOOK_ADMIN_SERVER_URL="$base_url"
 export OPENCOOK_ADMIN_REQUESTOR_NAME="$admin_requestor"
 export OPENCOOK_ADMIN_REQUESTOR_TYPE="${OPENCOOK_ADMIN_REQUESTOR_TYPE:-user}"
@@ -485,6 +552,9 @@ case "$phase" in
     ;;
   operational-verify)
     run_operational_verify_phase
+    ;;
+  admin-repair)
+    run_admin_repair_phase
     ;;
   *)
     echo "unknown operational functional phase: $phase" >&2

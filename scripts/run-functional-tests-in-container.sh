@@ -19,7 +19,7 @@ case "$phase" in
   maintenance)
     exec bash /src/scripts/run-maintenance-functional-tests-in-container.sh "$phase"
     ;;
-  operational|operational-verify)
+  operational|operational-verify|admin-repair)
     exec bash /src/scripts/run-operational-functional-tests-in-container.sh "$phase"
     ;;
   migration-*)
