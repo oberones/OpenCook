@@ -4,6 +4,26 @@ All notable changes to this project will be documented in this file.
 
 The format is inspired by Keep a Changelog and uses semantic versioning-style tags where practical.
 
+## v0.2.0 (2026-05-26)
+
+### Feat
+
+- add online repair admin mutation parity
+- **admin**: add live chef source extraction
+- **admin**: add production-scale migration validation
+- add maintenance mode and online repair safety
+- add chef source import sync tooling
+- add chef-server-ctl operational parity
+
+### Fix
+
+- **admin**: export live source key expirations in UTC
+- **admin**: reject trailing cutover evidence JSON
+- **admin**: address migration validation review feedback
+- address maintenance review feedback
+- harden source migration edge cases
+- classify org admin metric surfaces
+
 ## v0.1.0 (2026-04-29)
 
 ### Feat
