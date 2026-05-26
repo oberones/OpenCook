@@ -17,7 +17,13 @@ type adminJSONClient interface {
 	DoJSON(context.Context, string, string, any, any) error
 }
 
-const maintenanceRepairDefaultACLsAdminPath = "/internal/maintenance/repair/default-acls"
+const (
+	internalAdminServerAdminsAdminPath        = "/internal/admin/server-admins"
+	maintenanceRepairDefaultACLsAdminPath     = "/internal/maintenance/repair/default-acls"
+	maintenanceRepairOrgMembershipAdminPath   = "/internal/maintenance/repair/org-membership"
+	maintenanceRepairGroupMembershipAdminPath = "/internal/maintenance/repair/group-membership"
+	maintenanceRepairServerAdminsAdminPath    = "/internal/maintenance/repair/server-admins"
+)
 
 type adminOutputOptions struct {
 	privateKeyOut       string
@@ -147,6 +153,8 @@ func (c *command) runAdminCommand(ctx context.Context, args []string) int {
 		return c.runAdminContainers(ctx, client, rest[1:])
 	case "acls":
 		return c.runAdminACLs(ctx, client, rest[1:])
+	case "server-admins":
+		return c.runAdminServerAdmins(ctx, client, rest[1:])
 	case "help", "-h", "--help":
 		if len(rest) > 1 {
 			return c.adminUsageError("%s does not accept arguments: %v\n\n", rest[0], rest[1:])
@@ -296,7 +304,7 @@ func (c *command) runAdminOrganizations(ctx context.Context, client adminJSONCli
 	case "create":
 		return c.runAdminOrganizationCreate(ctx, client, args[1:])
 	case "add-user", "remove-user":
-		return c.adminUsageError("admin orgs %s is offline-only; rerun with --offline --yes\n\n", args[0])
+		return c.runAdminOrgMembershipOnline(ctx, client, args)
 	case "help", "-h", "--help":
 		c.printAdminOrganizationsUsage(c.stdout)
 		return exitOK
@@ -322,13 +330,92 @@ func (c *command) runAdminGroups(ctx context.Context, client adminJSONClient, ar
 		}
 		return c.adminDo(ctx, client, http.MethodGet, adminPath("organizations", args[1], "groups", args[2]), nil, "")
 	case "add-actor", "remove-actor":
-		return c.adminUsageError("admin groups %s is offline-only; rerun with --offline --yes\n\n", args[0])
+		return c.runAdminGroupMembershipOnline(ctx, client, args)
 	case "help", "-h", "--help":
 		c.printAdminGroupsUsage(c.stdout)
 		return exitOK
 	default:
 		return c.adminUsageError("unknown admin groups command %q\n\n", args[0])
 	}
+}
+
+func (c *command) runAdminOrgMembershipOnline(ctx context.Context, client adminJSONClient, args []string) int {
+	if len(args) < 3 {
+		return c.adminUsageError("usage: opencook admin orgs add-user ORG USER --online --yes [--admin]\n       opencook admin orgs remove-user ORG USER --online --yes [--force]\n       opencook admin orgs add-user ORG USER --offline --yes [--admin]\n       opencook admin orgs remove-user ORG USER --offline --yes [--force]\n\n")
+	}
+	action, orgName, username := args[0], args[1], args[2]
+	fs := flag.NewFlagSet("opencook admin orgs "+action, flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	online := fs.Bool("online", false, "repair live process membership during active maintenance mode")
+	offline := fs.Bool("offline", false, "use the offline PostgreSQL repair path instead")
+	yes := fs.Bool("yes", false, "confirm online org membership repair")
+	adminUser := fs.Bool("admin", false, "also add the user to the admins group")
+	force := fs.Bool("force", false, "allow removal even if the user record is missing")
+	if err := fs.Parse(args[3:]); err != nil {
+		return c.adminFlagError("admin orgs "+action, err)
+	}
+	if fs.NArg() != 0 {
+		return c.adminUsageError("admin orgs %s received unexpected arguments: %v\n\n", action, fs.Args())
+	}
+	if *online == *offline {
+		return c.adminUsageError("admin orgs %s requires exactly one mode: use --online --yes during active maintenance, or --offline --yes while OpenCook is stopped\n\n", action)
+	}
+	if *offline {
+		return c.adminUsageError("admin orgs %s --offline must be run through the offline repair path; rerun without --online\n\n", action)
+	}
+	if !*yes {
+		return c.adminUsageError("admin orgs %s --online requires --yes\n\n", action)
+	}
+	payload := map[string]any{
+		"yes":    true,
+		"action": action,
+		"org":    orgName,
+		"user":   username,
+	}
+	if action == "add-user" && *adminUser {
+		payload["admin"] = true
+	}
+	if action == "remove-user" && *force {
+		payload["force"] = true
+	}
+	return c.adminDo(ctx, client, http.MethodPost, maintenanceRepairOrgMembershipAdminPath, payload, "")
+}
+
+func (c *command) runAdminGroupMembershipOnline(ctx context.Context, client adminJSONClient, args []string) int {
+	if len(args) < 4 {
+		return c.adminUsageError("usage: opencook admin groups add-actor ORG GROUP ACTOR --online --yes [--actor-type user|client|group]\n       opencook admin groups remove-actor ORG GROUP ACTOR --online --yes [--actor-type user|client|group]\n       opencook admin groups add-actor ORG GROUP ACTOR --offline --yes [--actor-type user|client|group]\n       opencook admin groups remove-actor ORG GROUP ACTOR --offline --yes [--actor-type user|client|group]\n\n")
+	}
+	action, orgName, groupName, actorName := args[0], args[1], args[2], args[3]
+	fs := flag.NewFlagSet("opencook admin groups "+action, flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	online := fs.Bool("online", false, "repair live process membership during active maintenance mode")
+	offline := fs.Bool("offline", false, "use the offline PostgreSQL repair path instead")
+	yes := fs.Bool("yes", false, "confirm online group membership repair")
+	actorType := fs.String("actor-type", "user", "actor type: user, client, or group")
+	if err := fs.Parse(args[4:]); err != nil {
+		return c.adminFlagError("admin groups "+action, err)
+	}
+	if fs.NArg() != 0 {
+		return c.adminUsageError("admin groups %s received unexpected arguments: %v\n\n", action, fs.Args())
+	}
+	if *online == *offline {
+		return c.adminUsageError("admin groups %s requires exactly one mode: use --online --yes during active maintenance, or --offline --yes while OpenCook is stopped\n\n", action)
+	}
+	if *offline {
+		return c.adminUsageError("admin groups %s --offline must be run through the offline repair path; rerun without --online\n\n", action)
+	}
+	if !*yes {
+		return c.adminUsageError("admin groups %s --online requires --yes\n\n", action)
+	}
+	payload := map[string]any{
+		"yes":        true,
+		"action":     action,
+		"org":        orgName,
+		"group":      groupName,
+		"actor":      actorName,
+		"actor_type": *actorType,
+	}
+	return c.adminDo(ctx, client, http.MethodPost, maintenanceRepairGroupMembershipAdminPath, payload, "")
 }
 
 func (c *command) runAdminContainers(ctx context.Context, client adminJSONClient, args []string) int {
@@ -415,6 +502,65 @@ func (c *command) runAdminACLRepairOnline(ctx context.Context, client adminJSONC
 		payload["org"] = org
 	}
 	return c.adminDo(ctx, client, http.MethodPost, maintenanceRepairDefaultACLsAdminPath, payload, "")
+}
+
+func (c *command) runAdminServerAdmins(ctx context.Context, client adminJSONClient, args []string) int {
+	if len(args) == 0 {
+		return c.adminUsageError("admin server-admins requires list, grant, or revoke\n\n")
+	}
+
+	switch args[0] {
+	case "list":
+		fs := flag.NewFlagSet("opencook admin server-admins list", flag.ContinueOnError)
+		fs.SetOutput(io.Discard)
+		if err := fs.Parse(args[1:]); err != nil {
+			return c.adminFlagError("admin server-admins list", err)
+		}
+		if fs.NArg() != 0 {
+			return c.adminUsageError("admin server-admins list received unexpected arguments: %v\n\n", fs.Args())
+		}
+		return c.adminDo(ctx, client, http.MethodGet, internalAdminServerAdminsAdminPath, nil, "")
+	case "grant", "revoke":
+		return c.runAdminServerAdminRepairOnline(ctx, client, args)
+	case "help", "-h", "--help":
+		c.printAdminServerAdminsUsage(c.stdout)
+		return exitOK
+	default:
+		return c.adminUsageError("unknown admin server-admins command %q\n\n", args[0])
+	}
+}
+
+func (c *command) runAdminServerAdminRepairOnline(ctx context.Context, client adminJSONClient, args []string) int {
+	if len(args) < 2 {
+		return c.adminUsageError("usage: opencook admin server-admins %s USER --online --yes\n       opencook admin server-admins %s USER --offline --yes\n\n", args[0], args[0])
+	}
+	action, username := args[0], args[1]
+	fs := flag.NewFlagSet("opencook admin server-admins "+action, flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	online := fs.Bool("online", false, "repair live process server-admin membership during active maintenance mode")
+	offline := fs.Bool("offline", false, "use the offline PostgreSQL repair path instead")
+	yes := fs.Bool("yes", false, "confirm online server-admin repair")
+	if err := fs.Parse(args[2:]); err != nil {
+		return c.adminFlagError("admin server-admins "+action, err)
+	}
+	if fs.NArg() != 0 {
+		return c.adminUsageError("admin server-admins %s received unexpected arguments: %v\n\n", action, fs.Args())
+	}
+	if *online == *offline {
+		return c.adminUsageError("admin server-admins %s requires exactly one mode: use --online --yes during active maintenance, or --offline --yes while OpenCook is stopped\n\n", action)
+	}
+	if *offline {
+		return c.adminUsageError("admin server-admins %s --offline must be run through the offline repair path; rerun without --online\n\n", action)
+	}
+	if !*yes {
+		return c.adminUsageError("admin server-admins %s --online requires --yes\n\n", action)
+	}
+	payload := map[string]any{
+		"yes":    true,
+		"action": action,
+		"user":   username,
+	}
+	return c.adminDo(ctx, client, http.MethodPost, maintenanceRepairServerAdminsAdminPath, payload, "")
 }
 
 func (c *command) runAdminOrganizationCreate(ctx context.Context, client adminJSONClient, args []string) int {
@@ -800,10 +946,14 @@ func (c *command) printAdminUsage(w io.Writer) {
   opencook admin [flags] orgs list
   opencook admin [flags] orgs show ORG
   opencook admin [flags] orgs create ORG --full-name NAME [--org-type TYPE] [--validator-key-out PATH|-]
+  opencook admin [flags] orgs add-user ORG USER --online --yes [--admin]
+  opencook admin [flags] orgs remove-user ORG USER --online --yes [--force]
   opencook admin orgs add-user ORG USER --offline --yes [--admin]
   opencook admin orgs remove-user ORG USER --offline --yes [--force]
   opencook admin [flags] groups list ORG
   opencook admin [flags] groups show ORG GROUP
+  opencook admin [flags] groups add-actor ORG GROUP ACTOR --online --yes [--actor-type user|client|group]
+  opencook admin [flags] groups remove-actor ORG GROUP ACTOR --online --yes [--actor-type user|client|group]
   opencook admin groups add-actor ORG GROUP ACTOR --offline --yes [--actor-type user|client|group]
   opencook admin groups remove-actor ORG GROUP ACTOR --offline --yes [--actor-type user|client|group]
   opencook admin [flags] containers list ORG
@@ -815,7 +965,10 @@ func (c *command) printAdminUsage(w io.Writer) {
   opencook admin [flags] acls get client ORG CLIENT
   opencook admin acls repair-defaults --offline [--org ORG] [--dry-run|--yes]
   opencook admin [flags] acls repair-defaults --online --yes [--org ORG]
+  opencook admin [flags] server-admins list
   opencook admin server-admins list --offline
+  opencook admin [flags] server-admins grant USER --online --yes
+  opencook admin [flags] server-admins revoke USER --online --yes
   opencook admin server-admins grant USER --offline --yes
   opencook admin server-admins revoke USER --offline --yes
   opencook admin [flags] clients keys list ORG CLIENT
@@ -900,6 +1053,8 @@ func (c *command) printAdminOrganizationsUsage(w io.Writer) {
   opencook admin orgs list
   opencook admin orgs show ORG
   opencook admin orgs create ORG --full-name NAME [flags]
+  opencook admin orgs add-user ORG USER --online --yes [--admin]
+  opencook admin orgs remove-user ORG USER --online --yes [--force]
   opencook admin orgs add-user ORG USER --offline --yes [--admin]
   opencook admin orgs remove-user ORG USER --offline --yes [--force]
 `)
@@ -909,6 +1064,8 @@ func (c *command) printAdminGroupsUsage(w io.Writer) {
 	fmt.Fprint(w, `Usage:
   opencook admin groups list ORG
   opencook admin groups show ORG GROUP
+  opencook admin groups add-actor ORG GROUP ACTOR --online --yes [--actor-type user|client|group]
+  opencook admin groups remove-actor ORG GROUP ACTOR --online --yes [--actor-type user|client|group]
   opencook admin groups add-actor ORG GROUP ACTOR --offline --yes [--actor-type user|client|group]
   opencook admin groups remove-actor ORG GROUP ACTOR --offline --yes [--actor-type user|client|group]
 `)
@@ -930,6 +1087,17 @@ func (c *command) printAdminACLsUsage(w io.Writer) {
   opencook admin acls get client ORG CLIENT
   opencook admin acls repair-defaults --offline [--org ORG] [--dry-run|--yes]
   opencook admin acls repair-defaults --online --yes [--org ORG]
+`)
+}
+
+func (c *command) printAdminServerAdminsUsage(w io.Writer) {
+	fmt.Fprint(w, `Usage:
+  opencook admin server-admins list
+  opencook admin server-admins list --offline
+  opencook admin server-admins grant USER --online --yes
+  opencook admin server-admins revoke USER --online --yes
+  opencook admin server-admins grant USER --offline --yes
+  opencook admin server-admins revoke USER --offline --yes
 `)
 }
 

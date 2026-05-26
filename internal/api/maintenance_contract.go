@@ -60,12 +60,24 @@ func maintenanceRouteContracts() []maintenanceRouteContract {
 	)...)
 	contracts = append(contracts, maintenanceContractsForPatterns(
 		[]string{
+			internalAdminServerAdminsPath,
+		},
+		[]maintenanceRouteClass{maintenanceRouteOperationalOnly},
+		[]string{http.MethodGet},
+		nil,
+		"server-admin listing is a signed read-only operational route",
+	)...)
+	contracts = append(contracts, maintenanceContractsForPatterns(
+		[]string{
 			maintenanceRepairDefaultACLsPath,
+			maintenanceRepairOrgMembershipPath,
+			maintenanceRepairGroupMembershipPath,
+			maintenanceRepairServerAdminsPath,
 		},
 		[]maintenanceRouteClass{maintenanceRouteOperationalOnly},
 		[]string{http.MethodPost},
 		nil,
-		"online ACL repair is an authenticated operational route that performs its own active-maintenance and confirmation checks",
+		"online repair routes are authenticated operational routes that perform their own active-maintenance and confirmation checks",
 	)...)
 	contracts = append(contracts, maintenanceContractsForPatterns(
 		[]string{
