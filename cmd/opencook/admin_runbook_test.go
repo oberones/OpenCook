@@ -26,7 +26,7 @@ func TestAdminRunbookListReportsCatalogWithoutLiveClient(t *testing.T) {
 		t.Fatalf("runbook list output = %v, want ok runbook_list", out)
 	}
 	runbooks := adminRunbookRows(t, out)
-	for _, name := range []string{"service-management", "observability", "backup-restore", "search-reindex", "migration-cutover", "identity-acl-repair", "unsupported-omnibus"} {
+	for _, name := range []string{"service-management", "observability", "backup-restore", "search-reindex", "migration-cutover", "identity-acl-repair", "deployment-evidence", "unsupported-omnibus"} {
 		if runbooks[name] == nil {
 			t.Fatalf("runbook list missing %q: %v", name, runbooks)
 		}
@@ -90,6 +90,22 @@ func TestAdminRunbookShowReportsProductionScaleMigrationGuidance(t *testing.T) {
 	for _, want := range []string{"operator_report", "migration source live preflight", "migration source live extract", "--copy-blobs", "source-frozen", "emergency rollback"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("migration runbook missing %q: %s", want, body)
+		}
+	}
+}
+
+func TestAdminRunbookShowReportsDeploymentEvidenceGuidance(t *testing.T) {
+	cmd, stdout, stderr := newTestCommand(t)
+
+	code := cmd.Run(context.Background(), []string{"admin", "runbook", "show", "deployment-evidence", "--json"})
+	if code != exitOK {
+		t.Fatalf("Run(admin runbook show deployment-evidence) exit = %d, want %d; stderr = %s", code, exitOK, stderr.String())
+	}
+
+	body := stdout.String()
+	for _, want := range []string{"scripts/deployment-evidence.sh smoke", "scripts/deployment-evidence.sh migration", "OPENCOOK_FUNCTIONAL_SCALE_PROFILE=small", ".local/deployment-evidence", "evidence-backed Chef compatibility"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("deployment evidence runbook missing %q: %s", want, body)
 		}
 	}
 }

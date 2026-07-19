@@ -458,4 +458,4 @@ These areas are still intentionally incomplete:
 - future object compatibility gaps may still be discovered by pedant mining, deployment testing, live-source extraction, or upstream Chef behavior review; treat those as evidence-driven interruptions rather than a currently planned object-hardening bucket
 - broad migration backup/restore/source import/source sync mutation paths remain offline-gated until a future slice defines equally narrow live seams and rollback guidance
 
-The next likely major slice should be chosen from deployment-test-discovered or live-source-discovered Chef compatibility gaps, broader migration safety, or remaining operational polish.
+Use `scripts/deployment-evidence.sh smoke`, `scripts/deployment-evidence.sh migration`, or `scripts/deployment-evidence.sh scale` to collect redacted evidence before choosing the next likely major slice from deployment-test-discovered or live-source-discovered Chef compatibility gaps, broader migration safety, or remaining operational polish.

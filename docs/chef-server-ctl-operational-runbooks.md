@@ -267,6 +267,32 @@ with the stack; set `KEEP_STACK=1` to keep containers running or
 `OPENCOOK_FUNCTIONAL_KEEP_ARTIFACTS=1` to remove containers while preserving the
 named volumes for report inspection.
 
+## Deployment Evidence Triage
+
+Use deployment evidence before choosing the next compatibility or migration
+safety patch. The runner delegates to the existing functional Compose harness,
+captures redacted logs, and writes a manifest that operators can attach to an
+issue or handoff.
+
+Recommended pattern:
+
+```sh
+scripts/deployment-evidence.sh smoke
+scripts/deployment-evidence.sh migration
+OPENCOOK_FUNCTIONAL_SCALE_PROFILE=small scripts/deployment-evidence.sh scale
+```
+
+Notes:
+
+- Evidence is written under `.local/deployment-evidence/<timestamp>` unless
+  `OPENCOOK_DEPLOYMENT_EVIDENCE_DIR` is set.
+- Fix only deterministic harness issues or evidence-backed Chef compatibility
+  regressions discovered by the run.
+- Existing functional overrides still apply, including `DOCKER_HOST`,
+  `POSTGRES_IMAGE`, `OPENSEARCH_IMAGE`, `KEEP_STACK`, and `REBUILD`.
+- Set `KEEP_STACK=1` or `OPENCOOK_FUNCTIONAL_KEEP_ARTIFACTS=1` when
+  Compose-managed migration or diagnostics artifacts must survive cleanup.
+
 ## Diagnostics
 
 Use diagnostics for support handoff context, not state export.

@@ -504,11 +504,11 @@ start_restore_server() {
   OPENCOOK_ENV=functional-restore \
   OPENCOOK_LISTEN_ADDRESS="$restore_listen_address" \
   OPENCOOK_DEFAULT_ORGANIZATION="$org" \
-  OPENCOOK_BOOTSTRAP_MODE=true \
-  OPENCOOK_BOOTSTRAP_REQUESTOR_NAME="$admin_requestor" \
+  OPENCOOK_BOOTSTRAP_MODE=false \
+  OPENCOOK_BOOTSTRAP_REQUESTOR_NAME= \
   OPENCOOK_BOOTSTRAP_REQUESTOR_TYPE=user \
   OPENCOOK_BOOTSTRAP_REQUESTOR_KEY_ID="${OPENCOOK_FUNCTIONAL_ACTOR_KEY_ID:-default}" \
-  OPENCOOK_BOOTSTRAP_PUBLIC_KEY_PATH=/src/test/functional/fixtures/bootstrap_public.pem \
+  OPENCOOK_BOOTSTRAP_PUBLIC_KEY_PATH= \
   OPENCOOK_POSTGRES_DSN="$restore_dsn" \
   OPENCOOK_OPENSEARCH_URL="$opensearch_url" \
   OPENCOOK_BLOB_BACKEND=filesystem \
@@ -1362,13 +1362,46 @@ require_scale_sync_progress() {
   require_json_contains "$scale_sync_result" '"command": "migration_source_sync_apply"'
   require_json_contains "$scale_sync_result" '"source_sync_write"'
   require_json_contains "$scale_sync_progress" '"last_status": "applied"'
+  rm -rf "$scale_backup_dir"
+  rm -f "$scale_backup_create_result" "$scale_backup_inspect_result" "$scale_reindex_result" "$scale_search_result" "$scale_shadow_result" "$scale_cutover_result"
+}
+
+# ensure_scale_cutover_manifest creates the backup manifest after final source
+# sync so representative cutover reads match the restored target under test.
+ensure_scale_cutover_manifest() {
+  require_scale_sync_progress
+  require_scale_search_evidence
+  if [[ -f "$scale_backup_dir/manifest.json" ]]; then
+    return 0
+  fi
+
+  echo "==> migration production-scale backup manifest for cutover rehearsal"
+  rm -rf "$scale_backup_dir"
+  mkdir -p "$scale_root"
+  if ! admin_restore_target migration backup create --output "$scale_backup_dir" --offline --yes --with-timing --json >"$scale_backup_create_result"; then
+    echo "migration scale backup create command failed; output:" >&2
+    print_file_if_exists "$scale_backup_create_result"
+    return 1
+  fi
+  require_json_contains "$scale_backup_create_result" '"command": "migration_backup_create"'
+  require_json_contains "$scale_backup_create_result" '"write_backup_bundle"'
+  test -f "$scale_backup_dir/manifest.json"
+
+  echo "==> migration production-scale backup inspect for cutover rehearsal"
+  if ! admin migration backup inspect "$scale_backup_dir" --json >"$scale_backup_inspect_result"; then
+    echo "migration scale backup inspect command failed; output:" >&2
+    print_file_if_exists "$scale_backup_inspect_result"
+    return 1
+  fi
+  require_json_contains "$scale_backup_inspect_result" '"command": "migration_backup_inspect"'
+  require_json_contains "$scale_backup_inspect_result" '"required_payloads"'
 }
 
 # run_migration_scale_shadow compares production-scale source reads to the
 # restored OpenCook target using the opt-in scale coverage mode.
 run_migration_scale_shadow() {
   build_cli
-  require_scale_sync_progress
+  ensure_scale_cutover_manifest
 
   echo "==> migration production-scale shadow-read comparison"
   start_restore_server
@@ -1410,6 +1443,7 @@ require_scale_shadow_result() {
 run_migration_scale_rehearsal() {
   build_cli
   require_scale_shadow_result
+  ensure_scale_cutover_manifest
 
   echo "==> migration production-scale cutover rehearsal"
   start_restore_server

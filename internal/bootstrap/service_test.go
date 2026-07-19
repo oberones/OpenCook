@@ -22,6 +22,24 @@ func (failingBootstrapCoreStore) SaveBootstrapCore(BootstrapCoreState) error {
 	return errBootstrapCoreStoreFailed
 }
 
+type countingBootstrapCoreStore struct {
+	delegate *MemoryBootstrapCoreStore
+	saves    int
+}
+
+func newCountingBootstrapCoreStore(initial BootstrapCoreState) *countingBootstrapCoreStore {
+	return &countingBootstrapCoreStore{delegate: NewMemoryBootstrapCoreStore(initial)}
+}
+
+func (s *countingBootstrapCoreStore) LoadBootstrapCore() (BootstrapCoreState, error) {
+	return s.delegate.LoadBootstrapCore()
+}
+
+func (s *countingBootstrapCoreStore) SaveBootstrapCore(state BootstrapCoreState) error {
+	s.saves++
+	return s.delegate.SaveBootstrapCore(state)
+}
+
 func TestSeedPublicKeyRejectsUnsupportedPrincipalType(t *testing.T) {
 	service := NewService(authn.NewMemoryKeyStore(), Options{SuperuserName: "pivotal"})
 	publicKeyPEM := mustGeneratePublicKeyPEM(t)
@@ -89,6 +107,76 @@ func TestSeedPublicKeyRejectsEmptyPublicKey(t *testing.T) {
 	}, "default", "   ")
 	if !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("SeedPublicKey() error = %v, want %v", err, ErrInvalidInput)
+	}
+}
+
+func TestSeedPrincipalSkipsPersistenceWhenUserAlreadyExists(t *testing.T) {
+	initial := BootstrapCoreState{
+		Users: map[string]User{
+			"pivotal": {Username: "pivotal", DisplayName: "pivotal"},
+		},
+		UserACLs: map[string]authz.ACL{
+			"pivotal": defaultUserACL("pivotal", "pivotal"),
+		},
+		UserKeys: map[string]map[string]KeyRecord{},
+		Orgs:     map[string]BootstrapCoreOrganizationState{},
+	}
+	store := newCountingBootstrapCoreStore(initial)
+	service := NewService(authn.NewMemoryKeyStore(), Options{
+		SuperuserName:             "pivotal",
+		InitialBootstrapCoreState: &initial,
+		BootstrapCoreStoreFactory: func(*Service) BootstrapCoreStore {
+			return store
+		},
+	})
+
+	service.SeedPrincipal(authn.Principal{Type: "user", Name: "pivotal"})
+
+	if store.saves != 0 {
+		t.Fatalf("SeedPrincipal(existing) saved bootstrap core %d times, want 0", store.saves)
+	}
+}
+
+func TestSeedPublicKeySkipsPersistenceWhenRecordAlreadyMatches(t *testing.T) {
+	publicKeyPEM := mustGeneratePublicKeyPEM(t)
+	initial := BootstrapCoreState{
+		Users: map[string]User{
+			"pivotal": {Username: "pivotal", DisplayName: "pivotal"},
+		},
+		UserACLs: map[string]authz.ACL{
+			"pivotal": defaultUserACL("pivotal", "pivotal"),
+		},
+		UserKeys: map[string]map[string]KeyRecord{
+			"pivotal": {
+				"default": {
+					Name:           "default",
+					URI:            keyURI(authn.Principal{Type: "user", Name: "pivotal"}, "default"),
+					PublicKeyPEM:   publicKeyPEM,
+					ExpirationDate: "infinity",
+				},
+			},
+		},
+		Orgs: map[string]BootstrapCoreOrganizationState{},
+	}
+	store := newCountingBootstrapCoreStore(initial)
+	keyStore := authn.NewMemoryKeyStore()
+	service := NewService(keyStore, Options{
+		SuperuserName:             "pivotal",
+		InitialBootstrapCoreState: &initial,
+		BootstrapCoreStoreFactory: func(*Service) BootstrapCoreStore {
+			return store
+		},
+	})
+
+	if err := service.SeedPublicKey(authn.Principal{Type: "user", Name: "pivotal"}, "default", publicKeyPEM); err != nil {
+		t.Fatalf("SeedPublicKey(existing) error = %v", err)
+	}
+
+	if store.saves != 0 {
+		t.Fatalf("SeedPublicKey(existing) saved bootstrap core %d times, want 0", store.saves)
+	}
+	if keys, err := keyStore.Lookup(context.Background(), "pivotal", ""); err != nil || len(keys) != 1 {
+		t.Fatalf("Lookup(pivotal) keys=%d err=%v, want verifier key hydrated", len(keys), err)
 	}
 }
 

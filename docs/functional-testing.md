@@ -179,6 +179,25 @@ OPENCOOK_FUNCTIONAL_SCALE_PROFILE=medium scripts/functional-compose.sh migration
 OPENCOOK_FUNCTIONAL_SCALE_PROFILE=large scripts/functional-compose.sh migration-scale-all
 ```
 
+## Deployment Evidence Runner
+
+Use the deployment evidence runner when the goal is to decide the next
+compatibility or migration-safety patch from repeatable evidence instead of
+speculation:
+
+```sh
+scripts/deployment-evidence.sh smoke
+scripts/deployment-evidence.sh migration
+OPENCOOK_FUNCTIONAL_SCALE_PROFILE=small scripts/deployment-evidence.sh scale
+```
+
+The runner delegates to `scripts/functional-compose.sh`, preserves the same
+Docker, image, provider, organization, and remote `DOCKER_HOST` overrides, and
+writes redacted logs plus `manifest.json` under
+`.local/deployment-evidence/<timestamp>` by default. Use `KEEP_STACK=1` or
+`OPENCOOK_FUNCTIONAL_KEEP_ARTIFACTS=1` when Compose-managed generated artifacts
+must survive cleanup for deeper inspection.
+
 ## Remote Docker
 
 The Compose stack does not rely on bind mounts, so it can run against a remote Docker daemon as long as your Docker client can send the build context.

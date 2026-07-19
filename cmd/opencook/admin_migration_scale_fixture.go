@@ -717,11 +717,12 @@ func adminMigrationScaleFixtureSourcePayloadValuesForBundle(fixture adminMigrati
 				add(adminMigrationSourcePayloadKey{Organization: orgName, Family: "group_memberships"}, member)
 			}
 		}
+		sourceACLs := adminMigrationScaleFixtureSourceACLs(bootstrapOrg, sourceGroups)
 		for _, containerName := range adminMigrationSortedMapKeys(bootstrapOrg.Containers) {
 			add(adminMigrationSourcePayloadKey{Organization: orgName, Family: "containers"}, bootstrapOrg.Containers[containerName])
 		}
-		for _, aclKey := range adminMigrationSortedMapKeys(bootstrapOrg.ACLs) {
-			add(adminMigrationSourcePayloadKey{Organization: orgName, Family: "acls"}, adminMigrationScaleFixtureSourceACLRecord(adminMigrationScaleFixtureSourceACLResource(orgName, aclKey), bootstrapOrg.ACLs[aclKey]))
+		for _, aclKey := range adminMigrationSortedMapKeys(sourceACLs) {
+			add(adminMigrationSourcePayloadKey{Organization: orgName, Family: "acls"}, adminMigrationScaleFixtureSourceACLRecord(adminMigrationScaleFixtureSourceACLResource(orgName, aclKey), sourceACLs[aclKey]))
 		}
 		for _, envName := range adminMigrationSortedMapKeys(coreOrg.Environments) {
 			add(adminMigrationSourcePayloadKey{Organization: orgName, Family: "environments"}, coreOrg.Environments[envName])
@@ -827,6 +828,23 @@ func adminMigrationScaleFixtureSourceGroups(org bootstrap.BootstrapCoreOrganizat
 		}
 	}
 	return groups
+}
+
+// adminMigrationScaleFixtureSourceACLs keeps generated source group rows and
+// ACL rows consistent, including explicit rows for nested-group placeholders.
+func adminMigrationScaleFixtureSourceACLs(org bootstrap.BootstrapCoreOrganizationState, sourceGroups map[string]bootstrap.Group) map[string]authz.ACL {
+	acls := make(map[string]authz.ACL, len(org.ACLs)+len(sourceGroups))
+	for key, acl := range org.ACLs {
+		acls[key] = acl
+	}
+	for groupName := range sourceGroups {
+		aclKey := adminMigrationGroupACLKey(groupName)
+		if _, ok := acls[aclKey]; ok {
+			continue
+		}
+		acls[aclKey] = adminMigrationScaleFixtureACL(nil, []string{"admins"})
+	}
+	return acls
 }
 
 // adminMigrationScaleFixtureSourceACLRecord stores ACL documents with explicit
