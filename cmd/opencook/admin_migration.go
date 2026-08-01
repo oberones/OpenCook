@@ -44,6 +44,8 @@ const (
 	adminMigrationSourceManifestPath           = "opencook-source-manifest.json"
 	adminMigrationSourceImportProgressPath     = "opencook-source-import-progress.json"
 	adminMigrationSourceSyncProgressPath       = "opencook-source-sync-progress.json"
+	adminMigrationLiveSourceErchefDatabase     = "opscode_chef"
+	adminMigrationLiveSourceBifrostDatabase    = "bifrost"
 )
 
 const (
@@ -58,29 +60,37 @@ const (
 )
 
 const (
-	adminMigrationFindingCountMismatch               = "migration_count_mismatch"
-	adminMigrationFindingRestoredObjectMissing       = "migration_restored_object_missing"
-	adminMigrationFindingUnexpectedExtraObject       = "migration_unexpected_extra_object"
-	adminMigrationFindingBlobMismatch                = "migration_blob_mismatch"
-	adminMigrationFindingMissingBlob                 = "migration_missing_blob"
-	adminMigrationFindingStaleSearchDocument         = "migration_stale_search_document"
-	adminMigrationFindingMissingSearchDocument       = "migration_missing_search_document"
-	adminMigrationFindingUnsupportedSourceFamily     = "migration_unsupported_source_family"
-	adminMigrationFindingRetryProgressDrift          = "migration_retry_progress_drift"
-	adminMigrationFindingRetrySafe                   = "migration_retry_safe"
-	adminMigrationFindingRetryUnsafe                 = "migration_retry_unsafe"
-	adminMigrationFindingManualCleanupRequired       = "migration_manual_cleanup_required"
-	adminMigrationFindingMaintenanceInvalid          = "cutover_maintenance_evidence_invalid"
-	adminMigrationFindingMaintenanceInactive         = "cutover_maintenance_inactive"
-	adminMigrationFindingMaintenanceProcessLocal     = "cutover_maintenance_process_local"
-	adminMigrationFindingSourcePostgresUnavailable   = "source_postgres_unavailable"
-	adminMigrationFindingSourceSchemaUnsupported     = "source_schema_unsupported"
-	adminMigrationFindingSourceFamilyUnsupported     = "source_family_unsupported"
-	adminMigrationFindingSourceBlobUnavailable       = "source_blob_unavailable"
-	adminMigrationFindingSourceBlobMissing           = "source_blob_missing"
-	adminMigrationFindingSourceBlobChecksumMismatch  = "source_blob_checksum_mismatch"
-	adminMigrationFindingSourceHTTPReadUnavailable   = "source_http_read_unavailable"
-	adminMigrationFindingSourceExtractionInterrupted = "source_extraction_interrupted"
+	adminMigrationFindingCountMismatch                        = "migration_count_mismatch"
+	adminMigrationFindingRestoredObjectMissing                = "migration_restored_object_missing"
+	adminMigrationFindingUnexpectedExtraObject                = "migration_unexpected_extra_object"
+	adminMigrationFindingBlobMismatch                         = "migration_blob_mismatch"
+	adminMigrationFindingMissingBlob                          = "migration_missing_blob"
+	adminMigrationFindingStaleSearchDocument                  = "migration_stale_search_document"
+	adminMigrationFindingMissingSearchDocument                = "migration_missing_search_document"
+	adminMigrationFindingUnsupportedSourceFamily              = "migration_unsupported_source_family"
+	adminMigrationFindingRetryProgressDrift                   = "migration_retry_progress_drift"
+	adminMigrationFindingRetrySafe                            = "migration_retry_safe"
+	adminMigrationFindingRetryUnsafe                          = "migration_retry_unsafe"
+	adminMigrationFindingManualCleanupRequired                = "migration_manual_cleanup_required"
+	adminMigrationFindingMaintenanceInvalid                   = "cutover_maintenance_evidence_invalid"
+	adminMigrationFindingMaintenanceInactive                  = "cutover_maintenance_inactive"
+	adminMigrationFindingMaintenanceProcessLocal              = "cutover_maintenance_process_local"
+	adminMigrationFindingSourcePostgresUnavailable            = "source_postgres_unavailable"
+	adminMigrationFindingSourceSchemaUnsupported              = "source_schema_unsupported"
+	adminMigrationFindingSourceErchefUnavailable              = "source_erchef_unavailable"
+	adminMigrationFindingSourceErchefSchemaUnsupported        = "source_erchef_schema_unsupported"
+	adminMigrationFindingSourceBifrostUnavailable             = "source_bifrost_unavailable"
+	adminMigrationFindingSourceBifrostSchemaUnsupported       = "source_bifrost_schema_unsupported"
+	adminMigrationFindingSourceAuthorizationTargetUnresolved  = "source_authorization_target_unresolved"
+	adminMigrationFindingSourceAuthorizationSubjectUnresolved = "source_authorization_subject_unresolved"
+	adminMigrationFindingSourceCrossDatabaseConsistency       = "source_cross_database_consistency_advisory"
+	adminMigrationFindingSourceBifrostUnrelatedRecords        = "source_bifrost_unrelated_records"
+	adminMigrationFindingSourceFamilyUnsupported              = "source_family_unsupported"
+	adminMigrationFindingSourceBlobUnavailable                = "source_blob_unavailable"
+	adminMigrationFindingSourceBlobMissing                    = "source_blob_missing"
+	adminMigrationFindingSourceBlobChecksumMismatch           = "source_blob_checksum_mismatch"
+	adminMigrationFindingSourceHTTPReadUnavailable            = "source_http_read_unavailable"
+	adminMigrationFindingSourceExtractionInterrupted          = "source_extraction_interrupted"
 )
 
 var (
@@ -123,6 +133,8 @@ type adminMigrationFlagValues struct {
 	blobS3SecretKey       string
 	blobS3SessionToken    string
 	sourcePostgresDSN     string
+	sourceErchefDatabase  string
+	sourceBifrostDatabase string
 	sourceBookshelfRoot   string
 	sourceBlobURL         string
 	sourceServerURL       string
@@ -179,18 +191,22 @@ type adminMigrationTarget struct {
 }
 
 type adminMigrationLiveSourceTarget struct {
-	AllOrganizations bool   `json:"all_organizations,omitempty"`
-	Organization     string `json:"organization,omitempty"`
-	PostgresDSN      string `json:"postgres_dsn"`
-	BlobMode         string `json:"blob_mode"`
-	BookshelfRoot    string `json:"bookshelf_root,omitempty"`
-	BlobURL          string `json:"blob_url,omitempty"`
-	ServerURL        string `json:"server_url,omitempty"`
-	RequestorName    string `json:"requestor_name,omitempty"`
-	RequestorType    string `json:"requestor_type,omitempty"`
-	PrivateKey       string `json:"private_key,omitempty"`
-	BlobCopyMode     string `json:"blob_copy_mode"`
-	OutputPath       string `json:"output_path,omitempty"`
+	AllOrganizations   bool   `json:"all_organizations,omitempty"`
+	Organization       string `json:"organization,omitempty"`
+	PostgresDSN        string `json:"postgres_dsn"`
+	ErchefPostgresDSN  string `json:"erchef_postgres_dsn"`
+	BifrostPostgresDSN string `json:"bifrost_postgres_dsn"`
+	ErchefDatabase     string `json:"erchef_database"`
+	BifrostDatabase    string `json:"bifrost_database"`
+	BlobMode           string `json:"blob_mode"`
+	BookshelfRoot      string `json:"bookshelf_root,omitempty"`
+	BlobURL            string `json:"blob_url,omitempty"`
+	ServerURL          string `json:"server_url,omitempty"`
+	RequestorName      string `json:"requestor_name,omitempty"`
+	RequestorType      string `json:"requestor_type,omitempty"`
+	PrivateKey         string `json:"private_key,omitempty"`
+	BlobCopyMode       string `json:"blob_copy_mode"`
+	OutputPath         string `json:"output_path,omitempty"`
 }
 
 type adminMigrationCapability struct {
@@ -277,20 +293,22 @@ type adminMigrationLiveSourceCapabilityProbe struct {
 }
 
 type adminMigrationLiveSourceConfig struct {
-	PostgresDSN    string
-	BookshelfRoot  string
-	BlobURL        string
-	ServerURL      string
-	RequestorName  string
-	RequestorType  string
-	PrivateKeyPath string
-	Organization   string
-	AllOrgs        bool
-	CopyBlobs      bool
-	ReferenceBlobs bool
-	OutputPath     string
-	ExtractionMode string
-	PreflightOnly  bool
+	PostgresDSN     string
+	ErchefDatabase  string
+	BifrostDatabase string
+	BookshelfRoot   string
+	BlobURL         string
+	ServerURL       string
+	RequestorName   string
+	RequestorType   string
+	PrivateKeyPath  string
+	Organization    string
+	AllOrgs         bool
+	CopyBlobs       bool
+	ReferenceBlobs  bool
+	OutputPath      string
+	ExtractionMode  string
+	PreflightOnly   bool
 }
 
 type adminMigrationPostgresRead struct {
@@ -1243,19 +1261,27 @@ func adminMigrationLiveSourceCapabilityProbes() []adminMigrationLiveSourceCapabi
 // scoped to admin migration commands instead of runtime server configuration.
 func adminMigrationLiveSourceConfigFromFlags(opts *adminMigrationFlagValues, preflightOnly bool) adminMigrationLiveSourceConfig {
 	cfg := adminMigrationLiveSourceConfig{
-		PostgresDSN:    strings.TrimSpace(opts.sourcePostgresDSN),
-		BookshelfRoot:  strings.TrimSpace(opts.sourceBookshelfRoot),
-		BlobURL:        strings.TrimSpace(opts.sourceBlobURL),
-		ServerURL:      strings.TrimSpace(opts.sourceServerURL),
-		RequestorName:  strings.TrimSpace(opts.sourceRequestorName),
-		RequestorType:  strings.TrimSpace(opts.sourceRequestorType),
-		PrivateKeyPath: strings.TrimSpace(opts.sourcePrivateKeyPath),
-		Organization:   strings.TrimSpace(opts.orgName),
-		AllOrgs:        opts.allOrgs || strings.TrimSpace(opts.orgName) == "",
-		CopyBlobs:      opts.copyBlobs,
-		ReferenceBlobs: opts.referenceBlobs,
-		OutputPath:     strings.TrimSpace(opts.outputPath),
-		PreflightOnly:  preflightOnly,
+		PostgresDSN:     strings.TrimSpace(opts.sourcePostgresDSN),
+		ErchefDatabase:  strings.TrimSpace(opts.sourceErchefDatabase),
+		BifrostDatabase: strings.TrimSpace(opts.sourceBifrostDatabase),
+		BookshelfRoot:   strings.TrimSpace(opts.sourceBookshelfRoot),
+		BlobURL:         strings.TrimSpace(opts.sourceBlobURL),
+		ServerURL:       strings.TrimSpace(opts.sourceServerURL),
+		RequestorName:   strings.TrimSpace(opts.sourceRequestorName),
+		RequestorType:   strings.TrimSpace(opts.sourceRequestorType),
+		PrivateKeyPath:  strings.TrimSpace(opts.sourcePrivateKeyPath),
+		Organization:    strings.TrimSpace(opts.orgName),
+		AllOrgs:         opts.allOrgs || strings.TrimSpace(opts.orgName) == "",
+		CopyBlobs:       opts.copyBlobs,
+		ReferenceBlobs:  opts.referenceBlobs,
+		OutputPath:      strings.TrimSpace(opts.outputPath),
+		PreflightOnly:   preflightOnly,
+	}
+	if cfg.ErchefDatabase == "" {
+		cfg.ErchefDatabase = adminMigrationLiveSourceErchefDatabase
+	}
+	if cfg.BifrostDatabase == "" {
+		cfg.BifrostDatabase = adminMigrationLiveSourceBifrostDatabase
 	}
 	if cfg.RequestorType == "" && cfg.ServerURL != "" {
 		cfg.RequestorType = "user"
@@ -1279,6 +1305,9 @@ func adminMigrationValidateLiveSourceConfig(cfg adminMigrationLiveSourceConfig, 
 	}
 	if cfg.Organization != "" && cfg.AllOrgs {
 		return "admin migration source live cannot combine --all-orgs with --org"
+	}
+	if strings.ContainsRune(cfg.ErchefDatabase, '\x00') || strings.ContainsRune(cfg.BifrostDatabase, '\x00') {
+		return "admin migration source live database names cannot contain NUL bytes"
 	}
 	if cfg.BookshelfRoot != "" && cfg.BlobURL != "" {
 		return "admin migration source live cannot combine --source-bookshelf-root with --source-blob-url"
@@ -1305,19 +1334,23 @@ func adminMigrationValidateLiveSourceConfig(cfg adminMigrationLiveSourceConfig, 
 // raw DSNs, provider credentials, signed URLs, private key paths, and secret paths.
 func adminMigrationLiveSourceRedactedConfig(cfg adminMigrationLiveSourceConfig) map[string]string {
 	return map[string]string{
-		"source_postgres_dsn":    adminMigrationRedact(cfg.PostgresDSN),
-		"source_blob_mode":       adminMigrationLiveSourceBlobMode(cfg),
-		"source_bookshelf_root":  adminMigrationRedactMigrationPath(cfg.BookshelfRoot),
-		"source_blob_url":        adminMigrationRedact(cfg.BlobURL),
-		"source_server_url":      adminMigrationRedact(cfg.ServerURL),
-		"source_requestor_name":  cfg.RequestorName,
-		"source_requestor_type":  cfg.RequestorType,
-		"source_private_key":     adminMigrationPresence(cfg.PrivateKeyPath),
-		"organization":           cfg.Organization,
-		"all_organizations":      adminMigrationBoolString(cfg.AllOrgs),
-		"source_blob_copy_mode":  cfg.ExtractionMode,
-		"normalized_output_path": adminMigrationRedactMigrationPath(cfg.OutputPath),
-		"preflight_only":         adminMigrationBoolString(cfg.PreflightOnly),
+		"source_postgres_dsn":         adminMigrationRedact(cfg.PostgresDSN),
+		"source_erchef_postgres_dsn":  adminMigrationRedact(cfg.PostgresDSN),
+		"source_bifrost_postgres_dsn": adminMigrationRedact(cfg.PostgresDSN),
+		"source_erchef_database":      adminMigrationLiveSourceEffectiveErchefDatabase(cfg),
+		"source_bifrost_database":     adminMigrationLiveSourceEffectiveBifrostDatabase(cfg),
+		"source_blob_mode":            adminMigrationLiveSourceBlobMode(cfg),
+		"source_bookshelf_root":       adminMigrationRedactMigrationPath(cfg.BookshelfRoot),
+		"source_blob_url":             adminMigrationRedact(cfg.BlobURL),
+		"source_server_url":           adminMigrationRedact(cfg.ServerURL),
+		"source_requestor_name":       cfg.RequestorName,
+		"source_requestor_type":       cfg.RequestorType,
+		"source_private_key":          adminMigrationPresence(cfg.PrivateKeyPath),
+		"organization":                cfg.Organization,
+		"all_organizations":           adminMigrationBoolString(cfg.AllOrgs),
+		"source_blob_copy_mode":       cfg.ExtractionMode,
+		"normalized_output_path":      adminMigrationRedactMigrationPath(cfg.OutputPath),
+		"preflight_only":              adminMigrationBoolString(cfg.PreflightOnly),
 	}
 }
 
@@ -1325,18 +1358,22 @@ func adminMigrationLiveSourceRedactedConfig(cfg adminMigrationLiveSourceConfig) 
 // block used by live preflight and the later extractor command.
 func adminMigrationLiveSourceTargetFromConfig(cfg adminMigrationLiveSourceConfig) adminMigrationLiveSourceTarget {
 	return adminMigrationLiveSourceTarget{
-		AllOrganizations: cfg.AllOrgs,
-		Organization:     cfg.Organization,
-		PostgresDSN:      adminMigrationRedact(cfg.PostgresDSN),
-		BlobMode:         adminMigrationLiveSourceBlobMode(cfg),
-		BookshelfRoot:    adminMigrationRedactMigrationPath(cfg.BookshelfRoot),
-		BlobURL:          adminMigrationRedact(cfg.BlobURL),
-		ServerURL:        adminMigrationRedact(cfg.ServerURL),
-		RequestorName:    cfg.RequestorName,
-		RequestorType:    cfg.RequestorType,
-		PrivateKey:       adminMigrationPresence(cfg.PrivateKeyPath),
-		BlobCopyMode:     cfg.ExtractionMode,
-		OutputPath:       adminMigrationRedactMigrationPath(cfg.OutputPath),
+		AllOrganizations:   cfg.AllOrgs,
+		Organization:       cfg.Organization,
+		PostgresDSN:        adminMigrationRedact(cfg.PostgresDSN),
+		ErchefPostgresDSN:  adminMigrationRedact(cfg.PostgresDSN),
+		BifrostPostgresDSN: adminMigrationRedact(cfg.PostgresDSN),
+		ErchefDatabase:     adminMigrationLiveSourceEffectiveErchefDatabase(cfg),
+		BifrostDatabase:    adminMigrationLiveSourceEffectiveBifrostDatabase(cfg),
+		BlobMode:           adminMigrationLiveSourceBlobMode(cfg),
+		BookshelfRoot:      adminMigrationRedactMigrationPath(cfg.BookshelfRoot),
+		BlobURL:            adminMigrationRedact(cfg.BlobURL),
+		ServerURL:          adminMigrationRedact(cfg.ServerURL),
+		RequestorName:      cfg.RequestorName,
+		RequestorType:      cfg.RequestorType,
+		PrivateKey:         adminMigrationPresence(cfg.PrivateKeyPath),
+		BlobCopyMode:       cfg.ExtractionMode,
+		OutputPath:         adminMigrationRedactMigrationPath(cfg.OutputPath),
 	}
 }
 
@@ -3310,7 +3347,7 @@ func (c *command) runAdminMigrationSourceLivePreflight(ctx context.Context, args
 		return c.adminFlagError("admin migration source live preflight", err)
 	}
 	if fs.NArg() != 0 {
-		return c.adminUsageError("usage: opencook admin migration source live preflight --source-postgres-dsn DSN [--source-bookshelf-root PATH|--source-blob-url URL] [--source-server-url URL --source-requestor-name NAME --source-private-key PATH] [--org ORG|--all-orgs] [--json] [--with-timing]\n\n")
+		return c.adminUsageError("usage: opencook admin migration source live preflight --source-postgres-dsn DSN [--source-erchef-database NAME] [--source-bifrost-database NAME] [--source-bookshelf-root PATH|--source-blob-url URL] [--source-server-url URL --source-requestor-name NAME --source-private-key PATH] [--org ORG|--all-orgs] [--json] [--with-timing]\n\n")
 	}
 	cfg := adminMigrationLiveSourceConfigFromFlags(opts, true)
 	if message := adminMigrationValidateLiveSourceConfig(cfg, false); message != "" {
@@ -3335,7 +3372,7 @@ func (c *command) runAdminMigrationSourceLiveExtract(ctx context.Context, args [
 		return c.adminFlagError("admin migration source live extract", err)
 	}
 	if fs.NArg() != 0 {
-		return c.adminUsageError("usage: opencook admin migration source live extract --source-postgres-dsn DSN --output PATH [--source-bookshelf-root PATH|--source-blob-url URL] [--source-server-url URL --source-requestor-name NAME --source-private-key PATH] [--org ORG|--all-orgs] [--copy-blobs|--reference-blobs] [--dry-run] [--yes] [--json] [--with-timing]\n\n")
+		return c.adminUsageError("usage: opencook admin migration source live extract --source-postgres-dsn DSN --output PATH [--source-erchef-database NAME] [--source-bifrost-database NAME] [--source-bookshelf-root PATH|--source-blob-url URL] [--source-server-url URL --source-requestor-name NAME --source-private-key PATH] [--org ORG|--all-orgs] [--copy-blobs|--reference-blobs] [--dry-run] [--yes] [--json] [--with-timing]\n\n")
 	}
 	cfg := adminMigrationLiveSourceConfigFromFlags(opts, false)
 	if message := adminMigrationValidateLiveSourceConfig(cfg, true); message != "" {
@@ -3485,12 +3522,24 @@ func adminMigrationLiveSourceTargetPtr(cfg adminMigrationLiveSourceConfig) *admi
 func adminMigrationLiveSourceDependencies(cfg adminMigrationLiveSourceConfig) []adminMigrationDependency {
 	return append([]adminMigrationDependency{
 		{
-			Name:       "source_postgres",
+			Name:       "source_erchef_postgres",
 			Status:     "skipped",
 			Backend:    "postgres",
 			Configured: strings.TrimSpace(cfg.PostgresDSN) != "",
-			Message:    "source PostgreSQL is configured for read-only live-source probes",
+			Message:    "source Erchef PostgreSQL is configured for a read-only live-source probe",
 			Details: map[string]string{
+				"database":           adminMigrationLiveSourceEffectiveErchefDatabase(cfg),
+				"read_only_required": "true",
+			},
+		},
+		{
+			Name:       "source_bifrost_postgres",
+			Status:     "skipped",
+			Backend:    "postgres",
+			Configured: strings.TrimSpace(cfg.PostgresDSN) != "",
+			Message:    "source Bifrost PostgreSQL is configured for a read-only live-source probe",
+			Details: map[string]string{
+				"database":           adminMigrationLiveSourceEffectiveBifrostDatabase(cfg),
 				"read_only_required": "true",
 			},
 		},
@@ -10697,7 +10746,7 @@ func adminMigrationRedactedAdminConfig(cfg admin.Config) map[string]string {
 // making old invocations fail just because new evidence files were omitted.
 func adminMigrationApplyCutoverEvidenceGates(out *adminMigrationCLIOutput, opts *adminMigrationFlagValues) {
 	sourceRead, sourceLoaded := adminMigrationCutoverSourceBundleGate(out, opts)
-	adminMigrationCutoverSourceFreezeGate(out, opts)
+	adminMigrationCutoverSourceFreezeGate(out, opts, sourceLoaded && adminMigrationSourceBundleIsLiveExtraction(sourceRead.Bundle.SourceType))
 	adminMigrationCutoverImportProgressGate(out, opts)
 	adminMigrationCutoverSyncFreshnessGate(out, opts, sourceRead, sourceLoaded)
 	adminMigrationCutoverSearchCleanlinessGate(out, opts)
@@ -10779,18 +10828,24 @@ func adminMigrationSourceBundleIsLiveExtraction(sourceType string) bool {
 // adminMigrationCutoverSourceFreezeGate records the explicit source-freeze
 // acknowledgement while staying honest that OpenCook cannot enforce source Chef
 // write blocking from this read-only target-side command.
-func adminMigrationCutoverSourceFreezeGate(out *adminMigrationCLIOutput, opts *adminMigrationFlagValues) {
+func adminMigrationCutoverSourceFreezeGate(out *adminMigrationCLIOutput, opts *adminMigrationFlagValues, liveExtraction bool) {
 	details := map[string]string{
 		"operator_confirmed":   fmt.Sprintf("%t", opts.sourceFrozen),
 		"enforced_by_opencook": "false",
 	}
 	if !opts.sourceFrozen {
+		status := "warning"
+		message := "source Chef write-freeze evidence was not confirmed; OpenCook cannot enforce writes still targeting source Chef"
+		if liveExtraction {
+			status = "error"
+			message = "live-extracted source cannot proceed to final cutover rehearsal without external source Chef write-freeze evidence"
+		}
 		adminMigrationMarkDependency(out, adminMigrationDependency{
 			Name:       "source_freeze_evidence",
-			Status:     "warning",
+			Status:     status,
 			Backend:    "runbook",
 			Configured: false,
-			Message:    "source Chef write-freeze evidence was not confirmed; OpenCook cannot enforce writes still targeting source Chef",
+			Message:    message,
 			Details:    details,
 		})
 		return
@@ -13484,7 +13539,9 @@ func bindAdminMigrationScopeFlags(fs *flag.FlagSet, opts *adminMigrationFlagValu
 // bindAdminMigrationLiveSourceFlags keeps source Chef connection settings
 // command-local so normal OpenCook runtime config never points at source Chef.
 func bindAdminMigrationLiveSourceFlags(fs *flag.FlagSet, opts *adminMigrationFlagValues) {
-	fs.StringVar(&opts.sourcePostgresDSN, "source-postgres-dsn", "", "read-only Chef Server PostgreSQL source DSN")
+	fs.StringVar(&opts.sourcePostgresDSN, "source-postgres-dsn", "", "read-only Chef/Cinc PostgreSQL cluster seed DSN; its database is replaced for Erchef and Bifrost")
+	fs.StringVar(&opts.sourceErchefDatabase, "source-erchef-database", adminMigrationLiveSourceErchefDatabase, "source Erchef PostgreSQL database name")
+	fs.StringVar(&opts.sourceBifrostDatabase, "source-bifrost-database", adminMigrationLiveSourceBifrostDatabase, "source Bifrost PostgreSQL database name")
 	fs.StringVar(&opts.sourceBookshelfRoot, "source-bookshelf-root", "", "read-only local Bookshelf checksum root")
 	fs.StringVar(&opts.sourceBlobURL, "source-blob-url", "", "read-only source blob provider URL")
 	fs.StringVar(&opts.sourceServerURL, "source-server-url", "", "optional read-only Chef Server HTTP URL")
@@ -15225,8 +15282,8 @@ func (c *command) printAdminMigrationUsage(w io.Writer) {
   opencook admin migration scale-fixture create --output PATH [--profile small|medium|large] [--yes] [--json] [--with-timing]
   opencook admin migration source inventory PATH [--json] [--with-timing]
   opencook admin migration source normalize PATH --output PATH [--yes] [--json] [--with-timing]
-  opencook admin migration source live preflight --source-postgres-dsn DSN [--source-bookshelf-root PATH|--source-blob-url URL] [--source-server-url URL --source-requestor-name NAME --source-private-key PATH] [--org ORG|--all-orgs] [--json] [--with-timing]
-  opencook admin migration source live extract --source-postgres-dsn DSN --output PATH [--source-bookshelf-root PATH|--source-blob-url URL] [--source-server-url URL --source-requestor-name NAME --source-private-key PATH] [--org ORG|--all-orgs] [--copy-blobs|--reference-blobs] [--dry-run] [--yes] [--json] [--with-timing]
+  opencook admin migration source live preflight --source-postgres-dsn DSN [--source-erchef-database NAME] [--source-bifrost-database NAME] [--source-bookshelf-root PATH|--source-blob-url URL] [--source-server-url URL --source-requestor-name NAME --source-private-key PATH] [--org ORG|--all-orgs] [--json] [--with-timing]
+  opencook admin migration source live extract --source-postgres-dsn DSN --output PATH [--source-erchef-database NAME] [--source-bifrost-database NAME] [--source-bookshelf-root PATH|--source-blob-url URL] [--source-server-url URL --source-requestor-name NAME --source-private-key PATH] [--org ORG|--all-orgs] [--copy-blobs|--reference-blobs] [--dry-run] [--yes] [--json] [--with-timing]
   opencook admin migration source import preflight PATH --offline [--json] [--with-timing]
   opencook admin migration source import apply PATH --offline [--dry-run|--yes] [--progress PATH] [--json] [--with-timing]
   opencook admin migration source sync preflight PATH --offline [--progress PATH] [--json] [--with-timing]
@@ -15258,6 +15315,8 @@ Flags:
   --manifest PATH
   --source PATH
   --source-postgres-dsn DSN
+  --source-erchef-database NAME
+  --source-bifrost-database NAME
   --source-bookshelf-root PATH
   --source-blob-url URL
   --source-server-url URL

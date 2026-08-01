@@ -190,7 +190,7 @@ As of 2026-05-02, OpenCook has moved past pure scaffolding and into the first co
 
 Current focus:
 
-- direct live Chef Infra Server source extraction is complete for the implemented PostgreSQL-backed Chef families and checksum blob evidence, feeding the existing normalized source import/sync, reindex, shadow-read, and cutover rehearsal pipeline
+- direct live Chef/Cinc Server source extraction is complete for the implemented PostgreSQL-backed families and checksum blob evidence, deriving separate `opscode_chef` and `bifrost` connections from one redacted cluster seed, resolving authorization edges in Go, reporting independent-snapshot consistency advisories, and feeding the existing normalized source import/sync, reindex, shadow-read, and source-freeze-gated cutover rehearsal pipeline
 - preserve the completed API-version, search-route, unsupported-index, encrypted-data-bag, provider capability, migration/cutover, source import/sync, live-source extraction, maintenance-mode, operational parity, production-scale validation, core object compatibility hardening, and PostgreSQL-source-of-truth contracts while planning the next operations/admin safety slice
 - treat deployment-test and live-source-discovered Chef compatibility gaps as interrupt-worthy if they prove higher risk than broader online repair/admin mutation parity
 

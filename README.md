@@ -228,10 +228,25 @@ See [Functional Docker Stack](docs/functional-testing.md) for phase-by-phase and
 
 ## Migration: Live Chef Source Extraction
 
-OpenCook can extract implemented Chef Infra Server source families directly
-from read-only source PostgreSQL access plus Bookshelf checksum blob access,
-then reuse the same normalized source import/sync, reindex, shadow-read, and
-cutover rehearsal pipeline as prepared source artifacts.
+OpenCook can extract implemented Chef or Cinc Server source families directly
+from read-only PostgreSQL access plus Bookshelf checksum blob access, then reuse
+the same normalized source import/sync, reindex, shadow-read, and cutover
+rehearsal pipeline as prepared source artifacts. Chef/Cinc stores Erchef data in
+`opscode_chef` and Bifrost authorization data in `bifrost`; OpenCook connects to
+them independently and never relies on cross-database SQL joins. Cinc retains
+the normal Chef Server tooling and configuration conventions; see the
+[Cinc Server documentation](https://cinc.sh/docs/server/).
+
+`--source-postgres-dsn` is a cluster seed, not the database that extraction
+queries. Its host, port, credentials, TLS, and connection parameters are cloned
+while the database is replaced with `opscode_chef` and `bifrost`. For example:
+
+```bash
+export CHEF_SOURCE_POSTGRES_DSN='postgresql://opscode_chef_ro:<password>@127.0.0.1:5432/postgres?sslmode=disable'
+```
+
+Use `--source-erchef-database` or `--source-bifrost-database` only when the
+installation uses nonstandard names.
 
 Start with a no-mutation source preflight:
 
@@ -294,10 +309,16 @@ Operational notes:
   signed URLs out of shell history, logs, and issue trackers. JSON output
   redacts known credential fields, but deployment secret handling is still the
   operator's responsibility.
+- Erchef and Bifrost extraction uses independent read-only repeatable-read
+  transactions. PostgreSQL cannot share one transaction snapshot across
+  databases, so an active-source rehearsal reports a consistency advisory; see
+  [PostgreSQL transaction documentation](https://www.postgresql.org/docs/current/sql-set-transaction.html).
 - Freeze source Chef writes externally before the final source sync and keep
   them frozen through shadow-read comparison, cutover rehearsal, client
-  cutover, and post-cutover smoke checks. OpenCook maintenance mode only gates
-  writes routed to OpenCook; it cannot freeze an upstream Chef Infra Server.
+  cutover, and post-cutover smoke checks. Final cutover rehearsal for a
+  live-extracted bundle is blocked unless `--source-frozen` is supplied.
+  OpenCook maintenance mode only gates writes routed to OpenCook; it cannot
+  freeze an upstream Chef or Cinc Server.
 
 ## Container Image
 

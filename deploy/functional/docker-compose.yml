@@ -115,8 +115,9 @@ services:
       OPENCOOK_FUNCTIONAL_RESTORE_SERVER_URL: http://127.0.0.1:4400
       OPENCOOK_FUNCTIONAL_RESTORE_LISTEN_ADDRESS: 127.0.0.1:4400
       OPENCOOK_FUNCTIONAL_LIVE_SOURCE_POSTGRES_ADMIN_DSN: postgres://opencook:opencook@postgres:5432/postgres?sslmode=disable
-      OPENCOOK_FUNCTIONAL_LIVE_SOURCE_POSTGRES_DSN: postgres://opencook:opencook@postgres:5432/opencook_live_source?sslmode=disable
-      OPENCOOK_FUNCTIONAL_LIVE_SOURCE_DB: opencook_live_source
+      OPENCOOK_FUNCTIONAL_LIVE_SOURCE_POSTGRES_DSN: postgres://opencook:opencook@postgres:5432/postgres?sslmode=disable
+      OPENCOOK_FUNCTIONAL_LIVE_SOURCE_ERCHEF_DB: opscode_chef
+      OPENCOOK_FUNCTIONAL_LIVE_SOURCE_BIFROST_DB: bifrost
       OPENCOOK_FUNCTIONAL_LIVE_SOURCE_STATE_DIR: /var/lib/opencook-functional/live-source
       OPENCOOK_FUNCTIONAL_LIVE_SOURCE_BOOKSHELF_ROOT: /var/lib/opencook-functional/live-source/bookshelf
       OPENCOOK_FUNCTIONAL_SCALE_PROFILE: ${OPENCOOK_FUNCTIONAL_SCALE_PROFILE:-small}

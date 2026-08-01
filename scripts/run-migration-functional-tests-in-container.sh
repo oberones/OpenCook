@@ -28,9 +28,12 @@ source_shadow_result="$state_dir/source-migration-shadow-compare.json"
 source_cutover_result="$state_dir/source-migration-cutover-rehearsal.json"
 source_backup_create_result="$state_dir/source-migration-backup-create.json"
 live_source_root="${OPENCOOK_FUNCTIONAL_LIVE_SOURCE_STATE_DIR:-$state_dir/live-source}"
-live_source_db="${OPENCOOK_FUNCTIONAL_LIVE_SOURCE_DB:-opencook_live_source}"
+live_source_erchef_db="${OPENCOOK_FUNCTIONAL_LIVE_SOURCE_ERCHEF_DB:-opscode_chef}"
+live_source_bifrost_db="${OPENCOOK_FUNCTIONAL_LIVE_SOURCE_BIFROST_DB:-bifrost}"
 live_source_admin_dsn="${OPENCOOK_FUNCTIONAL_LIVE_SOURCE_POSTGRES_ADMIN_DSN:-$restore_admin_dsn}"
-live_source_dsn="${OPENCOOK_FUNCTIONAL_LIVE_SOURCE_POSTGRES_DSN:-postgres://opencook:opencook@postgres:5432/$live_source_db?sslmode=disable}"
+live_source_dsn="${OPENCOOK_FUNCTIONAL_LIVE_SOURCE_POSTGRES_DSN:-postgres://opencook:opencook@postgres:5432/postgres?sslmode=disable}"
+live_source_erchef_dsn="${OPENCOOK_FUNCTIONAL_LIVE_SOURCE_ERCHEF_POSTGRES_DSN:-postgres://opencook:opencook@postgres:5432/$live_source_erchef_db?sslmode=disable}"
+live_source_bifrost_dsn="${OPENCOOK_FUNCTIONAL_LIVE_SOURCE_BIFROST_POSTGRES_DSN:-postgres://opencook:opencook@postgres:5432/$live_source_bifrost_db?sslmode=disable}"
 live_source_dir="${OPENCOOK_FUNCTIONAL_LIVE_SOURCE_DIR:-$live_source_root/source}"
 live_source_bookshelf_dir="${OPENCOOK_FUNCTIONAL_LIVE_SOURCE_BOOKSHELF_ROOT:-$live_source_root/bookshelf}"
 live_source_backup_dir="${OPENCOOK_FUNCTIONAL_LIVE_SOURCE_BACKUP_DIR:-$live_source_root/backup}"
@@ -47,6 +50,7 @@ live_source_sync_result="$live_source_root/migration-live-source-sync-apply.json
 live_source_shadow_result="$live_source_root/migration-live-source-shadow-compare.json"
 live_source_backup_create_result="$live_source_root/migration-live-source-backup-create.json"
 live_source_cutover_result="$live_source_root/migration-live-source-cutover-rehearsal.json"
+live_source_cutover_unfrozen_result="$live_source_root/migration-live-source-cutover-unfrozen.json"
 live_source_checksum="2bf4a922bbf40fb1ae4268646116853c"
 scale_profile="${OPENCOOK_FUNCTIONAL_SCALE_PROFILE:-small}"
 scale_root="${OPENCOOK_FUNCTIONAL_SCALE_STATE_DIR:-$state_dir/migration-scale/$scale_profile}"
@@ -317,12 +321,14 @@ prepare_live_source_fixture() {
   local public_key
   public_key="$(cat /src/test/functional/fixtures/bootstrap_public.pem)"
 
-  psql "$live_source_admin_dsn" -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS \"$live_source_db\" WITH (FORCE)"
-  psql "$live_source_admin_dsn" -v ON_ERROR_STOP=1 -c "CREATE DATABASE \"$live_source_db\""
+  psql "$live_source_admin_dsn" -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS \"$live_source_erchef_db\" WITH (FORCE)"
+  psql "$live_source_admin_dsn" -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS \"$live_source_bifrost_db\" WITH (FORCE)"
+  psql "$live_source_admin_dsn" -v ON_ERROR_STOP=1 -c "CREATE DATABASE \"$live_source_erchef_db\""
+  psql "$live_source_admin_dsn" -v ON_ERROR_STOP=1 -c "CREATE DATABASE \"$live_source_bifrost_db\""
 
-  # This intentionally tiny schema is a deterministic stand-in for live Chef
-  # Server PostgreSQL. It includes only the columns the read-only extractor uses.
-  psql "$live_source_dsn" -v ON_ERROR_STOP=1 \
+  # These intentionally tiny, separate schemas stand in for the standard
+  # opscode_chef and bifrost databases used by Chef/Cinc Server.
+  psql "$live_source_erchef_dsn" -v ON_ERROR_STOP=1 \
     -v org="$org" \
     -v public_key="$public_key" \
     -v checksum="$live_source_checksum" <<'SQL'
@@ -333,20 +339,6 @@ CREATE TABLE org_user_associations (org_id text, user_id text);
 CREATE TABLE clients (id text PRIMARY KEY, org_id text NOT NULL, name text NOT NULL, validator boolean NOT NULL DEFAULT false, admin boolean NOT NULL DEFAULT false, public_key text, authz_id text NOT NULL);
 CREATE TABLE groups (id text PRIMARY KEY, org_id text NOT NULL, name text NOT NULL, authz_id text NOT NULL);
 CREATE TABLE containers (id text PRIMARY KEY, org_id text NOT NULL, name text NOT NULL, authz_id text NOT NULL);
-CREATE TABLE auth_container (id text PRIMARY KEY, authz_id text NOT NULL);
-CREATE TABLE auth_actor (id text PRIMARY KEY, authz_id text NOT NULL);
-CREATE TABLE auth_group (id text PRIMARY KEY, authz_id text NOT NULL);
-CREATE TABLE auth_object (id text PRIMARY KEY, authz_id text NOT NULL);
-CREATE TABLE object_acl_group (target text NOT NULL, authorizee text NOT NULL, permission text NOT NULL);
-CREATE TABLE object_acl_actor (target text NOT NULL, authorizee text NOT NULL, permission text NOT NULL);
-CREATE TABLE actor_acl_group (target text NOT NULL, authorizee text NOT NULL, permission text NOT NULL);
-CREATE TABLE actor_acl_actor (target text NOT NULL, authorizee text NOT NULL, permission text NOT NULL);
-CREATE TABLE group_acl_group (target text NOT NULL, authorizee text NOT NULL, permission text NOT NULL);
-CREATE TABLE group_acl_actor (target text NOT NULL, authorizee text NOT NULL, permission text NOT NULL);
-CREATE TABLE container_acl_group (target text NOT NULL, authorizee text NOT NULL, permission text NOT NULL);
-CREATE TABLE container_acl_actor (target text NOT NULL, authorizee text NOT NULL, permission text NOT NULL);
-CREATE TABLE group_group_relations (parent text NOT NULL, child text NOT NULL);
-CREATE TABLE group_actor_relations (parent text NOT NULL, child text NOT NULL);
 CREATE TABLE nodes (id text PRIMARY KEY, org_id text NOT NULL, authz_id text NOT NULL, name text NOT NULL, environment text NOT NULL, policy_name text, policy_group text, serialized_object bytea NOT NULL);
 CREATE TABLE environments (id text PRIMARY KEY, org_id text NOT NULL, authz_id text NOT NULL, name text NOT NULL, serialized_object bytea NOT NULL);
 CREATE TABLE roles (id text PRIMARY KEY, org_id text NOT NULL, authz_id text NOT NULL, name text NOT NULL, serialized_object bytea NOT NULL);
@@ -366,39 +358,21 @@ CREATE TABLE cookbook_artifact_versions (id text PRIMARY KEY, cookbook_artifact_
 CREATE TABLE cookbook_artifact_version_checksums (cookbook_artifact_version_id text NOT NULL, org_id text NOT NULL, checksum text NOT NULL);
 
 INSERT INTO users VALUES ('user-pivotal', 'pivotal', 'pivotal@example.test', jsonb_build_object('display_name', 'Pivotal User'), true, 'actor-pivotal');
-INSERT INTO auth_actor VALUES ('actor-row-pivotal', 'actor-pivotal');
 INSERT INTO keys VALUES ('user-pivotal', 'default', :'public_key', 'infinity'::timestamptz);
 
 INSERT INTO orgs VALUES ('org-' || :'org', :'org', 'Ponyville', 'object-org-' || :'org');
 INSERT INTO org_user_associations VALUES ('org-' || :'org', 'user-pivotal');
-INSERT INTO auth_object VALUES ('object-row-org', 'object-org-' || :'org');
 
 INSERT INTO clients VALUES ('client-validator', 'org-' || :'org', :'org' || '-validator', true, false, :'public_key', 'actor-validator');
-INSERT INTO auth_actor VALUES ('actor-row-validator', 'actor-validator');
 INSERT INTO keys VALUES ('client-validator', 'default', :'public_key', 'infinity'::timestamptz);
 
 INSERT INTO groups
 SELECT 'group-' || name, 'org-' || :'org', name, 'group-' || name
 FROM unnest(ARRAY['admins','billing-admins','users','clients']) AS name;
-INSERT INTO auth_group
-SELECT 'auth-group-' || name, 'group-' || name
-FROM unnest(ARRAY['admins','billing-admins','users','clients']) AS name;
 
 INSERT INTO containers
 SELECT 'container-' || name, 'org-' || :'org', name, 'container-' || name
 FROM unnest(ARRAY['clients','containers','cookbooks','data','environments','groups','nodes','roles','sandboxes','policies','policy_groups','cookbook_artifacts']) AS name;
-INSERT INTO auth_container
-SELECT 'auth-container-' || name, 'container-' || name
-FROM unnest(ARRAY['clients','containers','cookbooks','data','environments','groups','nodes','roles','sandboxes','policies','policy_groups','cookbook_artifacts']) AS name;
-
-INSERT INTO group_actor_relations
-SELECT admins.id, pivotal.id
-FROM auth_group admins, auth_actor pivotal
-WHERE admins.authz_id = 'group-admins' AND pivotal.authz_id = 'actor-pivotal';
-INSERT INTO group_actor_relations
-SELECT clients.id, validator.id
-FROM auth_group clients, auth_actor validator
-WHERE clients.authz_id = 'group-clients' AND validator.authz_id = 'actor-validator';
 
 INSERT INTO nodes VALUES ('node-web01', 'org-' || :'org', 'object-node-web01', 'web01', '_default', 'base', 'prod',
 	convert_to(jsonb_build_object('name', 'web01', 'chef_environment', '_default', 'run_list', jsonb_build_array('role[web]'), 'normal', jsonb_build_object('app', 'opencook'), 'default', '{}'::jsonb, 'override', '{}'::jsonb, 'automatic', '{}'::jsonb, 'policy_name', 'base', 'policy_group', 'prod')::text, 'UTF8'));
@@ -431,9 +405,35 @@ INSERT INTO cookbook_artifact_versions VALUES ('artifact-base-1', 'artifact-base
 	'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb');
 INSERT INTO cookbook_artifact_version_checksums VALUES ('artifact-base-1', 'org-' || :'org', :'checksum');
 
+SQL
+
+  psql "$live_source_bifrost_dsn" -v ON_ERROR_STOP=1 -v org="$org" <<'SQL'
+CREATE TABLE auth_container (id text PRIMARY KEY, authz_id text NOT NULL UNIQUE);
+CREATE TABLE auth_actor (id text PRIMARY KEY, authz_id text NOT NULL UNIQUE);
+CREATE TABLE auth_group (id text PRIMARY KEY, authz_id text NOT NULL UNIQUE);
+CREATE TABLE auth_object (id text PRIMARY KEY, authz_id text NOT NULL UNIQUE);
+CREATE TABLE object_acl_group (target text NOT NULL, authorizee text NOT NULL, permission text NOT NULL);
+CREATE TABLE object_acl_actor (target text NOT NULL, authorizee text NOT NULL, permission text NOT NULL);
+CREATE TABLE actor_acl_group (target text NOT NULL, authorizee text NOT NULL, permission text NOT NULL);
+CREATE TABLE actor_acl_actor (target text NOT NULL, authorizee text NOT NULL, permission text NOT NULL);
+CREATE TABLE group_acl_group (target text NOT NULL, authorizee text NOT NULL, permission text NOT NULL);
+CREATE TABLE group_acl_actor (target text NOT NULL, authorizee text NOT NULL, permission text NOT NULL);
+CREATE TABLE container_acl_group (target text NOT NULL, authorizee text NOT NULL, permission text NOT NULL);
+CREATE TABLE container_acl_actor (target text NOT NULL, authorizee text NOT NULL, permission text NOT NULL);
+CREATE TABLE group_group_relations (parent text NOT NULL, child text NOT NULL);
+CREATE TABLE group_actor_relations (parent text NOT NULL, child text NOT NULL);
+
+INSERT INTO auth_actor VALUES ('actor-row-pivotal', 'actor-pivotal'), ('actor-row-validator', 'actor-validator');
+INSERT INTO auth_group
+SELECT 'auth-group-' || name, 'group-' || name
+FROM unnest(ARRAY['admins','billing-admins','users','clients']) AS name;
+INSERT INTO auth_container
+SELECT 'auth-container-' || name, 'container-' || name
+FROM unnest(ARRAY['clients','containers','cookbooks','data','environments','groups','nodes','roles','sandboxes','policies','policy_groups','cookbook_artifacts']) AS name;
 INSERT INTO auth_object
 SELECT id, authz_id
 FROM (VALUES
+	('object-row-org', 'object-org-' || :'org'),
 	('object-row-node-web01', 'object-node-web01'),
 	('object-row-env-default', 'object-env-default'),
 	('object-row-role-web', 'object-role-web'),
@@ -442,10 +442,15 @@ FROM (VALUES
 	('object-row-policy-group-prod', 'object-policy-group-prod')
 ) AS objects(id, authz_id);
 
+INSERT INTO group_actor_relations VALUES
+	('auth-group-admins', 'actor-row-pivotal'),
+	('auth-group-clients', 'actor-row-validator');
+INSERT INTO group_group_relations VALUES ('auth-group-admins', 'auth-group-billing-admins');
+
 CREATE TEMP TABLE live_acl_permissions(permission text);
 INSERT INTO live_acl_permissions VALUES ('create'), ('read'), ('update'), ('delete'), ('grant');
-INSERT INTO actor_acl_actor SELECT id, 'actor-row-pivotal', permission FROM auth_actor CROSS JOIN live_acl_permissions WHERE authz_id IN ('actor-pivotal', 'actor-validator');
-INSERT INTO actor_acl_group SELECT id, 'auth-group-admins', permission FROM auth_actor CROSS JOIN live_acl_permissions WHERE authz_id IN ('actor-pivotal', 'actor-validator');
+INSERT INTO actor_acl_actor SELECT id, 'actor-row-pivotal', permission FROM auth_actor CROSS JOIN live_acl_permissions;
+INSERT INTO actor_acl_group SELECT id, 'auth-group-admins', permission FROM auth_actor CROSS JOIN live_acl_permissions;
 INSERT INTO group_acl_actor SELECT id, 'actor-row-pivotal', permission FROM auth_group CROSS JOIN live_acl_permissions;
 INSERT INTO group_acl_group SELECT id, 'auth-group-admins', permission FROM auth_group CROSS JOIN live_acl_permissions;
 INSERT INTO container_acl_actor SELECT id, 'actor-row-pivotal', permission FROM auth_container CROSS JOIN live_acl_permissions;
@@ -983,6 +988,43 @@ run_migration_live_source_preflight() {
   fi
   prepare_live_source_fixture
 
+  local failure_result="$live_source_root/migration-live-source-split-failure.json"
+  psql "$live_source_admin_dsn" -v ON_ERROR_STOP=1 -c "DROP DATABASE \"$live_source_erchef_db\" WITH (FORCE)"
+  if admin migration source live preflight --source-postgres-dsn "$live_source_dsn" --source-bookshelf-root "$live_source_bookshelf_dir" --org "$org" --json >"$failure_result"; then
+    echo "live source preflight unexpectedly accepted a missing Erchef database" >&2
+    return 1
+  fi
+  require_json_contains "$failure_result" '"source_erchef_unavailable"'
+  require_json_contains "$failure_result" '"source_bifrost_postgres"'
+  prepare_live_source_fixture
+
+  psql "$live_source_admin_dsn" -v ON_ERROR_STOP=1 -c "DROP DATABASE \"$live_source_bifrost_db\" WITH (FORCE)"
+  if admin migration source live preflight --source-postgres-dsn "$live_source_dsn" --source-bookshelf-root "$live_source_bookshelf_dir" --org "$org" --json >"$failure_result"; then
+    echo "live source preflight unexpectedly accepted a missing Bifrost database" >&2
+    return 1
+  fi
+  require_json_contains "$failure_result" '"source_bifrost_unavailable"'
+  require_json_contains "$failure_result" '"source_erchef_postgres"'
+  prepare_live_source_fixture
+
+  psql "$live_source_erchef_dsn" -v ON_ERROR_STOP=1 -c "DROP TABLE nodes"
+  if admin migration source live preflight --source-postgres-dsn "$live_source_dsn" --source-bookshelf-root "$live_source_bookshelf_dir" --org "$org" --json >"$failure_result"; then
+    echo "live source preflight unexpectedly accepted an incomplete Erchef schema" >&2
+    return 1
+  fi
+  require_json_contains "$failure_result" '"source_erchef_schema_unsupported"'
+  require_json_contains "$failure_result" '"source_bifrost_schema"'
+  prepare_live_source_fixture
+
+  psql "$live_source_bifrost_dsn" -v ON_ERROR_STOP=1 -c "DROP TABLE auth_object"
+  if admin migration source live preflight --source-postgres-dsn "$live_source_dsn" --source-bookshelf-root "$live_source_bookshelf_dir" --org "$org" --json >"$failure_result"; then
+    echo "live source preflight unexpectedly accepted an incomplete Bifrost schema" >&2
+    return 1
+  fi
+  require_json_contains "$failure_result" '"source_bifrost_schema_unsupported"'
+  require_json_contains "$failure_result" '"source_erchef_schema"'
+  prepare_live_source_fixture
+
   echo "==> migration live source preflight"
   if ! admin migration source live preflight \
     --source-postgres-dsn "$live_source_dsn" \
@@ -995,8 +1037,11 @@ run_migration_live_source_preflight() {
     return 1
   fi
   require_json_contains "$live_source_preflight_result" '"command": "migration_source_live_preflight"'
-  require_json_contains "$live_source_preflight_result" '"source_postgres"'
-  require_json_contains "$live_source_preflight_result" '"source_schema"'
+  require_json_contains "$live_source_preflight_result" '"source_erchef_postgres"'
+  require_json_contains "$live_source_preflight_result" '"source_erchef_schema"'
+  require_json_contains "$live_source_preflight_result" '"source_bifrost_postgres"'
+  require_json_contains "$live_source_preflight_result" '"source_bifrost_schema"'
+  require_json_contains "$live_source_preflight_result" '"source_cross_database_consistency_advisory"'
   require_json_contains "$live_source_preflight_result" '"read_only": "true"'
 }
 
@@ -1006,6 +1051,47 @@ run_migration_live_source_extract() {
   if ! keep_functional_artifacts; then
     clean_live_source_artifacts
   fi
+  prepare_live_source_fixture
+
+  local failure_dir="$live_source_root/failed-source"
+  local failure_result="$live_source_root/migration-live-source-extract-failure.json"
+  psql "$live_source_erchef_dsn" -v ON_ERROR_STOP=1 -c "DROP TABLE nodes"
+  if admin migration source live extract \
+    --source-postgres-dsn "$live_source_dsn" \
+    --source-bookshelf-root "$live_source_bookshelf_dir" \
+    --copy-blobs \
+    --org "$org" \
+    --output "$failure_dir" \
+    --yes \
+    --json >"$failure_result"; then
+    echo "live source extraction unexpectedly accepted an incomplete Erchef schema" >&2
+    return 1
+  fi
+  require_json_contains "$failure_result" '"source_erchef_schema_unsupported"'
+  test ! -e "$failure_dir"
+  psql "$live_source_admin_dsn" -v ON_ERROR_STOP=1 -c "DROP DATABASE \"$live_source_erchef_db\""
+  psql "$live_source_admin_dsn" -v ON_ERROR_STOP=1 -c "DROP DATABASE \"$live_source_bifrost_db\""
+  prepare_live_source_fixture
+
+  psql "$live_source_bifrost_dsn" -v ON_ERROR_STOP=1 -c "DELETE FROM auth_object WHERE authz_id = 'object-node-web01'"
+  if admin migration source live extract \
+    --source-postgres-dsn "$live_source_dsn" \
+    --source-bookshelf-root "$live_source_bookshelf_dir" \
+    --copy-blobs \
+    --org "$org" \
+    --output "$failure_dir" \
+    --yes \
+    --json >"$failure_result"; then
+    echo "live source extraction unexpectedly accepted an unresolved Bifrost target" >&2
+    return 1
+  fi
+  require_json_contains "$failure_result" '"source_authorization_target_unresolved"'
+  require_json_contains "$failure_result" 'resource_type=object'
+  require_json_contains "$failure_result" "organization=$org"
+  require_json_contains "$failure_result" 'authz_id=object-node-web01'
+  test ! -e "$failure_dir"
+  psql "$live_source_admin_dsn" -v ON_ERROR_STOP=1 -c "DROP DATABASE \"$live_source_erchef_db\""
+  psql "$live_source_admin_dsn" -v ON_ERROR_STOP=1 -c "DROP DATABASE \"$live_source_bifrost_db\""
   prepare_live_source_fixture
 
   echo "==> migration live source extract"
@@ -1024,10 +1110,22 @@ run_migration_live_source_extract() {
   fi
   require_json_contains "$live_source_extract_result" '"command": "migration_source_live_extract"'
   require_json_contains "$live_source_extract_result" '"source_bootstrap"'
+  require_json_contains "$live_source_extract_result" '"source_erchef_postgres"'
+  require_json_contains "$live_source_extract_result" '"source_bifrost_postgres"'
+  require_json_contains "$live_source_extract_result" '"source_cross_database_consistency_advisory"'
   require_json_contains "$live_source_extract_result" '"source_blob"'
   require_json_contains "$live_source_extract_result" '"normalized_source_output"'
   require_json_contains "$live_source_extract_result" '"source_type": "live_chef_infra_server"'
   test -f "$live_source_dir/opencook-source-manifest.json"
+  test -f "$live_source_dir/payloads/bootstrap/user_acls.json"
+  test -f "$live_source_dir/payloads/organizations/$org/acls.json"
+  test -f "$live_source_dir/payloads/organizations/$org/group_memberships.json"
+  require_json_contains "$live_source_dir/payloads/bootstrap/user_acls.json" '"user:pivotal"'
+  require_json_contains "$live_source_dir/payloads/organizations/$org/acls.json" '"node:web01"'
+  require_json_contains "$live_source_dir/payloads/organizations/$org/acls.json" '"admins"'
+  require_json_contains "$live_source_dir/payloads/organizations/$org/group_memberships.json" '"pivotal"'
+  require_json_contains "$live_source_dir/payloads/organizations/$org/group_memberships.json" '"billing-admins"'
+  require_json_contains "$live_source_dir/payloads/organizations/$org/group_memberships.json" "\"$org-validator\""
 }
 
 run_migration_live_source_import() {
@@ -1124,6 +1222,28 @@ run_migration_live_source_rehearsal() {
 
   echo "==> migration live source cutover rehearsal"
   start_restore_server
+  if admin migration cutover rehearse \
+    --manifest "$live_source_backup_dir/manifest.json" \
+    --source "$live_source_dir" \
+    --source-import-progress "$live_source_import_progress" \
+    --source-sync-progress "$live_source_sync_progress" \
+    --search-check-result "$live_source_search_result" \
+    --shadow-result "$live_source_shadow_result" \
+    --rollback-ready \
+    --server-url "$restore_server_url" \
+    --requestor-name "$admin_requestor" \
+    --requestor-type user \
+    --private-key "$admin_private_key" \
+    --server-api-version "${OPENCOOK_ADMIN_SERVER_API_VERSION:-1}" \
+    --with-timing \
+    --json >"$live_source_cutover_unfrozen_result"; then
+    echo "live-extracted cutover rehearsal unexpectedly accepted missing source-freeze evidence" >&2
+    print_file_if_exists "$live_source_cutover_unfrozen_result"
+    return 1
+  fi
+  require_json_contains "$live_source_cutover_unfrozen_result" '"name": "source_freeze_evidence"'
+  require_json_contains "$live_source_cutover_unfrozen_result" '"status": "error"'
+
   if ! admin migration cutover rehearse \
     --manifest "$live_source_backup_dir/manifest.json" \
     --source "$live_source_dir" \

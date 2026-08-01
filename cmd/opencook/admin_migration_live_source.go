@@ -7,10 +7,12 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 )
 
-const adminMigrationLiveSourcePostgresProbeTimeout = 10 * time.Second
+const (
+	adminMigrationLiveSourcePostgresProbeTimeout      = 10 * time.Second
+	adminMigrationLiveSourcePostgresExtractionTimeout = 30 * time.Minute
+)
 
 type adminMigrationLiveSourceExtractor interface {
 	Preflight(context.Context, adminMigrationLiveSourceConfig) adminMigrationLiveSourceExtractorResult
@@ -133,143 +135,34 @@ func (adminMigrationPGXLiveSourcePostgresProbe) Probe(ctx context.Context, cfg a
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if _, err := pgconn.ParseConfig(cfg.PostgresDSN); err != nil {
-		return adminMigrationLiveSourcePostgresProbeFailure(
-			"source PostgreSQL DSN is not a valid connection string",
-			adminMigrationFindingSourcePostgresUnavailable,
-			"source_postgres",
-			"source PostgreSQL connection string could not be parsed",
-		)
-	}
-	probeCtx, cancel := context.WithTimeout(ctx, adminMigrationLiveSourcePostgresProbeTimeout)
-	defer cancel()
-
-	conn, err := pgx.Connect(probeCtx, cfg.PostgresDSN)
+	targets, err := adminMigrationLiveSourceDerivePostgresTargets(cfg)
 	if err != nil {
 		return adminMigrationLiveSourcePostgresProbeFailure(
-			"source PostgreSQL could not be reached",
+			"source PostgreSQL cluster seed DSN is not a valid connection string",
 			adminMigrationFindingSourcePostgresUnavailable,
-			"source_postgres",
-			"source PostgreSQL could not be reached or authenticated",
+			"source_postgres_seed",
+			"source PostgreSQL cluster seed connection string could not be parsed",
 		)
 	}
-	defer conn.Close(probeCtx)
-
-	tx, err := conn.BeginTx(probeCtx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
-	if err != nil {
-		return adminMigrationLiveSourcePostgresProbeFailure(
-			"source PostgreSQL read-only transaction could not be opened",
-			adminMigrationFindingSourcePostgresUnavailable,
-			"source_postgres",
-			"source PostgreSQL did not allow a read-only migration preflight transaction",
-		)
-	}
-	defer tx.Rollback(probeCtx)
-
-	var readOnly string
-	if err := tx.QueryRow(probeCtx, "SHOW transaction_read_only").Scan(&readOnly); err != nil {
-		return adminMigrationLiveSourcePostgresProbeFailure(
-			"source PostgreSQL read-only posture could not be verified",
-			adminMigrationFindingSourcePostgresUnavailable,
-			"source_postgres",
-			"source PostgreSQL read-only posture could not be verified",
-		)
-	}
-	if !adminMigrationLiveSourcePostgresReadOnlyEnabled(readOnly) {
-		return adminMigrationLiveSourcePostgresProbeFailure(
-			"source PostgreSQL preflight was not running in a read-only transaction",
-			adminMigrationFindingSourcePostgresUnavailable,
-			"source_postgres",
-			"source PostgreSQL preflight was not running in a read-only transaction",
-		)
-	}
-
-	var databaseName, databaseUser string
-	if err := tx.QueryRow(probeCtx, "SELECT current_database(), current_user").Scan(&databaseName, &databaseUser); err != nil {
-		return adminMigrationLiveSourcePostgresProbeFailure(
-			"source PostgreSQL identity could not be read",
-			adminMigrationFindingSourcePostgresUnavailable,
-			"source_postgres",
-			"source PostgreSQL identity could not be read",
-		)
-	}
-
-	missingTables := make([]string, 0)
-	for _, table := range adminMigrationLiveSourceRequiredPostgresTables() {
-		var resolved string
-		if err := tx.QueryRow(probeCtx, "SELECT COALESCE(to_regclass($1)::text, '')", table).Scan(&resolved); err != nil {
-			return adminMigrationLiveSourcePostgresProbeFailure(
-				"source PostgreSQL schema tables could not be inspected",
-				adminMigrationFindingSourceSchemaUnsupported,
-				"source_schema",
-				"source PostgreSQL schema could not be inspected by the configured read-only role",
-			)
-		}
-		if strings.TrimSpace(resolved) == "" {
-			missingTables = append(missingTables, table)
-		}
-	}
-	if len(missingTables) > 0 {
-		return adminMigrationLiveSourcePostgresSchemaFailure(databaseName, databaseUser, missingTables)
-	}
-
-	organizations, err := adminMigrationLiveSourceReadOrganizations(probeCtx, tx)
-	if err != nil {
-		return adminMigrationLiveSourcePostgresProbeFailure(
-			"source organizations could not be enumerated",
-			adminMigrationFindingSourceSchemaUnsupported,
-			"source_organizations",
-			"source organizations could not be enumerated by the configured read-only role",
-		)
-	}
-	if len(organizations) == 0 {
-		return adminMigrationLiveSourcePostgresProbeFailure(
-			"source PostgreSQL exposes no organizations",
-			adminMigrationFindingSourceSchemaUnsupported,
-			"source_organizations",
-			"source PostgreSQL did not expose any organizations to the configured read-only role",
-		)
-	}
-	if cfg.Organization != "" && !adminMigrationLiveSourceIncludesOrganization(organizations, cfg.Organization) {
-		return adminMigrationLiveSourcePostgresProbeFailure(
-			"requested source organization is not visible",
-			adminMigrationFindingSourceSchemaUnsupported,
-			"source_organizations",
-			"requested source organization is not visible to the configured read-only role",
-		)
-	}
-
-	return adminMigrationLiveSourcePostgresProbeResult{
-		Dependencies: []adminMigrationDependency{
-			{
-				Name:       "source_postgres",
-				Status:     "ok",
-				Backend:    "postgres",
-				Configured: true,
-				Message:    "source PostgreSQL read-only preflight probe passed",
-				Details: map[string]string{
-					"database":              adminMigrationLiveSourceSafeDetail(databaseName),
-					"user":                  adminMigrationLiveSourceSafeDetail(databaseUser),
-					"read_only":             "true",
-					"visible_organizations": fmt.Sprintf("%d", len(organizations)),
-				},
-			},
-			{
-				Name:       "source_schema",
-				Status:     "ok",
-				Backend:    "postgres",
-				Configured: true,
-				Message:    "source PostgreSQL schema exposes required erchef and Bifrost tables",
-				Details: map[string]string{
-					"required_tables": fmt.Sprintf("%d", len(adminMigrationLiveSourceRequiredPostgresTables())),
-				},
-			},
-		},
+	erchef := adminMigrationLiveSourceProbeDatabase(ctx, targets.Erchef, "erchef", adminMigrationLiveSourceRequiredErchefTables(), true)
+	bifrost := adminMigrationLiveSourceProbeDatabase(ctx, targets.Bifrost, "bifrost", adminMigrationLiveSourceRequiredBifrostTables(), false)
+	result := adminMigrationLiveSourcePostgresProbeResult{
+		Dependencies: append(append([]adminMigrationDependency{}, erchef.Dependencies...), bifrost.Dependencies...),
+		Findings:     append(append([]adminMigrationFinding{}, erchef.Findings...), bifrost.Findings...),
 		Inventory: adminMigrationInventory{Families: []adminMigrationInventoryFamily{
-			{Family: "source_organizations", Count: len(organizations)},
-			{Family: "source_required_tables", Count: len(adminMigrationLiveSourceRequiredPostgresTables())},
+			{Family: "source_organizations", Count: len(erchef.Organizations)},
+			{Family: "source_erchef_required_tables", Count: len(adminMigrationLiveSourceRequiredErchefTables())},
+			{Family: "source_bifrost_required_tables", Count: len(adminMigrationLiveSourceRequiredBifrostTables())},
 		}},
 	}
+	result.Findings = append(result.Findings, adminMigrationLiveSourceCrossDatabaseConsistencyFinding())
+	if erchef.Ready && len(erchef.Organizations) == 0 {
+		result.Findings = append(result.Findings, adminMigrationFinding{Severity: "error", Code: adminMigrationFindingSourceErchefSchemaUnsupported, Family: "source_erchef_schema", Message: "source Erchef PostgreSQL did not expose any organizations to the configured read-only role"})
+	}
+	if erchef.Ready && cfg.Organization != "" && !adminMigrationLiveSourceIncludesOrganization(erchef.Organizations, cfg.Organization) {
+		result.Findings = append(result.Findings, adminMigrationFinding{Severity: "error", Code: adminMigrationFindingSourceErchefSchemaUnsupported, Family: "source_organizations", Message: "requested source organization is not visible to the configured read-only role"})
+	}
+	return result
 }
 
 // adminMigrationLiveSourcePostgresReadOnlyEnabled accepts PostgreSQL's common
@@ -321,46 +214,7 @@ func adminMigrationLiveSourceIncludesOrganization(organizations []string, want s
 // adminMigrationLiveSourceRequiredPostgresTables is the conservative schema
 // surface needed by the implemented normalized-source families.
 func adminMigrationLiveSourceRequiredPostgresTables() []string {
-	return []string{
-		"users",
-		"keys",
-		"orgs",
-		"org_user_associations",
-		"clients",
-		"groups",
-		"containers",
-		"auth_container",
-		"auth_actor",
-		"auth_group",
-		"auth_object",
-		"object_acl_group",
-		"object_acl_actor",
-		"actor_acl_group",
-		"actor_acl_actor",
-		"group_acl_group",
-		"group_acl_actor",
-		"container_acl_group",
-		"container_acl_actor",
-		"group_group_relations",
-		"group_actor_relations",
-		"nodes",
-		"environments",
-		"roles",
-		"data_bags",
-		"data_bag_items",
-		"policies",
-		"policy_revisions",
-		"policy_groups",
-		"policy_revisions_policy_groups_association",
-		"checksums",
-		"sandboxed_checksums",
-		"cookbooks",
-		"cookbook_versions",
-		"cookbook_version_checksums",
-		"cookbook_artifacts",
-		"cookbook_artifact_versions",
-		"cookbook_artifact_version_checksums",
-	}
+	return append(append([]string{}, adminMigrationLiveSourceRequiredErchefTables()...), adminMigrationLiveSourceRequiredBifrostTables()...)
 }
 
 // adminMigrationLiveSourcePostgresProbeFailure returns one blocking dependency
@@ -384,48 +238,6 @@ func adminMigrationLiveSourcePostgresProbeFailure(depMessage, code, family, find
 			Code:     code,
 			Family:   family,
 			Message:  findingMessage,
-		}},
-	}
-}
-
-// adminMigrationLiveSourcePostgresSchemaFailure adds bounded missing-table
-// detail that is actionable for operators but does not include raw SQL errors.
-func adminMigrationLiveSourcePostgresSchemaFailure(databaseName, databaseUser string, missingTables []string) adminMigrationLiveSourcePostgresProbeResult {
-	return adminMigrationLiveSourcePostgresProbeResult{
-		Dependencies: []adminMigrationDependency{
-			{
-				Name:       "source_postgres",
-				Status:     "ok",
-				Backend:    "postgres",
-				Configured: true,
-				Message:    "source PostgreSQL read-only preflight probe passed",
-				Details: map[string]string{
-					"database":  adminMigrationLiveSourceSafeDetail(databaseName),
-					"user":      adminMigrationLiveSourceSafeDetail(databaseUser),
-					"read_only": "true",
-				},
-			},
-			{
-				Name:       "source_schema",
-				Status:     "error",
-				Backend:    "postgres",
-				Configured: true,
-				Message:    "source PostgreSQL schema is missing required Chef Server tables",
-				Details: map[string]string{
-					"missing_tables":  adminMigrationLiveSourceBoundedList(missingTables, 8),
-					"missing_count":   fmt.Sprintf("%d", len(missingTables)),
-					"required_tables": fmt.Sprintf("%d", len(adminMigrationLiveSourceRequiredPostgresTables())),
-				},
-			},
-		},
-		Inventory: adminMigrationInventory{Families: []adminMigrationInventoryFamily{
-			{Family: "source_missing_tables", Count: len(missingTables)},
-		}},
-		Findings: []adminMigrationFinding{{
-			Severity: "error",
-			Code:     adminMigrationFindingSourceSchemaUnsupported,
-			Family:   "source_schema",
-			Message:  "source PostgreSQL schema is missing required Chef Server tables",
 		}},
 	}
 }
@@ -484,6 +296,14 @@ func adminMigrationLiveSourceFindingCodes() []adminMigrationValidationFindingCod
 	return []adminMigrationValidationFindingCode{
 		{Code: adminMigrationFindingSourcePostgresUnavailable, Severity: "error", Family: "source_postgres", Message: "source PostgreSQL could not be reached or queried"},
 		{Code: adminMigrationFindingSourceSchemaUnsupported, Severity: "error", Family: "source_schema", Message: "source Chef Server schema is unsupported"},
+		{Code: adminMigrationFindingSourceErchefUnavailable, Severity: "error", Family: "source_erchef_postgres", Message: "source Erchef PostgreSQL could not be reached or queried"},
+		{Code: adminMigrationFindingSourceErchefSchemaUnsupported, Severity: "error", Family: "source_erchef_schema", Message: "source Erchef schema is unsupported"},
+		{Code: adminMigrationFindingSourceBifrostUnavailable, Severity: "error", Family: "source_bifrost_postgres", Message: "source Bifrost PostgreSQL could not be reached or queried"},
+		{Code: adminMigrationFindingSourceBifrostSchemaUnsupported, Severity: "error", Family: "source_bifrost_schema", Message: "source Bifrost schema is unsupported"},
+		{Code: adminMigrationFindingSourceAuthorizationTargetUnresolved, Severity: "error", Family: "source_authorization", Message: "an Erchef authorization target could not be resolved in Bifrost"},
+		{Code: adminMigrationFindingSourceAuthorizationSubjectUnresolved, Severity: "error", Family: "source_authorization", Message: "a Bifrost authorization subject or membership could not be resolved in Erchef"},
+		{Code: adminMigrationFindingSourceCrossDatabaseConsistency, Severity: "warning", Family: "live_source", Message: "Erchef and Bifrost snapshots are independently consistent but not atomic across databases"},
+		{Code: adminMigrationFindingSourceBifrostUnrelatedRecords, Severity: "warning", Family: "source_bifrost", Message: "Bifrost contains records outside the selected extraction scope"},
 		{Code: adminMigrationFindingSourceFamilyUnsupported, Severity: "warning", Family: "source_family", Message: "source family is not supported by OpenCook migration"},
 		{Code: adminMigrationFindingSourceBlobUnavailable, Severity: "error", Family: "source_blob", Message: "source blob provider is unavailable"},
 		{Code: adminMigrationFindingSourceBlobMissing, Severity: "error", Family: "source_blob", Message: "source blob referenced by metadata is missing"},

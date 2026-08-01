@@ -196,8 +196,9 @@ opencook admin migration cutover rehearse --manifest PATH --source normalized-so
 Direct live source pattern:
 
 ```sh
-opencook admin migration source live preflight --source-postgres-dsn DSN --source-bookshelf-root PATH --org ORG --json
-opencook admin migration source live extract --source-postgres-dsn DSN --source-bookshelf-root PATH --copy-blobs --org ORG --output live-source --yes --json
+SOURCE_DSN='postgresql://opscode_chef_ro:<password>@127.0.0.1:5432/postgres?sslmode=disable'
+opencook admin migration source live preflight --source-postgres-dsn "$SOURCE_DSN" --source-bookshelf-root PATH --org ORG --json
+opencook admin migration source live extract --source-postgres-dsn "$SOURCE_DSN" --source-bookshelf-root PATH --copy-blobs --org ORG --output live-source --yes --json
 opencook admin migration source import preflight live-source --offline --json
 opencook admin migration source import apply live-source --offline --yes --progress source-import-progress.json --json
 opencook admin migration source sync apply live-source --offline --yes --progress source-sync-progress.json --json
@@ -212,14 +213,22 @@ opencook admin migration cutover rehearse --manifest restored-target-backup/mani
 
 Notes:
 
-- Live source preflight and extract use read-only source PostgreSQL access and
-  do not mutate source Chef or the OpenCook target. Import/sync still mutate
-  the target and therefore remain `--offline` workflows.
+- `--source-postgres-dsn` is a cluster seed. OpenCook preserves its server,
+  credentials, TLS, and connection parameters while deriving separate
+  `opscode_chef` and `bifrost` connections. Use
+  `--source-erchef-database NAME` and `--source-bifrost-database NAME` for
+  nonstandard installations. The seed and both derived targets stay redacted.
+- Live source preflight and extract use independent read-only repeatable-read
+  transactions for Erchef and Bifrost and do not mutate source Chef/Cinc or the
+  OpenCook target. PostgreSQL cannot make those two database snapshots atomic,
+  so rehearsal reports a consistency advisory. Import/sync still mutate the
+  target and therefore remain `--offline` workflows.
 - Freeze source Chef writes before the final source sync and keep the freeze
   through shadow-read comparison, cutover rehearsal, client cutover, and
   post-cutover smoke checks. OpenCook can report whether the operator confirmed
   the freeze with `--source-frozen`, but it cannot enforce writes still routed
-  to source Chef Infra Server.
+  to source Chef Infra Server. A live-extracted bundle is blocked at final
+  cutover rehearsal when that confirmation is absent.
 - OpenCook maintenance mode only blocks writes routed to OpenCook. It does not
   block writes still routed to the source Chef Infra Server.
 - Source import and source sync apply remain offline-gated because they mutate

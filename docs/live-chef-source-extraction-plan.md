@@ -35,7 +35,8 @@ OpenCook already has:
   source sync, shadow-read comparison, and source cutover rehearsal.
 - Direct read-only live Chef source preflight/extract commands that publish the
   same normalized bundle contract for implemented PostgreSQL-backed Chef
-  families and checksum blob evidence.
+  families and checksum blob evidence. The commands treat the source DSN as a
+  cluster seed and derive separate `opscode_chef` and `bifrost` connections.
 - Production-scale deterministic fixtures, scale-aware functional phases,
   `operator_report` summaries, rollback guidance, and remote Docker workflows.
 - Maintenance-mode write blocking for OpenCook targets, PostgreSQL-shared
@@ -46,9 +47,11 @@ Closed outcome:
 
 - Operators can now use prepared normalized artifacts or direct live-source
   extraction as inputs to the same import/sync/reindex/shadow/cutover pipeline.
-- Live extraction connects read-only to Chef source PostgreSQL, can copy or
-  reference checksum blobs from a local Bookshelf-style source, and can record
-  optional read-only Chef HTTP evidence without proxying writes.
+- Live extraction connects read-only to the Erchef and Bifrost databases in
+  independent repeatable-read transactions, resolves authorization IDs and
+  relationship edges in Go, can copy or reference checksum blobs from a local
+  Bookshelf-style source, and can record optional read-only Chef HTTP evidence
+  without proxying writes.
 - Source extraction reports capability gaps, unsupported ancillary families,
   source-write-freeze evidence, cursor freshness metadata, redacted dependency
   diagnostics, and retry-safe bundle publication status.
@@ -64,7 +67,10 @@ Closed outcome:
   are read-only and must not proxy writes.
 - Keep source Chef write-freeze control external to OpenCook. OpenCook can
   document and validate operator-provided evidence, but it must not pretend it
-  can freeze upstream Chef writes without an explicit future integration.
+  can freeze upstream Chef writes without an explicit future integration. The
+  two PostgreSQL database snapshots are not atomic across databases: active
+  source rehearsal is advisory, and final cutover of live-extracted evidence
+  is blocked without `--source-frozen`.
 - Keep the existing normalized source bundle format
   `opencook.migration.chef_source.v1` as the handoff into import/sync. Live
   extraction should write that bundle instead of introducing a second import
@@ -85,6 +91,11 @@ Closed outcome:
 - Redact source PostgreSQL DSNs, blob credentials, source Chef URLs with
   credentials, private key paths, signed URL query strings, request signatures,
   provider response bodies, and secret-like local paths in all output.
+- Parse `--source-postgres-dsn` once as a cluster template, preserve its host,
+  port, credentials, TLS, and connection parameters, and replace only the
+  database. Defaults are `opscode_chef` and `bifrost`; nonstandard names use
+  `--source-erchef-database` and `--source-bifrost-database`. Never emit the
+  seed or either derived target without redaction.
 - Do not import object families OpenCook has not implemented. Report them as
   unsupported or deferred with stable finding codes.
 
@@ -96,12 +107,14 @@ the current artifact-oriented commands:
 ```sh
 opencook admin migration source live preflight \
   --source-postgres-dsn DSN \
+  [--source-erchef-database NAME] [--source-bifrost-database NAME] \
   [--source-bookshelf-root PATH|--source-blob-url URL] \
   [--source-server-url URL --source-requestor-name NAME --source-private-key PATH] \
   [--org ORG|--all-orgs] [--json] [--with-timing]
 
 opencook admin migration source live extract \
   --source-postgres-dsn DSN \
+  [--source-erchef-database NAME] [--source-bifrost-database NAME] \
   --output PATH \
   [--source-bookshelf-root PATH|--source-blob-url URL] \
   [--source-server-url URL --source-requestor-name NAME --source-private-key PATH] \
@@ -326,6 +339,8 @@ Implementation notes:
 
 - Added command-local live-source config plumbing for:
   - `--source-postgres-dsn`
+  - `--source-erchef-database` (default `opscode_chef`)
+  - `--source-bifrost-database` (default `bifrost`)
   - `--source-bookshelf-root`
   - `--source-blob-url`
   - `--source-server-url`
@@ -412,11 +427,12 @@ Task status: complete.
 
 Implementation notes:
 
-- Replaced the default live-source preflight placeholder with a real
-  PostgreSQL probe that parses the source DSN, opens a `pgx` connection, starts
-  a read-only transaction, verifies `transaction_read_only`, reads
-  `current_database()`/`current_user`, checks the required erchef/Bifrost table
-  surface with `to_regclass`, and lists visible organizations from `orgs`.
+- Replaced the default live-source preflight placeholder with real dedicated
+  PostgreSQL probes. The cluster seed DSN is parsed once and cloned for Erchef
+  and Bifrost; each connection starts a read-only repeatable-read transaction,
+  verifies `transaction_read_only`, reads `current_database()`/`current_user`,
+  and checks only its own required table surface with `to_regclass`. Visible
+  organizations are listed only through the Erchef connection.
 - Kept extraction itself pending and retry-safe. Task 5 still performs no
   source writes, target OpenCook writes, blob reads, Chef HTTP calls, or bundle
   publication during preflight.
@@ -449,11 +465,12 @@ Task status: complete.
 Implementation notes:
 
 - Added the first concrete `source live extract` implementation for bootstrap
-  identity and authorization families. Extraction opens source PostgreSQL in a
-  read-only transaction, reads users, organizations, admin memberships, clients,
-  keys, groups, group relations, containers, and direct Bifrost ACL rows, then
-  emits the existing `opencook.migration.chef_source.v1` normalized payload
-  layout.
+  identity and authorization families. Extraction establishes independent
+  read-only repeatable-read Erchef and Bifrost transactions before payload
+  reads, builds an Erchef authorization catalog keyed by record type,
+  organization, and `authz_id`, reads only authorization IDs/permissions/edges
+  from Bifrost, and resolves ACLs and memberships in Go. It then emits the
+  existing `opencook.migration.chef_source.v1` normalized payload layout.
 - Kept source rows routed through the existing source normalization validators
   before bundle materialization. This preserves current duplicate, orphan,
   malformed key, malformed ACL, and organization-scope rejection behavior
@@ -463,7 +480,9 @@ Implementation notes:
 - Added direct ACL reconstruction for user, organization, client, group, and
   container resources using Bifrost actor/group/container/object ACL tables.
   The extractor keeps actor/group arrays compatible with the existing OpenCook
-  ACL import shape.
+  ACL import shape, rejects unresolved selected targets or subjects, deduplicates
+  repeated edges, and ignores unrelated Bifrost records outside the selected
+  scope with an advisory count.
 - Added deterministic command tests that publish a fake PostgreSQL bootstrap
   extraction bundle, read it back through the normalized source import reader,
   and prove users, validator clients, client keys, admin group membership, and
@@ -614,7 +633,9 @@ Implementation notes:
   preflight/apply, admin reindex, admin search check/repair, and cutover
   rehearsal without any live-source-specific import branch.
 - Cutover evidence still requires the existing source-write-freeze and
-  rollback-ready acknowledgements for final readiness.
+  rollback-ready acknowledgements for final readiness. Live-extracted source
+  evidence now makes missing source-freeze confirmation a blocker rather than
+  an advisory.
 
 ### Task 11: Add Live Source Functional Coverage
 
@@ -637,9 +658,12 @@ Implementation notes:
 Implementation notes:
 
 - The functional harness now has an opt-in live-source fixture namespace under
-  the Compose-managed state volume. It creates a tiny Chef-shaped source
-  PostgreSQL database and filesystem Bookshelf checksum root inside the existing
-  PostgreSQL/OpenSearch/filesystem-blob stack.
+  the Compose-managed state volume. It creates separate tiny Chef-shaped
+  `opscode_chef` and `bifrost` databases with linked fixed `authz_id` values,
+  direct and nested group relationships, plus a filesystem Bookshelf checksum
+  root inside the existing PostgreSQL/OpenSearch/filesystem-blob stack. It also
+  pins isolated database/schema failures, strict unresolved-target extraction,
+  connection cleanup, and the emitted ACL/direct/nested-membership payloads.
 - New phases are `migration-live-source-preflight`,
   `migration-live-source-extract`, `migration-live-source-import`,
   `migration-live-source-reindex`, `migration-live-source-shadow`,

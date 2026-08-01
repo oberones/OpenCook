@@ -5,11 +5,13 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/oberones/OpenCook/internal/admin"
 	"github.com/oberones/OpenCook/internal/blob"
 	"github.com/oberones/OpenCook/internal/config"
@@ -119,14 +121,22 @@ func TestAdminMigrationLiveSourceCapabilityProbesAreReadOnly(t *testing.T) {
 
 func TestAdminMigrationLiveSourceFindingCodesAreStable(t *testing.T) {
 	required := map[string]bool{
-		adminMigrationFindingSourcePostgresUnavailable:   false,
-		adminMigrationFindingSourceSchemaUnsupported:     false,
-		adminMigrationFindingSourceFamilyUnsupported:     false,
-		adminMigrationFindingSourceBlobUnavailable:       false,
-		adminMigrationFindingSourceBlobMissing:           false,
-		adminMigrationFindingSourceBlobChecksumMismatch:  false,
-		adminMigrationFindingSourceHTTPReadUnavailable:   false,
-		adminMigrationFindingSourceExtractionInterrupted: false,
+		adminMigrationFindingSourcePostgresUnavailable:            false,
+		adminMigrationFindingSourceSchemaUnsupported:              false,
+		adminMigrationFindingSourceErchefUnavailable:              false,
+		adminMigrationFindingSourceErchefSchemaUnsupported:        false,
+		adminMigrationFindingSourceBifrostUnavailable:             false,
+		adminMigrationFindingSourceBifrostSchemaUnsupported:       false,
+		adminMigrationFindingSourceAuthorizationTargetUnresolved:  false,
+		adminMigrationFindingSourceAuthorizationSubjectUnresolved: false,
+		adminMigrationFindingSourceCrossDatabaseConsistency:       false,
+		adminMigrationFindingSourceBifrostUnrelatedRecords:        false,
+		adminMigrationFindingSourceFamilyUnsupported:              false,
+		adminMigrationFindingSourceBlobUnavailable:                false,
+		adminMigrationFindingSourceBlobMissing:                    false,
+		adminMigrationFindingSourceBlobChecksumMismatch:           false,
+		adminMigrationFindingSourceHTTPReadUnavailable:            false,
+		adminMigrationFindingSourceExtractionInterrupted:          false,
 	}
 	for _, finding := range adminMigrationLiveSourceFindingCodes() {
 		if finding.Code == "" || finding.Severity == "" || finding.Family == "" || finding.Message == "" {
@@ -141,6 +151,197 @@ func TestAdminMigrationLiveSourceFindingCodesAreStable(t *testing.T) {
 			t.Fatalf("live source finding codes missing %s", code)
 		}
 	}
+}
+
+func TestAdminMigrationLiveSourceDerivesSplitDatabaseTargets(t *testing.T) {
+	cfg := adminMigrationLiveSourceConfig{
+		PostgresDSN: "postgresql://opscode_chef_ro:supersecret@db.example:5544/postgres?sslmode=require&application_name=opencook-extract&search_path=chef",
+	}
+	targets, err := adminMigrationLiveSourceDerivePostgresTargets(cfg)
+	if err != nil {
+		t.Fatalf("adminMigrationLiveSourceDerivePostgresTargets() error = %v", err)
+	}
+	if targets.Erchef.Database != "opscode_chef" || targets.Bifrost.Database != "bifrost" {
+		t.Fatalf("derived databases = %q/%q, want opscode_chef/bifrost", targets.Erchef.Database, targets.Bifrost.Database)
+	}
+	for name, target := range map[string]any{"erchef": targets.Erchef, "bifrost": targets.Bifrost} {
+		conn := target.(*pgx.ConnConfig)
+		if conn.Host != "db.example" || conn.Port != 5544 || conn.User != "opscode_chef_ro" || conn.Password != "supersecret" {
+			t.Fatalf("%s target did not preserve server credentials: %+v", name, conn.Config)
+		}
+		if conn.TLSConfig == nil || conn.RuntimeParams["application_name"] != "opencook-extract" || conn.RuntimeParams["search_path"] != "chef" {
+			t.Fatalf("%s target did not preserve TLS/query parameters: %+v", name, conn.Config)
+		}
+	}
+	targets.Erchef.RuntimeParams["clone_probe"] = "erchef_only"
+	if targets.Erchef == targets.Bifrost || targets.Bifrost.RuntimeParams["clone_probe"] != "" {
+		t.Fatal("derived targets must be independent deep clones")
+	}
+}
+
+func TestAdminMigrationLiveSourceDerivesDatabaseOverridesAndRejectsInvalidSeed(t *testing.T) {
+	targets, err := adminMigrationLiveSourceDerivePostgresTargets(adminMigrationLiveSourceConfig{
+		PostgresDSN:     "host=db.example port=5433 user=reader password=secret dbname=seed sslmode=disable application_name=extractor",
+		ErchefDatabase:  "chef_custom",
+		BifrostDatabase: "authz_custom",
+	})
+	if err != nil {
+		t.Fatalf("derive override targets error = %v", err)
+	}
+	if targets.Erchef.Database != "chef_custom" || targets.Bifrost.Database != "authz_custom" || targets.Erchef.RuntimeParams["application_name"] != "extractor" {
+		t.Fatalf("override targets = %+v %+v", targets.Erchef.Config, targets.Bifrost.Config)
+	}
+	if _, err := adminMigrationLiveSourceDerivePostgresTargets(adminMigrationLiveSourceConfig{PostgresDSN: "postgres://reader:%zz@db.example/postgres"}); err == nil {
+		t.Fatal("invalid cluster seed DSN unexpectedly parsed")
+	}
+}
+
+func TestAdminMigrationLiveSourceAuthorizationResolutionIsStrictAndOrganizationScoped(t *testing.T) {
+	catalog := adminMigrationLiveSourceAuthorizationCatalog{byTypeOrgAndID: map[string]adminMigrationLiveSourceAuthorizationRef{}, byTypeAndID: map[string]adminMigrationLiveSourceAuthorizationRef{}}
+	for _, ref := range []adminMigrationLiveSourceAuthorizationRef{
+		{RecordType: "group", Organization: "ponyville", AuthzID: "group-ponyville-admins", Resource: "group:admins", SubjectType: "group", Name: "admins"},
+		{RecordType: "group", Organization: "canterlot", AuthzID: "group-canterlot-admins", Resource: "group:admins", SubjectType: "group", Name: "admins"},
+		{RecordType: "actor", Organization: "", AuthzID: "actor-pivotal", Resource: "user:pivotal", SubjectType: "user", Name: "pivotal"},
+	} {
+		catalog.byTypeOrgAndID[adminMigrationLiveSourceAuthorizationScopeKey(ref.RecordType, ref.Organization, ref.AuthzID)] = ref
+		catalog.byTypeAndID[adminMigrationLiveSourceAuthorizationKey(ref.RecordType, ref.AuthzID)] = ref
+	}
+	if len(catalog.byTypeOrgAndID) != 3 {
+		t.Fatalf("authorization catalog scoped keys = %v", catalog.byTypeOrgAndID)
+	}
+	ponyville, err := catalog.resolve("group", "group-ponyville-admins", "ponyville", "acl_subject")
+	if err != nil || ponyville.Organization != "ponyville" {
+		t.Fatalf("ponyville scoped resolution = %+v, %v", ponyville, err)
+	}
+	canterlot, err := catalog.resolve("group", "group-canterlot-admins", "canterlot", "nested_group")
+	if err != nil || canterlot.Organization != "canterlot" {
+		t.Fatalf("canterlot scoped resolution = %+v, %v", canterlot, err)
+	}
+	if _, err := catalog.resolve("group", "group-canterlot-admins", "ponyville", "acl_subject"); err == nil {
+		t.Fatal("cross-organization group subject unexpectedly resolved")
+	}
+	_, err = catalog.resolve("actor", "actor-missing", "ponyville", "group_membership_child")
+	var integrity adminMigrationLiveSourceAuthorizationIntegrityError
+	if !errors.As(err, &integrity) || integrity.Code != adminMigrationFindingSourceAuthorizationSubjectUnresolved || integrity.Organization != "ponyville" || integrity.AuthzID != "actor-missing" {
+		t.Fatalf("missing subject error = %#v, want stable scoped integrity error", err)
+	}
+	err = adminMigrationLiveSourceValidateBifrostTargets(catalog, "group", map[string]struct{}{"group-canterlot-admins": {}})
+	if !errors.As(err, &integrity) || integrity.Code != adminMigrationFindingSourceAuthorizationTargetUnresolved || integrity.Organization != "ponyville" || integrity.AuthzID != "group-ponyville-admins" {
+		t.Fatalf("missing target error = %#v, want stable scoped target integrity error", err)
+	}
+
+	aclObjects := adminMigrationLiveSourceACLObjects([]adminMigrationLiveSourceACLRow{
+		{OrgName: "ponyville", Resource: "group:admins", Permission: "read", AuthorizeeType: "actor", Authorizee: "pivotal"},
+		{OrgName: "ponyville", Resource: "group:admins", Permission: "read", AuthorizeeType: "actor", Authorizee: "pivotal"},
+	})
+	if len(aclObjects) != 1 {
+		t.Fatalf("duplicate ACL relationships produced %d objects, want 1", len(aclObjects))
+	}
+	readACL := aclObjects[0]["read"].(map[string]any)
+	if actors := readACL["actors"].([]string); len(actors) != 1 || actors[0] != "pivotal" {
+		t.Fatalf("deduplicated ACL actors = %v, want [pivotal]", actors)
+	}
+}
+
+func TestAdminMigrationLiveSourceGroupMembershipResolutionHandlesNestedDuplicatesAndMissingMembers(t *testing.T) {
+	catalog := adminMigrationLiveSourceAuthorizationCatalog{byTypeOrgAndID: map[string]adminMigrationLiveSourceAuthorizationRef{}, byTypeAndID: map[string]adminMigrationLiveSourceAuthorizationRef{}}
+	for _, ref := range []adminMigrationLiveSourceAuthorizationRef{
+		{RecordType: "group", Organization: "ponyville", AuthzID: "group-admins", Resource: "group:admins", SubjectType: "group", Name: "admins"},
+		{RecordType: "group", Organization: "ponyville", AuthzID: "group-billing", Resource: "group:billing-admins", SubjectType: "group", Name: "billing-admins"},
+		{RecordType: "actor", Organization: "", AuthzID: "actor-pivotal", Resource: "user:pivotal", SubjectType: "user", Name: "pivotal"},
+	} {
+		catalog.byTypeOrgAndID[adminMigrationLiveSourceAuthorizationScopeKey(ref.RecordType, ref.Organization, ref.AuthzID)] = ref
+		catalog.byTypeAndID[adminMigrationLiveSourceAuthorizationKey(ref.RecordType, ref.AuthzID)] = ref
+	}
+
+	payloadValues := map[adminMigrationSourcePayloadKey][]json.RawMessage{}
+	err := adminMigrationLiveSourceAppendBifrostGroupMemberships(catalog, payloadValues, []adminMigrationLiveSourceBifrostGroupMembershipRow{
+		{ParentAuthzID: "group-admins", ChildType: "actor", ChildAuthzID: "actor-pivotal"},
+		{ParentAuthzID: "group-admins", ChildType: "group", ChildAuthzID: "group-billing"},
+		{ParentAuthzID: "group-admins", ChildType: "group", ChildAuthzID: "group-billing"},
+	})
+	if err != nil {
+		t.Fatalf("append group memberships error = %v", err)
+	}
+	key := adminMigrationSourcePayloadKey{Organization: "ponyville", Family: "group_memberships"}
+	if got := len(payloadValues[key]); got != 2 {
+		t.Fatalf("deduplicated direct and nested memberships = %d, want 2", got)
+	}
+	var nested map[string]any
+	if err := json.Unmarshal(payloadValues[key][1], &nested); err != nil {
+		t.Fatalf("decode nested membership error = %v", err)
+	}
+	if nested["group"] != "admins" || nested["type"] != "group" || nested["actor"] != "billing-admins" {
+		t.Fatalf("nested membership = %#v", nested)
+	}
+
+	err = adminMigrationLiveSourceAppendBifrostGroupMemberships(catalog, map[adminMigrationSourcePayloadKey][]json.RawMessage{}, []adminMigrationLiveSourceBifrostGroupMembershipRow{{
+		ParentAuthzID: "group-admins", ChildType: "actor", ChildAuthzID: "actor-missing",
+	}})
+	var integrity adminMigrationLiveSourceAuthorizationIntegrityError
+	if !errors.As(err, &integrity) || integrity.Code != adminMigrationFindingSourceAuthorizationSubjectUnresolved || integrity.Relationship != "group_membership_child" {
+		t.Fatalf("missing group member error = %#v, want stable subject integrity error", err)
+	}
+
+	err = adminMigrationLiveSourceAppendBifrostGroupMemberships(catalog, map[adminMigrationSourcePayloadKey][]json.RawMessage{}, []adminMigrationLiveSourceBifrostGroupMembershipRow{{
+		ParentAuthzID: "group-missing", ChildType: "actor", ChildAuthzID: "actor-pivotal",
+	}})
+	if !errors.As(err, &integrity) || integrity.Code != adminMigrationFindingSourceAuthorizationSubjectUnresolved || integrity.Relationship != "group_membership_parent" {
+		t.Fatalf("missing parent group error = %#v, want stable parent integrity error", err)
+	}
+}
+
+func TestAdminMigrationLiveSourceSQLNeverCrossesErchefAndBifrostTables(t *testing.T) {
+	erchefTables := map[string]bool{}
+	for _, table := range adminMigrationLiveSourceRequiredErchefTables() {
+		erchefTables[table] = true
+	}
+	for _, table := range adminMigrationLiveSourceRequiredBifrostTables() {
+		if erchefTables[table] {
+			t.Fatalf("required table %q is assigned to both Erchef and Bifrost probes", table)
+		}
+	}
+	for _, forbidden := range []string{"auth_actor", "auth_group", "auth_object", "auth_container", "_acl_", "group_actor_relations", "group_group_relations"} {
+		if strings.Contains(adminMigrationLiveSourceErchefAuthorizationCatalogQuery, forbidden) {
+			t.Fatalf("Erchef catalog query references Bifrost table fragment %q", forbidden)
+		}
+	}
+	bifrostQueries := []string{adminMigrationLiveSourceBifrostGroupMembershipQuery}
+	for _, spec := range adminMigrationLiveSourceBifrostACLSpecs() {
+		bifrostQueries = append(bifrostQueries, adminMigrationLiveSourceBifrostACLQuery(spec))
+	}
+	for _, query := range bifrostQueries {
+		for _, forbidden := range []string{"FROM users", "JOIN users", "FROM orgs", "JOIN orgs", "FROM clients", "JOIN clients", "FROM nodes", "JOIN nodes"} {
+			if strings.Contains(query, forbidden) {
+				t.Fatalf("Bifrost query references Erchef table fragment %q: %s", forbidden, query)
+			}
+		}
+	}
+}
+
+func TestAdminMigrationLiveSourceCutoverRequiresFreezeEvidence(t *testing.T) {
+	live := adminMigrationCLIOutput{Dependencies: []adminMigrationDependency{}, Findings: []adminMigrationFinding{}}
+	adminMigrationCutoverSourceFreezeGate(&live, &adminMigrationFlagValues{}, true)
+	requireAdminMigrationDependency(t, adminMigrationDependenciesAsAny(live.Dependencies), "source_freeze_evidence", "error")
+
+	prepared := adminMigrationCLIOutput{Dependencies: []adminMigrationDependency{}, Findings: []adminMigrationFinding{}}
+	adminMigrationCutoverSourceFreezeGate(&prepared, &adminMigrationFlagValues{}, false)
+	requireAdminMigrationDependency(t, adminMigrationDependenciesAsAny(prepared.Dependencies), "source_freeze_evidence", "warning")
+
+	frozen := adminMigrationCLIOutput{Dependencies: []adminMigrationDependency{}, Findings: []adminMigrationFinding{}}
+	adminMigrationCutoverSourceFreezeGate(&frozen, &adminMigrationFlagValues{sourceFrozen: true}, true)
+	requireAdminMigrationDependency(t, adminMigrationDependenciesAsAny(frozen.Dependencies), "source_freeze_evidence", "ok")
+}
+
+func adminMigrationDependenciesAsAny(deps []adminMigrationDependency) []any {
+	out := make([]any, 0, len(deps))
+	for _, dep := range deps {
+		data, _ := json.Marshal(dep)
+		var decoded map[string]any
+		_ = json.Unmarshal(data, &decoded)
+		out = append(out, decoded)
+	}
+	return out
 }
 
 func TestAdminMigrationSourceLivePreflightReportsRedactedShapeWithoutMutation(t *testing.T) {
@@ -162,6 +363,8 @@ func TestAdminMigrationSourceLivePreflightReportsRedactedShapeWithoutMutation(t 
 	code := cmd.Run(context.Background(), []string{
 		"admin", "migration", "source", "live", "preflight",
 		"--source-postgres-dsn", "postgres://chef:pgsecret@source-db.example/chef",
+		"--source-erchef-database", "chef_custom",
+		"--source-bifrost-database", "authz_custom",
 		"--source-blob-url", "https://blob-user:blobsecret@blob.example/checksums?token=source-token",
 		"--source-server-url", "https://chef-user:httpsecret@chef-source.example",
 		"--source-requestor-name", "pivotal",
@@ -195,12 +398,18 @@ func TestAdminMigrationSourceLivePreflightReportsRedactedShapeWithoutMutation(t 
 	if config["source_postgres_dsn"] != "post..." || config["source_blob_url"] != "http..." || config["source_server_url"] != "http..." {
 		t.Fatalf("redacted config = %v, want redacted source DSN and URLs", config)
 	}
+	if config["source_erchef_postgres_dsn"] != "post..." || config["source_bifrost_postgres_dsn"] != "post..." || config["source_erchef_database"] != "chef_custom" || config["source_bifrost_database"] != "authz_custom" {
+		t.Fatalf("redacted split database config = %v", config)
+	}
 	if config["source_private_key"] != "set" || config["source_requestor_type"] != "user" {
 		t.Fatalf("redacted config = %v, want private key presence and default user requestor type", config)
 	}
 	liveSource := requireAdminMigrationMap(t, out, "live_source")
 	if liveSource["blob_mode"] != "provider_url" || liveSource["blob_copy_mode"] != "reference_blobs" {
 		t.Fatalf("live_source = %v, want provider URL reference mode", liveSource)
+	}
+	if liveSource["erchef_postgres_dsn"] != "post..." || liveSource["bifrost_postgres_dsn"] != "post..." || liveSource["erchef_database"] != "chef_custom" || liveSource["bifrost_database"] != "authz_custom" {
+		t.Fatalf("live_source split targets = %v", liveSource)
 	}
 	capabilities := requireAdminMigrationArray(t, out, "capabilities")
 	requireAdminMigrationCapability(t, capabilities, "source_postgres_read_only", "planned")
@@ -298,8 +507,9 @@ func TestAdminMigrationSourceLivePreflightDefaultPostgresConnectionFailureIsReda
 		t.Fatalf("source live preflight leaked source DSN secret; stdout = %s stderr = %s", stdout.String(), stderr.String())
 	}
 	out := decodeAdminMigrationOutput(t, stdout.String())
-	requireAdminMigrationDependency(t, requireAdminMigrationArray(t, out, "dependencies"), "source_postgres", "error")
-	requireAdminMigrationFinding(t, requireAdminMigrationArray(t, out, "findings"), adminMigrationFindingSourcePostgresUnavailable)
+	requireAdminMigrationDependency(t, requireAdminMigrationArray(t, out, "dependencies"), "source_erchef_postgres", "error")
+	requireAdminMigrationDependency(t, requireAdminMigrationArray(t, out, "dependencies"), "source_bifrost_postgres", "error")
+	requireAdminMigrationFinding(t, requireAdminMigrationArray(t, out, "findings"), adminMigrationFindingSourceErchefUnavailable)
 }
 
 func TestAdminMigrationSourceLivePreflightRunsAgainstInjectedExtractor(t *testing.T) {
@@ -1189,8 +1399,8 @@ func TestAdminMigrationSourceLiveExtractPostgresFailureDoesNotWrite(t *testing.T
 	if target["output_path"] != outputPath {
 		t.Fatalf("target.output_path = %v, want %s", target["output_path"], outputPath)
 	}
-	requireAdminMigrationDependency(t, requireAdminMigrationArray(t, out, "dependencies"), "source_postgres", "error")
-	requireAdminMigrationFinding(t, requireAdminMigrationArray(t, out, "findings"), adminMigrationFindingSourcePostgresUnavailable)
+	requireAdminMigrationDependency(t, requireAdminMigrationArray(t, out, "dependencies"), "source_erchef_postgres", "error")
+	requireAdminMigrationFinding(t, requireAdminMigrationArray(t, out, "findings"), adminMigrationFindingSourceErchefUnavailable)
 	if strings.Contains(stdout.String(), "pgsecret") {
 		t.Fatalf("source live extract leaked source DSN secret: %s", stdout.String())
 	}
