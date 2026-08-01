@@ -364,6 +364,7 @@ The first `opencook admin` CLI supports:
 - configuration validation and service status/doctor checks
 - log path discovery, redacted diagnostics bundle collection, and runbook discovery
 - migration preflight, backup create/inspect, restore preflight/apply, normalized source import/sync, shadow comparison, and cutover rehearsal
+- deployment evidence collection for smoke, migration, and scale compatibility triage
 
 Show command help:
 
@@ -375,6 +376,7 @@ bin/opencook admin service status --json
 bin/opencook admin maintenance status --json
 bin/opencook admin diagnostics collect --output .local/opencook-diagnostics.tar.gz --offline --yes --json
 bin/opencook admin runbook list --json
+scripts/deployment-evidence.sh smoke
 bin/opencook admin reindex help
 bin/opencook admin migration help
 ```
@@ -465,6 +467,20 @@ OPENCOOK_FUNCTIONAL_SCALE_PROFILE=medium scripts/functional-compose.sh migration
 OPENCOOK_FUNCTIONAL_SCALE_PROFILE=large scripts/functional-compose.sh migration-scale-all
 DOCKER_HOST=ssh://example-host OPENCOOK_FUNCTIONAL_SCALE_PROFILE=medium scripts/functional-compose.sh migration-scale-all
 ```
+
+To collect redacted deployment evidence before choosing the next compatibility
+or migration-safety patch, use the evidence runner:
+
+```bash
+scripts/deployment-evidence.sh smoke
+scripts/deployment-evidence.sh migration
+OPENCOOK_FUNCTIONAL_SCALE_PROFILE=small scripts/deployment-evidence.sh scale
+```
+
+Evidence logs and `manifest.json` are written under
+`.local/deployment-evidence/<timestamp>` by default. Treat failures as triage
+inputs: patch only deterministic harness issues or evidence-backed Chef
+compatibility regressions, then rerun the same preset.
 
 Before final source sync and client cutover, freeze writes on the source Chef
 Infra Server externally. OpenCook maintenance mode protects the OpenCook target;

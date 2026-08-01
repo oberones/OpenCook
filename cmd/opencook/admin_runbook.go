@@ -154,6 +154,7 @@ func adminRunbookCatalog() []adminRunbook {
 	docs := []string{
 		"docs/chef-server-ctl-operational-runbooks.md",
 		"docs/chef-server-ctl-operational-parity-plan.md",
+		"docs/deployment-evidence-compatibility-triage-plan.md",
 	}
 	runbooks := []adminRunbook{
 		{
@@ -308,6 +309,23 @@ func adminRunbookCatalog() []adminRunbook {
 			},
 		},
 		{
+			Name:    "deployment-evidence",
+			Title:   "Deployment Evidence And Compatibility Triage",
+			Summary: "Collect redacted functional evidence before choosing compatibility or safety follow-up work.",
+			Commands: []adminRunbookCommand{
+				{Command: "scripts/deployment-evidence.sh smoke", Purpose: "run the default deployment smoke evidence flow across Chef compatibility, OpenSearch, operational, repair, and maintenance phases"},
+				{Command: "scripts/deployment-evidence.sh migration", Purpose: "run source artifact, live-source, shadow-read, and cutover rehearsal evidence flows"},
+				{Command: "OPENCOOK_FUNCTIONAL_SCALE_PROFILE=small scripts/deployment-evidence.sh scale", Purpose: "run the production-scale evidence drill with the default small profile"},
+				{Command: "scripts/deployment-evidence.sh all", Purpose: "collect smoke, migration, and scale evidence in one manifest-backed run"},
+			},
+			Notes: []string{
+				"evidence logs are redacted and paired with a manifest under .local/deployment-evidence by default",
+				"keep fixes narrow: patch only deterministic harness bugs or evidence-backed Chef compatibility regressions",
+				"set KEEP_STACK=1 or OPENCOOK_FUNCTIONAL_KEEP_ARTIFACTS=1 when Compose-managed diagnostic or migration artifacts must survive cleanup",
+				"remote Docker, image, organization, and provider overrides continue to flow through the existing functional Compose harness",
+			},
+		},
+		{
 			Name:    "unsupported-omnibus",
 			Title:   "Unsupported Omnibus Workflows",
 			Summary: "Document upstream chef-server-ctl workflows that OpenCook intentionally delegates to deployment tooling or excludes.",
@@ -381,6 +399,6 @@ func (c *command) printAdminRunbookUsage(w io.Writer) {
 
 Discover OpenCook operational runbooks for service management, observability,
 backup/restore, reindex/search repair, migration/cutover, identity/ACL repair,
-and intentionally unsupported omnibus workflows.
+deployment evidence triage, and intentionally unsupported omnibus workflows.
 `)
 }

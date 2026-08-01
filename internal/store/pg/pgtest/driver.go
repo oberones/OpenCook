@@ -206,13 +206,76 @@ func (s *State) exec(query string, args []driver.NamedValue) (driver.Result, err
 		return driver.RowsAffected(1), nil
 	case strings.Contains(query, "CREATE TABLE IF NOT EXISTS oc_bootstrap_"):
 		return driver.RowsAffected(0), nil
-	case strings.Contains(query, "DELETE FROM oc_bootstrap_"):
-		s.bootstrap = bootstrap.BootstrapCoreState{
-			Users:    make(map[string]bootstrap.User),
-			UserACLs: make(map[string]authz.ACL),
-			UserKeys: make(map[string]map[string]bootstrap.KeyRecord),
-			Orgs:     make(map[string]bootstrap.BootstrapCoreOrganizationState),
+	case strings.Contains(query, "DELETE FROM oc_bootstrap_orgs WHERE org_name NOT IN"):
+		keep := map[string]struct{}{}
+		for _, arg := range args {
+			keep[fmt.Sprint(arg.Value)] = struct{}{}
 		}
+		for orgName := range s.bootstrap.Orgs {
+			if _, ok := keep[orgName]; ok {
+				continue
+			}
+			delete(s.bootstrap.Orgs, orgName)
+			delete(s.objects.Orgs, orgName)
+		}
+		return driver.RowsAffected(1), nil
+	case strings.Contains(query, "DELETE FROM oc_bootstrap_orgs"):
+		s.bootstrap.Orgs = make(map[string]bootstrap.BootstrapCoreOrganizationState)
+		s.objects.Orgs = make(map[string]bootstrap.CoreObjectOrganizationState)
+		return driver.RowsAffected(1), nil
+	case strings.Contains(query, "DELETE FROM oc_bootstrap_client_keys"):
+		for orgName, org := range s.bootstrap.Orgs {
+			org.ClientKeys = make(map[string]map[string]bootstrap.KeyRecord)
+			s.bootstrap.Orgs[orgName] = org
+		}
+		return driver.RowsAffected(1), nil
+	case strings.Contains(query, "DELETE FROM oc_bootstrap_clients"):
+		for orgName, org := range s.bootstrap.Orgs {
+			org.Clients = make(map[string]bootstrap.Client)
+			org.ClientKeys = make(map[string]map[string]bootstrap.KeyRecord)
+			s.bootstrap.Orgs[orgName] = org
+		}
+		return driver.RowsAffected(1), nil
+	case strings.Contains(query, "DELETE FROM oc_bootstrap_group_memberships"):
+		for orgName, org := range s.bootstrap.Orgs {
+			for groupName, group := range org.Groups {
+				group.Actors = nil
+				group.Users = nil
+				group.Clients = nil
+				group.Groups = nil
+				org.Groups[groupName] = group
+			}
+			s.bootstrap.Orgs[orgName] = org
+		}
+		return driver.RowsAffected(1), nil
+	case strings.Contains(query, "DELETE FROM oc_bootstrap_groups"):
+		for orgName, org := range s.bootstrap.Orgs {
+			org.Groups = make(map[string]bootstrap.Group)
+			s.bootstrap.Orgs[orgName] = org
+		}
+		return driver.RowsAffected(1), nil
+	case strings.Contains(query, "DELETE FROM oc_bootstrap_containers"):
+		for orgName, org := range s.bootstrap.Orgs {
+			org.Containers = make(map[string]bootstrap.Container)
+			s.bootstrap.Orgs[orgName] = org
+		}
+		return driver.RowsAffected(1), nil
+	case strings.Contains(query, "DELETE FROM oc_bootstrap_org_acls"):
+		for orgName, org := range s.bootstrap.Orgs {
+			org.ACLs = make(map[string]authz.ACL)
+			s.bootstrap.Orgs[orgName] = org
+		}
+		return driver.RowsAffected(1), nil
+	case strings.Contains(query, "DELETE FROM oc_bootstrap_user_keys"):
+		s.bootstrap.UserKeys = make(map[string]map[string]bootstrap.KeyRecord)
+		return driver.RowsAffected(1), nil
+	case strings.Contains(query, "DELETE FROM oc_bootstrap_user_acls"):
+		s.bootstrap.UserACLs = make(map[string]authz.ACL)
+		return driver.RowsAffected(1), nil
+	case strings.Contains(query, "DELETE FROM oc_bootstrap_users"):
+		s.bootstrap.Users = make(map[string]bootstrap.User)
+		s.bootstrap.UserACLs = make(map[string]authz.ACL)
+		s.bootstrap.UserKeys = make(map[string]map[string]bootstrap.KeyRecord)
 		return driver.RowsAffected(1), nil
 	case strings.Contains(query, "INSERT INTO oc_bootstrap_users"):
 		username := namedString(args, 0)

@@ -132,6 +132,93 @@ func TestBootstrapOptionsLoadActivePostgresState(t *testing.T) {
 	}
 }
 
+func TestNewKeepsPostgresCoreObjectsWhenBootstrapRequestorAlreadyPersisted(t *testing.T) {
+	privateKey := mustGenerateAppAdminPrivateKey(t)
+	publicKeyPEM := string(mustMarshalAppAdminPublicKeyPEM(t, &privateKey.PublicKey))
+	publicKeyPath := filepath.Join(t.TempDir(), "pivotal.pub")
+	if err := os.WriteFile(publicKeyPath, []byte(publicKeyPEM), 0o600); err != nil {
+		t.Fatalf("WriteFile(public key) error = %v", err)
+	}
+
+	state := pgtest.NewState(pgtest.Seed{
+		BootstrapCore: bootstrap.BootstrapCoreState{
+			Users: map[string]bootstrap.User{
+				"pivotal": {Username: "pivotal", DisplayName: "pivotal"},
+			},
+			UserKeys: map[string]map[string]bootstrap.KeyRecord{
+				"pivotal": {
+					"default": {
+						Name:           "default",
+						URI:            "/users/pivotal/keys/default",
+						PublicKeyPEM:   publicKeyPEM,
+						ExpirationDate: "infinity",
+					},
+				},
+			},
+			Orgs: map[string]bootstrap.BootstrapCoreOrganizationState{
+				"ponyville": {
+					Organization: bootstrap.Organization{
+						Name:     "ponyville",
+						FullName: "Ponyville",
+						OrgType:  "Business",
+						GUID:     "ponyville",
+					},
+				},
+			},
+		},
+		CoreObjects: bootstrap.CoreObjectState{
+			Orgs: map[string]bootstrap.CoreObjectOrganizationState{
+				"ponyville": {
+					Nodes: map[string]bootstrap.Node{
+						"twilight": {
+							Name:            "twilight",
+							JSONClass:       "Chef::Node",
+							ChefType:        "node",
+							ChefEnvironment: "_default",
+						},
+					},
+				},
+			},
+		},
+	})
+	db, cleanup, err := state.OpenDB()
+	if err != nil {
+		t.Fatalf("OpenDB() error = %v", err)
+	}
+	defer cleanup()
+
+	previousPostgres := activatePostgresCookbookPersistence
+	var appStore *pg.Store
+	activatePostgresCookbookPersistence = func(ctx context.Context, store *pg.Store) error {
+		appStore = store
+		return store.ActivateCookbookPersistenceWithDB(ctx, db)
+	}
+	defer func() {
+		activatePostgresCookbookPersistence = previousPostgres
+	}()
+
+	if _, err := New(config.Config{
+		ServiceName:                     "opencook",
+		Environment:                     "test",
+		PostgresDSN:                     "postgres://bootstrap-seed-core-object-test",
+		AuthSkew:                        15 * time.Minute,
+		BootstrapRequestorName:          "pivotal",
+		BootstrapRequestorType:          "user",
+		BootstrapRequestorKeyID:         "default",
+		BootstrapRequestorPublicKeyPath: publicKeyPath,
+	}, log.New(io.Discard, "", 0), version.Info{Version: "test"}); err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	objects, err := appStore.CoreObjects().LoadCoreObjects()
+	if err != nil {
+		t.Fatalf("LoadCoreObjects() error = %v", err)
+	}
+	if _, ok := objects.Orgs["ponyville"].Nodes["twilight"]; !ok {
+		t.Fatalf("PostgreSQL core object node missing after idempotent bootstrap requestor seed: %#v", objects.Orgs["ponyville"].Nodes)
+	}
+}
+
 func TestNewReturnsActivationFailure(t *testing.T) {
 	previous := activatePostgresCookbookPersistence
 	activatePostgresCookbookPersistence = func(context.Context, *pg.Store) error {

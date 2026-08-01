@@ -273,6 +273,10 @@ func (s *Service) SeedPrincipal(principal authn.Principal) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if _, exists := s.users[principal.Name]; exists {
+		return
+	}
+
 	previous := s.snapshotBootstrapCoreLocked()
 	s.ensureUserLocked(principal.Name)
 	if err := s.finishBootstrapCoreMutationLocked(previous); err != nil {
@@ -303,8 +307,12 @@ func (s *Service) SeedPublicKey(principal authn.Principal, name, publicKeyPEM st
 	defer s.mu.Unlock()
 
 	previous := s.snapshotBootstrapCoreLocked()
+	changed := false
 	if principal.Type == "user" {
-		s.ensureUserLocked(principal.Name)
+		if _, ok := s.users[principal.Name]; !ok {
+			s.ensureUserLocked(principal.Name)
+			changed = true
+		}
 	} else {
 		org, ok := s.orgs[principal.Organization]
 		if !ok {
@@ -314,8 +322,11 @@ func (s *Service) SeedPublicKey(principal authn.Principal, name, publicKeyPEM st
 		if !ok {
 			return ErrNotFound
 		}
-		client.PublicKey = publicKeyPEM
-		org.clients[principal.Name] = client
+		if client.PublicKey != publicKeyPEM {
+			client.PublicKey = publicKeyPEM
+			org.clients[principal.Name] = client
+			changed = true
+		}
 	}
 
 	if err := s.keyStore.Put(authn.Key{
@@ -327,14 +338,21 @@ func (s *Service) SeedPublicKey(principal authn.Principal, name, publicKeyPEM st
 		_ = s.rehydrateKeyStoreLocked()
 		return err
 	}
-	s.recordKeyLocked(principal, KeyRecord{
+	record := KeyRecord{
 		Name:           name,
 		URI:            keyURI(principal, name),
 		PublicKeyPEM:   publicKeyPEM,
 		ExpirationDate: "infinity",
 		Expired:        false,
 		ExpiresAt:      nil,
-	})
+	}
+	if existing, ok := s.keyRecordsForPrincipalLocked(principal)[name]; !ok || !seedKeyRecordMatches(existing, record) {
+		s.recordKeyLocked(principal, record)
+		changed = true
+	}
+	if !changed {
+		return nil
+	}
 	return s.finishBootstrapCoreMutationLocked(previous)
 }
 
@@ -1490,6 +1508,22 @@ func (s *Service) recordKeyLocked(principal authn.Principal, record KeyRecord) {
 		org.clientKeys[principal.Name] = make(map[string]KeyRecord)
 	}
 	org.clientKeys[principal.Name][record.Name] = record
+}
+
+func (s *Service) keyRecordsForPrincipalLocked(principal authn.Principal) map[string]KeyRecord {
+	if principal.Organization == "" {
+		return s.userKeys[principal.Name]
+	}
+	org, ok := s.orgs[principal.Organization]
+	if !ok {
+		return nil
+	}
+	return org.clientKeys[principal.Name]
+}
+
+func seedKeyRecordMatches(existing, seeded KeyRecord) bool {
+	existing.PublicKeyPEM = strings.TrimSpace(existing.PublicKeyPEM)
+	return reflect.DeepEqual(existing, seeded)
 }
 
 func parseExpirationDate(raw string) (string, *time.Time, bool, error) {

@@ -1472,11 +1472,12 @@ func adminMigrationScaleSourcePayloadValues(t *testing.T, fixture adminMigration
 				add(adminMigrationSourcePayloadKey{Organization: orgName, Family: "group_memberships"}, member)
 			}
 		}
+		sourceACLs := adminMigrationScaleSourceACLs(bootstrapOrg, sourceGroups)
 		for _, containerName := range adminMigrationSortedMapKeys(bootstrapOrg.Containers) {
 			add(adminMigrationSourcePayloadKey{Organization: orgName, Family: "containers"}, bootstrapOrg.Containers[containerName])
 		}
-		for _, aclKey := range adminMigrationSortedMapKeys(bootstrapOrg.ACLs) {
-			add(adminMigrationSourcePayloadKey{Organization: orgName, Family: "acls"}, adminMigrationScaleSourceACLRecord(adminMigrationScaleSourceACLResource(orgName, aclKey), bootstrapOrg.ACLs[aclKey]))
+		for _, aclKey := range adminMigrationSortedMapKeys(sourceACLs) {
+			add(adminMigrationSourcePayloadKey{Organization: orgName, Family: "acls"}, adminMigrationScaleSourceACLRecord(adminMigrationScaleSourceACLResource(orgName, aclKey), sourceACLs[aclKey]))
 		}
 		for _, envName := range adminMigrationSortedMapKeys(coreOrg.Environments) {
 			add(adminMigrationSourcePayloadKey{Organization: orgName, Family: "environments"}, coreOrg.Environments[envName])
@@ -1581,6 +1582,23 @@ func adminMigrationScaleSourceGroups(org bootstrap.BootstrapCoreOrganizationStat
 		}
 	}
 	return groups
+}
+
+// adminMigrationScaleSourceACLs mirrors the production fixture exporter so
+// explicit nested-group placeholder rows are paired with readable ACL rows.
+func adminMigrationScaleSourceACLs(org bootstrap.BootstrapCoreOrganizationState, sourceGroups map[string]bootstrap.Group) map[string]authz.ACL {
+	acls := make(map[string]authz.ACL, len(org.ACLs)+len(sourceGroups))
+	for key, acl := range org.ACLs {
+		acls[key] = acl
+	}
+	for groupName := range sourceGroups {
+		aclKey := adminMigrationGroupACLKey(groupName)
+		if _, ok := acls[aclKey]; ok {
+			continue
+		}
+		acls[aclKey] = adminMigrationScaleFixtureACL(nil, []string{"admins"})
+	}
+	return acls
 }
 
 // adminMigrationScaleSourceACLRecord stores ACL documents with an explicit

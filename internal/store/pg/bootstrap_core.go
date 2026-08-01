@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -148,7 +149,6 @@ func saveBootstrapCore(ctx context.Context, db *sql.DB, state bootstrap.Bootstra
 		"oc_bootstrap_groups",
 		"oc_bootstrap_containers",
 		"oc_bootstrap_org_acls",
-		"oc_bootstrap_orgs",
 		"oc_bootstrap_user_keys",
 		"oc_bootstrap_user_acls",
 		"oc_bootstrap_users",
@@ -195,9 +195,14 @@ VALUES ($1, $2, $3, $4, $5, $6)`,
 		org := orgState.Organization
 		if _, err := tx.ExecContext(ctx, `
 INSERT INTO oc_bootstrap_orgs (org_name, full_name, org_type, guid)
-VALUES ($1, $2, $3, $4)`,
+VALUES ($1, $2, $3, $4)
+ON CONFLICT (org_name) DO UPDATE
+SET full_name = EXCLUDED.full_name,
+    org_type = EXCLUDED.org_type,
+    guid = EXCLUDED.guid,
+    updated_at = NOW()`,
 			org.Name, org.FullName, org.OrgType, org.GUID); err != nil {
-			return fmt.Errorf("insert bootstrap org %s: %w", orgName, err)
+			return fmt.Errorf("upsert bootstrap org %s: %w", orgName, err)
 		}
 
 		for _, clientName := range sortedMapKeys(orgState.Clients) {
@@ -261,8 +266,32 @@ VALUES ($1, $2, $3)`, org.Name, aclKey, aclJSON); err != nil {
 		}
 	}
 
+	if err := deleteMissingBootstrapOrgs(ctx, tx, sortedMapKeys(state.Orgs)); err != nil {
+		return err
+	}
+
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit bootstrap core transaction: %w", err)
+	}
+	return nil
+}
+
+func deleteMissingBootstrapOrgs(ctx context.Context, tx *sql.Tx, keep []string) error {
+	if len(keep) == 0 {
+		if _, err := tx.ExecContext(ctx, "DELETE FROM oc_bootstrap_orgs"); err != nil {
+			return fmt.Errorf("clear removed bootstrap orgs: %w", err)
+		}
+		return nil
+	}
+	placeholders := make([]string, 0, len(keep))
+	args := make([]any, 0, len(keep))
+	for i, orgName := range keep {
+		placeholders = append(placeholders, fmt.Sprintf("$%d", i+1))
+		args = append(args, orgName)
+	}
+	query := "DELETE FROM oc_bootstrap_orgs WHERE org_name NOT IN (" + strings.Join(placeholders, ", ") + ")"
+	if _, err := tx.ExecContext(ctx, query, args...); err != nil {
+		return fmt.Errorf("delete removed bootstrap orgs: %w", err)
 	}
 	return nil
 }

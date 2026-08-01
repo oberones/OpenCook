@@ -236,3 +236,4 @@ Status: in progress
 - production-scale validation now covers migration, reindex, source sync, shadow-read comparison, rollback readiness, cutover rehearsal guidance, and operator-facing report summaries
 - direct live Chef Infra Server source extraction now feeds the same source import/sync, reindex, shadow-read, and cutover rehearsal pipeline for implemented source families without proxying source writes
 - online repair/admin mutation parity is complete for bootstrap membership repairs; the next follow-on bucket should be chosen from deployment-test or live-source-discovered Chef compatibility gaps, broader migration safety, or remaining operational polish
+- deployment evidence triage now provides `scripts/deployment-evidence.sh` presets for smoke, migration, scale, and all-in evidence collection, with redacted logs and a manifest operators can use to choose the next narrow compatibility or safety follow-up
