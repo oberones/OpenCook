@@ -181,7 +181,12 @@ func adminMigrationReadLiveSourceBootstrapPayloads(ctx context.Context, cfg admi
 		return adminMigrationLiveSourceExtractionErrorResult("erchef", erchefDatabase, err), err
 	}
 	if err := adminMigrationLiveSourceReadBootstrapRows(probeCtx, erchefTx, cfg, orgs, payloadValues); err != nil {
-		return adminMigrationLiveSourceExtractionDatabaseFailure("erchef", erchefDatabase, "source Erchef identity and object rows could not be read by the configured read-only role", true), err
+		failure := adminMigrationLiveSourceExtractionDatabaseFailure("erchef", erchefDatabase, "source Erchef identity and object rows could not be read by the configured read-only role", true)
+		var payloadRead *adminMigrationLiveSourcePayloadReadError
+		if errors.As(err, &payloadRead) {
+			failure.Dependencies[0].Details["payload_family"] = payloadRead.Family
+		}
+		return failure, err
 	}
 	unrelatedBifrostRecords, err := adminMigrationLiveSourceReadBifrostAuthorization(probeCtx, bifrostTx, catalog, payloadValues)
 	if err != nil {
@@ -843,22 +848,25 @@ func adminMigrationLiveSourceReadCookbooks(ctx context.Context, tx pgx.Tx, cfg a
 	return adminMigrationLiveSourceReadCookbookArtifacts(ctx, tx, cfg, payloadValues)
 }
 
-func adminMigrationLiveSourceReadCookbookVersions(ctx context.Context, tx pgx.Tx, cfg adminMigrationLiveSourceConfig, payloadValues map[adminMigrationSourcePayloadKey][]json.RawMessage) error {
-	return adminMigrationLiveSourceAppendOrgQuery(ctx, tx, payloadValues, "cookbook_versions", `
+const adminMigrationLiveSourceCookbookVersionsQuery = `
 SELECT o.name AS orgname,
        cv.serialized_object AS raw_payload,
        cv.metadata AS metadata_payload,
-       cv.name AS _source_cookbook_name,
-       cv.name AS cookbook_name,
+       cb.name AS _source_cookbook_name,
+       cb.name AS cookbook_name,
        (cv.major::text || '.' || cv.minor::text || '.' || cv.patch::text) AS _source_cookbook_version,
        (cv.major::text || '.' || cv.minor::text || '.' || cv.patch::text) AS version,
        COALESCE(ARRAY_REMOVE(ARRAY_AGG(lower(cvc.checksum) ORDER BY lower(cvc.checksum)), NULL), ARRAY[]::text[]) AS checksums
 FROM cookbook_versions cv
-JOIN orgs o ON o.id = cv.org_id
-LEFT JOIN cookbook_version_checksums cvc ON cvc.cookbook_version_id = cv.id AND cvc.org_id = cv.org_id
+JOIN cookbooks cb ON cb.id = cv.cookbook_id
+JOIN orgs o ON o.id = cb.org_id
+LEFT JOIN cookbook_version_checksums cvc ON cvc.cookbook_version_id = cv.id AND cvc.org_id = cb.org_id
 WHERE o.name <> '' AND ($1::text = '' OR o.name = $1)
-GROUP BY o.name, cv.id, cv.serialized_object, cv.metadata, cv.name, cv.major, cv.minor, cv.patch
-ORDER BY o.name, cv.name, cv.major, cv.minor, cv.patch`, strings.TrimSpace(cfg.Organization))
+GROUP BY o.name, cv.id, cv.serialized_object, cv.metadata, cb.name, cv.major, cv.minor, cv.patch
+ORDER BY o.name, cb.name, cv.major, cv.minor, cv.patch`
+
+func adminMigrationLiveSourceReadCookbookVersions(ctx context.Context, tx pgx.Tx, cfg adminMigrationLiveSourceConfig, payloadValues map[adminMigrationSourcePayloadKey][]json.RawMessage) error {
+	return adminMigrationLiveSourceAppendOrgQuery(ctx, tx, payloadValues, "cookbook_versions", adminMigrationLiveSourceCookbookVersionsQuery, strings.TrimSpace(cfg.Organization))
 }
 
 func adminMigrationLiveSourceReadCookbookArtifacts(ctx context.Context, tx pgx.Tx, cfg adminMigrationLiveSourceConfig, payloadValues map[adminMigrationSourcePayloadKey][]json.RawMessage) error {
@@ -933,7 +941,7 @@ func adminMigrationLiveSourceACLObjects(rows []adminMigrationLiveSourceACLRow) [
 func adminMigrationLiveSourceAppendQuery(ctx context.Context, tx pgx.Tx, payloadValues map[adminMigrationSourcePayloadKey][]json.RawMessage, key adminMigrationSourcePayloadKey, query string, args ...any) error {
 	rows, err := adminMigrationLiveSourceQueryObjects(ctx, tx, query, args...)
 	if err != nil {
-		return err
+		return adminMigrationLiveSourceWrapPayloadReadError(key.Family, err)
 	}
 	for _, row := range rows {
 		adminMigrationLiveSourceAppendObject(payloadValues, key, row)
@@ -944,7 +952,7 @@ func adminMigrationLiveSourceAppendQuery(ctx context.Context, tx pgx.Tx, payload
 func adminMigrationLiveSourceAppendOrgQuery(ctx context.Context, tx pgx.Tx, payloadValues map[adminMigrationSourcePayloadKey][]json.RawMessage, family, query string, args ...any) error {
 	rows, err := adminMigrationLiveSourceQueryObjects(ctx, tx, query, args...)
 	if err != nil {
-		return err
+		return adminMigrationLiveSourceWrapPayloadReadError(family, err)
 	}
 	for _, row := range rows {
 		orgName := adminMigrationSourceString(row, "orgname")
@@ -955,6 +963,28 @@ func adminMigrationLiveSourceAppendOrgQuery(ctx context.Context, tx pgx.Tx, payl
 		adminMigrationLiveSourceAppendObject(payloadValues, adminMigrationSourcePayloadKey{Organization: orgName, Family: family}, row)
 	}
 	return nil
+}
+
+// adminMigrationLiveSourcePayloadReadError identifies the safe normalized
+// family that failed without exposing source SQL, driver text, or credentials.
+type adminMigrationLiveSourcePayloadReadError struct {
+	Family string
+	Err    error
+}
+
+func (e *adminMigrationLiveSourcePayloadReadError) Error() string {
+	return "source payload family " + e.Family + " could not be read"
+}
+
+func (e *adminMigrationLiveSourcePayloadReadError) Unwrap() error {
+	return e.Err
+}
+
+func adminMigrationLiveSourceWrapPayloadReadError(family string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return &adminMigrationLiveSourcePayloadReadError{Family: strings.TrimSpace(family), Err: err}
 }
 
 func adminMigrationLiveSourceQueryObjects(ctx context.Context, tx pgx.Tx, query string, args ...any) ([]map[string]any, error) {

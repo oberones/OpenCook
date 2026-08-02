@@ -351,7 +351,7 @@ CREATE TABLE policy_revisions_policy_groups_association (org_id text NOT NULL, p
 CREATE TABLE checksums (org_id text NOT NULL, checksum text NOT NULL);
 CREATE TABLE sandboxed_checksums (org_id text NOT NULL, sandbox_id text NOT NULL, checksum text NOT NULL);
 CREATE TABLE cookbooks (id text PRIMARY KEY, org_id text NOT NULL, name text NOT NULL);
-CREATE TABLE cookbook_versions (id text PRIMARY KEY, org_id text NOT NULL, serialized_object bytea NOT NULL, metadata bytea NOT NULL, name text NOT NULL, major integer NOT NULL, minor integer NOT NULL, patch integer NOT NULL);
+CREATE TABLE cookbook_versions (id text PRIMARY KEY, cookbook_id text NOT NULL REFERENCES cookbooks(id), serialized_object bytea NOT NULL, metadata bytea NOT NULL, major integer NOT NULL, minor integer NOT NULL, patch integer NOT NULL);
 CREATE TABLE cookbook_version_checksums (cookbook_version_id text NOT NULL, org_id text NOT NULL, checksum text NOT NULL);
 CREATE TABLE cookbook_artifacts (id text PRIMARY KEY, org_id text NOT NULL, name text NOT NULL);
 CREATE TABLE cookbook_artifact_versions (id text PRIMARY KEY, cookbook_artifact_id text NOT NULL, serialized_object bytea NOT NULL, metadata bytea NOT NULL, identifier text NOT NULL);
@@ -393,10 +393,10 @@ INSERT INTO checksums VALUES ('org-' || :'org', :'checksum');
 INSERT INTO sandboxed_checksums VALUES ('org-' || :'org', 'sandbox-fixture', :'checksum');
 
 INSERT INTO cookbooks VALUES ('cookbook-base', 'org-' || :'org', 'base');
-INSERT INTO cookbook_versions VALUES ('cookbook-base-1', 'org-' || :'org',
+INSERT INTO cookbook_versions (id, cookbook_id, serialized_object, metadata, major, minor, patch) VALUES ('cookbook-base-1', 'cookbook-base',
 	convert_to(jsonb_build_object('name', 'base-1.0.0', 'cookbook_name', 'base', 'version', '1.0.0', 'all_files', jsonb_build_array(jsonb_build_object('name', 'default.rb', 'path', 'recipes/default.rb', 'checksum', :'checksum', 'specificity', 'default')), 'recipes', jsonb_build_array(jsonb_build_object('name', 'default.rb', 'path', 'recipes/default.rb', 'checksum', :'checksum', 'specificity', 'default')))::text, 'UTF8'),
 	convert_to(jsonb_build_object('name', 'base', 'version', '1.0.0', 'dependencies', '{}'::jsonb, 'platforms', '{}'::jsonb)::text, 'UTF8'),
-	'base', 1, 0, 0);
+	1, 0, 0);
 INSERT INTO cookbook_version_checksums VALUES ('cookbook-base-1', 'org-' || :'org', :'checksum');
 INSERT INTO cookbook_artifacts VALUES ('artifact-base', 'org-' || :'org', 'base');
 INSERT INTO cookbook_artifact_versions VALUES ('artifact-base-1', 'artifact-base',

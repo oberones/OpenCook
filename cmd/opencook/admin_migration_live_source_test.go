@@ -319,6 +319,36 @@ func TestAdminMigrationLiveSourceSQLNeverCrossesErchefAndBifrostTables(t *testin
 	}
 }
 
+func TestAdminMigrationLiveSourceCookbookVersionsUseNativeErchefParentTable(t *testing.T) {
+	for _, required := range []string{
+		"JOIN cookbooks cb ON cb.id = cv.cookbook_id",
+		"JOIN orgs o ON o.id = cb.org_id",
+		"cvc.org_id = cb.org_id",
+		"cb.name AS cookbook_name",
+	} {
+		if !strings.Contains(adminMigrationLiveSourceCookbookVersionsQuery, required) {
+			t.Fatalf("cookbook version query does not contain native Erchef relationship %q: %s", required, adminMigrationLiveSourceCookbookVersionsQuery)
+		}
+	}
+	for _, forbidden := range []string{"cv.org_id", "cv.name"} {
+		if strings.Contains(adminMigrationLiveSourceCookbookVersionsQuery, forbidden) {
+			t.Fatalf("cookbook version query references non-native Erchef column %q: %s", forbidden, adminMigrationLiveSourceCookbookVersionsQuery)
+		}
+	}
+}
+
+func TestAdminMigrationLiveSourcePayloadReadErrorPreservesSafeFamily(t *testing.T) {
+	underlying := errors.New("driver detail that must remain internal")
+	err := adminMigrationLiveSourceWrapPayloadReadError("cookbook_versions", underlying)
+	var payloadRead *adminMigrationLiveSourcePayloadReadError
+	if !errors.As(err, &payloadRead) || payloadRead.Family != "cookbook_versions" || !errors.Is(err, underlying) {
+		t.Fatalf("payload read error = %#v, want safe family and wrapped cause", err)
+	}
+	if strings.Contains(err.Error(), underlying.Error()) {
+		t.Fatalf("payload read error leaked driver detail: %q", err.Error())
+	}
+}
+
 func TestAdminMigrationLiveSourceCutoverRequiresFreezeEvidence(t *testing.T) {
 	live := adminMigrationCLIOutput{Dependencies: []adminMigrationDependency{}, Findings: []adminMigrationFinding{}}
 	adminMigrationCutoverSourceFreezeGate(&live, &adminMigrationFlagValues{}, true)
