@@ -201,12 +201,13 @@ func TestAdminMigrationLiveSourceAuthorizationResolutionIsStrictAndOrganizationS
 	for _, ref := range []adminMigrationLiveSourceAuthorizationRef{
 		{RecordType: "group", Organization: "ponyville", AuthzID: "group-ponyville-admins", Resource: "group:admins", SubjectType: "group", Name: "admins"},
 		{RecordType: "group", Organization: "canterlot", AuthzID: "group-canterlot-admins", Resource: "group:admins", SubjectType: "group", Name: "admins"},
+		{RecordType: "group", AuthzID: "group-server-admins", Resource: "group:::server-admins", SubjectType: "group", Name: "::server-admins", SubjectOnly: true},
 		{RecordType: "actor", Organization: "", AuthzID: "actor-pivotal", Resource: "user:pivotal", SubjectType: "user", Name: "pivotal"},
 	} {
 		catalog.byTypeOrgAndID[adminMigrationLiveSourceAuthorizationScopeKey(ref.RecordType, ref.Organization, ref.AuthzID)] = ref
 		catalog.byTypeAndID[adminMigrationLiveSourceAuthorizationKey(ref.RecordType, ref.AuthzID)] = ref
 	}
-	if len(catalog.byTypeOrgAndID) != 3 {
+	if len(catalog.byTypeOrgAndID) != 4 {
 		t.Fatalf("authorization catalog scoped keys = %v", catalog.byTypeOrgAndID)
 	}
 	ponyville, err := catalog.resolve("group", "group-ponyville-admins", "ponyville", "acl_subject")
@@ -219,6 +220,16 @@ func TestAdminMigrationLiveSourceAuthorizationResolutionIsStrictAndOrganizationS
 	}
 	if _, err := catalog.resolve("group", "group-canterlot-admins", "ponyville", "acl_subject"); err == nil {
 		t.Fatal("cross-organization group subject unexpectedly resolved")
+	}
+	global, err := catalog.resolve("group", "group-server-admins", "ponyville", "acl_subject")
+	if err != nil || global.Name != "::server-admins" || global.Organization != "" {
+		t.Fatalf("global server-admins subject resolution = %+v, %v", global, err)
+	}
+	if ids := catalog.ids("group"); len(ids) != 2 {
+		t.Fatalf("selected group target ids = %v, want two organization groups", ids)
+	}
+	if ids := catalog.allIDs("group"); len(ids) != 3 {
+		t.Fatalf("all recognized group ids = %v, want local and global groups", ids)
 	}
 	_, err = catalog.resolve("actor", "actor-missing", "ponyville", "group_membership_child")
 	var integrity adminMigrationLiveSourceAuthorizationIntegrityError
@@ -240,6 +251,18 @@ func TestAdminMigrationLiveSourceAuthorizationResolutionIsStrictAndOrganizationS
 	readACL := aclObjects[0]["read"].(map[string]any)
 	if actors := readACL["actors"].([]string); len(actors) != 1 || actors[0] != "pivotal" {
 		t.Fatalf("deduplicated ACL actors = %v, want [pivotal]", actors)
+	}
+}
+
+func TestAdminMigrationLiveSourceGlobalGroupSubjectNamesAreChefScoped(t *testing.T) {
+	for input, want := range map[string]string{
+		"server-admins":               "::server-admins",
+		"ponyville_read_access_group": "::ponyville_read_access_group",
+		"::already-scoped":            "::already-scoped",
+	} {
+		if got := adminMigrationLiveSourceGlobalGroupSubjectName(input); got != want {
+			t.Fatalf("global group subject name for %q = %q, want %q", input, got, want)
+		}
 	}
 }
 

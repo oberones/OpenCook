@@ -369,6 +369,7 @@ INSERT INTO keys VALUES ('client-validator', 'default', :'public_key', 'infinity
 INSERT INTO groups
 SELECT 'group-' || name, 'org-' || :'org', name, 'group-' || name
 FROM unnest(ARRAY['admins','billing-admins','users','clients']) AS name;
+INSERT INTO groups VALUES ('group-server-admins', '00000000000000000000000000000000', 'server-admins', 'group-server-admins');
 
 INSERT INTO containers
 SELECT 'container-' || name, 'org-' || :'org', name, 'container-' || name
@@ -427,6 +428,7 @@ INSERT INTO auth_actor VALUES ('actor-row-pivotal', 'actor-pivotal'), ('actor-ro
 INSERT INTO auth_group
 SELECT 'auth-group-' || name, 'group-' || name
 FROM unnest(ARRAY['admins','billing-admins','users','clients']) AS name;
+INSERT INTO auth_group VALUES ('auth-group-server-admins', 'group-server-admins');
 INSERT INTO auth_container
 SELECT 'auth-container-' || name, 'container-' || name
 FROM unnest(ARRAY['clients','containers','cookbooks','data','environments','groups','nodes','roles','sandboxes','policies','policy_groups','cookbook_artifacts']) AS name;
@@ -444,13 +446,15 @@ FROM (VALUES
 
 INSERT INTO group_actor_relations VALUES
 	('auth-group-admins', 'actor-row-pivotal'),
-	('auth-group-clients', 'actor-row-validator');
+	('auth-group-clients', 'actor-row-validator'),
+	('auth-group-server-admins', 'actor-row-pivotal');
 INSERT INTO group_group_relations VALUES ('auth-group-admins', 'auth-group-billing-admins');
 
 CREATE TEMP TABLE live_acl_permissions(permission text);
 INSERT INTO live_acl_permissions VALUES ('create'), ('read'), ('update'), ('delete'), ('grant');
 INSERT INTO actor_acl_actor SELECT id, 'actor-row-pivotal', permission FROM auth_actor CROSS JOIN live_acl_permissions;
 INSERT INTO actor_acl_group SELECT id, 'auth-group-admins', permission FROM auth_actor CROSS JOIN live_acl_permissions;
+INSERT INTO actor_acl_group VALUES ('actor-row-pivotal', 'auth-group-server-admins', 'read');
 INSERT INTO group_acl_actor SELECT id, 'actor-row-pivotal', permission FROM auth_group CROSS JOIN live_acl_permissions;
 INSERT INTO group_acl_group SELECT id, 'auth-group-admins', permission FROM auth_group CROSS JOIN live_acl_permissions;
 INSERT INTO container_acl_actor SELECT id, 'actor-row-pivotal', permission FROM auth_container CROSS JOIN live_acl_permissions;

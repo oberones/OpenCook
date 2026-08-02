@@ -10,6 +10,8 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+const adminMigrationLiveSourceGlobalOrganizationID = "00000000000000000000000000000000"
+
 // adminMigrationLiveSourceAuthorizationRef is the Erchef-side identity for a
 // Bifrost authorization record. Bifrost deliberately has no organization or
 // object-name context, so all human-readable resolution stays in Go.
@@ -20,6 +22,7 @@ type adminMigrationLiveSourceAuthorizationRef struct {
 	Resource     string
 	SubjectType  string
 	Name         string
+	SubjectOnly  bool
 }
 
 type adminMigrationLiveSourceAuthorizationCatalog struct {
@@ -73,39 +76,92 @@ func adminMigrationLiveSourceReadAuthorizationCatalog(ctx context.Context, tx pg
 		ref.Resource = strings.TrimSpace(ref.Resource)
 		ref.SubjectType = strings.TrimSpace(ref.SubjectType)
 		ref.Name = strings.TrimSpace(ref.Name)
-		scopeKey := adminMigrationLiveSourceAuthorizationScopeKey(ref.RecordType, ref.Organization, ref.AuthzID)
-		if existing, ok := catalog.byTypeOrgAndID[scopeKey]; ok && existing.Resource != ref.Resource {
-			return adminMigrationLiveSourceAuthorizationCatalog{}, adminMigrationLiveSourceAuthorizationIntegrityError{
-				Code:         adminMigrationFindingSourceAuthorizationTargetUnresolved,
-				RecordType:   ref.RecordType,
-				Organization: ref.Organization,
-				AuthzID:      ref.AuthzID,
-				Relationship: "duplicate_erchef_authorization_target",
-			}
+		if err := catalog.add(ref); err != nil {
+			return adminMigrationLiveSourceAuthorizationCatalog{}, err
 		}
-		catalog.byTypeOrgAndID[scopeKey] = ref
-		key := adminMigrationLiveSourceAuthorizationKey(ref.RecordType, ref.AuthzID)
-		if existing, ok := catalog.byTypeAndID[key]; ok && (existing.Organization != ref.Organization || existing.Resource != ref.Resource) {
-			return adminMigrationLiveSourceAuthorizationCatalog{}, adminMigrationLiveSourceAuthorizationIntegrityError{
-				Code:         adminMigrationFindingSourceAuthorizationTargetUnresolved,
-				RecordType:   ref.RecordType,
-				Organization: ref.Organization,
-				AuthzID:      ref.AuthzID,
-				Relationship: "duplicate_erchef_authorization_target",
-			}
-		}
-		catalog.byTypeAndID[key] = ref
 	}
 	if err := rows.Err(); err != nil {
+		return adminMigrationLiveSourceAuthorizationCatalog{}, err
+	}
+	rows.Close()
+
+	globalRows, err := tx.Query(ctx, `
+SELECT btrim(authz_id::text), name
+FROM groups
+WHERE org_id = $1
+ORDER BY name, btrim(authz_id::text)`, adminMigrationLiveSourceGlobalOrganizationID)
+	if err != nil {
+		return adminMigrationLiveSourceAuthorizationCatalog{}, err
+	}
+	defer globalRows.Close()
+	for globalRows.Next() {
+		var authzID, name string
+		if err := globalRows.Scan(&authzID, &name); err != nil {
+			return adminMigrationLiveSourceAuthorizationCatalog{}, err
+		}
+		name = adminMigrationLiveSourceGlobalGroupSubjectName(name)
+		ref := adminMigrationLiveSourceAuthorizationRef{
+			RecordType:  "group",
+			AuthzID:     strings.TrimSpace(authzID),
+			Resource:    "group:" + name,
+			SubjectType: "group",
+			Name:        name,
+			SubjectOnly: true,
+		}
+		if err := catalog.add(ref); err != nil {
+			return adminMigrationLiveSourceAuthorizationCatalog{}, err
+		}
+	}
+	if err := globalRows.Err(); err != nil {
 		return adminMigrationLiveSourceAuthorizationCatalog{}, err
 	}
 	return catalog, nil
 }
 
+func (c *adminMigrationLiveSourceAuthorizationCatalog) add(ref adminMigrationLiveSourceAuthorizationRef) error {
+	if c.byTypeOrgAndID == nil {
+		c.byTypeOrgAndID = map[string]adminMigrationLiveSourceAuthorizationRef{}
+	}
+	if c.byTypeAndID == nil {
+		c.byTypeAndID = map[string]adminMigrationLiveSourceAuthorizationRef{}
+	}
+	scopeKey := adminMigrationLiveSourceAuthorizationScopeKey(ref.RecordType, ref.Organization, ref.AuthzID)
+	if existing, ok := c.byTypeOrgAndID[scopeKey]; ok && existing.Resource != ref.Resource {
+		return adminMigrationLiveSourceAuthorizationIntegrityError{
+			Code:         adminMigrationFindingSourceAuthorizationTargetUnresolved,
+			RecordType:   ref.RecordType,
+			Organization: ref.Organization,
+			AuthzID:      ref.AuthzID,
+			Relationship: "duplicate_erchef_authorization_target",
+		}
+	}
+	c.byTypeOrgAndID[scopeKey] = ref
+	key := adminMigrationLiveSourceAuthorizationKey(ref.RecordType, ref.AuthzID)
+	if existing, ok := c.byTypeAndID[key]; ok && (existing.Organization != ref.Organization || existing.Resource != ref.Resource) {
+		return adminMigrationLiveSourceAuthorizationIntegrityError{
+			Code:         adminMigrationFindingSourceAuthorizationTargetUnresolved,
+			RecordType:   ref.RecordType,
+			Organization: ref.Organization,
+			AuthzID:      ref.AuthzID,
+			Relationship: "duplicate_erchef_authorization_target",
+		}
+	}
+	c.byTypeAndID[key] = ref
+	return nil
+}
+
+func adminMigrationLiveSourceGlobalGroupSubjectName(name string) string {
+	name = strings.TrimSpace(name)
+	if strings.HasPrefix(name, "::") {
+		return name
+	}
+	return "::" + name
+}
+
 func (c adminMigrationLiveSourceAuthorizationCatalog) refs(recordType string) []adminMigrationLiveSourceAuthorizationRef {
 	refs := make([]adminMigrationLiveSourceAuthorizationRef, 0)
 	for _, ref := range c.byTypeAndID {
-		if ref.RecordType == recordType {
+		if ref.RecordType == recordType && !ref.SubjectOnly {
 			refs = append(refs, ref)
 		}
 	}
@@ -119,6 +175,25 @@ func (c adminMigrationLiveSourceAuthorizationCatalog) refs(recordType string) []
 		return refs[i].AuthzID < refs[j].AuthzID
 	})
 	return refs
+}
+
+func (c adminMigrationLiveSourceAuthorizationCatalog) allIDs(recordType string) []string {
+	ids := make([]string, 0)
+	for _, ref := range c.byTypeAndID {
+		if ref.RecordType == recordType {
+			ids = append(ids, ref.AuthzID)
+		}
+	}
+	return adminMigrationUniqueSortedStrings(ids)
+}
+
+func (c adminMigrationLiveSourceAuthorizationCatalog) subject(recordType, name string) (adminMigrationLiveSourceAuthorizationRef, bool) {
+	for _, ref := range c.byTypeAndID {
+		if ref.RecordType == recordType && ref.SubjectOnly && ref.Name == name {
+			return ref, true
+		}
+	}
+	return adminMigrationLiveSourceAuthorizationRef{}, false
 }
 
 func (c adminMigrationLiveSourceAuthorizationCatalog) ids(recordType string) []string {
@@ -212,10 +287,72 @@ func adminMigrationLiveSourceReadBifrostAuthorization(ctx context.Context, tx pg
 		adminMigrationLiveSourceAppendObject(payloadValues, key, acl)
 	}
 
+	if err := adminMigrationLiveSourceReadBifrostServerAdminMemberships(ctx, tx, catalog, payloadValues); err != nil {
+		return 0, err
+	}
 	if err := adminMigrationLiveSourceReadBifrostGroupMemberships(ctx, tx, catalog, payloadValues); err != nil {
 		return 0, err
 	}
 	return adminMigrationLiveSourceCountUnrelatedBifrostRecords(ctx, tx, catalog)
+}
+
+func adminMigrationLiveSourceReadBifrostServerAdminMemberships(ctx context.Context, tx pgx.Tx, catalog adminMigrationLiveSourceAuthorizationCatalog, payloadValues map[adminMigrationSourcePayloadKey][]json.RawMessage) error {
+	serverAdmins, ok := catalog.subject("group", "::server-admins")
+	if !ok {
+		return nil
+	}
+	found, err := adminMigrationLiveSourceReadBifrostTargetIDs(ctx, tx, "auth_group", []string{serverAdmins.AuthzID})
+	if err != nil {
+		return err
+	}
+	if _, ok := found[serverAdmins.AuthzID]; !ok {
+		return adminMigrationLiveSourceAuthorizationIntegrityError{
+			Code:         adminMigrationFindingSourceAuthorizationTargetUnresolved,
+			RecordType:   "group",
+			AuthzID:      serverAdmins.AuthzID,
+			Relationship: "server_admin_group",
+		}
+	}
+	rows, err := tx.Query(ctx, `
+SELECT btrim(child.authz_id::text)
+FROM auth_group parent
+JOIN group_actor_relations relation ON relation.parent = parent.id
+JOIN auth_actor child ON child.id = relation.child
+WHERE btrim(parent.authz_id::text) = $1
+ORDER BY btrim(child.authz_id::text)`, serverAdmins.AuthzID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	payloadValues[adminMigrationSourcePayloadKey{Family: "server_admin_memberships"}] = []json.RawMessage{}
+	seen := map[string]struct{}{}
+	for rows.Next() {
+		var actorAuthzID string
+		if err := rows.Scan(&actorAuthzID); err != nil {
+			return err
+		}
+		actor, err := catalog.resolve("actor", strings.TrimSpace(actorAuthzID), "", "server_admin_membership")
+		if err != nil {
+			return err
+		}
+		if actor.SubjectType != "user" {
+			return adminMigrationLiveSourceAuthorizationIntegrityError{
+				Code:         adminMigrationFindingSourceAuthorizationSubjectUnresolved,
+				RecordType:   "actor",
+				AuthzID:      strings.TrimSpace(actorAuthzID),
+				Relationship: "server_admin_membership",
+			}
+		}
+		if _, ok := seen[actor.AuthzID]; ok {
+			continue
+		}
+		seen[actor.AuthzID] = struct{}{}
+		adminMigrationLiveSourceAppendObject(payloadValues, adminMigrationSourcePayloadKey{Family: "server_admin_memberships"}, map[string]any{
+			"actor": actor.Name,
+			"type":  "user",
+		})
+	}
+	return rows.Err()
 }
 
 func adminMigrationLiveSourceValidateBifrostTargets(catalog adminMigrationLiveSourceAuthorizationCatalog, recordType string, found map[string]struct{}) error {
@@ -356,7 +493,7 @@ func adminMigrationLiveSourceCountUnrelatedBifrostRecords(ctx context.Context, t
 	for _, spec := range adminMigrationLiveSourceBifrostACLSpecs() {
 		var count int
 		query := fmt.Sprintf("SELECT count(*) FROM %s WHERE NOT (btrim(authz_id::text) = ANY($1::text[]))", spec.authTable)
-		if err := tx.QueryRow(ctx, query, catalog.ids(spec.recordType)).Scan(&count); err != nil {
+		if err := tx.QueryRow(ctx, query, catalog.allIDs(spec.recordType)).Scan(&count); err != nil {
 			return 0, err
 		}
 		total += count
