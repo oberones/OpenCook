@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file.
 
 The format is inspired by Keep a Changelog and uses semantic versioning-style tags where practical.
 
+## v0.3.0 (2026-11-04)
+
+### Feat
+
+- **ops**: add deployment evidence triage
+
+### Fix
+
+- address findings based on review feedback
+- address nine critical review findings
+- update extractor to use placeholder org id
+- follow native erchef parent relationships during import
+- update db import tool path to account for all dbs
+
 ## v0.2.0 (2026-05-26)
 
 ### Feat
