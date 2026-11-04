@@ -618,6 +618,22 @@ reads, and shadow comparison. Logical state backups retain policy payloads.
 Cutover freshness uses the latest applied cursor; shadow comparison has explicit
 protocol path rules that leave application data significant.
 
+PR #125 follow-up closes parent-traversal aliases and trailing-slash destination
+errors, reapplies explicit server admins after relationship reconstruction, and
+validates initial policy assignments against explicit parent definitions. Global
+ACL grants expand to snapshot-effective actors, including nested groups, without
+changing target authorization or bundle versions. HTTP numeric decoding and
+canonical policy comparisons preserve exact values across restart. Search uses
+one exact formatter across writes, hydration, and reindex; existing indexes need
+a maintenance-gated rebuild after upgrading. No database schema change is needed.
+Follow-up verification passed the full uncached Go suite and Docker
+`create restart verify query-compat object-compat migration-all` plus
+`migration-live-source-all`. New live-source assertions cover signed global ACL
+access/denial, server admins after sync, and numeric policy/search behavior
+across restart, reindex, and restore. The synthetic policy fixture now uses the
+valid `recipe[base::default]` policy run-list form. Real Chef/Cinc acceptance
+remains pending.
+
 Qualification on 2026-11-04: permanent regression tests and the full uncached Go
 suite pass. Docker `create restart verify migration-all migration-live-source-all
 migration-scale-all` passes with the small scale profile, as does a final

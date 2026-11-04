@@ -234,6 +234,26 @@ Notes:
 - Source import and source sync apply remain offline-gated because they mutate
   target PostgreSQL/blob state directly. Run them against a stopped OpenCook
   target or under an externally frozen target window.
+- Publication paths, protected source paths, and source private-key paths must
+  not contain literal `..` components. Supply absolute paths or relative paths
+  without parent traversal; this closes symlink-plus-parent traversal aliases.
+  A trailing slash does not change the publication destination. Existing
+  backup destinations remain forbidden even with `--yes`.
+- Extraction expands global ACL groups using the Bifrost membership snapshot.
+  Nested groups are traversed with cycle protection; missing identities and
+  cross-organization client grants fail closed. Re-extract and sync after
+  changing global memberships. Explicit server-admin memberships survive
+  relationship reconstruction; target-only organizations remain untouched.
+- Initial import needs explicit policy-group definitions for every assignment.
+  Relationship-only sync can instead use valid retained target parents.
+- After upgrading the numeric search formatter, enable maintenance, run
+  `opencook admin reindex --all-orgs --complete`, verify with
+  `opencook admin search check --all-orgs`, then disable maintenance. Existing
+  derived indexes may contain older numeric spellings until rebuilt. The new
+  formatter preserves every decimal digit and uses scientific notation below
+  exponent -4 or at/above exponent 6, consistently across HTTP writes, restart,
+  and reindex. Policy re-PUT accepts equivalent decimal/exponent values while
+  still rejecting changed large integers.
 - Use live extraction `--copy-blobs` with a local `--source-bookshelf-root` when
   the migration operator can read checksum blob bytes. This creates the most
   self-contained normalized bundle and lets import/cutover verify copied

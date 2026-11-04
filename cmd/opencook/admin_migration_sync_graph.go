@@ -48,6 +48,19 @@ func adminMigrationSourceSyncStateFromRead(read adminMigrationSourceImportRead) 
 			state.CoreObjects.Orgs[key.Organization] = org
 		}
 	}
+	// Relationship reconstruction must finish before explicit global admins are
+	// added, otherwise an unchanged sync erases their imported memberships.
+	for _, object := range adminMigrationSourceImportObjects(read.PayloadValues, "", "server_admin_memberships") {
+		if adminMigrationSourceStringDefault(object, "user", "type", "actor_type") != "user" {
+			continue
+		}
+		for name, org := range state.Bootstrap.Orgs {
+			if group, ok := org.Groups["admins"]; ok {
+				org.Groups["admins"] = adminMigrationSourceImportAddGroupMember(group, "user", adminMigrationSourceString(object, "actor", "username", "name"))
+				state.Bootstrap.Orgs[name] = org
+			}
+		}
+	}
 	return state, nil
 }
 
@@ -137,8 +150,15 @@ func adminMigrationValidateImportedRelationships(read adminMigrationSourceImport
 				}
 			}
 		case "policy_assignments":
+			definitions := map[string]bool{}
+			for _, object := range adminMigrationSourceImportObjects(read.PayloadValues, key.Organization, "policy_groups") {
+				name := adminMigrationSourceString(object, "name", "group")
+				if name != "" {
+					definitions[name] = true
+				}
+			}
 			for _, object := range adminMigrationSourceImportObjects(read.PayloadValues, key.Organization, key.Family) {
-				if _, ok := state.CoreObjects.Orgs[key.Organization].PolicyGroups[adminMigrationSourceString(object, "group", "policy_group")]; !ok {
+				if !definitions[adminMigrationSourceString(object, "group", "policy_group")] {
 					return fmt.Errorf("source assignment references a missing policy group")
 				}
 			}

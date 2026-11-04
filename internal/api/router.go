@@ -713,6 +713,7 @@ const (
 
 func decodeJSONInto(r *http.Request, payload any) decodeJSONResult {
 	decoder := json.NewDecoder(r.Body)
+	decoder.UseNumber()
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(payload); err != nil {
 		return decodeJSONInvalid

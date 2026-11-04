@@ -313,7 +313,10 @@ Operational notes:
 - Source normalization and live extraction reject output paths that equal,
   contain, or sit inside a protected source path, including symlink aliases and
   missing output ancestors. Live extraction protects both the Bookshelf root
-  and the configured source private key. Normalization `--dry-run` writes
+  and the configured source private key. Literal `..` path components are
+  rejected before path cleaning or filesystem access, including in source and
+  private-key inputs. Use an absolute path or a relative path without `..`.
+  Trailing slashes name the same destination directory. Normalization `--dry-run` writes
   nothing, including when combined with `--yes` and an existing output.
 - An exclusive `.<destination>.publish.lock` serializes bundle writers. After
   interruption or a publication/cleanup failure, inspect the lock's PID and
@@ -323,13 +326,30 @@ Operational notes:
 - Sync treats group definitions and memberships, and policy-group definitions
   and assignments, as separate scopes. Omitted relationship scopes preserve
   retained relationships; explicit empty scopes clear them while retaining
-  parents. The final merged relationship graph is validated before writes.
+  parents. Explicit server-admin memberships are applied after organization
+  relationships are rebuilt. Initial import requires explicit policy-group
+  definitions for assignments; relationship-only sync may use retained parents.
+  The final merged relationship graph is validated before writes.
+- Live extraction expands global-group ACL grants into effective actor grants
+  using the Bifrost snapshot, including nested memberships. Empty groups grant
+  nothing; unresolved or unrepresentable cross-organization actors block
+  extraction. Re-extract and sync to refresh these grants after membership changes.
 - Live extraction preserves explicit empty ACLs and rejects malformed gzip,
   invalid/trailing JSON, and non-object serialized payloads. Findings identify
   the family and a hashed source identity without exposing payload contents.
   Arbitrary JSON numbers retain their exact values through import, persistence,
   restart, API reads, and backup/restore; PostgreSQL may change numeric notation.
-  Logical backups also retain complete policy revision payloads.
+  Logical backups also retain complete policy revision payloads. HTTP writes
+  retain exact numbers, and policy re-PUT compares equivalent decimal/exponent
+  spellings by value without rounding large integers.
+- After upgrading from the earlier numeric-token implementation, rebuild
+  existing OpenSearch data under maintenance with `opencook admin reindex
+  --all-orgs --complete`, then run `opencook admin search check --all-orgs`.
+  Search now uses one exact decimal formatter for writes, restart hydration,
+  and reindex. It keeps Go float notation boundaries (scientific notation for
+  exponents below -4 or at least 6) while retaining all significant digits.
+  For example, `1000000` indexes as `1e+06`; escape the plus sign in exact
+  Lucene queries (`million:1e\+06`).
 - Cutover requires the latest successful sync cursor to match the supplied
   source bundle. Historical cursors alone do not prove freshness. Shadow
   comparison normalizes only defined protocol fields and generated download

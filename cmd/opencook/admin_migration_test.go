@@ -4074,7 +4074,10 @@ func writeAdminMigrationTestBlob(t *testing.T, root, body string) string {
 func adminMigrationSourceFixturePath(t *testing.T, parts ...string) string {
 	t.Helper()
 	segments := append([]string{"..", "..", "test", "compat", "fixtures"}, parts...)
-	path := filepath.Join(segments...)
+	path, err := filepath.Abs(filepath.Join(segments...))
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("source fixture %s unavailable: %v", path, err)
 	}

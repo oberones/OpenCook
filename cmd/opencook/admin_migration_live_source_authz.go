@@ -236,6 +236,10 @@ func adminMigrationLiveSourceBifrostACLSpecs() []adminMigrationLiveSourceBifrost
 }
 
 func adminMigrationLiveSourceReadBifrostAuthorization(ctx context.Context, tx pgx.Tx, catalog adminMigrationLiveSourceAuthorizationCatalog, payloadValues map[adminMigrationSourcePayloadKey][]json.RawMessage) (int, error) {
+	graph, err := adminMigrationLiveSourceReadBifrostMembershipGraph(ctx, tx, catalog)
+	if err != nil {
+		return 0, err
+	}
 	aclRows := make([]adminMigrationLiveSourceACLRow, 0)
 	for _, spec := range adminMigrationLiveSourceBifrostACLSpecs() {
 		ids := catalog.ids(spec.recordType)
@@ -267,17 +271,11 @@ func adminMigrationLiveSourceReadBifrostAuthorization(ctx context.Context, tx pg
 					Relationship: "acl_target",
 				}
 			}
-			subject, err := catalog.resolve(row.AuthorizeeType, row.AuthorizeeAuthzID, target.Organization, "acl_subject")
+			expanded, err := adminMigrationExpandGlobalACL(catalog, graph, target, row)
 			if err != nil {
 				return 0, err
 			}
-			aclRows = append(aclRows, adminMigrationLiveSourceACLRow{
-				OrgName:        target.Organization,
-				Resource:       target.Resource,
-				Permission:     row.Permission,
-				AuthorizeeType: row.AuthorizeeType,
-				Authorizee:     subject.Name,
-			})
+			aclRows = append(aclRows, expanded...)
 		}
 	}
 
@@ -291,72 +289,65 @@ func adminMigrationLiveSourceReadBifrostAuthorization(ctx context.Context, tx pg
 		adminMigrationLiveSourceAppendObject(payloadValues, key, acl)
 	}
 
-	if err := adminMigrationLiveSourceReadBifrostServerAdminMemberships(ctx, tx, catalog, payloadValues); err != nil {
+	if err := adminMigrationLiveSourceReadBifrostServerAdminMemberships(catalog, graph, payloadValues); err != nil {
 		return 0, err
 	}
-	if err := adminMigrationLiveSourceReadBifrostGroupMemberships(ctx, tx, catalog, payloadValues); err != nil {
+	if err := adminMigrationLiveSourceAppendBifrostGroupMemberships(catalog, payloadValues, adminMigrationLocalMembershipRows(catalog, graph), graph); err != nil {
 		return 0, err
 	}
 	return adminMigrationLiveSourceCountUnrelatedBifrostRecords(ctx, tx, catalog)
 }
 
-func adminMigrationLiveSourceReadBifrostServerAdminMemberships(ctx context.Context, tx pgx.Tx, catalog adminMigrationLiveSourceAuthorizationCatalog, payloadValues map[adminMigrationSourcePayloadKey][]json.RawMessage) error {
+func adminMigrationLiveSourceReadBifrostServerAdminMemberships(catalog adminMigrationLiveSourceAuthorizationCatalog, graph map[string][]adminMigrationLiveSourceBifrostGroupMembershipRow, payloadValues map[adminMigrationSourcePayloadKey][]json.RawMessage) error {
 	serverAdmins, ok := catalog.subject("group", "::server-admins")
 	if !ok {
 		return nil
 	}
-	found, err := adminMigrationLiveSourceReadBifrostTargetIDs(ctx, tx, "auth_group", []string{serverAdmins.AuthzID})
+	actors, err := adminMigrationEffectiveGroupActors(catalog, graph, serverAdmins.AuthzID, "")
 	if err != nil {
 		return err
 	}
-	if _, ok := found[serverAdmins.AuthzID]; !ok {
-		return adminMigrationLiveSourceAuthorizationIntegrityError{
-			Code:         adminMigrationFindingSourceAuthorizationTargetUnresolved,
-			RecordType:   "group",
-			AuthzID:      serverAdmins.AuthzID,
-			Relationship: "server_admin_group",
-		}
+	key := adminMigrationSourcePayloadKey{Family: "server_admin_memberships"}
+	payloadValues[key] = []json.RawMessage{}
+	for _, actor := range actors {
+		adminMigrationLiveSourceAppendObject(payloadValues, key, map[string]any{"actor": actor.Name, "type": "user"})
 	}
-	rows, err := tx.Query(ctx, `
-SELECT btrim(child.authz_id::text)
-FROM auth_group parent
-JOIN group_actor_relations relation ON relation.parent = parent.id
-JOIN auth_actor child ON child.id = relation.child
-WHERE btrim(parent.authz_id::text) = $1
-ORDER BY btrim(child.authz_id::text)`, serverAdmins.AuthzID)
+	return nil
+}
+
+func adminMigrationLiveSourceReadBifrostMembershipGraph(ctx context.Context, tx pgx.Tx, catalog adminMigrationLiveSourceAuthorizationCatalog) (map[string][]adminMigrationLiveSourceBifrostGroupMembershipRow, error) {
+	ids := catalog.allIDs("group")
+	found, err := adminMigrationLiveSourceReadBifrostTargetIDs(ctx, tx, "auth_group", ids)
 	if err != nil {
-		return err
+		return nil, err
+	}
+	graph := map[string][]adminMigrationLiveSourceBifrostGroupMembershipRow{}
+	for id := range found {
+		graph[id] = nil
+	}
+	rows, err := tx.Query(ctx, adminMigrationLiveSourceBifrostGroupMembershipQuery, ids)
+	if err != nil {
+		return nil, err
 	}
 	defer rows.Close()
-	payloadValues[adminMigrationSourcePayloadKey{Family: "server_admin_memberships"}] = []json.RawMessage{}
-	seen := map[string]struct{}{}
 	for rows.Next() {
-		var actorAuthzID string
-		if err := rows.Scan(&actorAuthzID); err != nil {
-			return err
+		var row adminMigrationLiveSourceBifrostGroupMembershipRow
+		if err := rows.Scan(&row.ParentAuthzID, &row.ChildType, &row.ChildAuthzID); err != nil {
+			return nil, err
 		}
-		actor, err := catalog.resolve("actor", strings.TrimSpace(actorAuthzID), "", "server_admin_membership")
-		if err != nil {
-			return err
-		}
-		if actor.SubjectType != "user" {
-			return adminMigrationLiveSourceAuthorizationIntegrityError{
-				Code:         adminMigrationFindingSourceAuthorizationSubjectUnresolved,
-				RecordType:   "actor",
-				AuthzID:      strings.TrimSpace(actorAuthzID),
-				Relationship: "server_admin_membership",
-			}
-		}
-		if _, ok := seen[actor.AuthzID]; ok {
-			continue
-		}
-		seen[actor.AuthzID] = struct{}{}
-		adminMigrationLiveSourceAppendObject(payloadValues, adminMigrationSourcePayloadKey{Family: "server_admin_memberships"}, map[string]any{
-			"actor": actor.Name,
-			"type":  "user",
-		})
+		row.ParentAuthzID = strings.TrimSpace(row.ParentAuthzID)
+		row.ChildAuthzID = strings.TrimSpace(row.ChildAuthzID)
+		graph[row.ParentAuthzID] = append(graph[row.ParentAuthzID], row)
 	}
-	return rows.Err()
+	return graph, rows.Err()
+}
+
+func adminMigrationLocalMembershipRows(catalog adminMigrationLiveSourceAuthorizationCatalog, graph map[string][]adminMigrationLiveSourceBifrostGroupMembershipRow) []adminMigrationLiveSourceBifrostGroupMembershipRow {
+	var rows []adminMigrationLiveSourceBifrostGroupMembershipRow
+	for _, ref := range catalog.refs("group") {
+		rows = append(rows, graph[ref.AuthzID]...)
+	}
+	return rows
 }
 
 func adminMigrationLiveSourceValidateBifrostTargets(catalog adminMigrationLiveSourceAuthorizationCatalog, recordType string, found map[string]struct{}) error {
@@ -440,31 +431,7 @@ WHERE btrim(target.authz_id::text) = ANY($1::text[])
 ORDER BY 1, 2, 3, 4`, spec.authTable, spec.actorACLTable, spec.authTable, spec.groupACLTable)
 }
 
-func adminMigrationLiveSourceReadBifrostGroupMemberships(ctx context.Context, tx pgx.Tx, catalog adminMigrationLiveSourceAuthorizationCatalog, payloadValues map[adminMigrationSourcePayloadKey][]json.RawMessage) error {
-	groupIDs := catalog.ids("group")
-	if len(groupIDs) == 0 {
-		return nil
-	}
-	rows, err := tx.Query(ctx, adminMigrationLiveSourceBifrostGroupMembershipQuery, groupIDs)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-	memberships := make([]adminMigrationLiveSourceBifrostGroupMembershipRow, 0)
-	for rows.Next() {
-		var membership adminMigrationLiveSourceBifrostGroupMembershipRow
-		if err := rows.Scan(&membership.ParentAuthzID, &membership.ChildType, &membership.ChildAuthzID); err != nil {
-			return err
-		}
-		memberships = append(memberships, membership)
-	}
-	if err := rows.Err(); err != nil {
-		return err
-	}
-	return adminMigrationLiveSourceAppendBifrostGroupMemberships(catalog, payloadValues, memberships)
-}
-
-func adminMigrationLiveSourceAppendBifrostGroupMemberships(catalog adminMigrationLiveSourceAuthorizationCatalog, payloadValues map[adminMigrationSourcePayloadKey][]json.RawMessage, memberships []adminMigrationLiveSourceBifrostGroupMembershipRow) error {
+func adminMigrationLiveSourceAppendBifrostGroupMemberships(catalog adminMigrationLiveSourceAuthorizationCatalog, payloadValues map[adminMigrationSourcePayloadKey][]json.RawMessage, memberships []adminMigrationLiveSourceBifrostGroupMembershipRow, graphs ...map[string][]adminMigrationLiveSourceBifrostGroupMembershipRow) error {
 	seen := map[string]struct{}{}
 	for _, membership := range memberships {
 		parentAuthzID := strings.TrimSpace(membership.ParentAuthzID)
@@ -477,6 +444,25 @@ func adminMigrationLiveSourceAppendBifrostGroupMemberships(catalog adminMigratio
 		child, err := catalog.resolve(childType, childAuthzID, parent.Organization, "group_membership_child")
 		if err != nil {
 			return err
+		}
+		if childType == "group" && child.SubjectOnly {
+			var graph map[string][]adminMigrationLiveSourceBifrostGroupMembershipRow
+			if len(graphs) > 0 {
+				graph = graphs[0]
+			}
+			actors, err := adminMigrationEffectiveGroupActors(catalog, graph, child.AuthzID, parent.Organization)
+			if err != nil {
+				return err
+			}
+			for _, actor := range actors {
+				identity := parent.AuthzID + "|actor|" + actor.AuthzID
+				if _, ok := seen[identity]; ok {
+					continue
+				}
+				seen[identity] = struct{}{}
+				adminMigrationLiveSourceAppendObject(payloadValues, adminMigrationSourcePayloadKey{Organization: parent.Organization, Family: "group_memberships"}, map[string]any{"group": parent.Name, "type": actor.SubjectType, "actor": actor.Name})
+			}
+			continue
 		}
 		identity := parent.AuthzID + "|" + childType + "|" + child.AuthzID
 		if _, ok := seen[identity]; ok {

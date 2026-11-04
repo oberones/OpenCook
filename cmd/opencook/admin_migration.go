@@ -1671,6 +1671,9 @@ func buildAdminMigrationScaleFixtureCreate(profile string, includeSidecars bool,
 // adminMigrationEnsureScaleFixtureOutputAllowed mirrors source-normalize output
 // safety without requiring a real source path to compare against.
 func adminMigrationEnsureScaleFixtureOutputAllowed(outputPath string, overwrite bool) error {
+	if err := adminMigrationRejectParentTraversal(outputPath); err != nil {
+		return err
+	}
 	outputPath = strings.TrimSpace(outputPath)
 	if outputPath == "" || filepath.Clean(outputPath) == "." || filepath.Clean(outputPath) == string(os.PathSeparator) {
 		return errAdminMigrationUnsafeSourcePath
@@ -9629,9 +9632,6 @@ func adminMigrationNormalizeSourceRelativePath(value string) (string, error) {
 // and prevents writing the normalized bundle inside the source tree.
 func adminMigrationEnsureNormalizeOutputAllowed(sourcePath, outputPath string, overwrite bool) error {
 	outputPath = strings.TrimSpace(outputPath)
-	if outputPath == "" || filepath.Clean(outputPath) == "." || filepath.Clean(outputPath) == string(os.PathSeparator) {
-		return errAdminMigrationUnsafeSourcePath
-	}
 	if err := adminMigrationProtectPaths(outputPath, sourcePath); err != nil {
 		return err
 	}
@@ -9653,10 +9653,14 @@ func adminMigrationEnsureNormalizeOutputAllowed(sourcePath, outputPath string, o
 // adminMigrationInterruptedNormalizedSourceOutputDirs finds sibling temp
 // directories left by interrupted atomic source-bundle publications.
 func adminMigrationInterruptedNormalizedSourceOutputDirs(outputPath string) ([]string, error) {
+	if err := adminMigrationRejectParentTraversal(outputPath); err != nil {
+		return nil, err
+	}
 	outputPath = strings.TrimSpace(outputPath)
 	if outputPath == "" {
 		return nil, nil
 	}
+	outputPath = filepath.Clean(outputPath)
 	parent := filepath.Dir(outputPath)
 	entries, err := os.ReadDir(parent)
 	if err != nil {

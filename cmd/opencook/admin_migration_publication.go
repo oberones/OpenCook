@@ -13,6 +13,9 @@ var errAdminMigrationBackupOutputExists = errors.New("backup destination already
 // Resolve existing ancestors as well as symlink aliases of not-yet-created
 // paths. Dangling symlinks and unresolvable paths fail closed.
 func adminMigrationResolvedPath(path string) (string, error) {
+	if err := adminMigrationRejectParentTraversal(path); err != nil {
+		return "", err
+	}
 	absolute, err := filepath.Abs(path)
 	if err != nil {
 		return "", err
@@ -42,7 +45,21 @@ func adminMigrationResolvedPath(path string) (string, error) {
 	}
 }
 
+func adminMigrationRejectParentTraversal(path string) error {
+	for _, component := range strings.Split(path, string(os.PathSeparator)) {
+		if component == ".." {
+			return errAdminMigrationUnsafeSourcePath
+		}
+	}
+	return nil
+}
+
 func adminMigrationProtectPaths(output string, sources ...string) error {
+	for _, path := range append([]string{output}, sources...) {
+		if err := adminMigrationRejectParentTraversal(path); err != nil {
+			return err
+		}
+	}
 	if strings.TrimSpace(output) == "" || filepath.Clean(output) == "." || filepath.Clean(output) == string(os.PathSeparator) {
 		return errAdminMigrationUnsafeSourcePath
 	}
@@ -103,6 +120,9 @@ func adminMigrationRequireFreshBackup(output string) error {
 	if strings.TrimSpace(output) == "" {
 		return errAdminMigrationUnsafeSourcePath
 	}
+	if err := adminMigrationRejectParentTraversal(output); err != nil {
+		return err
+	}
 	if _, err := os.Lstat(output); err == nil {
 		return errAdminMigrationBackupOutputExists
 	} else if !os.IsNotExist(err) {
@@ -116,6 +136,11 @@ func adminMigrationRequireFreshBackup(output string) error {
 // records the staging path for operator recovery. Kernel no-replace rename also
 // protects against writers that do not participate in the lock protocol.
 func adminMigrationPublishBundle(output, kind string, overwrite bool, protected []string, write func(string) error) (resultErr error) {
+	for _, path := range append([]string{output}, protected...) {
+		if err := adminMigrationRejectParentTraversal(path); err != nil {
+			return err
+		}
+	}
 	if kind == "backup" {
 		if err := adminMigrationRequireFreshBackup(output); err != nil {
 			return err
@@ -124,6 +149,7 @@ func adminMigrationPublishBundle(output, kind string, overwrite bool, protected 
 	if err := adminMigrationProtectPaths(output, protected...); err != nil {
 		return err
 	}
+	output = filepath.Clean(output)
 	// Resolve the parent once so changing a symlink ancestor cannot redirect writes.
 	parent, err := adminMigrationResolvedPath(filepath.Dir(output))
 	if err != nil {

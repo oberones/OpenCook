@@ -375,6 +375,8 @@ INSERT INTO users VALUES ('user-pivotal', 'pivotal', 'pivotal@example.test', jso
 INSERT INTO keys VALUES ('user-pivotal', 'default', :'public_key', 'infinity'::timestamptz);
 INSERT INTO users VALUES ('user-observer', 'migration-observer', 'observer@example.test', '{}'::jsonb, false, 'actor-observer'), ('user-denied', 'zz-denied-user', 'denied@example.test', '{}'::jsonb, false, 'actor-denied');
 INSERT INTO keys VALUES ('user-observer', 'default', :'public_key', 'infinity'::timestamptz);
+INSERT INTO users VALUES ('user-global-admin', 'migration-global-admin', 'admin@example.test', '{}'::jsonb, false, 'actor-global-admin'), ('user-orphan', 'migration-orphan', 'orphan@example.test', '{}'::jsonb, false, 'actor-orphan');
+INSERT INTO keys VALUES ('user-global-admin', 'default', :'public_key', 'infinity'::timestamptz);
 
 
 INSERT INTO orgs VALUES ('org-' || :'org', :'org', 'Ponyville', 'object-org-' || :'org');
@@ -388,6 +390,7 @@ INSERT INTO groups
 SELECT 'group-' || name, 'org-' || :'org', name, 'group-' || name
 FROM unnest(ARRAY['admins','billing-admins','users','clients']) AS name;
 INSERT INTO groups VALUES ('group-server-admins', '00000000000000000000000000000000', 'server-admins', 'group-server-admins');
+INSERT INTO groups VALUES ('group-global-nested', '00000000000000000000000000000000', 'nested-admins', 'group-global-nested');
 
 INSERT INTO containers
 SELECT 'container-' || name, 'org-' || :'org', name, 'container-' || name
@@ -396,7 +399,7 @@ FROM unnest(ARRAY['clients','containers','cookbooks','data','environments','grou
 INSERT INTO nodes VALUES ('node-web01', 'org-' || :'org', 'object-node-web01', 'web01', '_default', 'base', 'prod',
 	convert_to(jsonb_build_object('name', 'web01', 'chef_environment', '_default', 'run_list', jsonb_build_array('role[web]'), 'normal', jsonb_build_object('app', 'opencook'), 'default', '{}'::jsonb, 'override', '{}'::jsonb, 'automatic', '{}'::jsonb, 'policy_name', 'base', 'policy_group', 'prod')::text, 'UTF8'));
 -- Exact arbitrary numeric attributes and application keys that shadow must retain.
-UPDATE nodes SET serialized_object = convert_to(jsonb_set(convert_from(serialized_object, 'UTF8')::jsonb, '{normal}', '{"app":"opencook","large":9007199254740993,"negative":-9007199254740997,"decimal":0.1234567890123456789012345,"exponent":1.234567890123456789e40,"private_key":"application-value","updated_at":"application-time","users":["b","a"],"url":"https://application.test/path?value=original"}')::text, 'UTF8') WHERE name='web01';
+UPDATE nodes SET serialized_object = convert_to(jsonb_set(convert_from(serialized_object, 'UTF8')::jsonb, '{normal}', '{"app":"opencook","large":9007199254740993,"negative":-9007199254740997,"decimal":0.1234567890123456789012345,"exponent":1.234567890123456789e40,"million":1000000,"small":0.00001,"private_key":"application-value","updated_at":"application-time","users":["b","a"],"url":"https://application.test/path?value=original"}')::text, 'UTF8') WHERE name='web01';
 INSERT INTO environments VALUES ('env-default', 'org-' || :'org', 'object-env-default', '_default',
 	convert_to(jsonb_build_object('name', '_default', 'description', 'The default Chef environment', 'cookbook_versions', '{}'::jsonb)::text, 'UTF8'));
 INSERT INTO roles VALUES ('role-web', 'org-' || :'org', 'object-role-web', 'web',
@@ -406,7 +409,8 @@ INSERT INTO data_bag_items VALUES ('item-secrets-db', 'org-' || :'org', 'secrets
 	convert_to(jsonb_build_object('id', 'db', 'encrypted_data', 'fixture', 'iv', 'still-opaque')::text, 'UTF8'));
 INSERT INTO policies VALUES ('policy-base', 'org-' || :'org', 'object-policy-base', 'base');
 INSERT INTO policy_revisions VALUES ('policy-base-rev', 'org-' || :'org', 'base', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-	convert_to(jsonb_build_object('name', 'base', 'revision_id', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'run_list', jsonb_build_array('recipe[base]'), 'named_run_lists', '{}'::jsonb, 'cookbook_locks', '{}'::jsonb, 'solution_dependencies', '{}'::jsonb)::text, 'UTF8'));
+	convert_to(jsonb_build_object('name', 'base', 'revision_id', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'run_list', jsonb_build_array('recipe[base::default]'), 'named_run_lists', '{}'::jsonb, 'cookbook_locks', '{}'::jsonb, 'solution_dependencies', '{}'::jsonb)::text, 'UTF8'));
+UPDATE policy_revisions SET serialized_object = convert_to(jsonb_set(convert_from(serialized_object,'UTF8')::jsonb, '{default_attributes}', '{"nested":[9007199254740993,1000000,0.00001]}')::text,'UTF8');
 INSERT INTO policy_groups VALUES ('policy-group-prod', 'org-' || :'org', 'object-policy-group-prod', 'prod',
 	convert_to(jsonb_build_object('name', 'prod')::text, 'UTF8'));
 INSERT INTO policy_groups VALUES ('policy-group-denied', 'org-' || :'org', 'object-policy-group-denied', 'zz-denied-group', convert_to('{"name":"zz-denied-group"}', 'UTF8'));
@@ -450,7 +454,8 @@ INSERT INTO auth_actor VALUES ('actor-row-observer', 'actor-observer'), ('actor-
 INSERT INTO auth_group
 SELECT 'auth-group-' || name, 'group-' || name
 FROM unnest(ARRAY['admins','billing-admins','users','clients']) AS name;
-INSERT INTO auth_group VALUES ('auth-group-server-admins', 'group-server-admins');
+INSERT INTO auth_group VALUES ('auth-group-server-admins', 'group-server-admins'), ('auth-group-global-nested','group-global-nested');
+INSERT INTO auth_actor VALUES ('actor-row-global-admin','actor-global-admin'), ('actor-row-orphan','actor-orphan');
 INSERT INTO auth_container
 SELECT 'auth-container-' || name, 'container-' || name
 FROM unnest(ARRAY['clients','containers','cookbooks','data','environments','groups','nodes','roles','sandboxes','policies','policy_groups','cookbook_artifacts']) AS name;
@@ -472,7 +477,8 @@ INSERT INTO group_actor_relations VALUES
  ('auth-group-users', 'actor-row-observer'),
 	('auth-group-clients', 'actor-row-validator'),
 	('auth-group-server-admins', 'actor-row-pivotal');
-INSERT INTO group_group_relations VALUES ('auth-group-admins', 'auth-group-billing-admins');
+INSERT INTO group_group_relations VALUES ('auth-group-admins', 'auth-group-billing-admins'), ('auth-group-server-admins','auth-group-global-nested');
+INSERT INTO group_actor_relations VALUES ('auth-group-global-nested','actor-row-global-admin');
 
 CREATE TEMP TABLE live_acl_permissions(permission text);
 INSERT INTO live_acl_permissions VALUES ('create'), ('read'), ('update'), ('delete'), ('grant');
@@ -485,6 +491,11 @@ INSERT INTO container_acl_actor SELECT id, 'actor-row-pivotal', permission FROM 
 INSERT INTO container_acl_group SELECT id, 'auth-group-admins', permission FROM auth_container CROSS JOIN live_acl_permissions;
 INSERT INTO object_acl_actor SELECT id, 'actor-row-pivotal', permission FROM auth_object CROSS JOIN live_acl_permissions;
 INSERT INTO object_acl_group SELECT id, 'auth-group-admins', permission FROM auth_object CROSS JOIN live_acl_permissions;
+DELETE FROM actor_acl_actor WHERE target='actor-row-orphan';
+DELETE FROM actor_acl_group WHERE target='actor-row-orphan';
+INSERT INTO actor_acl_group VALUES ('actor-row-orphan','auth-group-server-admins','read');
+DELETE FROM object_acl_group WHERE target='object-row-node-web01' AND permission='read';
+INSERT INTO object_acl_group VALUES ('object-row-node-web01','auth-group-server-admins','read');
 DELETE FROM actor_acl_actor WHERE target='actor-row-denied';
 DELETE FROM actor_acl_group WHERE target='actor-row-denied';
 DELETE FROM object_acl_actor WHERE target='object-row-policy-group-denied';
@@ -1223,10 +1234,14 @@ run_migration_live_source_fidelity() {
   admin migration source normalize "$live_source_dir" --output "$dry_output" --dry-run --yes --json >"$live_source_root/normalize-existing-dry-run.json"
   [[ "$(cat "$dry_output/sentinel")" == "unchanged" ]]
   test ! -e "$dry_output/opencook-source-manifest.json"
-  echo "==> migration persisted number and deny-all ACL checks, including restart"
+  echo "==> migration persisted number and ACL checks, including restart and reindex"
+  run_migration_live_source_reindex
   verify_live_source_fidelity
+  verify_live_source_fidelity
+  run_migration_live_source_reindex
   verify_live_source_fidelity
   require_live_source_sync_progress
+  run_migration_live_source_reindex
   verify_live_source_fidelity
   ensure_live_source_cutover_manifest
   local before_hash after_hash
@@ -1241,6 +1256,7 @@ run_migration_live_source_fidelity() {
   reset_restore_target
   admin_restore_target migration restore apply "$live_source_backup_dir" --offline --yes --json >"$live_source_root/fidelity-restore.json"
   require_json_contains "$live_source_root/fidelity-restore.json" '"ok": true'
+  run_migration_live_source_reindex
   verify_live_source_fidelity
   touch "$live_source_import_sentinel"
 }
