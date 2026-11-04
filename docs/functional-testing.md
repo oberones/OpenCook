@@ -137,23 +137,29 @@ under the Compose-managed functional state volume and are cleaned unless
 `KEEP_STACK=1` or `OPENCOOK_FUNCTIONAL_KEEP_ARTIFACTS=1` is set.
 
 The live-source migration phases are also opt-in. `migration-live-source-all`
-creates a tiny Chef-shaped source PostgreSQL database and filesystem Bookshelf
-checksum root inside the Compose stack, runs live preflight/extract, imports the
+creates separate tiny Chef-shaped `opscode_chef` and `bifrost` databases plus a
+filesystem Bookshelf checksum root inside the Compose stack, verifies isolated
+Erchef/Bifrost connection and required-table failures, proves both extraction
+connections close after Erchef- and Bifrost-side failures, runs live
+preflight/extract, checks object ACL plus direct and nested group-membership
+payloads, imports the
 normalized bundle into the restore target, rebuilds/search-checks OpenSearch,
-runs shadow-read comparison, records source-sync cursor progress, and finishes
-with cutover rehearsal evidence that proves the source came from live
-extraction. Generated live-source databases, bundles, progress files, search
+runs shadow-read comparison, records source-sync cursor progress, verifies that
+missing source-freeze evidence blocks live-extracted cutover, and finishes with
+successful frozen-source cutover rehearsal evidence. Generated live-source
+databases, bundles, progress files, search
 reports, shadow reports, backup manifests, and rehearsal outputs stay in the
 Compose-managed state volume and are cleaned unless `KEEP_STACK=1` or
 `OPENCOOK_FUNCTIONAL_KEEP_ARTIFACTS=1` is set.
 
 The functional live-source phases do not require a real Chef Infra Server. They
-seed a deterministic source database and Bookshelf checksum root with
+seed deterministic linked Erchef/Bifrost databases and a Bookshelf checksum root with
 Compose-provided `OPENCOOK_FUNCTIONAL_LIVE_SOURCE_*` variables, then exercise
 the same read-only `opencook admin migration source live ...` command surface
 operators use against live sources. This keeps remote Docker runs reproducible
-while still proving credential redaction, copied-blob mode, source cursor
-freshness, shadow-read evidence, and cutover rehearsal gates.
+while still proving credential redaction, strict unresolved-authorization
+failure, copied-blob mode, source cursor freshness, shadow-read evidence, and
+cutover rehearsal gates.
 
 The production-scale migration phases are also opt-in. `migration-scale-all`
 generates a deterministic normalized source bundle inside the Compose-managed

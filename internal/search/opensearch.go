@@ -909,7 +909,9 @@ func classifyOpenSearchStatus(status int, accepted ...int) error {
 }
 
 func decodeOpenSearchJSON(body io.Reader, target any, label string) error {
-	if err := json.NewDecoder(body).Decode(target); err != nil {
+	decoder := json.NewDecoder(body)
+	decoder.UseNumber()
+	if err := decoder.Decode(target); err != nil {
 		if errors.Is(err, io.EOF) {
 			return fmt.Errorf("%w: empty %s", ErrUnavailable, label)
 		}

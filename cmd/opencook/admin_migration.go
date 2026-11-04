@@ -12,6 +12,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/oberones/OpenCook/internal/jsonvalue"
 	"io"
 	"net/http"
 	"net/url"
@@ -44,6 +45,8 @@ const (
 	adminMigrationSourceManifestPath           = "opencook-source-manifest.json"
 	adminMigrationSourceImportProgressPath     = "opencook-source-import-progress.json"
 	adminMigrationSourceSyncProgressPath       = "opencook-source-sync-progress.json"
+	adminMigrationLiveSourceErchefDatabase     = "opscode_chef"
+	adminMigrationLiveSourceBifrostDatabase    = "bifrost"
 )
 
 const (
@@ -58,29 +61,37 @@ const (
 )
 
 const (
-	adminMigrationFindingCountMismatch               = "migration_count_mismatch"
-	adminMigrationFindingRestoredObjectMissing       = "migration_restored_object_missing"
-	adminMigrationFindingUnexpectedExtraObject       = "migration_unexpected_extra_object"
-	adminMigrationFindingBlobMismatch                = "migration_blob_mismatch"
-	adminMigrationFindingMissingBlob                 = "migration_missing_blob"
-	adminMigrationFindingStaleSearchDocument         = "migration_stale_search_document"
-	adminMigrationFindingMissingSearchDocument       = "migration_missing_search_document"
-	adminMigrationFindingUnsupportedSourceFamily     = "migration_unsupported_source_family"
-	adminMigrationFindingRetryProgressDrift          = "migration_retry_progress_drift"
-	adminMigrationFindingRetrySafe                   = "migration_retry_safe"
-	adminMigrationFindingRetryUnsafe                 = "migration_retry_unsafe"
-	adminMigrationFindingManualCleanupRequired       = "migration_manual_cleanup_required"
-	adminMigrationFindingMaintenanceInvalid          = "cutover_maintenance_evidence_invalid"
-	adminMigrationFindingMaintenanceInactive         = "cutover_maintenance_inactive"
-	adminMigrationFindingMaintenanceProcessLocal     = "cutover_maintenance_process_local"
-	adminMigrationFindingSourcePostgresUnavailable   = "source_postgres_unavailable"
-	adminMigrationFindingSourceSchemaUnsupported     = "source_schema_unsupported"
-	adminMigrationFindingSourceFamilyUnsupported     = "source_family_unsupported"
-	adminMigrationFindingSourceBlobUnavailable       = "source_blob_unavailable"
-	adminMigrationFindingSourceBlobMissing           = "source_blob_missing"
-	adminMigrationFindingSourceBlobChecksumMismatch  = "source_blob_checksum_mismatch"
-	adminMigrationFindingSourceHTTPReadUnavailable   = "source_http_read_unavailable"
-	adminMigrationFindingSourceExtractionInterrupted = "source_extraction_interrupted"
+	adminMigrationFindingCountMismatch                        = "migration_count_mismatch"
+	adminMigrationFindingRestoredObjectMissing                = "migration_restored_object_missing"
+	adminMigrationFindingUnexpectedExtraObject                = "migration_unexpected_extra_object"
+	adminMigrationFindingBlobMismatch                         = "migration_blob_mismatch"
+	adminMigrationFindingMissingBlob                          = "migration_missing_blob"
+	adminMigrationFindingStaleSearchDocument                  = "migration_stale_search_document"
+	adminMigrationFindingMissingSearchDocument                = "migration_missing_search_document"
+	adminMigrationFindingUnsupportedSourceFamily              = "migration_unsupported_source_family"
+	adminMigrationFindingRetryProgressDrift                   = "migration_retry_progress_drift"
+	adminMigrationFindingRetrySafe                            = "migration_retry_safe"
+	adminMigrationFindingRetryUnsafe                          = "migration_retry_unsafe"
+	adminMigrationFindingManualCleanupRequired                = "migration_manual_cleanup_required"
+	adminMigrationFindingMaintenanceInvalid                   = "cutover_maintenance_evidence_invalid"
+	adminMigrationFindingMaintenanceInactive                  = "cutover_maintenance_inactive"
+	adminMigrationFindingMaintenanceProcessLocal              = "cutover_maintenance_process_local"
+	adminMigrationFindingSourcePostgresUnavailable            = "source_postgres_unavailable"
+	adminMigrationFindingSourceSchemaUnsupported              = "source_schema_unsupported"
+	adminMigrationFindingSourceErchefUnavailable              = "source_erchef_unavailable"
+	adminMigrationFindingSourceErchefSchemaUnsupported        = "source_erchef_schema_unsupported"
+	adminMigrationFindingSourceBifrostUnavailable             = "source_bifrost_unavailable"
+	adminMigrationFindingSourceBifrostSchemaUnsupported       = "source_bifrost_schema_unsupported"
+	adminMigrationFindingSourceAuthorizationTargetUnresolved  = "source_authorization_target_unresolved"
+	adminMigrationFindingSourceAuthorizationSubjectUnresolved = "source_authorization_subject_unresolved"
+	adminMigrationFindingSourceCrossDatabaseConsistency       = "source_cross_database_consistency_advisory"
+	adminMigrationFindingSourceBifrostUnrelatedRecords        = "source_bifrost_unrelated_records"
+	adminMigrationFindingSourceFamilyUnsupported              = "source_family_unsupported"
+	adminMigrationFindingSourceBlobUnavailable                = "source_blob_unavailable"
+	adminMigrationFindingSourceBlobMissing                    = "source_blob_missing"
+	adminMigrationFindingSourceBlobChecksumMismatch           = "source_blob_checksum_mismatch"
+	adminMigrationFindingSourceHTTPReadUnavailable            = "source_http_read_unavailable"
+	adminMigrationFindingSourceExtractionInterrupted          = "source_extraction_interrupted"
 )
 
 var (
@@ -123,6 +134,8 @@ type adminMigrationFlagValues struct {
 	blobS3SecretKey       string
 	blobS3SessionToken    string
 	sourcePostgresDSN     string
+	sourceErchefDatabase  string
+	sourceBifrostDatabase string
 	sourceBookshelfRoot   string
 	sourceBlobURL         string
 	sourceServerURL       string
@@ -179,18 +192,22 @@ type adminMigrationTarget struct {
 }
 
 type adminMigrationLiveSourceTarget struct {
-	AllOrganizations bool   `json:"all_organizations,omitempty"`
-	Organization     string `json:"organization,omitempty"`
-	PostgresDSN      string `json:"postgres_dsn"`
-	BlobMode         string `json:"blob_mode"`
-	BookshelfRoot    string `json:"bookshelf_root,omitempty"`
-	BlobURL          string `json:"blob_url,omitempty"`
-	ServerURL        string `json:"server_url,omitempty"`
-	RequestorName    string `json:"requestor_name,omitempty"`
-	RequestorType    string `json:"requestor_type,omitempty"`
-	PrivateKey       string `json:"private_key,omitempty"`
-	BlobCopyMode     string `json:"blob_copy_mode"`
-	OutputPath       string `json:"output_path,omitempty"`
+	AllOrganizations   bool   `json:"all_organizations,omitempty"`
+	Organization       string `json:"organization,omitempty"`
+	PostgresDSN        string `json:"postgres_dsn"`
+	ErchefPostgresDSN  string `json:"erchef_postgres_dsn"`
+	BifrostPostgresDSN string `json:"bifrost_postgres_dsn"`
+	ErchefDatabase     string `json:"erchef_database"`
+	BifrostDatabase    string `json:"bifrost_database"`
+	BlobMode           string `json:"blob_mode"`
+	BookshelfRoot      string `json:"bookshelf_root,omitempty"`
+	BlobURL            string `json:"blob_url,omitempty"`
+	ServerURL          string `json:"server_url,omitempty"`
+	RequestorName      string `json:"requestor_name,omitempty"`
+	RequestorType      string `json:"requestor_type,omitempty"`
+	PrivateKey         string `json:"private_key,omitempty"`
+	BlobCopyMode       string `json:"blob_copy_mode"`
+	OutputPath         string `json:"output_path,omitempty"`
 }
 
 type adminMigrationCapability struct {
@@ -277,20 +294,22 @@ type adminMigrationLiveSourceCapabilityProbe struct {
 }
 
 type adminMigrationLiveSourceConfig struct {
-	PostgresDSN    string
-	BookshelfRoot  string
-	BlobURL        string
-	ServerURL      string
-	RequestorName  string
-	RequestorType  string
-	PrivateKeyPath string
-	Organization   string
-	AllOrgs        bool
-	CopyBlobs      bool
-	ReferenceBlobs bool
-	OutputPath     string
-	ExtractionMode string
-	PreflightOnly  bool
+	PostgresDSN     string
+	ErchefDatabase  string
+	BifrostDatabase string
+	BookshelfRoot   string
+	BlobURL         string
+	ServerURL       string
+	RequestorName   string
+	RequestorType   string
+	PrivateKeyPath  string
+	Organization    string
+	AllOrgs         bool
+	CopyBlobs       bool
+	ReferenceBlobs  bool
+	OutputPath      string
+	ExtractionMode  string
+	PreflightOnly   bool
 }
 
 type adminMigrationPostgresRead struct {
@@ -530,11 +549,12 @@ type adminMigrationUnsignedClient interface {
 }
 
 type adminMigrationFinding struct {
-	Severity     string `json:"severity"`
-	Code         string `json:"code"`
-	Message      string `json:"message"`
-	Organization string `json:"organization,omitempty"`
-	Family       string `json:"family,omitempty"`
+	Details      map[string]string `json:"details,omitempty"`
+	Severity     string            `json:"severity"`
+	Code         string            `json:"code"`
+	Message      string            `json:"message"`
+	Organization string            `json:"organization,omitempty"`
+	Family       string            `json:"family,omitempty"`
 }
 
 type adminMigrationPlannedMutation struct {
@@ -1243,19 +1263,27 @@ func adminMigrationLiveSourceCapabilityProbes() []adminMigrationLiveSourceCapabi
 // scoped to admin migration commands instead of runtime server configuration.
 func adminMigrationLiveSourceConfigFromFlags(opts *adminMigrationFlagValues, preflightOnly bool) adminMigrationLiveSourceConfig {
 	cfg := adminMigrationLiveSourceConfig{
-		PostgresDSN:    strings.TrimSpace(opts.sourcePostgresDSN),
-		BookshelfRoot:  strings.TrimSpace(opts.sourceBookshelfRoot),
-		BlobURL:        strings.TrimSpace(opts.sourceBlobURL),
-		ServerURL:      strings.TrimSpace(opts.sourceServerURL),
-		RequestorName:  strings.TrimSpace(opts.sourceRequestorName),
-		RequestorType:  strings.TrimSpace(opts.sourceRequestorType),
-		PrivateKeyPath: strings.TrimSpace(opts.sourcePrivateKeyPath),
-		Organization:   strings.TrimSpace(opts.orgName),
-		AllOrgs:        opts.allOrgs || strings.TrimSpace(opts.orgName) == "",
-		CopyBlobs:      opts.copyBlobs,
-		ReferenceBlobs: opts.referenceBlobs,
-		OutputPath:     strings.TrimSpace(opts.outputPath),
-		PreflightOnly:  preflightOnly,
+		PostgresDSN:     strings.TrimSpace(opts.sourcePostgresDSN),
+		ErchefDatabase:  strings.TrimSpace(opts.sourceErchefDatabase),
+		BifrostDatabase: strings.TrimSpace(opts.sourceBifrostDatabase),
+		BookshelfRoot:   strings.TrimSpace(opts.sourceBookshelfRoot),
+		BlobURL:         strings.TrimSpace(opts.sourceBlobURL),
+		ServerURL:       strings.TrimSpace(opts.sourceServerURL),
+		RequestorName:   strings.TrimSpace(opts.sourceRequestorName),
+		RequestorType:   strings.TrimSpace(opts.sourceRequestorType),
+		PrivateKeyPath:  strings.TrimSpace(opts.sourcePrivateKeyPath),
+		Organization:    strings.TrimSpace(opts.orgName),
+		AllOrgs:         opts.allOrgs || strings.TrimSpace(opts.orgName) == "",
+		CopyBlobs:       opts.copyBlobs,
+		ReferenceBlobs:  opts.referenceBlobs,
+		OutputPath:      strings.TrimSpace(opts.outputPath),
+		PreflightOnly:   preflightOnly,
+	}
+	if cfg.ErchefDatabase == "" {
+		cfg.ErchefDatabase = adminMigrationLiveSourceErchefDatabase
+	}
+	if cfg.BifrostDatabase == "" {
+		cfg.BifrostDatabase = adminMigrationLiveSourceBifrostDatabase
 	}
 	if cfg.RequestorType == "" && cfg.ServerURL != "" {
 		cfg.RequestorType = "user"
@@ -1279,6 +1307,9 @@ func adminMigrationValidateLiveSourceConfig(cfg adminMigrationLiveSourceConfig, 
 	}
 	if cfg.Organization != "" && cfg.AllOrgs {
 		return "admin migration source live cannot combine --all-orgs with --org"
+	}
+	if strings.ContainsRune(cfg.ErchefDatabase, '\x00') || strings.ContainsRune(cfg.BifrostDatabase, '\x00') {
+		return "admin migration source live database names cannot contain NUL bytes"
 	}
 	if cfg.BookshelfRoot != "" && cfg.BlobURL != "" {
 		return "admin migration source live cannot combine --source-bookshelf-root with --source-blob-url"
@@ -1305,19 +1336,23 @@ func adminMigrationValidateLiveSourceConfig(cfg adminMigrationLiveSourceConfig, 
 // raw DSNs, provider credentials, signed URLs, private key paths, and secret paths.
 func adminMigrationLiveSourceRedactedConfig(cfg adminMigrationLiveSourceConfig) map[string]string {
 	return map[string]string{
-		"source_postgres_dsn":    adminMigrationRedact(cfg.PostgresDSN),
-		"source_blob_mode":       adminMigrationLiveSourceBlobMode(cfg),
-		"source_bookshelf_root":  adminMigrationRedactMigrationPath(cfg.BookshelfRoot),
-		"source_blob_url":        adminMigrationRedact(cfg.BlobURL),
-		"source_server_url":      adminMigrationRedact(cfg.ServerURL),
-		"source_requestor_name":  cfg.RequestorName,
-		"source_requestor_type":  cfg.RequestorType,
-		"source_private_key":     adminMigrationPresence(cfg.PrivateKeyPath),
-		"organization":           cfg.Organization,
-		"all_organizations":      adminMigrationBoolString(cfg.AllOrgs),
-		"source_blob_copy_mode":  cfg.ExtractionMode,
-		"normalized_output_path": adminMigrationRedactMigrationPath(cfg.OutputPath),
-		"preflight_only":         adminMigrationBoolString(cfg.PreflightOnly),
+		"source_postgres_dsn":         adminMigrationRedact(cfg.PostgresDSN),
+		"source_erchef_postgres_dsn":  adminMigrationRedact(cfg.PostgresDSN),
+		"source_bifrost_postgres_dsn": adminMigrationRedact(cfg.PostgresDSN),
+		"source_erchef_database":      adminMigrationLiveSourceEffectiveErchefDatabase(cfg),
+		"source_bifrost_database":     adminMigrationLiveSourceEffectiveBifrostDatabase(cfg),
+		"source_blob_mode":            adminMigrationLiveSourceBlobMode(cfg),
+		"source_bookshelf_root":       adminMigrationRedactMigrationPath(cfg.BookshelfRoot),
+		"source_blob_url":             adminMigrationRedact(cfg.BlobURL),
+		"source_server_url":           adminMigrationRedact(cfg.ServerURL),
+		"source_requestor_name":       cfg.RequestorName,
+		"source_requestor_type":       cfg.RequestorType,
+		"source_private_key":          adminMigrationPresence(cfg.PrivateKeyPath),
+		"organization":                cfg.Organization,
+		"all_organizations":           adminMigrationBoolString(cfg.AllOrgs),
+		"source_blob_copy_mode":       cfg.ExtractionMode,
+		"normalized_output_path":      adminMigrationRedactMigrationPath(cfg.OutputPath),
+		"preflight_only":              adminMigrationBoolString(cfg.PreflightOnly),
 	}
 }
 
@@ -1325,18 +1360,22 @@ func adminMigrationLiveSourceRedactedConfig(cfg adminMigrationLiveSourceConfig) 
 // block used by live preflight and the later extractor command.
 func adminMigrationLiveSourceTargetFromConfig(cfg adminMigrationLiveSourceConfig) adminMigrationLiveSourceTarget {
 	return adminMigrationLiveSourceTarget{
-		AllOrganizations: cfg.AllOrgs,
-		Organization:     cfg.Organization,
-		PostgresDSN:      adminMigrationRedact(cfg.PostgresDSN),
-		BlobMode:         adminMigrationLiveSourceBlobMode(cfg),
-		BookshelfRoot:    adminMigrationRedactMigrationPath(cfg.BookshelfRoot),
-		BlobURL:          adminMigrationRedact(cfg.BlobURL),
-		ServerURL:        adminMigrationRedact(cfg.ServerURL),
-		RequestorName:    cfg.RequestorName,
-		RequestorType:    cfg.RequestorType,
-		PrivateKey:       adminMigrationPresence(cfg.PrivateKeyPath),
-		BlobCopyMode:     cfg.ExtractionMode,
-		OutputPath:       adminMigrationRedactMigrationPath(cfg.OutputPath),
+		AllOrganizations:   cfg.AllOrgs,
+		Organization:       cfg.Organization,
+		PostgresDSN:        adminMigrationRedact(cfg.PostgresDSN),
+		ErchefPostgresDSN:  adminMigrationRedact(cfg.PostgresDSN),
+		BifrostPostgresDSN: adminMigrationRedact(cfg.PostgresDSN),
+		ErchefDatabase:     adminMigrationLiveSourceEffectiveErchefDatabase(cfg),
+		BifrostDatabase:    adminMigrationLiveSourceEffectiveBifrostDatabase(cfg),
+		BlobMode:           adminMigrationLiveSourceBlobMode(cfg),
+		BookshelfRoot:      adminMigrationRedactMigrationPath(cfg.BookshelfRoot),
+		BlobURL:            adminMigrationRedact(cfg.BlobURL),
+		ServerURL:          adminMigrationRedact(cfg.ServerURL),
+		RequestorName:      cfg.RequestorName,
+		RequestorType:      cfg.RequestorType,
+		PrivateKey:         adminMigrationPresence(cfg.PrivateKeyPath),
+		BlobCopyMode:       cfg.ExtractionMode,
+		OutputPath:         adminMigrationRedactMigrationPath(cfg.OutputPath),
 	}
 }
 
@@ -1632,11 +1671,14 @@ func buildAdminMigrationScaleFixtureCreate(profile string, includeSidecars bool,
 // adminMigrationEnsureScaleFixtureOutputAllowed mirrors source-normalize output
 // safety without requiring a real source path to compare against.
 func adminMigrationEnsureScaleFixtureOutputAllowed(outputPath string, overwrite bool) error {
+	if err := adminMigrationRejectParentTraversal(outputPath); err != nil {
+		return err
+	}
 	outputPath = strings.TrimSpace(outputPath)
 	if outputPath == "" || filepath.Clean(outputPath) == "." || filepath.Clean(outputPath) == string(os.PathSeparator) {
 		return errAdminMigrationUnsafeSourcePath
 	}
-	if _, err := os.Stat(outputPath); err == nil && !overwrite {
+	if _, err := os.Lstat(outputPath); err == nil && !overwrite {
 		return errAdminMigrationNormalizeOutputExists
 	} else if err != nil && !os.IsNotExist(err) {
 		return err
@@ -1645,7 +1687,7 @@ func adminMigrationEnsureScaleFixtureOutputAllowed(outputPath string, overwrite 
 	if err != nil {
 		return err
 	}
-	if len(stale) > 0 && !overwrite {
+	if len(stale) > 0 {
 		return errAdminMigrationNormalizeOutputStaleTmp
 	}
 	return nil
@@ -1843,6 +1885,10 @@ func (c *command) buildAdminMigrationBackupCreate(ctx context.Context, cfg confi
 		}},
 	}
 
+	if err := adminMigrationRequireFreshBackup(opts.outputPath); err != nil {
+		adminMigrationMarkFinding(&out, adminMigrationPublicationFinding(err, "backup_write_failed"))
+		return out
+	}
 	backupRead := c.adminMigrationLoadBackupState(ctx, cfg)
 	out.Dependencies = append(out.Dependencies, backupRead.Dependencies...)
 	var blobReferences []adminMigrationBlobReference
@@ -1883,17 +1929,7 @@ func (c *command) buildAdminMigrationBackupCreate(ctx context.Context, cfg confi
 		Warnings:    out.Warnings,
 	})
 	if err != nil {
-		out.OK = false
-		out.Errors = append(out.Errors, adminCLIError{
-			Code:    "backup_write_failed",
-			Message: "backup bundle could not be written",
-		})
-		out.Findings = append(out.Findings, adminMigrationFinding{
-			Severity: "error",
-			Code:     "backup_write_failed",
-			Family:   "backup_bundle",
-			Message:  "backup bundle could not be written",
-		})
+		adminMigrationMarkFinding(&out, adminMigrationPublicationFinding(err, "backup_write_failed"))
 		return out
 	}
 
@@ -2169,7 +2205,7 @@ func adminMigrationInspectBackupBundle(bundlePath string) (adminMigrationBackupM
 		return adminMigrationBackupManifest{}, adminMigrationBackupInspectSummary{}, []adminMigrationFinding{adminMigrationBackupInspectFinding("backup_manifest_missing", "backup manifest.json could not be read")}, err
 	}
 	var manifest adminMigrationBackupManifest
-	if err := json.Unmarshal(rawManifest, &manifest); err != nil {
+	if err := jsonvalue.Unmarshal(rawManifest, &manifest); err != nil {
 		return adminMigrationBackupManifest{}, adminMigrationBackupInspectSummary{}, []adminMigrationFinding{adminMigrationBackupInspectFinding("backup_manifest_invalid_json", "backup manifest.json is not valid JSON")}, err
 	}
 	if manifest.FormatVersion != adminMigrationBackupFormatVersion {
@@ -2517,7 +2553,7 @@ func adminMigrationReadBackupBlobManifest(bundlePath string) (adminMigrationBack
 		return adminMigrationBackupBlobManifest{}, err
 	}
 	var manifest adminMigrationBackupBlobManifest
-	if err := json.Unmarshal(data, &manifest); err != nil {
+	if err := jsonvalue.Unmarshal(data, &manifest); err != nil {
 		return adminMigrationBackupBlobManifest{}, err
 	}
 	if manifest.FormatVersion != adminMigrationBackupFormatVersion {
@@ -3039,7 +3075,7 @@ func adminMigrationReadBackupJSONPayload(bundlePath, relativePath string, out an
 	if err != nil {
 		return err
 	}
-	return json.Unmarshal(data, out)
+	return jsonvalue.Unmarshal(data, out)
 }
 
 // adminMigrationLoadRestoreTargetSnapshots loads current target state for the
@@ -3310,7 +3346,7 @@ func (c *command) runAdminMigrationSourceLivePreflight(ctx context.Context, args
 		return c.adminFlagError("admin migration source live preflight", err)
 	}
 	if fs.NArg() != 0 {
-		return c.adminUsageError("usage: opencook admin migration source live preflight --source-postgres-dsn DSN [--source-bookshelf-root PATH|--source-blob-url URL] [--source-server-url URL --source-requestor-name NAME --source-private-key PATH] [--org ORG|--all-orgs] [--json] [--with-timing]\n\n")
+		return c.adminUsageError("usage: opencook admin migration source live preflight --source-postgres-dsn DSN [--source-erchef-database NAME] [--source-bifrost-database NAME] [--source-bookshelf-root PATH|--source-blob-url URL] [--source-server-url URL --source-requestor-name NAME --source-private-key PATH] [--org ORG|--all-orgs] [--json] [--with-timing]\n\n")
 	}
 	cfg := adminMigrationLiveSourceConfigFromFlags(opts, true)
 	if message := adminMigrationValidateLiveSourceConfig(cfg, false); message != "" {
@@ -3335,11 +3371,16 @@ func (c *command) runAdminMigrationSourceLiveExtract(ctx context.Context, args [
 		return c.adminFlagError("admin migration source live extract", err)
 	}
 	if fs.NArg() != 0 {
-		return c.adminUsageError("usage: opencook admin migration source live extract --source-postgres-dsn DSN --output PATH [--source-bookshelf-root PATH|--source-blob-url URL] [--source-server-url URL --source-requestor-name NAME --source-private-key PATH] [--org ORG|--all-orgs] [--copy-blobs|--reference-blobs] [--dry-run] [--yes] [--json] [--with-timing]\n\n")
+		return c.adminUsageError("usage: opencook admin migration source live extract --source-postgres-dsn DSN --output PATH [--source-erchef-database NAME] [--source-bifrost-database NAME] [--source-bookshelf-root PATH|--source-blob-url URL] [--source-server-url URL --source-requestor-name NAME --source-private-key PATH] [--org ORG|--all-orgs] [--copy-blobs|--reference-blobs] [--dry-run] [--yes] [--json] [--with-timing]\n\n")
 	}
 	cfg := adminMigrationLiveSourceConfigFromFlags(opts, false)
 	if message := adminMigrationValidateLiveSourceConfig(cfg, true); message != "" {
 		return c.adminUsageError("%s\n\n", message)
+	}
+	if err := adminMigrationProtectPaths(cfg.OutputPath, cfg.BookshelfRoot, cfg.PrivateKeyPath); err != nil {
+		result := adminMigrationLiveSourceBaseOutput("migration_source_live_extract", cfg)
+		adminMigrationMarkFinding(&result, adminMigrationNormalizeOutputFinding(err))
+		return c.writeAdminMigrationResult(result, opts.withTiming, start, adminMigrationExitCode(result))
 	}
 	if !opts.dryRun {
 		if err := adminMigrationEnsureScaleFixtureOutputAllowed(cfg.OutputPath, opts.yes); err != nil {
@@ -3413,7 +3454,7 @@ func applyAdminMigrationSourceLiveExtractBundle(cfg adminMigrationLiveSourceConf
 		})
 		return out
 	}
-	if err := adminMigrationWriteNormalizedSourceBundle(cfg.OutputPath, *extracted.Bundle, opts.yes); err != nil {
+	if err := adminMigrationWriteNormalizedSourceBundle(cfg.OutputPath, *extracted.Bundle, opts.yes, cfg.BookshelfRoot, cfg.PrivateKeyPath); err != nil {
 		adminMigrationMarkDependency(&out, adminMigrationDependency{
 			Name:       "normalized_source_output",
 			Status:     "error",
@@ -3485,12 +3526,24 @@ func adminMigrationLiveSourceTargetPtr(cfg adminMigrationLiveSourceConfig) *admi
 func adminMigrationLiveSourceDependencies(cfg adminMigrationLiveSourceConfig) []adminMigrationDependency {
 	return append([]adminMigrationDependency{
 		{
-			Name:       "source_postgres",
+			Name:       "source_erchef_postgres",
 			Status:     "skipped",
 			Backend:    "postgres",
 			Configured: strings.TrimSpace(cfg.PostgresDSN) != "",
-			Message:    "source PostgreSQL is configured for read-only live-source probes",
+			Message:    "source Erchef PostgreSQL is configured for a read-only live-source probe",
 			Details: map[string]string{
+				"database":           adminMigrationLiveSourceEffectiveErchefDatabase(cfg),
+				"read_only_required": "true",
+			},
+		},
+		{
+			Name:       "source_bifrost_postgres",
+			Status:     "skipped",
+			Backend:    "postgres",
+			Configured: strings.TrimSpace(cfg.PostgresDSN) != "",
+			Message:    "source Bifrost PostgreSQL is configured for a read-only live-source probe",
+			Details: map[string]string{
+				"database":           adminMigrationLiveSourceEffectiveBifrostDatabase(cfg),
 				"read_only_required": "true",
 			},
 		},
@@ -3935,6 +3988,10 @@ func buildAdminMigrationSourceNormalize(sourcePath string, opts *adminMigrationF
 		PlannedMutations: []adminMigrationPlannedMutation{},
 	}
 
+	if err := adminMigrationProtectPaths(opts.outputPath, sourcePath); err != nil {
+		adminMigrationMarkFinding(&out, adminMigrationNormalizeOutputFinding(err))
+		return out
+	}
 	bundle, err := adminMigrationBuildNormalizedSourceBundle(sourcePath)
 	if err != nil {
 		adminMigrationMarkDependency(&out, adminMigrationDependency{
@@ -3966,7 +4023,7 @@ func buildAdminMigrationSourceNormalize(sourcePath string, opts *adminMigrationF
 			"format_version": bundle.FormatVersion,
 		},
 	})
-	if err := adminMigrationEnsureNormalizeOutputAllowed(sourcePath, opts.outputPath, opts.yes); err != nil {
+	if err := adminMigrationEnsureNormalizeOutputAllowed(sourcePath, opts.outputPath, opts.yes || opts.dryRun); err != nil {
 		adminMigrationMarkDependency(&out, adminMigrationDependency{
 			Name:       "normalized_source_output",
 			Status:     "error",
@@ -3977,7 +4034,13 @@ func buildAdminMigrationSourceNormalize(sourcePath string, opts *adminMigrationF
 		adminMigrationMarkFinding(&out, adminMigrationNormalizeOutputFinding(err))
 		return out
 	}
-	if err := adminMigrationWriteNormalizedSourceBundle(opts.outputPath, bundle, opts.yes); err != nil {
+	if opts.dryRun {
+		out.PlannedMutations = append(out.PlannedMutations, adminMigrationPlannedMutation{Action: "write_normalized_source", Family: "source_manifest", Count: len(bundle.Manifest.Payloads), Message: "would write normalized source bundle; dry run, no output was written"})
+		adminMigrationMarkDependency(&out, adminMigrationDependency{Name: "normalized_source_output", Status: "skipped", Message: "dry run; no output was written"})
+		adminMigrationCollectOutputStatuses(&out)
+		return out
+	}
+	if err := adminMigrationWriteNormalizedSourceBundle(opts.outputPath, bundle, opts.yes, sourcePath); err != nil {
 		adminMigrationMarkDependency(&out, adminMigrationDependency{
 			Name:       "normalized_source_output",
 			Status:     "error",
@@ -3985,7 +4048,7 @@ func buildAdminMigrationSourceNormalize(sourcePath string, opts *adminMigrationF
 			Configured: true,
 			Message:    "normalized source output could not be written",
 		})
-		adminMigrationMarkFinding(&out, adminMigrationSourceErrorFinding("source_normalize_write_failed", "normalized source output could not be written"))
+		adminMigrationMarkFinding(&out, adminMigrationPublicationFinding(err, "source_normalize_write_failed"))
 		return out
 	}
 	adminMigrationMarkDependency(&out, adminMigrationDependency{
@@ -4298,7 +4361,7 @@ func (c *command) buildAdminMigrationSourceSyncPreflight(ctx context.Context, cf
 		return out
 	}
 
-	importState, err := adminMigrationSourceImportStateFromRead(read)
+	importState, err := adminMigrationSourceSyncStateFromRead(read)
 	if err != nil {
 		adminMigrationMarkError(&out, "source_sync_state_invalid", "normalized source payloads could not be converted into OpenCook state", "source_sync")
 		return out
@@ -4316,7 +4379,12 @@ func (c *command) buildAdminMigrationSourceSyncPreflight(ctx context.Context, cf
 		Cookbooks:   targetRead.Cookbooks,
 	}
 	scopes := adminMigrationSourceSyncCoveredScopes(read)
-	diff := adminMigrationSourceSyncDiffStates(importState, targetState, scopes)
+	merged := adminMigrationSourceSyncMergedState(targetState, importState, scopes)
+	if err := adminMigrationValidateSyncGraph(merged, importState, scopes); err != nil {
+		adminMigrationMarkError(&out, "source_sync_graph_invalid", err.Error(), "source_sync")
+		return out
+	}
+	diff := adminMigrationSourceSyncDiffStates(merged, targetState, adminMigrationSourceSyncDiffScopes(scopes))
 	out.Inventory.Families = append(out.Inventory.Families, diff.Families...)
 	out.Inventory.Families = adminMigrationSortedInventoryFamilies(out.Inventory.Families)
 	out.PlannedMutations = adminMigrationSourceSyncPlannedMutations(diff, progress)
@@ -4331,7 +4399,7 @@ func (c *command) buildAdminMigrationSourceSyncPreflight(ctx context.Context, cf
 	out.Dependencies = append(out.Dependencies, openSearchDependency)
 	out.PlannedMutations = append(out.PlannedMutations, adminMigrationSourceSearchFollowupMutations(diff.HasChanges)...)
 	if diff.DeleteCount > 0 {
-		out.Warnings = append(out.Warnings, "source sync planned target-only deletes only for families explicitly present in the normalized source manifest")
+		out.Warnings = append(out.Warnings, "source sync planned deletes for covered families and relationships attached to deleted parents")
 	}
 
 	adminMigrationCollectOutputStatuses(&out)
@@ -4341,7 +4409,7 @@ func (c *command) buildAdminMigrationSourceSyncPreflight(ctx context.Context, cf
 // applyAdminMigrationSourceSync copies required blobs, reconciles covered
 // PostgreSQL families, and records a cursor only after metadata writes succeed.
 func (c *command) applyAdminMigrationSourceSync(ctx context.Context, cfg config.Config, sourcePath string, read adminMigrationSourceImportRead, opts *adminMigrationFlagValues, out adminMigrationCLIOutput) adminMigrationCLIOutput {
-	importState, err := adminMigrationSourceImportStateFromRead(read)
+	importState, err := adminMigrationSourceSyncStateFromRead(read)
 	if err != nil {
 		adminMigrationMarkError(&out, "source_sync_state_invalid", "normalized source payloads could not be converted into OpenCook state", "source_sync")
 		return out
@@ -4379,9 +4447,12 @@ func (c *command) applyAdminMigrationSourceSync(ctx context.Context, cfg config.
 
 	scopes := adminMigrationSourceSyncCoveredScopes(read)
 	targetState := adminMigrationSourceImportState{Bootstrap: previousBootstrap, CoreObjects: previousCore, Cookbooks: currentCookbooks}
-	diff := adminMigrationSourceSyncDiffStates(importState, targetState, scopes)
 	merged := adminMigrationSourceSyncMergedState(targetState, importState, scopes)
-
+	if err := adminMigrationValidateSyncGraph(merged, importState, scopes); err != nil {
+		adminMigrationMarkError(&out, "source_sync_graph_invalid", err.Error(), "source_sync")
+		return out
+	}
+	diff := adminMigrationSourceSyncDiffStates(merged, targetState, adminMigrationSourceSyncDiffScopes(scopes))
 	blobApply := c.adminMigrationSourceImportApplyBlobs(ctx, cfg, sourcePath, read, "")
 	blobApply.Dependency.Name = "source_sync_blobs"
 	if blobApply.Dependency.Message == "source import has no checksum blob references to copy or verify" {
@@ -5148,7 +5219,7 @@ func adminMigrationReadSourceImportProgress(path string) (adminMigrationSourceIm
 		return adminMigrationSourceImportProgress{}, err
 	}
 	var progress adminMigrationSourceImportProgress
-	if err := json.Unmarshal(data, &progress); err != nil {
+	if err := jsonvalue.Unmarshal(data, &progress); err != nil {
 		return adminMigrationSourceImportProgress{}, err
 	}
 	if progress.FormatVersion != "" && progress.FormatVersion != adminMigrationSourceImportProgressFormatV1 {
@@ -5258,7 +5329,7 @@ func adminMigrationReadSourceSyncProgress(path string) (adminMigrationSourceSync
 		return adminMigrationSourceSyncProgress{}, err
 	}
 	var progress adminMigrationSourceSyncProgress
-	if err := json.Unmarshal(data, &progress); err != nil {
+	if err := jsonvalue.Unmarshal(data, &progress); err != nil {
 		return adminMigrationSourceSyncProgress{}, err
 	}
 	if progress.FormatVersion != "" && progress.FormatVersion != adminMigrationSourceSyncProgressFormatV1 {
@@ -5474,7 +5545,7 @@ func adminMigrationSourceSyncMutationDetails(details []adminMigrationSourceSyncF
 		}{
 			{action: "create", count: detail.Creates, message: "source sync would create PostgreSQL-backed " + detail.Key.Family + " records from normalized source payloads"},
 			{action: "update", count: detail.Updates, message: "source sync would update PostgreSQL-backed " + detail.Key.Family + " records from normalized source payloads"},
-			{action: "delete", count: detail.Deletes, message: "source sync would delete target-only " + detail.Key.Family + " records because the source manifest covers that family"},
+			{action: "delete", count: detail.Deletes, message: "source sync would delete target-only " + detail.Key.Family + " records or attached relationships removed by source-covered parent changes"},
 			{action: "unchanged", count: detail.Unchanged, message: "source sync found unchanged PostgreSQL-backed " + detail.Key.Family + " records"},
 		} {
 			if item.count == 0 {
@@ -5735,7 +5806,31 @@ func adminMigrationSourceSyncMergedState(target, source adminMigrationSourceImpo
 	}
 	adminMigrationEnsureSourceSyncStateMaps(&source)
 
-	for key := range scopes {
+	keys := make([]adminMigrationSourcePayloadKey, 0, len(scopes))
+	for key, covered := range scopes {
+		if covered {
+			keys = append(keys, key)
+		}
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		rank := func(family string) int {
+			switch family {
+			case "group_memberships", "policy_assignments":
+				return 1
+			case "server_admin_memberships":
+				return 2
+			}
+			return 0
+		}
+		if rank(keys[i].Family) != rank(keys[j].Family) {
+			return rank(keys[i].Family) < rank(keys[j].Family)
+		}
+		if keys[i].Organization != keys[j].Organization {
+			return keys[i].Organization < keys[j].Organization
+		}
+		return keys[i].Family < keys[j].Family
+	})
+	for _, key := range keys {
 		switch key.Family {
 		case "users":
 			merged.Bootstrap.Users = source.Bootstrap.Users
@@ -5775,8 +5870,20 @@ func adminMigrationSourceSyncMergeOrgFamily(merged *adminMigrationSourceImportSt
 		bootstrapOrg.Clients = sourceBootstrapOrg.Clients
 	case "client_keys":
 		bootstrapOrg.ClientKeys = sourceBootstrapOrg.ClientKeys
-	case "groups", "group_memberships":
-		bootstrapOrg.Groups = sourceBootstrapOrg.Groups
+	case "groups":
+		definitions := make(map[string]bootstrap.Group, len(sourceBootstrapOrg.Groups))
+		for name, definition := range sourceBootstrapOrg.Groups {
+			previous := bootstrapOrg.Groups[name]
+			definition.Users, definition.Clients, definition.Groups, definition.Actors = previous.Users, previous.Clients, previous.Groups, previous.Actors
+			definitions[name] = definition
+		}
+		bootstrapOrg.Groups = definitions
+	case "group_memberships":
+		for name, definition := range bootstrapOrg.Groups {
+			relationships := sourceBootstrapOrg.Groups[name]
+			definition.Users, definition.Clients, definition.Groups, definition.Actors = relationships.Users, relationships.Clients, relationships.Groups, relationships.Actors
+			bootstrapOrg.Groups[name] = definition
+		}
 	case "containers":
 		bootstrapOrg.Containers = sourceBootstrapOrg.Containers
 	case "acls":
@@ -5794,8 +5901,18 @@ func adminMigrationSourceSyncMergeOrgFamily(merged *adminMigrationSourceImportSt
 		coreOrg.DataBagItems = sourceCoreOrg.DataBagItems
 	case "policy_revisions":
 		coreOrg.Policies = sourceCoreOrg.Policies
-	case "policy_groups", "policy_assignments":
-		coreOrg.PolicyGroups = sourceCoreOrg.PolicyGroups
+	case "policy_groups":
+		definitions := make(map[string]bootstrap.PolicyGroup, len(sourceCoreOrg.PolicyGroups))
+		for name, definition := range sourceCoreOrg.PolicyGroups {
+			definition.Policies = coreOrg.PolicyGroups[name].Policies
+			definitions[name] = definition
+		}
+		coreOrg.PolicyGroups = definitions
+	case "policy_assignments":
+		for name, definition := range coreOrg.PolicyGroups {
+			definition.Policies = sourceCoreOrg.PolicyGroups[name].Policies
+			coreOrg.PolicyGroups[name] = definition
+		}
 	case "sandboxes":
 		coreOrg.Sandboxes = sourceCoreOrg.Sandboxes
 	case "cookbook_versions":
@@ -5815,7 +5932,10 @@ func adminMigrationSourceSyncMergeServerAdmins(merged *adminMigrationSourceImpor
 		adminMigrationEnsureSourceSyncOrg(merged, orgName)
 		sourceOrg := source.Bootstrap.Orgs[orgName]
 		mergedOrg := merged.Bootstrap.Orgs[orgName]
-		group := mergedOrg.Groups["admins"]
+		group, exists := mergedOrg.Groups["admins"]
+		if !exists {
+			continue
+		}
 		sourceGroup := sourceOrg.Groups["admins"]
 		group.Users = adminMigrationUniqueSortedStrings(sourceGroup.Users)
 		group.Actors = adminMigrationUniqueSortedStrings(append(append([]string{}, group.Users...), group.Clients...))
@@ -5880,6 +6000,9 @@ func adminMigrationSourceSyncDigest(value any) string {
 	data, err := json.Marshal(value)
 	if err != nil {
 		return fmt.Sprintf("%#v", value)
+	}
+	if canonical, err := jsonvalue.CanonicalBytes(data); err == nil {
+		data = canonical
 	}
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
@@ -5955,7 +6078,7 @@ type adminMigrationSourceImportOrgAccumulator struct {
 
 // adminMigrationSourceImportStateFromRead converts the normalized source graph
 // into the same logical state shape used by backup restore and PostgreSQL stores.
-func adminMigrationSourceImportStateFromRead(read adminMigrationSourceImportRead) (adminMigrationSourceImportState, error) {
+func adminMigrationSourceImportStateFromRead(read adminMigrationSourceImportRead, deferRelationships ...bool) (adminMigrationSourceImportState, error) {
 	state := adminMigrationSourceImportState{
 		Bootstrap: bootstrap.BootstrapCoreState{
 			Users:    map[string]bootstrap.User{},
@@ -6064,6 +6187,11 @@ func adminMigrationSourceImportStateFromRead(read adminMigrationSourceImportRead
 		state.Bootstrap.Orgs[orgName] = acc.bootstrap
 		state.CoreObjects.Orgs[orgName] = acc.core
 		state.Cookbooks.Orgs[orgName] = adminMigrationSortedCookbookExportOrg(acc.cookbooks)
+	}
+	if len(deferRelationships) == 0 || !deferRelationships[0] {
+		if err := adminMigrationValidateImportedRelationships(read, state); err != nil {
+			return adminMigrationSourceImportState{}, err
+		}
 	}
 	return state, nil
 }
@@ -6619,7 +6747,7 @@ func adminMigrationSourceImportDecode(object map[string]any, out any) error {
 	if err != nil {
 		return err
 	}
-	return json.Unmarshal(data, out)
+	return jsonvalue.Unmarshal(data, out)
 }
 
 // adminMigrationSourceImportCloneMap deep-copies JSON-like maps so imported
@@ -6633,7 +6761,7 @@ func adminMigrationSourceImportCloneMap(in map[string]any) map[string]any {
 		return adminMigrationCopySourceObject(in)
 	}
 	var out map[string]any
-	if err := json.Unmarshal(data, &out); err != nil || out == nil {
+	if err := jsonvalue.Unmarshal(data, &out); err != nil || out == nil {
 		return adminMigrationCopySourceObject(in)
 	}
 	return out
@@ -6889,57 +7017,31 @@ func adminMigrationNormalizeSourceEntries(sourceType string, entries []adminMigr
 
 // adminMigrationWriteNormalizedSourceBundle writes through a sibling temporary
 // directory, verifies the staged manifest, and only then publishes the bundle.
-func adminMigrationWriteNormalizedSourceBundle(outputPath string, bundle adminMigrationSourceNormalizeBundle, overwrite bool) error {
+func adminMigrationWriteNormalizedSourceBundle(outputPath string, bundle adminMigrationSourceNormalizeBundle, overwrite bool, protected ...string) error {
 	outputPath = strings.TrimSpace(outputPath)
-	parent := filepath.Dir(outputPath)
-	if err := os.MkdirAll(parent, 0o755); err != nil {
-		return err
-	}
-	if overwrite {
-		if err := adminMigrationRemoveInterruptedNormalizedSourceOutputDirs(outputPath); err != nil {
+	return adminMigrationPublishBundle(outputPath, "normalize", overwrite, protected, func(tempDir string) error {
+		for _, path := range adminMigrationSortedMapKeys(bundle.Files) {
+			if err := adminMigrationWriteNormalizedSourceFile(tempDir, path, bundle.Files[path]); err != nil {
+				return err
+			}
+		}
+		manifestData, err := json.MarshalIndent(bundle.Manifest, "", "  ")
+		if err != nil {
 			return err
 		}
-	}
-	tempDir, err := os.MkdirTemp(parent, "."+filepath.Base(outputPath)+"-normalize-*")
-	if err != nil {
-		return err
-	}
-	cleanup := true
-	defer func() {
-		if cleanup {
-			_ = os.RemoveAll(tempDir)
-		}
-	}()
-	for _, path := range adminMigrationSortedMapKeys(bundle.Files) {
-		if err := adminMigrationWriteNormalizedSourceFile(tempDir, path, bundle.Files[path]); err != nil {
+		manifestData = append(manifestData, '\n')
+		if err := adminMigrationWriteNormalizedSourceFile(tempDir, adminMigrationSourceManifestPath, manifestData); err != nil {
 			return err
 		}
-	}
-	manifestData, err := json.MarshalIndent(bundle.Manifest, "", "  ")
-	if err != nil {
-		return err
-	}
-	manifestData = append(manifestData, '\n')
-	if err := adminMigrationWriteNormalizedSourceFile(tempDir, adminMigrationSourceManifestPath, manifestData); err != nil {
-		return err
-	}
-	if read, err := adminMigrationReadSourceImportBundle(tempDir); err != nil {
-		findings := read.Bundle.Findings
-		if len(findings) == 0 {
-			findings = []adminMigrationFinding{adminMigrationSourceErrorFinding("source_bundle_invalid", "normalized source bundle failed integrity inspection before publication")}
+		if read, err := adminMigrationReadSourceImportBundle(tempDir); err != nil {
+			findings := read.Bundle.Findings
+			if len(findings) == 0 {
+				findings = []adminMigrationFinding{adminMigrationSourceErrorFinding("source_bundle_invalid", "normalized source bundle failed integrity inspection before publication")}
+			}
+			return adminMigrationNormalizedSourceBundleWriteError{Findings: findings, Err: err}
 		}
-		return adminMigrationNormalizedSourceBundleWriteError{Findings: findings, Err: err}
-	}
-	if overwrite {
-		if err := os.RemoveAll(outputPath); err != nil {
-			return err
-		}
-	}
-	if err := os.Rename(tempDir, outputPath); err != nil {
-		return err
-	}
-	cleanup = false
-	return nil
+		return nil
+	})
 }
 
 type adminMigrationNormalizedSourceBundleWriteError struct {
@@ -6962,6 +7064,10 @@ func adminMigrationNormalizedSourceBundleWriteFindings(err error) []adminMigrati
 	var writeErr adminMigrationNormalizedSourceBundleWriteError
 	if errors.As(err, &writeErr) {
 		return append([]adminMigrationFinding(nil), writeErr.Findings...)
+	}
+	var publication *adminMigrationPublicationError
+	if errors.As(err, &publication) || errors.Is(err, errAdminMigrationNormalizeOutputOverlaps) {
+		return []adminMigrationFinding{adminMigrationPublicationFinding(err, "source_normalize_write_failed")}
 	}
 	return nil
 }
@@ -6989,7 +7095,7 @@ func adminMigrationLoadSourceManifestForNormalize(path string) (adminMigrationSo
 		return adminMigrationSourceManifest{}, "", finding, err
 	}
 	var manifest adminMigrationSourceManifest
-	if err := json.Unmarshal(raw, &manifest); err != nil {
+	if err := jsonvalue.Unmarshal(raw, &manifest); err != nil {
 		finding := adminMigrationSourceErrorFinding("source_manifest_invalid_json", "source manifest is not valid JSON")
 		return adminMigrationSourceManifest{}, "", finding, err
 	}
@@ -7566,8 +7672,11 @@ func adminMigrationNormalizeSourcePolicyAssignments(payloadValues map[adminMigra
 			return err
 		}
 		group := adminMigrationSourceString(object, "group", "policy_group")
-		if !policyGroups[group] {
+		if _, covered := payloadValues[adminMigrationSourcePayloadKey{Organization: orgName, Family: "policy_groups"}]; covered && !policyGroups[group] {
 			return adminMigrationSourceSemanticError{Code: "source_orphan_policy_assignment", Message: "source policy assignment references a missing policy group"}
+		}
+		if err := adminMigrationValidateSourceName(group, "source_policy_group_invalid"); err != nil {
+			return err
 		}
 		policy := adminMigrationSourceString(object, "policy", "policy_name")
 		if err := adminMigrationValidateSourceName(policy, "source_policy_assignment_invalid"); err != nil {
@@ -7577,7 +7686,7 @@ func adminMigrationNormalizeSourcePolicyAssignments(payloadValues map[adminMigra
 		if !adminMigrationPolicyRevisionPattern.MatchString(revisionID) {
 			return adminMigrationSourceSemanticError{Code: "source_policy_revision_invalid", Message: "source policy revision_id must be a 40-character hexadecimal identifier"}
 		}
-		if !policyRevisions[policy+"/"+revisionID] {
+		if _, covered := payloadValues[adminMigrationSourcePayloadKey{Organization: orgName, Family: "policy_groups"}]; covered && !policyRevisions[policy+"/"+revisionID] {
 			return adminMigrationSourceSemanticError{Code: "source_orphan_policy_assignment", Message: "source policy assignment references a missing policy revision"}
 		}
 		identity := group + "/" + policy
@@ -8502,12 +8611,30 @@ func adminMigrationNormalizeSourceGroupMemberships(payloadValues map[adminMigrat
 			return err
 		}
 		groupName := adminMigrationSourceString(object, "group", "groupname")
-		if !groups[groupName] {
+		if _, covered := payloadValues[adminMigrationSourcePayloadKey{Organization: orgName, Family: "groups"}]; covered && !groups[groupName] {
 			return adminMigrationSourceSemanticError{Code: "source_orphan_group_membership", Message: "source group membership references a missing group"}
 		}
 		actorType := adminMigrationSourceStringDefault(object, "user", "type", "actor_type")
 		actor := adminMigrationSourceString(object, "actor", "name")
-		if err := adminMigrationValidateSourceMembershipActor(actorType, actor, users, clients, groups); err != nil {
+		if err := adminMigrationValidateSourceName(groupName, "source_group_invalid"); err != nil {
+			return err
+		}
+		actorScope := adminMigrationSourcePayloadKey{Organization: orgName}
+		switch actorType {
+		case "user":
+			actorScope = adminMigrationSourcePayloadKey{Family: "users"}
+		case "client":
+			actorScope.Family = "clients"
+		case "group":
+			actorScope.Family = "groups"
+		default:
+			return adminMigrationSourceSemanticError{Code: "source_group_membership_invalid", Message: "unsupported membership subject type"}
+		}
+		if _, covered := payloadValues[actorScope]; !covered {
+			if err := adminMigrationValidateSourceName(actor, "source_group_membership_invalid"); err != nil {
+				return err
+			}
+		} else if err := adminMigrationValidateSourceMembershipActor(actorType, actor, users, clients, groups); err != nil {
 			return err
 		}
 		identity := groupName + "/" + actorType + "/" + actor
@@ -8787,7 +8914,7 @@ func adminMigrationValidateSourceOrgACLTarget(orgName, resourceType, resourceNam
 // object form required by semantic source normalization.
 func adminMigrationDecodeSourceObject(raw json.RawMessage) (map[string]any, error) {
 	var object map[string]any
-	if err := json.Unmarshal(raw, &object); err != nil {
+	if err := jsonvalue.Unmarshal(raw, &object); err != nil {
 		return nil, adminMigrationSourceSemanticError{Code: "source_payload_invalid_json", Message: "source payload JSON object could not be decoded"}
 	}
 	if object == nil {
@@ -9505,24 +9632,10 @@ func adminMigrationNormalizeSourceRelativePath(value string) (string, error) {
 // and prevents writing the normalized bundle inside the source tree.
 func adminMigrationEnsureNormalizeOutputAllowed(sourcePath, outputPath string, overwrite bool) error {
 	outputPath = strings.TrimSpace(outputPath)
-	if outputPath == "" || filepath.Clean(outputPath) == "." || filepath.Clean(outputPath) == string(os.PathSeparator) {
-		return errAdminMigrationUnsafeSourcePath
+	if err := adminMigrationProtectPaths(outputPath, sourcePath); err != nil {
+		return err
 	}
-	sourceAbs, sourceErr := filepath.Abs(sourcePath)
-	outputAbs, outputErr := filepath.Abs(outputPath)
-	if sourceErr == nil && outputErr == nil {
-		sourceClean := filepath.Clean(sourceAbs)
-		outputClean := filepath.Clean(outputAbs)
-		if sourceClean == outputClean {
-			return errAdminMigrationNormalizeOutputOverlaps
-		}
-		if info, err := os.Stat(sourcePath); err == nil && info.IsDir() {
-			if rel, err := filepath.Rel(sourceClean, outputClean); err == nil && rel != "." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator)) && rel != ".." {
-				return errAdminMigrationNormalizeOutputOverlaps
-			}
-		}
-	}
-	if _, err := os.Stat(outputPath); err == nil && !overwrite {
+	if _, err := os.Lstat(outputPath); err == nil && !overwrite {
 		return errAdminMigrationNormalizeOutputExists
 	} else if err != nil && !os.IsNotExist(err) {
 		return err
@@ -9531,7 +9644,7 @@ func adminMigrationEnsureNormalizeOutputAllowed(sourcePath, outputPath string, o
 	if err != nil {
 		return err
 	}
-	if len(stale) > 0 && !overwrite {
+	if len(stale) > 0 {
 		return errAdminMigrationNormalizeOutputStaleTmp
 	}
 	return nil
@@ -9540,10 +9653,14 @@ func adminMigrationEnsureNormalizeOutputAllowed(sourcePath, outputPath string, o
 // adminMigrationInterruptedNormalizedSourceOutputDirs finds sibling temp
 // directories left by interrupted atomic source-bundle publications.
 func adminMigrationInterruptedNormalizedSourceOutputDirs(outputPath string) ([]string, error) {
+	if err := adminMigrationRejectParentTraversal(outputPath); err != nil {
+		return nil, err
+	}
 	outputPath = strings.TrimSpace(outputPath)
 	if outputPath == "" {
 		return nil, nil
 	}
+	outputPath = filepath.Clean(outputPath)
 	parent := filepath.Dir(outputPath)
 	entries, err := os.ReadDir(parent)
 	if err != nil {
@@ -9553,7 +9670,7 @@ func adminMigrationInterruptedNormalizedSourceOutputDirs(outputPath string) ([]s
 		return nil, err
 	}
 	base := filepath.Base(outputPath)
-	prefixes := []string{"." + base + "-normalize-", "." + base + "-live-"}
+	prefixes := []string{"." + base + "-normalize-", "." + base + "-live-", "." + base + "-backup-"}
 	var stale []string
 	for _, entry := range entries {
 		if !entry.IsDir() {
@@ -9571,19 +9688,6 @@ func adminMigrationInterruptedNormalizedSourceOutputDirs(outputPath string) ([]s
 	return stale, nil
 }
 
-func adminMigrationRemoveInterruptedNormalizedSourceOutputDirs(outputPath string) error {
-	stale, err := adminMigrationInterruptedNormalizedSourceOutputDirs(outputPath)
-	if err != nil {
-		return err
-	}
-	for _, path := range stale {
-		if err := os.RemoveAll(path); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 // adminMigrationNormalizeOutputFinding maps local output failures to stable
 // codes without embedding filesystem paths in operator output.
 func adminMigrationNormalizeOutputFinding(err error) adminMigrationFinding {
@@ -9591,9 +9695,9 @@ func adminMigrationNormalizeOutputFinding(err error) adminMigrationFinding {
 	case errors.Is(err, errAdminMigrationNormalizeOutputExists):
 		return adminMigrationSourceErrorFinding("source_normalize_output_exists", "normalized source output already exists; pass --yes to replace it")
 	case errors.Is(err, errAdminMigrationNormalizeOutputOverlaps):
-		return adminMigrationSourceErrorFinding("source_normalize_output_overlaps_source", "normalized source output must not be written inside the source artifact")
+		return adminMigrationSourceErrorFinding("source_normalize_output_overlaps_source", "output must not equal, contain, or be contained by a protected source path")
 	case errors.Is(err, errAdminMigrationNormalizeOutputStaleTmp):
-		return adminMigrationSourceErrorFinding("source_normalize_output_interrupted", "normalized source output has interrupted temporary directories; inspect or remove them, or pass --yes to replace them")
+		return adminMigrationSourceErrorFinding("source_normalize_output_interrupted", "normalized source output has interrupted temporary directories; inspect and recover or remove them before retrying")
 	default:
 		return adminMigrationSourceErrorFinding("source_normalize_output_unsafe", "normalized source output path is not safe to write")
 	}
@@ -9741,7 +9845,7 @@ func adminMigrationReadSourceManifestFile(path string) (adminMigrationSourceInve
 		return adminMigrationSourceInventoryRead{Findings: []adminMigrationFinding{adminMigrationSourceErrorFinding("source_manifest_missing", "source manifest could not be read")}}, err
 	}
 	var manifest adminMigrationSourceManifest
-	if err := json.Unmarshal(raw, &manifest); err != nil {
+	if err := jsonvalue.Unmarshal(raw, &manifest); err != nil {
 		return adminMigrationSourceInventoryRead{Findings: []adminMigrationFinding{adminMigrationSourceErrorFinding("source_manifest_invalid_json", "source manifest is not valid JSON")}}, err
 	}
 	formatVersion := strings.TrimSpace(manifest.FormatVersion)
@@ -10697,7 +10801,7 @@ func adminMigrationRedactedAdminConfig(cfg admin.Config) map[string]string {
 // making old invocations fail just because new evidence files were omitted.
 func adminMigrationApplyCutoverEvidenceGates(out *adminMigrationCLIOutput, opts *adminMigrationFlagValues) {
 	sourceRead, sourceLoaded := adminMigrationCutoverSourceBundleGate(out, opts)
-	adminMigrationCutoverSourceFreezeGate(out, opts)
+	adminMigrationCutoverSourceFreezeGate(out, opts, sourceLoaded && adminMigrationSourceBundleIsLiveExtraction(sourceRead.Bundle.SourceType))
 	adminMigrationCutoverImportProgressGate(out, opts)
 	adminMigrationCutoverSyncFreshnessGate(out, opts, sourceRead, sourceLoaded)
 	adminMigrationCutoverSearchCleanlinessGate(out, opts)
@@ -10779,18 +10883,24 @@ func adminMigrationSourceBundleIsLiveExtraction(sourceType string) bool {
 // adminMigrationCutoverSourceFreezeGate records the explicit source-freeze
 // acknowledgement while staying honest that OpenCook cannot enforce source Chef
 // write blocking from this read-only target-side command.
-func adminMigrationCutoverSourceFreezeGate(out *adminMigrationCLIOutput, opts *adminMigrationFlagValues) {
+func adminMigrationCutoverSourceFreezeGate(out *adminMigrationCLIOutput, opts *adminMigrationFlagValues, liveExtraction bool) {
 	details := map[string]string{
 		"operator_confirmed":   fmt.Sprintf("%t", opts.sourceFrozen),
 		"enforced_by_opencook": "false",
 	}
 	if !opts.sourceFrozen {
+		status := "warning"
+		message := "source Chef write-freeze evidence was not confirmed; OpenCook cannot enforce writes still targeting source Chef"
+		if liveExtraction {
+			status = "error"
+			message = "live-extracted source cannot proceed to final cutover rehearsal without external source Chef write-freeze evidence"
+		}
 		adminMigrationMarkDependency(out, adminMigrationDependency{
 			Name:       "source_freeze_evidence",
-			Status:     "warning",
+			Status:     status,
 			Backend:    "runbook",
 			Configured: false,
-			Message:    "source Chef write-freeze evidence was not confirmed; OpenCook cannot enforce writes still targeting source Chef",
+			Message:    message,
 			Details:    details,
 		})
 		return
@@ -10947,8 +11057,9 @@ func adminMigrationCutoverSyncFreshnessGate(out *adminMigrationCLIOutput, opts *
 	}
 	cursor := adminMigrationSourceSyncCursor(read)
 	details["source_cursor"] = cursor
+	details["latest_applied_cursor"] = progress.SourceCursor
 	details["cursor_seen"] = fmt.Sprintf("%t", adminMigrationSourceSyncProgressSet(progress.AppliedCursors)[cursor])
-	if !adminMigrationSourceSyncProgressSet(progress.AppliedCursors)[cursor] {
+	if progress.SourceCursor == "" || progress.SourceCursor != cursor {
 		adminMigrationMarkDependency(out, adminMigrationDependency{
 			Name:       "source_sync_freshness",
 			Status:     "error",
@@ -12962,7 +13073,7 @@ func adminMigrationShadowJSONValue(value any) any {
 		return value
 	}
 	var out any
-	if err := json.Unmarshal(data, &out); err != nil {
+	if err := jsonvalue.Unmarshal(data, &out); err != nil {
 		return value
 	}
 	return out
@@ -12970,37 +13081,49 @@ func adminMigrationShadowJSONValue(value any) any {
 
 // adminMigrationShadowNormalizeValue removes documented compatibility noise but
 // preserves fields whose differences should block a Chef cutover.
-func adminMigrationShadowNormalizeValue(family, key string, value any) any {
+// Paths use '*' only for a protocol array element. Opaque application payloads
+// never acquire protocol rules merely because they contain a familiar key.
+func adminMigrationShadowNormalizeValue(family, path string, value any) any {
 	switch typed := value.(type) {
 	case map[string]any:
 		out := map[string]any{}
-		for childKey, childValue := range typed {
-			if adminMigrationShadowSkipKey(family, childKey) {
+		for key, child := range typed {
+			childPath := key
+			if path != "" {
+				childPath = path + "/" + key
+			}
+			if adminMigrationShadowSkipPath(family, childPath) {
 				continue
 			}
-			out[childKey] = adminMigrationShadowNormalizeValue(family, childKey, childValue)
+			out[key] = adminMigrationShadowNormalizeValue(family, childPath, child)
 		}
 		return out
 	case []any:
-		out := make([]any, 0, len(typed))
-		for _, item := range typed {
-			out = append(out, adminMigrationShadowNormalizeValue(family, key, item))
+		out := make([]any, len(typed))
+		childPath := path + "/*"
+		if path == "" {
+			childPath = "*"
 		}
-		if adminMigrationShadowUnorderedArrayKey(key) {
+		for i, child := range typed {
+			out[i] = adminMigrationShadowNormalizeValue(family, childPath, child)
+		}
+		if adminMigrationShadowUnorderedPath(family, path) {
 			sort.Slice(out, func(i, j int) bool {
-				left, _ := json.Marshal(out[i])
-				right, _ := json.Marshal(out[j])
-				return string(left) < string(right)
+				a, _ := json.Marshal(out[i])
+				b, _ := json.Marshal(out[j])
+				return string(a) < string(b)
 			})
 		}
 		return out
 	case string:
-		if key == "url" {
+		if adminMigrationShadowDownloadPath(family, path) {
 			return adminMigrationShadowNormalizeURLString(typed)
 		}
 		return typed
+	case json.Number:
+		return jsonvalue.CanonicalNumber(typed)
 	case nil:
-		if key == "actors" || key == "groups" {
+		if adminMigrationShadowUnorderedPath(family, path) {
 			return []any{}
 		}
 		return nil
@@ -13009,46 +13132,73 @@ func adminMigrationShadowNormalizeValue(family, key string, value any) any {
 	}
 }
 
-// adminMigrationShadowSkipKey captures volatile or version-specific fields that
-// should not decide source-to-target compatibility during read-only shadowing.
-func adminMigrationShadowSkipKey(family, key string) bool {
-	switch key {
-	case "private_key", "created_at", "updated_at", "last_updated", "last_modified", "create_time", "requestor", "authn", "persistence", "authn_status", "storage_status":
-		return true
-	case "uri":
-		return family == "users" || family == "clients" || family == "organizations"
-	case "public_key":
-		return family == "user_keys" || family == "client_keys"
-	default:
-		return false
+func adminMigrationShadowSkipPath(family, path string) bool {
+	switch family {
+	case "users":
+		switch path {
+		case "requestor", "uri", "authn_status", "storage_status":
+			return true
+		}
+	case "users_collection":
+		switch path {
+		case "requestor", "authn", "persistence":
+			return true
+		}
+	case "clients", "organizations":
+		return path == "uri"
+	case "user_keys", "client_keys":
+		return path == "*/public_key"
 	}
+	return false
 }
 
-// adminMigrationShadowUnorderedArrayKey sorts membership and file arrays where
-// Chef compatibility does not depend on response ordering.
-func adminMigrationShadowUnorderedArrayKey(key string) bool {
-	switch key {
-	case "actors", "groups", "users", "clients", "checksums", "all_files", "definitions", "files", "libraries", "recipes", "templates", "root_files":
-		return true
-	default:
-		return false
+func adminMigrationShadowUnorderedPath(family, path string) bool {
+	if family == "groups" {
+		switch path {
+		case "actors", "groups", "users", "clients":
+			return true
+		}
 	}
+	switch family {
+	case "user_acls", "organization_acls", "client_acls", "group_acls", "container_acls", "acls":
+		parts := strings.Split(path, "/")
+		if len(parts) == 2 && (parts[1] == "actors" || parts[1] == "groups") {
+			switch parts[0] {
+			case "create", "read", "update", "delete", "grant":
+				return true
+			}
+		}
+	case "cookbook_versions", "cookbook_artifacts":
+		return adminMigrationShadowFileCollection(path)
+	case "policy_revisions":
+		return path == "policy_group_list"
+	}
+	return false
 }
 
-// adminMigrationShadowNormalizeURLString strips signed blob query strings and
-// hosts so source and target compare by checksum-addressed download path.
+func adminMigrationShadowFileCollection(path string) bool {
+	switch path {
+	case "all_files", "definitions", "files", "libraries", "recipes", "templates", "root_files", "attributes", "resources", "providers":
+		return true
+	}
+	return false
+}
+func adminMigrationShadowDownloadPath(family, path string) bool {
+	if family != "cookbook_versions" && family != "cookbook_artifacts" {
+		return false
+	}
+	parts := strings.Split(path, "/")
+	return len(parts) == 3 && adminMigrationShadowFileCollection(parts[0]) && parts[1] == "*" && parts[2] == "url"
+}
+
+// Only generated checksum download URLs are host/query independent. Other
+// strings, including URLs inside attributes and metadata, are application data.
 func adminMigrationShadowNormalizeURLString(raw string) string {
-	trimmed := strings.TrimSpace(raw)
-	parsed, err := url.Parse(trimmed)
-	if err != nil {
-		return trimmed
-	}
-	if strings.Contains(parsed.Path, "/_blob/checksums/") {
+	parsed, err := url.Parse(raw)
+	if err == nil && strings.HasPrefix(parsed.Path, "/_blob/checksums/") {
 		return parsed.EscapedPath()
 	}
-	parsed.RawQuery = ""
-	parsed.Fragment = ""
-	return parsed.String()
+	return raw
 }
 
 // adminMigrationValidateShadowDownloads follows target-signed blob URLs and
@@ -13484,7 +13634,9 @@ func bindAdminMigrationScopeFlags(fs *flag.FlagSet, opts *adminMigrationFlagValu
 // bindAdminMigrationLiveSourceFlags keeps source Chef connection settings
 // command-local so normal OpenCook runtime config never points at source Chef.
 func bindAdminMigrationLiveSourceFlags(fs *flag.FlagSet, opts *adminMigrationFlagValues) {
-	fs.StringVar(&opts.sourcePostgresDSN, "source-postgres-dsn", "", "read-only Chef Server PostgreSQL source DSN")
+	fs.StringVar(&opts.sourcePostgresDSN, "source-postgres-dsn", "", "read-only Chef/Cinc PostgreSQL cluster seed DSN; its database is replaced for Erchef and Bifrost")
+	fs.StringVar(&opts.sourceErchefDatabase, "source-erchef-database", adminMigrationLiveSourceErchefDatabase, "source Erchef PostgreSQL database name")
+	fs.StringVar(&opts.sourceBifrostDatabase, "source-bifrost-database", adminMigrationLiveSourceBifrostDatabase, "source Bifrost PostgreSQL database name")
 	fs.StringVar(&opts.sourceBookshelfRoot, "source-bookshelf-root", "", "read-only local Bookshelf checksum root")
 	fs.StringVar(&opts.sourceBlobURL, "source-blob-url", "", "read-only source blob provider URL")
 	fs.StringVar(&opts.sourceServerURL, "source-server-url", "", "optional read-only Chef Server HTTP URL")
@@ -14893,6 +15045,11 @@ func adminMigrationHasRetryGuidance(findings []adminMigrationFinding) bool {
 func adminMigrationRetryGuidance(out adminMigrationCLIOutput) adminMigrationFinding {
 	codes := adminMigrationFindingCodeSet(out.Findings)
 	deps := adminMigrationDependencyStatusSet(out.Dependencies)
+	for _, code := range []string{"bundle_destination_locked", "bundle_staging_interrupted", "bundle_publication_failed", "bundle_cleanup_failed", "source_normalize_output_interrupted"} {
+		if codes[code] {
+			return adminMigrationManualCleanupFinding("inspect the destination, reported staging, and lock ownership before recovery; never remove another active writer's lock or staging")
+		}
+	}
 
 	switch out.Command {
 	case "migration_backup_inspect", "migration_restore_preflight", "migration_source_import_preflight", "migration_source_sync_preflight", "migration_shadow_compare", "migration_cutover_rehearse":
@@ -15225,8 +15382,8 @@ func (c *command) printAdminMigrationUsage(w io.Writer) {
   opencook admin migration scale-fixture create --output PATH [--profile small|medium|large] [--yes] [--json] [--with-timing]
   opencook admin migration source inventory PATH [--json] [--with-timing]
   opencook admin migration source normalize PATH --output PATH [--yes] [--json] [--with-timing]
-  opencook admin migration source live preflight --source-postgres-dsn DSN [--source-bookshelf-root PATH|--source-blob-url URL] [--source-server-url URL --source-requestor-name NAME --source-private-key PATH] [--org ORG|--all-orgs] [--json] [--with-timing]
-  opencook admin migration source live extract --source-postgres-dsn DSN --output PATH [--source-bookshelf-root PATH|--source-blob-url URL] [--source-server-url URL --source-requestor-name NAME --source-private-key PATH] [--org ORG|--all-orgs] [--copy-blobs|--reference-blobs] [--dry-run] [--yes] [--json] [--with-timing]
+  opencook admin migration source live preflight --source-postgres-dsn DSN [--source-erchef-database NAME] [--source-bifrost-database NAME] [--source-bookshelf-root PATH|--source-blob-url URL] [--source-server-url URL --source-requestor-name NAME --source-private-key PATH] [--org ORG|--all-orgs] [--json] [--with-timing]
+  opencook admin migration source live extract --source-postgres-dsn DSN --output PATH [--source-erchef-database NAME] [--source-bifrost-database NAME] [--source-bookshelf-root PATH|--source-blob-url URL] [--source-server-url URL --source-requestor-name NAME --source-private-key PATH] [--org ORG|--all-orgs] [--copy-blobs|--reference-blobs] [--dry-run] [--yes] [--json] [--with-timing]
   opencook admin migration source import preflight PATH --offline [--json] [--with-timing]
   opencook admin migration source import apply PATH --offline [--dry-run|--yes] [--progress PATH] [--json] [--with-timing]
   opencook admin migration source sync preflight PATH --offline [--progress PATH] [--json] [--with-timing]
@@ -15258,6 +15415,8 @@ Flags:
   --manifest PATH
   --source PATH
   --source-postgres-dsn DSN
+  --source-erchef-database NAME
+  --source-bifrost-database NAME
   --source-bookshelf-root PATH
   --source-blob-url URL
   --source-server-url URL

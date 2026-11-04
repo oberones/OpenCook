@@ -1,12 +1,15 @@
 package search
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/oberones/OpenCook/internal/authz"
 	"github.com/oberones/OpenCook/internal/bootstrap"
+	"github.com/oberones/OpenCook/internal/jsonvalue"
 )
 
 // DocumentBuilder centralizes Chef-style search document expansion so the
@@ -290,11 +293,13 @@ func addFlattenedFields(fields map[string][]string, path []string, value any) {
 	case bool:
 		addFlattenedLeaf(fields, path, fmt.Sprintf("%t", typed))
 	case int:
-		addFlattenedLeaf(fields, path, fmt.Sprintf("%d", typed))
+		addFlattenedLeaf(fields, path, jsonvalue.FormatNumber(json.Number(fmt.Sprintf("%d", typed))))
 	case int64:
-		addFlattenedLeaf(fields, path, fmt.Sprintf("%d", typed))
+		addFlattenedLeaf(fields, path, jsonvalue.FormatNumber(json.Number(fmt.Sprintf("%d", typed))))
+	case json.Number:
+		addFlattenedLeaf(fields, path, jsonvalue.FormatNumber(typed))
 	case float64:
-		addFlattenedLeaf(fields, path, fmt.Sprintf("%v", typed))
+		addFlattenedLeaf(fields, path, jsonvalue.FormatNumber(json.Number(strconv.FormatFloat(typed, 'g', -1, 64))))
 	}
 }
 

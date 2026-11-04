@@ -1,22 +1,25 @@
 package bootstrap
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
-	"reflect"
 	"regexp"
 	"sort"
 	"strings"
 
 	"github.com/oberones/OpenCook/internal/authn"
 	"github.com/oberones/OpenCook/internal/authz"
+	"github.com/oberones/OpenCook/internal/jsonvalue"
 )
 
 var validPolicyTokenPattern = regexp.MustCompile(`^[A-Za-z0-9_.:-]+$`)
 
 type PolicyRevision struct {
-	Name       string         `json:"name"`
-	RevisionID string         `json:"revision_id"`
-	Payload    map[string]any `json:"-"`
+	Name       string `json:"name"`
+	RevisionID string `json:"revision_id"`
+	// Payload is included in logical state backups; Chef routes serialize it directly.
+	Payload map[string]any `json:"payload,omitempty"`
 }
 
 type PolicyGroup struct {
@@ -497,7 +500,16 @@ func previewPolicyGroupAssignmentLocked(org *organizationState, targetPolicyName
 		}, nil
 	}
 
-	if !reflect.DeepEqual(stored.Payload, revision.Payload) {
+	canonical := func(payload map[string]any) ([]byte, error) {
+		data, err := json.Marshal(payload)
+		if err != nil {
+			return nil, err
+		}
+		return jsonvalue.CanonicalBytes(data)
+	}
+	storedJSON, storedErr := canonical(stored.Payload)
+	revisionJSON, revisionErr := canonical(revision.Payload)
+	if storedErr != nil || revisionErr != nil || !bytes.Equal(storedJSON, revisionJSON) {
 		return PolicyAssignmentPlan{}, fmt.Errorf("%w: policy revision payload differs from stored revision", ErrConflict)
 	}
 

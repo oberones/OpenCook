@@ -6,6 +6,7 @@ import (
 	"crypto/rsa"
 	"encoding/json"
 	"fmt"
+	"github.com/oberones/OpenCook/internal/jsonvalue"
 	"io"
 	"net/http"
 	"net/url"
@@ -124,7 +125,7 @@ func (c *Client) DoJSON(ctx context.Context, method, path string, in, out any) e
 	if len(bytes.TrimSpace(payload)) == 0 {
 		return errorf(CodeDecodeFailed, "%s %s returned empty JSON response", strings.ToUpper(method), safePath(path))
 	}
-	if err := json.Unmarshal(payload, out); err != nil {
+	if err := jsonvalue.Unmarshal(payload, out); err != nil {
 		return errorf(CodeDecodeFailed, "%s %s returned invalid JSON", strings.ToUpper(method), safePath(path))
 	}
 	return nil

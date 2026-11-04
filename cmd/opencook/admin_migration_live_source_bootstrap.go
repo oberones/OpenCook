@@ -4,27 +4,41 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/sha1"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net/url"
+	"os"
 	pathpkg "path"
+	"path/filepath"
 	"strings"
 	"time"
 
-	"github.com/oberones/OpenCook/internal/blob"
-
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 type adminMigrationPGXLiveSourceBootstrapExtractor struct{}
 
-// ExtractBootstrap reads implemented source PostgreSQL families in a read-only
-// transaction and emits the existing normalized source bundle format that
-// import/sync already validate.
+var (
+	errAdminMigrationLiveSourceBookshelfBlobNotFound         = errors.New("source Bookshelf blob not found")
+	errAdminMigrationLiveSourceBookshelfBlobChecksumMismatch = errors.New("source Bookshelf blob checksum mismatch")
+)
+
+// ExtractBootstrap reads implemented source PostgreSQL families through
+// independent Erchef and Bifrost read-only transactions and emits the existing
+// normalized source bundle format that import/sync already validate.
 func (adminMigrationPGXLiveSourceBootstrapExtractor) ExtractBootstrap(ctx context.Context, cfg adminMigrationLiveSourceConfig) adminMigrationLiveSourceExtractorResult {
 	read, err := adminMigrationReadLiveSourceBootstrapPayloads(ctx, cfg)
 	if err != nil {
+		if finding, ok := adminMigrationLiveSourceContextFinding(ctx); ok {
+			read.Findings = append(read.Findings, finding)
+		}
 		return adminMigrationLiveSourceExtractorResult{
 			Dependencies: read.Dependencies,
 			Findings:     read.Findings,
@@ -65,7 +79,7 @@ func (adminMigrationPGXLiveSourceBootstrapExtractor) ExtractBootstrap(ctx contex
 				Action:  "read_source_postgres_payloads",
 				Family:  "source_payloads",
 				Count:   len(bundle.Manifest.Payloads),
-				Message: "extracted identity, authorization, core object, cookbook, and checksum-reference payloads from source PostgreSQL using read-only queries",
+				Message: "extracted Erchef objects and Bifrost authorization payloads through independent read-only repeatable-read transactions",
 			},
 			{
 				Action:  "write_live_source_bundle",
@@ -114,86 +128,101 @@ func adminMigrationReadLiveSourceBootstrapPayloads(ctx context.Context, cfg admi
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	probeCtx, cancel := context.WithTimeout(ctx, adminMigrationLiveSourcePostgresProbeTimeout)
+	targets, err := adminMigrationLiveSourceDerivePostgresTargets(cfg)
+	if err != nil {
+		return adminMigrationLiveSourceBootstrapRead{
+			Dependencies: []adminMigrationDependency{adminMigrationLiveSourcePostgresErrorDependency("source PostgreSQL cluster seed DSN is invalid")},
+			Findings:     []adminMigrationFinding{adminMigrationLiveSourcePostgresErrorFinding("source PostgreSQL cluster seed connection string could not be parsed")},
+		}, err
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, adminMigrationLiveSourcePostgresExtractionTimeout)
 	defer cancel()
 
-	conn, err := pgx.Connect(probeCtx, cfg.PostgresDSN)
+	erchefConn, err := pgx.ConnectConfig(probeCtx, targets.Erchef)
 	if err != nil {
-		return adminMigrationLiveSourceBootstrapRead{
-			Dependencies: []adminMigrationDependency{adminMigrationLiveSourcePostgresErrorDependency("source PostgreSQL could not be reached")},
-			Findings:     []adminMigrationFinding{adminMigrationLiveSourcePostgresErrorFinding("source PostgreSQL could not be reached or authenticated")},
-		}, err
+		return adminMigrationLiveSourceExtractionDatabaseFailure("erchef", targets.Erchef.Database, "source Erchef PostgreSQL could not be reached or authenticated", false), err
 	}
-	defer conn.Close(probeCtx)
+	defer adminMigrationLiveSourceCloseConnection(erchefConn)
 
-	tx, err := conn.BeginTx(probeCtx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+	bifrostConn, err := pgx.ConnectConfig(probeCtx, targets.Bifrost)
 	if err != nil {
-		return adminMigrationLiveSourceBootstrapRead{
-			Dependencies: []adminMigrationDependency{adminMigrationLiveSourcePostgresErrorDependency("source PostgreSQL read-only transaction could not be opened")},
-			Findings:     []adminMigrationFinding{adminMigrationLiveSourcePostgresErrorFinding("source PostgreSQL did not allow a read-only migration extraction transaction")},
-		}, err
+		return adminMigrationLiveSourceExtractionDatabaseFailure("bifrost", targets.Bifrost.Database, "source Bifrost PostgreSQL could not be reached or authenticated", false), err
 	}
-	defer tx.Rollback(probeCtx)
+	defer adminMigrationLiveSourceCloseConnection(bifrostConn)
 
-	var readOnly string
-	if err := tx.QueryRow(probeCtx, "SHOW transaction_read_only").Scan(&readOnly); err != nil {
-		return adminMigrationLiveSourceBootstrapRead{
-			Dependencies: []adminMigrationDependency{adminMigrationLiveSourcePostgresErrorDependency("source PostgreSQL read-only posture could not be verified")},
-			Findings:     []adminMigrationFinding{adminMigrationLiveSourcePostgresErrorFinding("source PostgreSQL read-only posture could not be verified")},
-		}, err
+	erchefTx, err := erchefConn.BeginTx(probeCtx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return adminMigrationLiveSourceExtractionDatabaseFailure("erchef", targets.Erchef.Database, "source Erchef PostgreSQL did not allow a read-only repeatable-read extraction transaction", false), err
 	}
-	if !adminMigrationLiveSourcePostgresReadOnlyEnabled(readOnly) {
-		return adminMigrationLiveSourceBootstrapRead{
-			Dependencies: []adminMigrationDependency{adminMigrationLiveSourcePostgresErrorDependency("source PostgreSQL extraction was not running in a read-only transaction")},
-			Findings:     []adminMigrationFinding{adminMigrationLiveSourcePostgresErrorFinding("source PostgreSQL extraction was not running in a read-only transaction")},
-		}, fmt.Errorf("source PostgreSQL extraction was not read-only")
+	defer adminMigrationLiveSourceRollback(erchefTx)
+	bifrostTx, err := bifrostConn.BeginTx(probeCtx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return adminMigrationLiveSourceExtractionDatabaseFailure("bifrost", targets.Bifrost.Database, "source Bifrost PostgreSQL did not allow a read-only repeatable-read extraction transaction", false), err
+	}
+	defer adminMigrationLiveSourceRollback(bifrostTx)
+
+	erchefDatabase, erchefUser, err := adminMigrationLiveSourceEstablishSnapshot(probeCtx, erchefTx)
+	if err != nil {
+		return adminMigrationLiveSourceExtractionDatabaseFailure("erchef", targets.Erchef.Database, "source Erchef PostgreSQL read-only snapshot could not be established", false), err
+	}
+	bifrostDatabase, bifrostUser, err := adminMigrationLiveSourceEstablishSnapshot(probeCtx, bifrostTx)
+	if err != nil {
+		return adminMigrationLiveSourceExtractionDatabaseFailure("bifrost", targets.Bifrost.Database, "source Bifrost PostgreSQL read-only snapshot could not be established", false), err
 	}
 
-	var databaseName, databaseUser string
-	if err := tx.QueryRow(probeCtx, "SELECT current_database(), current_user").Scan(&databaseName, &databaseUser); err != nil {
-		return adminMigrationLiveSourceBootstrapRead{
-			Dependencies: []adminMigrationDependency{adminMigrationLiveSourcePostgresErrorDependency("source PostgreSQL identity could not be read")},
-			Findings:     []adminMigrationFinding{adminMigrationLiveSourcePostgresErrorFinding("source PostgreSQL identity could not be read")},
-		}, err
+	if missing, schemaErr := adminMigrationLiveSourceMissingTables(probeCtx, erchefTx, adminMigrationLiveSourceRequiredErchefTables()); schemaErr != nil || len(missing) > 0 {
+		return adminMigrationLiveSourceExtractionSchemaFailure("erchef", erchefDatabase, erchefUser, missing), firstAdminMigrationLiveSourceError(schemaErr, fmt.Errorf("source Erchef schema missing required tables"))
+	}
+	if missing, schemaErr := adminMigrationLiveSourceMissingTables(probeCtx, bifrostTx, adminMigrationLiveSourceRequiredBifrostTables()); schemaErr != nil || len(missing) > 0 {
+		return adminMigrationLiveSourceExtractionSchemaFailure("bifrost", bifrostDatabase, bifrostUser, missing), firstAdminMigrationLiveSourceError(schemaErr, fmt.Errorf("source Bifrost schema missing required tables"))
 	}
 
 	payloadValues := map[adminMigrationSourcePayloadKey][]json.RawMessage{}
-	orgs, err := adminMigrationLiveSourceReadBootstrapOrganizations(probeCtx, tx, cfg)
+	orgs, err := adminMigrationLiveSourceReadBootstrapOrganizations(probeCtx, erchefTx, cfg)
 	if err != nil {
-		return adminMigrationLiveSourceBootstrapRead{
-			Dependencies: []adminMigrationDependency{adminMigrationLiveSourcePostgresErrorDependency("source organizations could not be read")},
-			Findings:     []adminMigrationFinding{adminMigrationLiveSourceSchemaErrorFinding("source organizations could not be read by the configured read-only role")},
-		}, err
+		return adminMigrationLiveSourceExtractionDatabaseFailure("erchef", erchefDatabase, "source Erchef organizations could not be read by the configured read-only role", true), err
 	}
 	adminMigrationLiveSourceInitializeBootstrapPayloads(payloadValues, orgs)
 	if len(orgs) == 0 {
-		return adminMigrationLiveSourceBootstrapRead{
-			Dependencies: []adminMigrationDependency{adminMigrationLiveSourcePostgresErrorDependency("source PostgreSQL exposes no organizations")},
-			Findings:     []adminMigrationFinding{adminMigrationLiveSourceSchemaErrorFinding("source PostgreSQL did not expose any organizations to the configured read-only role")},
-		}, fmt.Errorf("source organizations missing")
+		return adminMigrationLiveSourceExtractionDatabaseFailure("erchef", erchefDatabase, "source Erchef PostgreSQL did not expose any organizations to the configured read-only role", true), fmt.Errorf("source organizations missing")
 	}
-	if err := adminMigrationLiveSourceReadBootstrapRows(probeCtx, tx, cfg, orgs, payloadValues); err != nil {
-		return adminMigrationLiveSourceBootstrapRead{
-			Dependencies: []adminMigrationDependency{adminMigrationLiveSourcePostgresErrorDependency("source bootstrap rows could not be read")},
-			Findings:     []adminMigrationFinding{adminMigrationLiveSourceSchemaErrorFinding("source bootstrap identity and authorization rows could not be read by the configured read-only role")},
-		}, err
+	catalog, err := adminMigrationLiveSourceReadAuthorizationCatalog(probeCtx, erchefTx, cfg)
+	if err != nil {
+		return adminMigrationLiveSourceExtractionErrorResult("erchef", erchefDatabase, err), err
+	}
+	if err := adminMigrationLiveSourceReadBootstrapRows(probeCtx, erchefTx, cfg, orgs, payloadValues); err != nil {
+		failure := adminMigrationLiveSourceExtractionDatabaseFailure("erchef", erchefDatabase, "source Erchef identity and object rows could not be read by the configured read-only role", true)
+		var payloadRead *adminMigrationLiveSourcePayloadReadError
+		if errors.As(err, &payloadRead) {
+			failure.Dependencies[0].Details["payload_family"] = payloadRead.Family
+			var malformed *adminMigrationLiveSourcePayloadDecodeError
+			if errors.As(err, &malformed) {
+				failure.Findings = []adminMigrationFinding{{Severity: "error", Code: "source_payload_malformed", Family: payloadRead.Family, Message: "serialized source payload is malformed; extraction stopped before publication", Details: map[string]string{"identity_sha256": malformed.Identity}}}
+			}
+
+		}
+		return failure, err
+	}
+	unrelatedBifrostRecords, err := adminMigrationLiveSourceReadBifrostAuthorization(probeCtx, bifrostTx, catalog, payloadValues)
+	if err != nil {
+		return adminMigrationLiveSourceExtractionErrorResult("bifrost", bifrostDatabase, err), err
 	}
 
+	findings := []adminMigrationFinding{adminMigrationLiveSourceCrossDatabaseConsistencyFinding()}
+	if unrelatedBifrostRecords > 0 {
+		findings = append(findings, adminMigrationFinding{
+			Severity: "warning",
+			Code:     adminMigrationFindingSourceBifrostUnrelatedRecords,
+			Family:   "source_bifrost",
+			Message:  fmt.Sprintf("source Bifrost contains %d authorization records outside the selected extraction scope; these may include valid excluded organizations or stale records and were not extracted", unrelatedBifrostRecords),
+		})
+	}
 	return adminMigrationLiveSourceBootstrapRead{
 		Dependencies: []adminMigrationDependency{
-			{
-				Name:       "source_postgres",
-				Status:     "ok",
-				Backend:    "postgres",
-				Configured: true,
-				Message:    "source PostgreSQL bootstrap extraction used a read-only transaction",
-				Details: map[string]string{
-					"database":              adminMigrationLiveSourceSafeDetail(databaseName),
-					"user":                  adminMigrationLiveSourceSafeDetail(databaseUser),
-					"read_only":             "true",
-					"visible_organizations": fmt.Sprintf("%d", len(orgs)),
-				},
-			},
+			adminMigrationLiveSourceConnectionDependency("erchef", erchefDatabase, erchefUser, "extraction snapshot passed"),
+			adminMigrationLiveSourceExtractionSchemaDependency("erchef", erchefDatabase, len(adminMigrationLiveSourceRequiredErchefTables())),
+			adminMigrationLiveSourceConnectionDependency("bifrost", bifrostDatabase, bifrostUser, "extraction snapshot passed"),
+			adminMigrationLiveSourceExtractionSchemaDependency("bifrost", bifrostDatabase, len(adminMigrationLiveSourceRequiredBifrostTables())),
 			{
 				Name:       "source_bootstrap",
 				Status:     "ok",
@@ -201,12 +230,83 @@ func adminMigrationReadLiveSourceBootstrapPayloads(ctx context.Context, cfg admi
 				Configured: true,
 				Message:    "source bootstrap identity and authorization rows were extracted",
 				Details: map[string]string{
-					"payload_families": fmt.Sprintf("%d", len(payloadValues)),
+					"payload_families":          fmt.Sprintf("%d", len(payloadValues)),
+					"visible_organizations":     fmt.Sprintf("%d", len(orgs)),
+					"unrelated_bifrost_records": fmt.Sprintf("%d", unrelatedBifrostRecords),
 				},
 			},
 		},
+		Findings:      findings,
 		PayloadValues: payloadValues,
 	}, nil
+}
+
+func adminMigrationLiveSourceEstablishSnapshot(ctx context.Context, tx pgx.Tx) (string, string, error) {
+	var readOnly, databaseName, databaseUser, snapshot string
+	if err := tx.QueryRow(ctx, "SHOW transaction_read_only").Scan(&readOnly); err != nil {
+		return "", "", err
+	}
+	if !adminMigrationLiveSourcePostgresReadOnlyEnabled(readOnly) {
+		return "", "", fmt.Errorf("source PostgreSQL extraction transaction is not read-only")
+	}
+	if err := tx.QueryRow(ctx, "SELECT current_database(), current_user, txid_current_snapshot()::text").Scan(&databaseName, &databaseUser, &snapshot); err != nil {
+		return "", "", err
+	}
+	if strings.TrimSpace(snapshot) == "" {
+		return "", "", fmt.Errorf("source PostgreSQL snapshot identity is empty")
+	}
+	return databaseName, databaseUser, nil
+}
+
+func firstAdminMigrationLiveSourceError(primary, fallback error) error {
+	if primary != nil {
+		return primary
+	}
+	return fallback
+}
+
+func adminMigrationLiveSourceExtractionDatabaseFailure(component, database, message string, schema bool) adminMigrationLiveSourceBootstrapRead {
+	code := adminMigrationFindingSourceErchefUnavailable
+	name := "source_erchef_postgres"
+	if component == "bifrost" {
+		code = adminMigrationFindingSourceBifrostUnavailable
+		name = "source_bifrost_postgres"
+	}
+	if schema {
+		name = "source_" + component + "_schema"
+		if component == "erchef" {
+			code = adminMigrationFindingSourceErchefSchemaUnsupported
+		} else {
+			code = adminMigrationFindingSourceBifrostSchemaUnsupported
+		}
+	}
+	return adminMigrationLiveSourceBootstrapRead{
+		Dependencies: []adminMigrationDependency{{Name: name, Status: "error", Backend: "postgres", Configured: true, Message: message, Details: map[string]string{"database": database, "read_only_required": "true"}}},
+		Findings:     []adminMigrationFinding{{Severity: "error", Code: code, Family: name, Message: message}},
+	}
+}
+
+func adminMigrationLiveSourceExtractionSchemaFailure(component, database, user string, missing []string) adminMigrationLiveSourceBootstrapRead {
+	result := adminMigrationLiveSourceExtractionDatabaseFailure(component, database, "source "+component+" PostgreSQL schema is missing or cannot inspect required Chef Server tables", true)
+	result.Dependencies = append([]adminMigrationDependency{adminMigrationLiveSourceConnectionDependency(component, database, user, "extraction snapshot passed")}, result.Dependencies...)
+	result.Dependencies[1].Details["missing_tables"] = adminMigrationLiveSourceBoundedList(missing, 8)
+	result.Dependencies[1].Details["missing_count"] = fmt.Sprintf("%d", len(missing))
+	return result
+}
+
+func adminMigrationLiveSourceExtractionSchemaDependency(component, database string, requiredTables int) adminMigrationDependency {
+	return adminMigrationDependency{Name: "source_" + component + "_schema", Status: "ok", Backend: "postgres", Configured: true, Message: "source " + component + " PostgreSQL schema was read through its dedicated connection", Details: map[string]string{"database": database, "required_tables": fmt.Sprintf("%d", requiredTables)}}
+}
+
+func adminMigrationLiveSourceExtractionErrorResult(component, database string, err error) adminMigrationLiveSourceBootstrapRead {
+	var integrity adminMigrationLiveSourceAuthorizationIntegrityError
+	if errors.As(err, &integrity) {
+		return adminMigrationLiveSourceBootstrapRead{
+			Dependencies: []adminMigrationDependency{{Name: "source_authorization", Status: "error", Backend: "postgres", Configured: true, Message: "source authorization data could not be resolved without ambiguity", Details: map[string]string{"database": database}}},
+			Findings:     []adminMigrationFinding{{Severity: "error", Code: integrity.Code, Family: "source_authorization", Message: integrity.Error()}},
+		}
+	}
+	return adminMigrationLiveSourceExtractionDatabaseFailure(component, database, "source "+component+" authorization rows could not be read by the configured read-only role", true)
 }
 
 func adminMigrationLiveSourcePostgresErrorDependency(message string) adminMigrationDependency {
@@ -227,15 +327,6 @@ func adminMigrationLiveSourcePostgresErrorFinding(message string) adminMigration
 		Severity: "error",
 		Code:     adminMigrationFindingSourcePostgresUnavailable,
 		Family:   "source_postgres",
-		Message:  message,
-	}
-}
-
-func adminMigrationLiveSourceSchemaErrorFinding(message string) adminMigrationFinding {
-	return adminMigrationFinding{
-		Severity: "error",
-		Code:     adminMigrationFindingSourceSchemaUnsupported,
-		Family:   "source_bootstrap",
 		Message:  message,
 	}
 }
@@ -362,32 +453,22 @@ func adminMigrationLiveSourceExtractBlobSidecars(ctx context.Context, cfg adminM
 			Files:    map[string][]byte{},
 		}
 	}
-	store, err := blob.NewFileStore(cfg.BookshelfRoot)
-	if err != nil {
-		return adminMigrationLiveSourceBlobExtraction{
-			Dependency: adminMigrationDependency{
-				Name:       "source_blob",
-				Status:     "error",
-				Backend:    backend,
-				Configured: true,
-				Message:    "source blob bytes could not be copied from the configured local Bookshelf root",
-				Details:    details,
-			},
-			Findings: []adminMigrationFinding{adminMigrationLiveSourceBlobFinding("error", adminMigrationFindingSourceBlobUnavailable, "source blob provider could not be opened for deterministic checksum reads")},
-			Files:    map[string][]byte{},
-		}
-	}
 	files := map[string][]byte{}
 	var findings []adminMigrationFinding
-	for _, checksum := range adminMigrationSortedMapKeys(referenced) {
+	for _, reference := range adminMigrationLiveSourceBlobReferences(payloadValues) {
+		checksum := reference.Checksum
 		if err := ctx.Err(); err != nil {
 			findings = append(findings, adminMigrationLiveSourceBlobFinding("error", adminMigrationFindingSourceExtractionInterrupted, "live source extraction was interrupted while copying checksum blobs"))
 			break
 		}
-		body, err := store.Get(ctx, checksum)
+		body, err := adminMigrationLiveSourceReadBookshelfBlob(cfg.BookshelfRoot, reference.OrganizationID, checksum)
 		if err != nil {
-			if err == blob.ErrNotFound {
+			if errors.Is(err, errAdminMigrationLiveSourceBookshelfBlobNotFound) {
 				findings = append(findings, adminMigrationLiveSourceBlobFinding("error", adminMigrationFindingSourceBlobMissing, "source metadata references checksum "+checksum+" but the source blob provider did not contain it"))
+				continue
+			}
+			if errors.Is(err, errAdminMigrationLiveSourceBookshelfBlobChecksumMismatch) {
+				findings = append(findings, adminMigrationLiveSourceBlobFinding("error", adminMigrationFindingSourceBlobChecksumMismatch, "source blob content did not match checksum "+checksum))
 				continue
 			}
 			findings = append(findings, adminMigrationLiveSourceBlobFinding("error", adminMigrationFindingSourceBlobUnavailable, "source blob provider could not read referenced checksum content"))
@@ -425,6 +506,99 @@ func adminMigrationLiveSourceExtractBlobSidecars(ctx context.Context, cfg adminM
 		},
 		Files: files,
 	}
+}
+
+type adminMigrationLiveSourceBlobReference struct {
+	OrganizationID string
+	Checksum       string
+}
+
+// Preserve the source orgs.id (normalized as guid) for every org/checksum pair.
+// Native Bookshelf objects are scoped by organization even when their content
+// is shared; the resulting bundle still stores only one sidecar per checksum.
+func adminMigrationLiveSourceBlobReferences(payloadValues map[adminMigrationSourcePayloadKey][]json.RawMessage) []adminMigrationLiveSourceBlobReference {
+	keys := map[adminMigrationSourcePayloadKey]struct{}{}
+	for key := range payloadValues {
+		if key.Family == "checksum_references" {
+			keys[key] = struct{}{}
+		}
+	}
+	var references []adminMigrationLiveSourceBlobReference
+	for _, key := range adminMigrationSortedSourcePayloadKeys(keys) {
+		orgID := ""
+		for _, raw := range payloadValues[adminMigrationSourcePayloadKey{Organization: key.Organization, Family: "organizations"}] {
+			if object, err := adminMigrationDecodeSourceObject(raw); err == nil {
+				orgID = adminMigrationSourceString(object, "guid")
+			}
+		}
+		checksums := adminMigrationReferencedSourceChecksums(map[adminMigrationSourcePayloadKey][]json.RawMessage{key: payloadValues[key]})
+		for _, checksum := range adminMigrationSortedMapKeys(checksums) {
+			references = append(references, adminMigrationLiveSourceBlobReference{OrganizationID: orgID, Checksum: checksum})
+		}
+	}
+	return references
+}
+
+// adminMigrationLiveSourceReadBookshelfBlob reads native Bookshelf filesystem
+// layouts without treating the source as OpenCook's flat filesystem backend.
+// chef_s3:make_key/2 scopes the key by orgs.id; bksw_io_names:entry_path_sha/1
+// hashes the percent-encoded key into four two-character directory levels and
+// uses that encoded key as the filename. bksw_io prefixes bytes with magic + MD5.
+func adminMigrationLiveSourceReadBookshelfBlob(root, orgID, checksum string) ([]byte, error) {
+	root = strings.TrimSpace(root)
+	checksum = strings.ToLower(strings.TrimSpace(checksum))
+	digest, err := hex.DecodeString(checksum)
+	if root == "" || err != nil || len(digest) != 16 {
+		return nil, fmt.Errorf("%w: invalid checksum key", errAdminMigrationLiveSourceBookshelfBlobChecksumMismatch)
+	}
+	var candidates [][]string
+	if orgID = strings.TrimSpace(orgID); orgID != "" {
+		key := url.PathEscape("organization-" + orgID + "/checksum-" + checksum)
+		shardDigest := sha1.Sum([]byte(key)) // #nosec G505 -- native Bookshelf path compatibility requires SHA-1.
+		shard := hex.EncodeToString(shardDigest[:])
+		shardedParts := []string{shard[0:2], shard[2:4], shard[4:6], shard[6:8], key}
+		candidates = append(candidates,
+			append([]string{root, "bookshelf"}, shardedParts...),
+			append([]string{root}, shardedParts...),
+		)
+	}
+	candidates = append(candidates, [][]string{
+		{root, "bookshelf", checksum},
+		{root, checksum},
+	}...)
+	seen := map[string]struct{}{}
+	for _, parts := range candidates {
+		candidate := filepath.Join(parts...)
+		if _, ok := seen[candidate]; ok {
+			continue
+		}
+		seen[candidate] = struct{}{}
+		data, err := os.ReadFile(candidate)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, err
+		}
+		return adminMigrationLiveSourceDecodeBookshelfBlob(data, digest)
+	}
+	return nil, errAdminMigrationLiveSourceBookshelfBlobNotFound
+}
+
+func adminMigrationLiveSourceDecodeBookshelfBlob(data, expectedDigest []byte) ([]byte, error) {
+	const bookshelfHeaderSize = 18
+	if len(data) < 2 || data[0] != 0xb0 || data[1] != 0x0c {
+		return data, nil
+	}
+	// Flat checksum files can contain arbitrary binary data, including the
+	// Bookshelf magic. A matching full-file digest takes precedence over decoding.
+	if adminMigrationMD5Hex(data) == hex.EncodeToString(expectedDigest) {
+		return data, nil
+	}
+	if len(data) < bookshelfHeaderSize || len(expectedDigest) != 16 || !bytes.Equal(data[2:bookshelfHeaderSize], expectedDigest) {
+		return nil, errAdminMigrationLiveSourceBookshelfBlobChecksumMismatch
+	}
+	return data[bookshelfHeaderSize:], nil
 }
 
 func adminMigrationLiveSourceBlobFinding(severity, code, message string) adminMigrationFinding {
@@ -516,9 +690,6 @@ func adminMigrationLiveSourceReadBootstrapRows(ctx context.Context, tx pgx.Tx, c
 	if err := adminMigrationLiveSourceReadUserKeys(ctx, tx, payloadValues); err != nil {
 		return err
 	}
-	if err := adminMigrationLiveSourceReadUserACLs(ctx, tx, payloadValues); err != nil {
-		return err
-	}
 	if err := adminMigrationLiveSourceReadServerAdmins(ctx, tx, payloadValues); err != nil {
 		return err
 	}
@@ -534,13 +705,7 @@ func adminMigrationLiveSourceReadBootstrapRows(ctx context.Context, tx pgx.Tx, c
 	if err := adminMigrationLiveSourceReadGroups(ctx, tx, cfg, payloadValues); err != nil {
 		return err
 	}
-	if err := adminMigrationLiveSourceReadGroupMemberships(ctx, tx, cfg, payloadValues); err != nil {
-		return err
-	}
 	if err := adminMigrationLiveSourceReadContainers(ctx, tx, cfg, payloadValues); err != nil {
-		return err
-	}
-	if err := adminMigrationLiveSourceReadOrgACLs(ctx, tx, cfg, payloadValues); err != nil {
 		return err
 	}
 	if err := adminMigrationLiveSourceReadCoreObjects(ctx, tx, cfg, payloadValues); err != nil {
@@ -623,34 +788,6 @@ WHERE o.name <> '' AND ($1::text = '' OR o.name = $1)
 ORDER BY o.name, g.name`, strings.TrimSpace(cfg.Organization))
 }
 
-func adminMigrationLiveSourceReadGroupMemberships(ctx context.Context, tx pgx.Tx, cfg adminMigrationLiveSourceConfig, payloadValues map[adminMigrationSourcePayloadKey][]json.RawMessage) error {
-	if err := adminMigrationLiveSourceAppendOrgQuery(ctx, tx, payloadValues, "group_memberships", `
-SELECT o.name AS orgname, g.name AS "group",
-       CASE WHEN u.username IS NOT NULL THEN 'user' ELSE 'client' END AS type,
-       COALESCE(u.username, c.name, child.authz_id) AS actor
-FROM groups g
-JOIN orgs o ON o.id = g.org_id
-JOIN auth_group parent_group ON parent_group.authz_id = g.authz_id
-JOIN group_actor_relations rel ON rel.parent = parent_group.id
-JOIN auth_actor child ON child.id = rel.child
-LEFT JOIN users u ON u.authz_id = child.authz_id
-LEFT JOIN clients c ON c.authz_id = child.authz_id AND c.org_id = g.org_id
-WHERE o.name <> '' AND ($1::text = '' OR o.name = $1)
-ORDER BY o.name, g.name, type, actor`, strings.TrimSpace(cfg.Organization)); err != nil {
-		return err
-	}
-	return adminMigrationLiveSourceAppendOrgQuery(ctx, tx, payloadValues, "group_memberships", `
-SELECT o.name AS orgname, parent_group.name AS "group", 'group' AS type, child_group.name AS actor
-FROM groups parent_group
-JOIN orgs o ON o.id = parent_group.org_id
-JOIN auth_group parent_auth ON parent_auth.authz_id = parent_group.authz_id
-JOIN group_group_relations rel ON rel.parent = parent_auth.id
-JOIN auth_group child_auth ON child_auth.id = rel.child
-JOIN groups child_group ON child_group.authz_id = child_auth.authz_id AND child_group.org_id = parent_group.org_id
-WHERE o.name <> '' AND ($1::text = '' OR o.name = $1)
-ORDER BY o.name, parent_group.name, child_group.name`, strings.TrimSpace(cfg.Organization))
-}
-
 func adminMigrationLiveSourceReadContainers(ctx context.Context, tx pgx.Tx, cfg adminMigrationLiveSourceConfig, payloadValues map[adminMigrationSourcePayloadKey][]json.RawMessage) error {
 	return adminMigrationLiveSourceAppendOrgQuery(ctx, tx, payloadValues, "containers", `
 SELECT o.name AS orgname, c.name, c.name AS containername, c.name AS containerpath
@@ -695,7 +832,7 @@ func adminMigrationLiveSourceReadCoreObjects(ctx context.Context, tx pgx.Tx, cfg
 	if err := adminMigrationLiveSourceReadChecksumReferences(ctx, tx, cfg, payloadValues); err != nil {
 		return err
 	}
-	return adminMigrationLiveSourceReadCoreObjectACLs(ctx, tx, cfg, payloadValues)
+	return nil
 }
 
 func adminMigrationLiveSourceReadNodes(ctx context.Context, tx pgx.Tx, cfg adminMigrationLiveSourceConfig, payloadValues map[adminMigrationSourcePayloadKey][]json.RawMessage) error {
@@ -809,22 +946,25 @@ func adminMigrationLiveSourceReadCookbooks(ctx context.Context, tx pgx.Tx, cfg a
 	return adminMigrationLiveSourceReadCookbookArtifacts(ctx, tx, cfg, payloadValues)
 }
 
-func adminMigrationLiveSourceReadCookbookVersions(ctx context.Context, tx pgx.Tx, cfg adminMigrationLiveSourceConfig, payloadValues map[adminMigrationSourcePayloadKey][]json.RawMessage) error {
-	return adminMigrationLiveSourceAppendOrgQuery(ctx, tx, payloadValues, "cookbook_versions", `
+const adminMigrationLiveSourceCookbookVersionsQuery = `
 SELECT o.name AS orgname,
        cv.serialized_object AS raw_payload,
        cv.metadata AS metadata_payload,
-       cv.name AS _source_cookbook_name,
-       cv.name AS cookbook_name,
+       cb.name AS _source_cookbook_name,
+       cb.name AS cookbook_name,
        (cv.major::text || '.' || cv.minor::text || '.' || cv.patch::text) AS _source_cookbook_version,
        (cv.major::text || '.' || cv.minor::text || '.' || cv.patch::text) AS version,
        COALESCE(ARRAY_REMOVE(ARRAY_AGG(lower(cvc.checksum) ORDER BY lower(cvc.checksum)), NULL), ARRAY[]::text[]) AS checksums
 FROM cookbook_versions cv
-JOIN orgs o ON o.id = cv.org_id
-LEFT JOIN cookbook_version_checksums cvc ON cvc.cookbook_version_id = cv.id AND cvc.org_id = cv.org_id
+JOIN cookbooks cb ON cb.id = cv.cookbook_id
+JOIN orgs o ON o.id = cb.org_id
+LEFT JOIN cookbook_version_checksums cvc ON cvc.cookbook_version_id = cv.id AND cvc.org_id = cb.org_id
 WHERE o.name <> '' AND ($1::text = '' OR o.name = $1)
-GROUP BY o.name, cv.id, cv.serialized_object, cv.metadata, cv.name, cv.major, cv.minor, cv.patch
-ORDER BY o.name, cv.name, cv.major, cv.minor, cv.patch`, strings.TrimSpace(cfg.Organization))
+GROUP BY o.name, cv.id, cv.serialized_object, cv.metadata, cb.name, cv.major, cv.minor, cv.patch
+ORDER BY o.name, cb.name, cv.major, cv.minor, cv.patch`
+
+func adminMigrationLiveSourceReadCookbookVersions(ctx context.Context, tx pgx.Tx, cfg adminMigrationLiveSourceConfig, payloadValues map[adminMigrationSourcePayloadKey][]json.RawMessage) error {
+	return adminMigrationLiveSourceAppendOrgQuery(ctx, tx, payloadValues, "cookbook_versions", adminMigrationLiveSourceCookbookVersionsQuery, strings.TrimSpace(cfg.Organization))
 }
 
 func adminMigrationLiveSourceReadCookbookArtifacts(ctx context.Context, tx pgx.Tx, cfg adminMigrationLiveSourceConfig, payloadValues map[adminMigrationSourcePayloadKey][]json.RawMessage) error {
@@ -844,227 +984,12 @@ GROUP BY o.name, ca.name, cav.id, cav.serialized_object, cav.metadata, cav.ident
 ORDER BY o.name, ca.name, cav.identifier`, strings.TrimSpace(cfg.Organization))
 }
 
-func adminMigrationLiveSourceReadCoreObjectACLs(ctx context.Context, tx pgx.Tx, cfg adminMigrationLiveSourceConfig, payloadValues map[adminMigrationSourcePayloadKey][]json.RawMessage) error {
-	rows, err := adminMigrationLiveSourceQueryACLRows(ctx, tx, `
-WITH core_objects AS (
-	SELECT o.name AS orgname, o.id AS org_id, n.authz_id, 'node:' || n.name AS resource
-	FROM nodes n JOIN orgs o ON o.id = n.org_id
-	WHERE o.name <> '' AND ($1::text = '' OR o.name = $1)
-	UNION ALL
-	SELECT o.name AS orgname, o.id AS org_id, e.authz_id, 'environment:' || e.name AS resource
-	FROM environments e JOIN orgs o ON o.id = e.org_id
-	WHERE o.name <> '' AND ($1::text = '' OR o.name = $1)
-	UNION ALL
-	SELECT o.name AS orgname, o.id AS org_id, r.authz_id, 'role:' || r.name AS resource
-	FROM roles r JOIN orgs o ON o.id = r.org_id
-	WHERE o.name <> '' AND ($1::text = '' OR o.name = $1)
-	UNION ALL
-	SELECT o.name AS orgname, o.id AS org_id, d.authz_id, 'data_bag:' || d.name AS resource
-	FROM data_bags d JOIN orgs o ON o.id = d.org_id
-	WHERE o.name <> '' AND ($1::text = '' OR o.name = $1)
-	UNION ALL
-	SELECT o.name AS orgname, o.id AS org_id, p.authz_id, 'policy:' || p.name AS resource
-	FROM policies p JOIN orgs o ON o.id = p.org_id
-	WHERE o.name <> '' AND ($1::text = '' OR o.name = $1)
-	UNION ALL
-	SELECT o.name AS orgname, o.id AS org_id, pg.authz_id, 'policy_group:' || pg.name AS resource
-	FROM policy_groups pg JOIN orgs o ON o.id = pg.org_id
-	WHERE o.name <> '' AND ($1::text = '' OR o.name = $1)
-)
-SELECT target.orgname, target.resource, acl.permission::text AS permission, 'actor' AS authorizee_type,
-       COALESCE(u.username, c.name, authorizee.authz_id) AS authorizee
-FROM core_objects target
-JOIN auth_object object_target ON object_target.authz_id = target.authz_id
-JOIN object_acl_actor acl ON acl.target = object_target.id
-JOIN auth_actor authorizee ON authorizee.id = acl.authorizee
-LEFT JOIN users u ON u.authz_id = authorizee.authz_id
-LEFT JOIN clients c ON c.authz_id = authorizee.authz_id AND c.org_id = target.org_id
-UNION ALL
-SELECT target.orgname, target.resource, acl.permission::text AS permission, 'group' AS authorizee_type,
-       COALESCE(g.name, authorizee.authz_id) AS authorizee
-FROM core_objects target
-JOIN auth_object object_target ON object_target.authz_id = target.authz_id
-JOIN object_acl_group acl ON acl.target = object_target.id
-JOIN auth_group authorizee ON authorizee.id = acl.authorizee
-LEFT JOIN groups g ON g.authz_id = authorizee.authz_id AND g.org_id = target.org_id
-ORDER BY orgname, resource, permission, authorizee_type, authorizee`, strings.TrimSpace(cfg.Organization))
-	if err != nil {
-		return err
-	}
-	byOrg := map[string][]map[string]any{}
-	for _, acl := range adminMigrationLiveSourceACLObjects(rows) {
-		orgName := adminMigrationSourceString(acl, "orgname")
-		delete(acl, "orgname")
-		byOrg[orgName] = append(byOrg[orgName], acl)
-	}
-	for _, orgName := range adminMigrationSortedMapKeys(byOrg) {
-		for _, acl := range byOrg[orgName] {
-			adminMigrationLiveSourceAppendObject(payloadValues, adminMigrationSourcePayloadKey{Organization: orgName, Family: "acls"}, acl)
-		}
-	}
-	return nil
-}
-
-func adminMigrationLiveSourceReadUserACLs(ctx context.Context, tx pgx.Tx, payloadValues map[adminMigrationSourcePayloadKey][]json.RawMessage) error {
-	rows, err := adminMigrationLiveSourceQueryACLRows(ctx, tx, `
-SELECT 'user:' || u.username AS resource, acl.permission::text AS permission, 'actor' AS authorizee_type,
-       COALESCE(au.username, ac.name, authorizee.authz_id) AS authorizee
-FROM users u
-JOIN auth_actor target ON target.authz_id = u.authz_id
-JOIN actor_acl_actor acl ON acl.target = target.id
-JOIN auth_actor authorizee ON authorizee.id = acl.authorizee
-LEFT JOIN users au ON au.authz_id = authorizee.authz_id
-LEFT JOIN clients ac ON ac.authz_id = authorizee.authz_id
-UNION ALL
-SELECT 'user:' || u.username AS resource, acl.permission::text AS permission, 'group' AS authorizee_type,
-       COALESCE(g.name, authorizee.authz_id) AS authorizee
-FROM users u
-JOIN auth_actor target ON target.authz_id = u.authz_id
-JOIN actor_acl_group acl ON acl.target = target.id
-JOIN auth_group authorizee ON authorizee.id = acl.authorizee
-LEFT JOIN groups g ON g.authz_id = authorizee.authz_id
-ORDER BY resource, permission, authorizee_type, authorizee`)
-	if err != nil {
-		return err
-	}
-	for _, acl := range adminMigrationLiveSourceACLObjects(rows) {
-		adminMigrationLiveSourceAppendObject(payloadValues, adminMigrationSourcePayloadKey{Family: "user_acls"}, acl)
-	}
-	return nil
-}
-
-func adminMigrationLiveSourceReadOrgACLs(ctx context.Context, tx pgx.Tx, cfg adminMigrationLiveSourceConfig, payloadValues map[adminMigrationSourcePayloadKey][]json.RawMessage) error {
-	rows, err := adminMigrationLiveSourceQueryACLRows(ctx, tx, `
-SELECT o.name AS orgname, 'organization:' || o.name AS resource, acl.permission::text AS permission, 'actor' AS authorizee_type,
-       COALESCE(u.username, c.name, authorizee.authz_id) AS authorizee
-FROM orgs o
-JOIN auth_object target ON target.authz_id = o.authz_id
-JOIN object_acl_actor acl ON acl.target = target.id
-JOIN auth_actor authorizee ON authorizee.id = acl.authorizee
-LEFT JOIN users u ON u.authz_id = authorizee.authz_id
-LEFT JOIN clients c ON c.authz_id = authorizee.authz_id AND c.org_id = o.id
-WHERE o.name <> '' AND ($1::text = '' OR o.name = $1)
-UNION ALL
-SELECT o.name AS orgname, 'organization:' || o.name AS resource, acl.permission::text AS permission, 'group' AS authorizee_type,
-       COALESCE(g.name, authorizee.authz_id) AS authorizee
-FROM orgs o
-JOIN auth_object target ON target.authz_id = o.authz_id
-JOIN object_acl_group acl ON acl.target = target.id
-JOIN auth_group authorizee ON authorizee.id = acl.authorizee
-LEFT JOIN groups g ON g.authz_id = authorizee.authz_id AND g.org_id = o.id
-WHERE o.name <> '' AND ($1::text = '' OR o.name = $1)
-UNION ALL
-SELECT o.name AS orgname, 'client:' || c.name AS resource, acl.permission::text AS permission, 'actor' AS authorizee_type,
-       COALESCE(u.username, ac.name, authorizee.authz_id) AS authorizee
-FROM clients c
-JOIN orgs o ON o.id = c.org_id
-JOIN auth_actor target ON target.authz_id = c.authz_id
-JOIN actor_acl_actor acl ON acl.target = target.id
-JOIN auth_actor authorizee ON authorizee.id = acl.authorizee
-LEFT JOIN users u ON u.authz_id = authorizee.authz_id
-LEFT JOIN clients ac ON ac.authz_id = authorizee.authz_id AND ac.org_id = o.id
-WHERE o.name <> '' AND ($1::text = '' OR o.name = $1)
-UNION ALL
-SELECT o.name AS orgname, 'client:' || c.name AS resource, acl.permission::text AS permission, 'group' AS authorizee_type,
-       COALESCE(g.name, authorizee.authz_id) AS authorizee
-FROM clients c
-JOIN orgs o ON o.id = c.org_id
-JOIN auth_actor target ON target.authz_id = c.authz_id
-JOIN actor_acl_group acl ON acl.target = target.id
-JOIN auth_group authorizee ON authorizee.id = acl.authorizee
-LEFT JOIN groups g ON g.authz_id = authorizee.authz_id AND g.org_id = o.id
-WHERE o.name <> '' AND ($1::text = '' OR o.name = $1)
-UNION ALL
-SELECT o.name AS orgname, 'group:' || g.name AS resource, acl.permission::text AS permission, 'actor' AS authorizee_type,
-       COALESCE(u.username, c.name, authorizee.authz_id) AS authorizee
-FROM groups g
-JOIN orgs o ON o.id = g.org_id
-JOIN auth_group target ON target.authz_id = g.authz_id
-JOIN group_acl_actor acl ON acl.target = target.id
-JOIN auth_actor authorizee ON authorizee.id = acl.authorizee
-LEFT JOIN users u ON u.authz_id = authorizee.authz_id
-LEFT JOIN clients c ON c.authz_id = authorizee.authz_id AND c.org_id = o.id
-WHERE o.name <> '' AND ($1::text = '' OR o.name = $1)
-UNION ALL
-SELECT o.name AS orgname, 'group:' || g.name AS resource, acl.permission::text AS permission, 'group' AS authorizee_type,
-       COALESCE(ag.name, authorizee.authz_id) AS authorizee
-FROM groups g
-JOIN orgs o ON o.id = g.org_id
-JOIN auth_group target ON target.authz_id = g.authz_id
-JOIN group_acl_group acl ON acl.target = target.id
-JOIN auth_group authorizee ON authorizee.id = acl.authorizee
-LEFT JOIN groups ag ON ag.authz_id = authorizee.authz_id AND ag.org_id = o.id
-WHERE o.name <> '' AND ($1::text = '' OR o.name = $1)
-UNION ALL
-SELECT o.name AS orgname, 'container:' || c.name AS resource, acl.permission::text AS permission, 'actor' AS authorizee_type,
-       COALESCE(u.username, ac.name, authorizee.authz_id) AS authorizee
-FROM containers c
-JOIN orgs o ON o.id = c.org_id
-JOIN auth_container target ON target.authz_id = c.authz_id
-JOIN container_acl_actor acl ON acl.target = target.id
-JOIN auth_actor authorizee ON authorizee.id = acl.authorizee
-LEFT JOIN users u ON u.authz_id = authorizee.authz_id
-LEFT JOIN clients ac ON ac.authz_id = authorizee.authz_id AND ac.org_id = o.id
-WHERE o.name <> '' AND ($1::text = '' OR o.name = $1)
-UNION ALL
-SELECT o.name AS orgname, 'container:' || c.name AS resource, acl.permission::text AS permission, 'group' AS authorizee_type,
-       COALESCE(g.name, authorizee.authz_id) AS authorizee
-FROM containers c
-JOIN orgs o ON o.id = c.org_id
-JOIN auth_container target ON target.authz_id = c.authz_id
-JOIN container_acl_group acl ON acl.target = target.id
-JOIN auth_group authorizee ON authorizee.id = acl.authorizee
-LEFT JOIN groups g ON g.authz_id = authorizee.authz_id AND g.org_id = o.id
-WHERE o.name <> '' AND ($1::text = '' OR o.name = $1)
-ORDER BY orgname, resource, permission, authorizee_type, authorizee`, strings.TrimSpace(cfg.Organization))
-	if err != nil {
-		return err
-	}
-	byOrg := map[string][]map[string]any{}
-	for _, acl := range adminMigrationLiveSourceACLObjects(rows) {
-		orgName := adminMigrationSourceString(acl, "orgname")
-		delete(acl, "orgname")
-		byOrg[orgName] = append(byOrg[orgName], acl)
-	}
-	for _, orgName := range adminMigrationSortedMapKeys(byOrg) {
-		for _, acl := range byOrg[orgName] {
-			adminMigrationLiveSourceAppendObject(payloadValues, adminMigrationSourcePayloadKey{Organization: orgName, Family: "acls"}, acl)
-		}
-	}
-	return nil
-}
-
 type adminMigrationLiveSourceACLRow struct {
 	OrgName        string
 	Resource       string
 	Permission     string
 	AuthorizeeType string
 	Authorizee     string
-}
-
-func adminMigrationLiveSourceQueryACLRows(ctx context.Context, tx pgx.Tx, query string, args ...any) ([]adminMigrationLiveSourceACLRow, error) {
-	rows, err := tx.Query(ctx, query, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	fields := rows.FieldDescriptions()
-	var out []adminMigrationLiveSourceACLRow
-	for rows.Next() {
-		values, err := rows.Values()
-		if err != nil {
-			return nil, err
-		}
-		object := adminMigrationLiveSourceRowMap(fields, values)
-		out = append(out, adminMigrationLiveSourceACLRow{
-			OrgName:        adminMigrationSourceString(object, "orgname"),
-			Resource:       adminMigrationSourceString(object, "resource"),
-			Permission:     adminMigrationSourceString(object, "permission"),
-			AuthorizeeType: adminMigrationSourceString(object, "authorizee_type"),
-			Authorizee:     adminMigrationSourceString(object, "authorizee"),
-		})
-	}
-	return out, rows.Err()
 }
 
 func adminMigrationLiveSourceACLObjects(rows []adminMigrationLiveSourceACLRow) []map[string]any {
@@ -1075,7 +1000,7 @@ func adminMigrationLiveSourceACLObjects(rows []adminMigrationLiveSourceACLRow) [
 		resource := strings.TrimSpace(row.Resource)
 		permission := strings.TrimSpace(row.Permission)
 		authorizee := strings.TrimSpace(row.Authorizee)
-		if resource == "" || permission == "" || authorizee == "" {
+		if resource == "" {
 			continue
 		}
 		identity := strings.TrimSpace(row.OrgName) + "|" + resource
@@ -1088,6 +1013,9 @@ func adminMigrationLiveSourceACLObjects(rows []adminMigrationLiveSourceACLRow) [
 		resourceByIdentity[identity] = resource
 		if row.OrgName != "" {
 			orgByIdentity[identity] = row.OrgName
+		}
+		if permission == "" || authorizee == "" {
+			continue
 		}
 		key := "actors"
 		if row.AuthorizeeType == "group" {
@@ -1114,7 +1042,7 @@ func adminMigrationLiveSourceACLObjects(rows []adminMigrationLiveSourceACLRow) [
 func adminMigrationLiveSourceAppendQuery(ctx context.Context, tx pgx.Tx, payloadValues map[adminMigrationSourcePayloadKey][]json.RawMessage, key adminMigrationSourcePayloadKey, query string, args ...any) error {
 	rows, err := adminMigrationLiveSourceQueryObjects(ctx, tx, query, args...)
 	if err != nil {
-		return err
+		return adminMigrationLiveSourceWrapPayloadReadError(key.Family, err)
 	}
 	for _, row := range rows {
 		adminMigrationLiveSourceAppendObject(payloadValues, key, row)
@@ -1125,7 +1053,7 @@ func adminMigrationLiveSourceAppendQuery(ctx context.Context, tx pgx.Tx, payload
 func adminMigrationLiveSourceAppendOrgQuery(ctx context.Context, tx pgx.Tx, payloadValues map[adminMigrationSourcePayloadKey][]json.RawMessage, family, query string, args ...any) error {
 	rows, err := adminMigrationLiveSourceQueryObjects(ctx, tx, query, args...)
 	if err != nil {
-		return err
+		return adminMigrationLiveSourceWrapPayloadReadError(family, err)
 	}
 	for _, row := range rows {
 		orgName := adminMigrationSourceString(row, "orgname")
@@ -1136,6 +1064,28 @@ func adminMigrationLiveSourceAppendOrgQuery(ctx context.Context, tx pgx.Tx, payl
 		adminMigrationLiveSourceAppendObject(payloadValues, adminMigrationSourcePayloadKey{Organization: orgName, Family: family}, row)
 	}
 	return nil
+}
+
+// adminMigrationLiveSourcePayloadReadError identifies the safe normalized
+// family that failed without exposing source SQL, driver text, or credentials.
+type adminMigrationLiveSourcePayloadReadError struct {
+	Family string
+	Err    error
+}
+
+func (e *adminMigrationLiveSourcePayloadReadError) Error() string {
+	return "source payload family " + e.Family + " could not be read"
+}
+
+func (e *adminMigrationLiveSourcePayloadReadError) Unwrap() error {
+	return e.Err
+}
+
+func adminMigrationLiveSourceWrapPayloadReadError(family string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return &adminMigrationLiveSourcePayloadReadError{Family: strings.TrimSpace(family), Err: err}
 }
 
 func adminMigrationLiveSourceQueryObjects(ctx context.Context, tx pgx.Tx, query string, args ...any) ([]map[string]any, error) {
@@ -1151,89 +1101,137 @@ func adminMigrationLiveSourceQueryObjects(ctx context.Context, tx pgx.Tx, query 
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, adminMigrationLiveSourceRowMap(fields, values))
+		// JSON/JSONB values from native columns must not pass through pgx's
+		// default interface decoder, which converts arbitrary numbers to float64.
+		rawValues := rows.RawValues()
+		for i, field := range fields {
+			if field.DataTypeOID == pgtype.JSONOID || field.DataTypeOID == pgtype.JSONBOID {
+				raw := rawValues[i]
+				if field.DataTypeOID == pgtype.JSONBOID && field.Format == pgx.BinaryFormatCode && len(raw) > 0 {
+					raw = raw[1:]
+				}
+				values[i] = string(raw)
+			}
+		}
+		object, err := adminMigrationLiveSourceRowMap(fields, values)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, object)
 	}
 	return out, rows.Err()
 }
 
-func adminMigrationLiveSourceRowMap(fields []pgconn.FieldDescription, values []any) map[string]any {
-	object := map[string]any{}
-	for i, field := range fields {
-		if i >= len(values) {
-			continue
-		}
-		name := string(field.Name)
-		value := adminMigrationLiveSourceJSONValue(values[i])
-		if name == "serialized_object" {
-			adminMigrationLiveSourceMergeSerializedObject(object, value)
-			continue
-		}
-		if name == "raw_payload" {
-			adminMigrationLiveSourceMergeRawPayload(object, value)
-			continue
-		}
-		if name == "metadata_payload" {
-			adminMigrationLiveSourceMergeMetadataPayload(object, value)
-			continue
-		}
-		object[name] = value
-	}
-	return object
+type adminMigrationLiveSourcePayloadDecodeError struct{ Identity string }
+
+func (e *adminMigrationLiveSourcePayloadDecodeError) Error() string {
+	return "malformed serialized source object"
 }
 
-func adminMigrationLiveSourceJSONValue(value any) any {
+func adminMigrationLiveSourceRowMap(fields []pgconn.FieldDescription, values []any) (map[string]any, error) {
+	object := map[string]any{}
+	identity := map[string]any{}
+	for i, field := range fields {
+		if i >= len(values) {
+			return nil, &adminMigrationLiveSourcePayloadDecodeError{}
+		}
+		switch field.Name {
+		case "orgname", "name", "username", "id", "cookbook_name", "version", "identifier", "revision_id":
+			identity[field.Name] = values[i]
+		}
+	}
+	identityBytes, _ := json.Marshal(identity)
+	digest := sha256.Sum256(identityBytes)
+	malformed := func() (map[string]any, error) {
+		return nil, &adminMigrationLiveSourcePayloadDecodeError{Identity: hex.EncodeToString(digest[:])}
+	}
+	// SQL identity columns are authoritative regardless of their column order.
+	for i, field := range fields {
+		switch field.Name {
+		case "serialized_object", "raw_payload", "metadata_payload":
+			continue
+		}
+		value, err := adminMigrationLiveSourceJSONValue(values[i])
+		if err != nil {
+			return malformed()
+		}
+		object[field.Name] = value
+	}
+	for i, field := range fields {
+		switch field.Name {
+		case "serialized_object", "raw_payload", "metadata_payload":
+			value, err := adminMigrationLiveSourceJSONValue(values[i])
+			if err != nil {
+				return malformed()
+			}
+			switch field.Name {
+			case "serialized_object":
+				err = adminMigrationLiveSourceMergeSerializedObject(object, value)
+			case "raw_payload":
+				err = adminMigrationLiveSourceMergeRawPayload(object, value)
+			case "metadata_payload":
+				err = adminMigrationLiveSourceMergeMetadataPayload(object, value)
+			}
+			if err != nil {
+				return malformed()
+			}
+		}
+	}
+	return object, nil
+}
+
+func adminMigrationLiveSourceJSONValue(value any) (any, error) {
 	switch typed := value.(type) {
 	case nil:
-		return ""
+		return "", nil
 	case []byte:
 		return adminMigrationLiveSourceStringFromBytes(typed)
 	case time.Time:
-		return typed.UTC().Format(time.RFC3339)
+		return typed.UTC().Format(time.RFC3339), nil
 	case []string:
-		return append([]string(nil), typed...)
-	case []any:
-		out := make([]string, 0, len(typed))
-		for _, item := range typed {
-			if s, ok := item.(string); ok {
-				out = append(out, s)
-			}
-		}
-		return out
+		return append([]string(nil), typed...), nil
 	default:
-		return typed
+		return typed, nil
 	}
 }
 
-// adminMigrationLiveSourceStringFromBytes accepts both plain JSON bytea and
-// Chef's gzip-compressed serialized_object blobs so source extraction can stay
-// read-only without relying on database-side extensions.
-func adminMigrationLiveSourceStringFromBytes(data []byte) string {
+// Decode compressed payloads strictly: gzip headers, trailers, CRCs, and
+// concatenated members are checked before parsing exactly one JSON object.
+func adminMigrationLiveSourceStringFromBytes(data []byte) (string, error) {
 	if len(data) >= 2 && data[0] == 0x1f && data[1] == 0x8b {
 		reader, err := gzip.NewReader(bytes.NewReader(data))
 		if err != nil {
-			return string(data)
+			return "", err
 		}
-		defer reader.Close()
 		decoded, err := io.ReadAll(reader)
+		closeErr := reader.Close()
 		if err != nil {
-			return string(data)
+			return "", err
 		}
-		return string(decoded)
+		if closeErr != nil {
+			return "", closeErr
+		}
+		return string(decoded), nil
 	}
-	return string(data)
+	return string(data), nil
 }
 
-// adminMigrationLiveSourceMergeSerializedObject salvages optional Chef user
-// profile fields without trusting serialized JSON to override canonical names.
-func adminMigrationLiveSourceMergeSerializedObject(object map[string]any, value any) {
-	raw, _ := value.(string)
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return
+func adminMigrationLiveSourcePayloadObject(value any, optional bool) (map[string]any, error) {
+	raw, ok := value.(string)
+	if !ok {
+		return nil, fmt.Errorf("serialized payload must be JSON text")
 	}
-	var decoded map[string]any
-	if err := json.Unmarshal([]byte(raw), &decoded); err != nil {
-		return
+	if optional && raw == "" {
+		return nil, nil
+	}
+	return adminMigrationDecodeSourceObject(json.RawMessage(raw))
+}
+
+// Only absent user-profile data is optional; malformed nonempty data blocks extraction.
+func adminMigrationLiveSourceMergeSerializedObject(object map[string]any, value any) error {
+	decoded, err := adminMigrationLiveSourcePayloadObject(value, true)
+	if err != nil {
+		return err
 	}
 	for _, field := range []string{"display_name", "first_name", "last_name"} {
 		if _, exists := object[field]; exists {
@@ -1243,42 +1241,27 @@ func adminMigrationLiveSourceMergeSerializedObject(object map[string]any, value 
 			object[field] = strings.TrimSpace(value)
 		}
 	}
+	return nil
 }
-
-// adminMigrationLiveSourceMergeRawPayload preserves Chef object JSON exactly
-// enough for OpenCook's normalized importer while keeping SQL-selected identity
-// columns authoritative for names, org routing, and relationship fields.
-func adminMigrationLiveSourceMergeRawPayload(object map[string]any, value any) {
-	raw, _ := value.(string)
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return
-	}
-	var decoded map[string]any
-	if err := json.Unmarshal([]byte(raw), &decoded); err != nil {
-		return
+func adminMigrationLiveSourceMergeRawPayload(object map[string]any, value any) error {
+	decoded, err := adminMigrationLiveSourcePayloadObject(value, false)
+	if err != nil {
+		return err
 	}
 	for key, value := range decoded {
-		if _, exists := object[key]; exists {
-			continue
+		if _, exists := object[key]; !exists {
+			object[key] = value
 		}
-		object[key] = value
 	}
+	return nil
 }
-
-// adminMigrationLiveSourceMergeMetadataPayload preserves cookbook metadata bytea
-// as the nested metadata object expected by OpenCook's cookbook importer.
-func adminMigrationLiveSourceMergeMetadataPayload(object map[string]any, value any) {
-	raw, _ := value.(string)
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return
-	}
-	var decoded map[string]any
-	if err := json.Unmarshal([]byte(raw), &decoded); err != nil {
-		return
+func adminMigrationLiveSourceMergeMetadataPayload(object map[string]any, value any) error {
+	decoded, err := adminMigrationLiveSourcePayloadObject(value, false)
+	if err != nil {
+		return err
 	}
 	object["metadata"] = decoded
+	return nil
 }
 
 func adminMigrationLiveSourceAppendObject(payloadValues map[adminMigrationSourcePayloadKey][]json.RawMessage, key adminMigrationSourcePayloadKey, object map[string]any) {

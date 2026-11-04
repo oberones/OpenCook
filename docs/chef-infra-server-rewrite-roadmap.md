@@ -41,6 +41,7 @@ As of 2026-05-02, OpenCook has moved past pure scaffolding and into the first co
 - generated `<org>-validator` clients can now register normal clients through the stock default-org and explicit-org client bootstrap routes
 - actor key lifecycle now supports list, create, update, delete, and expiration-aware authentication behavior
 - the first migration/cutover tooling slice is now live with redacted preflight checks, OpenCook logical backup create/inspect, offline restore preflight/apply, Chef Server source artifact inventory/normalize/import/sync for normalized source bundles, shadow-read comparison, restored-target complete reindex, cutover rehearsal, and Docker functional coverage
+- live-source blob extraction now resolves native Bookshelf keys using source organization IDs and upstream percent-encoding/SHA-1 sharding, validates headers and content, and preserves checksum-valid raw flat files with Bookshelf magic prefixes
 - `chef-server-ctl`-style operational parity is now live for config validation, service status/doctor, Prometheus-compatible metrics, request IDs, structured logs, log discovery, redacted diagnostics bundles, runbook discovery, service-management docs, and Docker functional coverage
 - deployment evidence triage is now live through `scripts/deployment-evidence.sh`, which collects redacted smoke, migration, and scale evidence manifests before choosing narrow compatibility or safety follow-up work
 - maintenance mode and online repair safety are now live with PostgreSQL-shared maintenance state, process-local standalone truthfulness, Chef-style `503` blocking for mutating Chef-facing writes, preserved reads/read-like POSTs/signed downloads, admin maintenance commands, status/doctor/metrics/log visibility, maintenance-gated reindex/search repair, online default ACL repair, and online org/group/server-admin membership repair through live service seams
@@ -190,7 +191,7 @@ As of 2026-05-02, OpenCook has moved past pure scaffolding and into the first co
 
 Current focus:
 
-- direct live Chef Infra Server source extraction is complete for the implemented PostgreSQL-backed Chef families and checksum blob evidence, feeding the existing normalized source import/sync, reindex, shadow-read, and cutover rehearsal pipeline
+- direct live Chef/Cinc Server source extraction is complete for the implemented PostgreSQL-backed families and checksum blob evidence, deriving separate `opscode_chef` and `bifrost` connections from one redacted cluster seed, resolving authorization edges in Go, reporting independent-snapshot consistency advisories, and feeding the existing normalized source import/sync, reindex, shadow-read, and source-freeze-gated cutover rehearsal pipeline
 - preserve the completed API-version, search-route, unsupported-index, encrypted-data-bag, provider capability, migration/cutover, source import/sync, live-source extraction, maintenance-mode, operational parity, production-scale validation, core object compatibility hardening, and PostgreSQL-source-of-truth contracts while planning the next operations/admin safety slice
 - treat deployment-test and live-source-discovered Chef compatibility gaps as interrupt-worthy if they prove higher risk than broader online repair/admin mutation parity
 
@@ -600,6 +601,49 @@ Exit criteria:
 - failover and restore drills exercised
 
 ## Phase 7: Migration and cutover
+
+The admin migration remediation adds protected source/output path checks,
+non-mutating normalization dry runs, fresh-destination backups with verified
+staging, synchronized publication, no-replace rename, and exclusive destination
+locks. Interrupted staging and locks require operator inspection and are never
+reclaimed by another invocation. Linux and macOS provide the required rename
+primitive; unsupported platforms fail closed.
+
+Sync now applies definitions before relationships in deterministic order,
+preserves omitted relationships, clears explicit empty relationship scopes, and
+validates the merged graph before writes. Extraction retains deny-all ACLs and
+rejects malformed serialized data with redacted findings. Number-preserving JSON
+decoding covers normalization, typed conversion, PostgreSQL rehydration, admin
+reads, and shadow comparison. Logical state backups retain policy payloads.
+Cutover freshness uses the latest applied cursor; shadow comparison has explicit
+protocol path rules that leave application data significant.
+
+PR #125 follow-up closes parent-traversal aliases and trailing-slash destination
+errors, reapplies explicit server admins after relationship reconstruction, and
+validates initial policy assignments against explicit parent definitions. Global
+ACL grants expand to snapshot-effective actors, including nested groups, without
+changing target authorization or bundle versions. HTTP numeric decoding and
+canonical policy comparisons preserve exact values across restart. Search uses
+one exact formatter across writes, hydration, and reindex; existing indexes need
+a maintenance-gated rebuild after upgrading. No database schema change is needed.
+Follow-up verification passed the full uncached Go suite and Docker
+`create restart verify query-compat object-compat migration-all` plus
+`migration-live-source-all`. New live-source assertions cover signed global ACL
+access/denial, server admins after sync, and numeric policy/search behavior
+across restart, reindex, and restore. The synthetic policy fixture now uses the
+valid `recipe[base::default]` policy run-list form. Real Chef/Cinc acceptance
+remains pending.
+
+Qualification on 2026-11-04: permanent regression tests and the full uncached Go
+suite pass. Docker `create restart verify migration-all migration-live-source-all
+migration-scale-all` passes with the small scale profile, as does a final
+`migration-live-source-all` rerun after the recovery refinements. These phases
+exercise PostgreSQL persistence/restart, import/sync, backup/restore, empty ACL
+denial, exact numeric values, and latest-cursor cutover checks. Injected failure
+tests and synthetic Docker source fixtures do not establish acceptance on a real
+Chef/Cinc deployment. Blob streaming and transactional metadata redesign remain
+separate work, and existing offline mutation gates and bundle version identifiers
+are unchanged.
 
 Deliverables:
 

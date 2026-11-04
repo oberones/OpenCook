@@ -196,8 +196,9 @@ opencook admin migration cutover rehearse --manifest PATH --source normalized-so
 Direct live source pattern:
 
 ```sh
-opencook admin migration source live preflight --source-postgres-dsn DSN --source-bookshelf-root PATH --org ORG --json
-opencook admin migration source live extract --source-postgres-dsn DSN --source-bookshelf-root PATH --copy-blobs --org ORG --output live-source --yes --json
+SOURCE_DSN='postgresql://opscode_chef_ro:<password>@127.0.0.1:5432/postgres?sslmode=disable'
+opencook admin migration source live preflight --source-postgres-dsn "$SOURCE_DSN" --source-bookshelf-root PATH --org ORG --json
+opencook admin migration source live extract --source-postgres-dsn "$SOURCE_DSN" --source-bookshelf-root PATH --copy-blobs --org ORG --output live-source --yes --json
 opencook admin migration source import preflight live-source --offline --json
 opencook admin migration source import apply live-source --offline --yes --progress source-import-progress.json --json
 opencook admin migration source sync apply live-source --offline --yes --progress source-sync-progress.json --json
@@ -212,19 +213,47 @@ opencook admin migration cutover rehearse --manifest restored-target-backup/mani
 
 Notes:
 
-- Live source preflight and extract use read-only source PostgreSQL access and
-  do not mutate source Chef or the OpenCook target. Import/sync still mutate
-  the target and therefore remain `--offline` workflows.
+- `--source-postgres-dsn` is a cluster seed. OpenCook preserves its server,
+  credentials, TLS, and connection parameters while deriving separate
+  `opscode_chef` and `bifrost` connections. Use
+  `--source-erchef-database NAME` and `--source-bifrost-database NAME` for
+  nonstandard installations. The seed and both derived targets stay redacted.
+- Live source preflight and extract use independent read-only repeatable-read
+  transactions for Erchef and Bifrost and do not mutate source Chef/Cinc or the
+  OpenCook target. PostgreSQL cannot make those two database snapshots atomic,
+  so rehearsal reports a consistency advisory. Import/sync still mutate the
+  target and therefore remain `--offline` workflows.
 - Freeze source Chef writes before the final source sync and keep the freeze
   through shadow-read comparison, cutover rehearsal, client cutover, and
   post-cutover smoke checks. OpenCook can report whether the operator confirmed
   the freeze with `--source-frozen`, but it cannot enforce writes still routed
-  to source Chef Infra Server.
+  to source Chef Infra Server. A live-extracted bundle is blocked at final
+  cutover rehearsal when that confirmation is absent.
 - OpenCook maintenance mode only blocks writes routed to OpenCook. It does not
   block writes still routed to the source Chef Infra Server.
 - Source import and source sync apply remain offline-gated because they mutate
   target PostgreSQL/blob state directly. Run them against a stopped OpenCook
   target or under an externally frozen target window.
+- Publication paths, protected source paths, and source private-key paths must
+  not contain literal `..` components. Supply absolute paths or relative paths
+  without parent traversal; this closes symlink-plus-parent traversal aliases.
+  A trailing slash does not change the publication destination. Existing
+  backup destinations remain forbidden even with `--yes`.
+- Extraction expands global ACL groups using the Bifrost membership snapshot.
+  Nested groups are traversed with cycle protection; missing identities and
+  cross-organization client grants fail closed. Re-extract and sync after
+  changing global memberships. Explicit server-admin memberships survive
+  relationship reconstruction; target-only organizations remain untouched.
+- Initial import needs explicit policy-group definitions for every assignment.
+  Relationship-only sync can instead use valid retained target parents.
+- After upgrading the numeric search formatter, enable maintenance, run
+  `opencook admin reindex --all-orgs --complete`, verify with
+  `opencook admin search check --all-orgs`, then disable maintenance. Existing
+  derived indexes may contain older numeric spellings until rebuilt. The new
+  formatter preserves every decimal digit and uses scientific notation below
+  exponent -4 or at/above exponent 6, consistently across HTTP writes, restart,
+  and reindex. Policy re-PUT accepts equivalent decimal/exponent values while
+  still rejecting changed large integers.
 - Use live extraction `--copy-blobs` with a local `--source-bookshelf-root` when
   the migration operator can read checksum blob bytes. This creates the most
   self-contained normalized bundle and lets import/cutover verify copied

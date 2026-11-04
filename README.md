@@ -228,10 +228,25 @@ See [Functional Docker Stack](docs/functional-testing.md) for phase-by-phase and
 
 ## Migration: Live Chef Source Extraction
 
-OpenCook can extract implemented Chef Infra Server source families directly
-from read-only source PostgreSQL access plus Bookshelf checksum blob access,
-then reuse the same normalized source import/sync, reindex, shadow-read, and
-cutover rehearsal pipeline as prepared source artifacts.
+OpenCook can extract implemented Chef or Cinc Server source families directly
+from read-only PostgreSQL access plus Bookshelf checksum blob access, then reuse
+the same normalized source import/sync, reindex, shadow-read, and cutover
+rehearsal pipeline as prepared source artifacts. Chef/Cinc stores Erchef data in
+`opscode_chef` and Bifrost authorization data in `bifrost`; OpenCook connects to
+them independently and never relies on cross-database SQL joins. Cinc retains
+the normal Chef Server tooling and configuration conventions; see the
+[Cinc Server documentation](https://cinc.sh/docs/server/).
+
+`--source-postgres-dsn` is a cluster seed, not the database that extraction
+queries. Its host, port, credentials, TLS, and connection parameters are cloned
+while the database is replaced with `opscode_chef` and `bifrost`. For example:
+
+```bash
+export CHEF_SOURCE_POSTGRES_DSN='postgresql://opscode_chef_ro:<password>@127.0.0.1:5432/postgres?sslmode=disable'
+```
+
+Use `--source-erchef-database` or `--source-bifrost-database` only when the
+installation uses nonstandard names.
 
 Start with a no-mutation source preflight:
 
@@ -284,9 +299,69 @@ bin/opencook admin migration cutover rehearse \
 
 Operational notes:
 
+- Qualification (2026-11-04): the full uncached Go suite and Docker
+  `create restart verify migration-all migration-live-source-all migration-scale-all`
+  pass with the small scale profile; a final live-source rerun also passes.
+  Docker verifies PostgreSQL persistence/restart, import/sync, backup/restore,
+  empty ACL denial, exact numbers, and cutover using synthetic Chef databases.
+  Injected failure tests provide additional recovery coverage. Real Chef/Cinc
+  deployment acceptance remains pending.
+- Backup creation requires a fresh destination: existing files, directories,
+  and symlinks are rejected even with `--yes`. Bundles are written to unique
+  sibling staging directories, checked for integrity, synchronized, and published
+  with a no-replace rename on Linux and macOS. Other platforms fail closed.
+- Source normalization and live extraction reject output paths that equal,
+  contain, or sit inside a protected source path, including symlink aliases and
+  missing output ancestors. Live extraction protects both the Bookshelf root
+  and the configured source private key. Literal `..` path components are
+  rejected before path cleaning or filesystem access, including in source and
+  private-key inputs. Use an absolute path or a relative path without `..`.
+  Trailing slashes name the same destination directory. Normalization `--dry-run` writes
+  nothing, including when combined with `--yes` and an existing output.
+- An exclusive `.<destination>.publish.lock` serializes bundle writers. After
+  interruption or a publication/cleanup failure, inspect the lock's PID and
+  staging path and the reported recovery paths. Verify that no writer is active,
+  inspect the staged bundle, and recover or remove only that invocation's files
+  before retrying. `--yes` never removes stale staging or locks automatically.
+- Sync treats group definitions and memberships, and policy-group definitions
+  and assignments, as separate scopes. Omitted relationship scopes preserve
+  retained relationships; explicit empty scopes clear them while retaining
+  parents. Explicit server-admin memberships are applied after organization
+  relationships are rebuilt. Initial import requires explicit policy-group
+  definitions for assignments; relationship-only sync may use retained parents.
+  The final merged relationship graph is validated before writes.
+- Live extraction expands global-group ACL grants into effective actor grants
+  using the Bifrost snapshot, including nested memberships. Empty groups grant
+  nothing; unresolved or unrepresentable cross-organization actors block
+  extraction. Re-extract and sync to refresh these grants after membership changes.
+- Live extraction preserves explicit empty ACLs and rejects malformed gzip,
+  invalid/trailing JSON, and non-object serialized payloads. Findings identify
+  the family and a hashed source identity without exposing payload contents.
+  Arbitrary JSON numbers retain their exact values through import, persistence,
+  restart, API reads, and backup/restore; PostgreSQL may change numeric notation.
+  Logical backups also retain complete policy revision payloads. HTTP writes
+  retain exact numbers, and policy re-PUT compares equivalent decimal/exponent
+  spellings by value without rounding large integers.
+- After upgrading from the earlier numeric-token implementation, rebuild
+  existing OpenSearch data under maintenance with `opencook admin reindex
+  --all-orgs --complete`, then run `opencook admin search check --all-orgs`.
+  Search now uses one exact decimal formatter for writes, restart hydration,
+  and reindex. It keeps Go float notation boundaries (scientific notation for
+  exponents below -4 or at least 6) while retaining all significant digits.
+  For example, `1000000` indexes as `1e+06`; escape the plus sign in exact
+  Lucene queries (`million:1e\+06`).
+- Cutover requires the latest successful sync cursor to match the supplied
+  source bundle. Historical cursors alone do not prove freshness. Shadow
+  comparison normalizes only defined protocol fields and generated download
+  URLs; application keys, ordered arrays, URL queries, and numeric differences
+  remain significant, including fields named `private_key` or `updated_at`.
 - Use `--copy-blobs` with `--source-bookshelf-root` when the operator running
   extraction can read local Bookshelf checksum files. This produces a
   self-contained bundle and lets import/cutover verify copied checksum bytes.
+  The root may be the native Bookshelf data directory or its `bookshelf` bucket
+  directory; extraction uses each source organization's ID to locate encoded,
+  sharded keys and validates the stored header and content. Flat `<root>/<checksum>`
+  files remain supported, including binary content starting with Bookshelf magic bytes.
 - Use `--reference-blobs` when blob bytes must remain in an external provider.
   Reference-only bundles require separate provider reachability validation
   before cutover because checksum content is not packaged into the bundle.
@@ -294,10 +369,16 @@ Operational notes:
   signed URLs out of shell history, logs, and issue trackers. JSON output
   redacts known credential fields, but deployment secret handling is still the
   operator's responsibility.
+- Erchef and Bifrost extraction uses independent read-only repeatable-read
+  transactions. PostgreSQL cannot share one transaction snapshot across
+  databases, so an active-source rehearsal reports a consistency advisory; see
+  [PostgreSQL transaction documentation](https://www.postgresql.org/docs/current/sql-set-transaction.html).
 - Freeze source Chef writes externally before the final source sync and keep
   them frozen through shadow-read comparison, cutover rehearsal, client
-  cutover, and post-cutover smoke checks. OpenCook maintenance mode only gates
-  writes routed to OpenCook; it cannot freeze an upstream Chef Infra Server.
+  cutover, and post-cutover smoke checks. Final cutover rehearsal for a
+  live-extracted bundle is blocked unless `--source-frozen` is supplied.
+  OpenCook maintenance mode only gates writes routed to OpenCook; it cannot
+  freeze an upstream Chef or Cinc Server.
 
 ## Container Image
 
