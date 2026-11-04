@@ -6,6 +6,7 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
+	"github.com/oberones/OpenCook/internal/jsonvalue"
 	"sort"
 	"sync"
 	"time"
@@ -288,7 +289,7 @@ func (r *CoreObjectRepository) DecodeCoreObjects(rows CoreObjectRows) (bootstrap
 	for _, row := range rows.Environments {
 		org := ensureCoreObjectOrg(state, row.Organization)
 		var env bootstrap.Environment
-		if err := json.Unmarshal(row.PayloadJSON, &env); err != nil {
+		if err := jsonvalue.Unmarshal(row.PayloadJSON, &env); err != nil {
 			return bootstrap.CoreObjectState{}, fmt.Errorf("unmarshal environment %s/%s: %w", row.Organization, row.Name, err)
 		}
 		org.Environments[row.Name] = env
@@ -297,7 +298,7 @@ func (r *CoreObjectRepository) DecodeCoreObjects(rows CoreObjectRows) (bootstrap
 	for _, row := range rows.Nodes {
 		org := ensureCoreObjectOrg(state, row.Organization)
 		var node bootstrap.Node
-		if err := json.Unmarshal(row.PayloadJSON, &node); err != nil {
+		if err := jsonvalue.Unmarshal(row.PayloadJSON, &node); err != nil {
 			return bootstrap.CoreObjectState{}, fmt.Errorf("unmarshal node %s/%s: %w", row.Organization, row.Name, err)
 		}
 		org.Nodes[row.Name] = node
@@ -306,7 +307,7 @@ func (r *CoreObjectRepository) DecodeCoreObjects(rows CoreObjectRows) (bootstrap
 	for _, row := range rows.Roles {
 		org := ensureCoreObjectOrg(state, row.Organization)
 		var role bootstrap.Role
-		if err := json.Unmarshal(row.PayloadJSON, &role); err != nil {
+		if err := jsonvalue.Unmarshal(row.PayloadJSON, &role); err != nil {
 			return bootstrap.CoreObjectState{}, fmt.Errorf("unmarshal role %s/%s: %w", row.Organization, row.Name, err)
 		}
 		org.Roles[row.Name] = role
@@ -315,7 +316,7 @@ func (r *CoreObjectRepository) DecodeCoreObjects(rows CoreObjectRows) (bootstrap
 	for _, row := range rows.DataBags {
 		org := ensureCoreObjectOrg(state, row.Organization)
 		var bag bootstrap.DataBag
-		if err := json.Unmarshal(row.PayloadJSON, &bag); err != nil {
+		if err := jsonvalue.Unmarshal(row.PayloadJSON, &bag); err != nil {
 			return bootstrap.CoreObjectState{}, fmt.Errorf("unmarshal data bag %s/%s: %w", row.Organization, row.Name, err)
 		}
 		org.DataBags[row.Name] = bag
@@ -327,7 +328,7 @@ func (r *CoreObjectRepository) DecodeCoreObjects(rows CoreObjectRows) (bootstrap
 			org.DataBagItems[row.BagName] = make(map[string]bootstrap.DataBagItem)
 		}
 		var item bootstrap.DataBagItem
-		if err := json.Unmarshal(row.PayloadJSON, &item); err != nil {
+		if err := jsonvalue.Unmarshal(row.PayloadJSON, &item); err != nil {
 			return bootstrap.CoreObjectState{}, fmt.Errorf("unmarshal data bag item %s/%s/%s: %w", row.Organization, row.BagName, row.ItemID, err)
 		}
 		org.DataBagItems[row.BagName][row.ItemID] = item
@@ -339,7 +340,7 @@ func (r *CoreObjectRepository) DecodeCoreObjects(rows CoreObjectRows) (bootstrap
 			org.Policies[row.PolicyName] = make(map[string]bootstrap.PolicyRevision)
 		}
 		var payload map[string]any
-		if err := json.Unmarshal(row.PayloadJSON, &payload); err != nil {
+		if err := jsonvalue.Unmarshal(row.PayloadJSON, &payload); err != nil {
 			return bootstrap.CoreObjectState{}, fmt.Errorf("unmarshal policy revision %s/%s/%s: %w", row.Organization, row.PolicyName, row.RevisionID, err)
 		}
 		org.Policies[row.PolicyName][row.RevisionID] = bootstrap.PolicyRevision{
@@ -352,7 +353,7 @@ func (r *CoreObjectRepository) DecodeCoreObjects(rows CoreObjectRows) (bootstrap
 	for _, row := range rows.PolicyGroups {
 		org := ensureCoreObjectOrg(state, row.Organization)
 		var group bootstrap.PolicyGroup
-		if err := json.Unmarshal(row.PayloadJSON, &group); err != nil {
+		if err := jsonvalue.Unmarshal(row.PayloadJSON, &group); err != nil {
 			return bootstrap.CoreObjectState{}, fmt.Errorf("unmarshal policy group %s/%s: %w", row.Organization, row.Name, err)
 		}
 		org.PolicyGroups[row.Name] = group
@@ -394,7 +395,7 @@ func (r *CoreObjectRepository) DecodeCoreObjects(rows CoreObjectRows) (bootstrap
 	for _, row := range rows.ACLs {
 		org := ensureCoreObjectOrg(state, row.Organization)
 		var acl authz.ACL
-		if err := json.Unmarshal(row.ACLJSON, &acl); err != nil {
+		if err := jsonvalue.Unmarshal(row.ACLJSON, &acl); err != nil {
 			return bootstrap.CoreObjectState{}, fmt.Errorf("unmarshal object ACL %s/%s: %w", row.Organization, row.ACLKey, err)
 		}
 		org.ACLs[row.ACLKey] = acl

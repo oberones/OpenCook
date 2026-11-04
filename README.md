@@ -299,9 +299,49 @@ bin/opencook admin migration cutover rehearse \
 
 Operational notes:
 
+- Qualification (2026-11-04): the full uncached Go suite and Docker
+  `create restart verify migration-all migration-live-source-all migration-scale-all`
+  pass with the small scale profile; a final live-source rerun also passes.
+  Docker verifies PostgreSQL persistence/restart, import/sync, backup/restore,
+  empty ACL denial, exact numbers, and cutover using synthetic Chef databases.
+  Injected failure tests provide additional recovery coverage. Real Chef/Cinc
+  deployment acceptance remains pending.
+- Backup creation requires a fresh destination: existing files, directories,
+  and symlinks are rejected even with `--yes`. Bundles are written to unique
+  sibling staging directories, checked for integrity, synchronized, and published
+  with a no-replace rename on Linux and macOS. Other platforms fail closed.
+- Source normalization and live extraction reject output paths that equal,
+  contain, or sit inside a protected source path, including symlink aliases and
+  missing output ancestors. Live extraction protects both the Bookshelf root
+  and the configured source private key. Normalization `--dry-run` writes
+  nothing, including when combined with `--yes` and an existing output.
+- An exclusive `.<destination>.publish.lock` serializes bundle writers. After
+  interruption or a publication/cleanup failure, inspect the lock's PID and
+  staging path and the reported recovery paths. Verify that no writer is active,
+  inspect the staged bundle, and recover or remove only that invocation's files
+  before retrying. `--yes` never removes stale staging or locks automatically.
+- Sync treats group definitions and memberships, and policy-group definitions
+  and assignments, as separate scopes. Omitted relationship scopes preserve
+  retained relationships; explicit empty scopes clear them while retaining
+  parents. The final merged relationship graph is validated before writes.
+- Live extraction preserves explicit empty ACLs and rejects malformed gzip,
+  invalid/trailing JSON, and non-object serialized payloads. Findings identify
+  the family and a hashed source identity without exposing payload contents.
+  Arbitrary JSON numbers retain their exact values through import, persistence,
+  restart, API reads, and backup/restore; PostgreSQL may change numeric notation.
+  Logical backups also retain complete policy revision payloads.
+- Cutover requires the latest successful sync cursor to match the supplied
+  source bundle. Historical cursors alone do not prove freshness. Shadow
+  comparison normalizes only defined protocol fields and generated download
+  URLs; application keys, ordered arrays, URL queries, and numeric differences
+  remain significant, including fields named `private_key` or `updated_at`.
 - Use `--copy-blobs` with `--source-bookshelf-root` when the operator running
   extraction can read local Bookshelf checksum files. This produces a
   self-contained bundle and lets import/cutover verify copied checksum bytes.
+  The root may be the native Bookshelf data directory or its `bookshelf` bucket
+  directory; extraction uses each source organization's ID to locate encoded,
+  sharded keys and validates the stored header and content. Flat `<root>/<checksum>`
+  files remain supported, including binary content starting with Bookshelf magic bytes.
 - Use `--reference-blobs` when blob bytes must remain in an external provider.
   Reference-only bundles require separate provider reachability validation
   before cutover because checksum content is not packaged into the bundle.

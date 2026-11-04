@@ -99,6 +99,20 @@ type adminMigrationBackupBlobManifest struct {
 // adminMigrationWriteBackupBundle writes the versioned logical backup directory
 // layout and returns the manifest that was persisted to manifest.json.
 func adminMigrationWriteBackupBundle(outputPath string, input adminMigrationBackupBundleInput) (adminMigrationBackupManifest, error) {
+	var manifest adminMigrationBackupManifest
+	err := adminMigrationPublishBundle(outputPath, "backup", false, nil, func(stage string) error {
+		var err error
+		manifest, err = adminMigrationWriteBackupBundleContents(stage, input)
+		if err != nil {
+			return err
+		}
+		_, _, _, err = adminMigrationInspectBackupBundle(stage)
+		return err
+	})
+	return manifest, err
+}
+
+func adminMigrationWriteBackupBundleContents(outputPath string, input adminMigrationBackupBundleInput) (adminMigrationBackupManifest, error) {
 	outputPath = strings.TrimSpace(outputPath)
 	if outputPath == "" {
 		return adminMigrationBackupManifest{}, fmt.Errorf("backup output path is required")

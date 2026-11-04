@@ -249,6 +249,10 @@ func adminMigrationLiveSourceReadBifrostAuthorization(ctx context.Context, tx pg
 		if err := adminMigrationLiveSourceValidateBifrostTargets(catalog, spec.recordType, found); err != nil {
 			return 0, err
 		}
+		// Targets with no grants are intentional deny-all ACLs, not missing ACLs.
+		for _, ref := range catalog.refs(spec.recordType) {
+			aclRows = append(aclRows, adminMigrationLiveSourceACLRow{OrgName: ref.Organization, Resource: ref.Resource})
+		}
 		bifrostRows, err := adminMigrationLiveSourceReadBifrostACLRows(ctx, tx, spec, ids)
 		if err != nil {
 			return 0, err

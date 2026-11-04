@@ -294,6 +294,7 @@ func adminMigrationLiveSourceContextFinding(ctx context.Context) (adminMigration
 // before concrete source PostgreSQL, blob, and HTTP implementations exist.
 func adminMigrationLiveSourceFindingCodes() []adminMigrationValidationFindingCode {
 	return []adminMigrationValidationFindingCode{
+		{Code: "source_payload_malformed", Severity: "error", Family: "live_source", Message: "serialized source object is malformed; payload contents are not reported"},
 		{Code: adminMigrationFindingSourcePostgresUnavailable, Severity: "error", Family: "source_postgres", Message: "source PostgreSQL could not be reached or queried"},
 		{Code: adminMigrationFindingSourceSchemaUnsupported, Severity: "error", Family: "source_schema", Message: "source Chef Server schema is unsupported"},
 		{Code: adminMigrationFindingSourceErchefUnavailable, Severity: "error", Family: "source_erchef_postgres", Message: "source Erchef PostgreSQL could not be reached or queried"},

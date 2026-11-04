@@ -316,7 +316,21 @@ restore_database_has_bootstrap_state() {
 prepare_live_source_fixture() {
   require_live_source_artifact_paths
   mkdir -p "$live_source_root" "$live_source_bookshelf_dir"
-  printf 'live source cookbook blob bytes' >"$live_source_bookshelf_dir/$live_source_checksum"
+  # Match chef_s3:make_key/2 using the orgs.id inserted below, then
+  # bksw_io_names:entry_path_sha/1 and bksw_io's magic + binary MD5 header.
+  local bookshelf_key="organization-org-${org}%2Fchecksum-${live_source_checksum}"
+  local bookshelf_shard
+  bookshelf_shard="$(printf '%s' "$bookshelf_key" | sha1sum | cut -c1-8)"
+  local bookshelf_blob_dir="$live_source_bookshelf_dir/bookshelf/${bookshelf_shard:0:2}/${bookshelf_shard:2:2}/${bookshelf_shard:4:2}/${bookshelf_shard:6:2}"
+  mkdir -p "$bookshelf_blob_dir"
+  local digest_offset
+  {
+    printf '\xb0\x0c'
+    for ((digest_offset = 0; digest_offset < 32; digest_offset += 2)); do
+      printf '%b' "\\x${live_source_checksum:digest_offset:2}"
+    done
+    printf 'live source cookbook blob bytes'
+  } >"$bookshelf_blob_dir/$bookshelf_key"
 
   local public_key
   public_key="$(cat /src/test/functional/fixtures/bootstrap_public.pem)"
@@ -359,9 +373,13 @@ CREATE TABLE cookbook_artifact_version_checksums (cookbook_artifact_version_id t
 
 INSERT INTO users VALUES ('user-pivotal', 'pivotal', 'pivotal@example.test', jsonb_build_object('display_name', 'Pivotal User'), true, 'actor-pivotal');
 INSERT INTO keys VALUES ('user-pivotal', 'default', :'public_key', 'infinity'::timestamptz);
+INSERT INTO users VALUES ('user-observer', 'migration-observer', 'observer@example.test', '{}'::jsonb, false, 'actor-observer'), ('user-denied', 'zz-denied-user', 'denied@example.test', '{}'::jsonb, false, 'actor-denied');
+INSERT INTO keys VALUES ('user-observer', 'default', :'public_key', 'infinity'::timestamptz);
+
 
 INSERT INTO orgs VALUES ('org-' || :'org', :'org', 'Ponyville', 'object-org-' || :'org');
 INSERT INTO org_user_associations VALUES ('org-' || :'org', 'user-pivotal');
+INSERT INTO org_user_associations VALUES ('org-' || :'org', 'user-observer');
 
 INSERT INTO clients VALUES ('client-validator', 'org-' || :'org', :'org' || '-validator', true, false, :'public_key', 'actor-validator');
 INSERT INTO keys VALUES ('client-validator', 'default', :'public_key', 'infinity'::timestamptz);
@@ -377,6 +395,8 @@ FROM unnest(ARRAY['clients','containers','cookbooks','data','environments','grou
 
 INSERT INTO nodes VALUES ('node-web01', 'org-' || :'org', 'object-node-web01', 'web01', '_default', 'base', 'prod',
 	convert_to(jsonb_build_object('name', 'web01', 'chef_environment', '_default', 'run_list', jsonb_build_array('role[web]'), 'normal', jsonb_build_object('app', 'opencook'), 'default', '{}'::jsonb, 'override', '{}'::jsonb, 'automatic', '{}'::jsonb, 'policy_name', 'base', 'policy_group', 'prod')::text, 'UTF8'));
+-- Exact arbitrary numeric attributes and application keys that shadow must retain.
+UPDATE nodes SET serialized_object = convert_to(jsonb_set(convert_from(serialized_object, 'UTF8')::jsonb, '{normal}', '{"app":"opencook","large":9007199254740993,"negative":-9007199254740997,"decimal":0.1234567890123456789012345,"exponent":1.234567890123456789e40,"private_key":"application-value","updated_at":"application-time","users":["b","a"],"url":"https://application.test/path?value=original"}')::text, 'UTF8') WHERE name='web01';
 INSERT INTO environments VALUES ('env-default', 'org-' || :'org', 'object-env-default', '_default',
 	convert_to(jsonb_build_object('name', '_default', 'description', 'The default Chef environment', 'cookbook_versions', '{}'::jsonb)::text, 'UTF8'));
 INSERT INTO roles VALUES ('role-web', 'org-' || :'org', 'object-role-web', 'web',
@@ -389,6 +409,7 @@ INSERT INTO policy_revisions VALUES ('policy-base-rev', 'org-' || :'org', 'base'
 	convert_to(jsonb_build_object('name', 'base', 'revision_id', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'run_list', jsonb_build_array('recipe[base]'), 'named_run_lists', '{}'::jsonb, 'cookbook_locks', '{}'::jsonb, 'solution_dependencies', '{}'::jsonb)::text, 'UTF8'));
 INSERT INTO policy_groups VALUES ('policy-group-prod', 'org-' || :'org', 'object-policy-group-prod', 'prod',
 	convert_to(jsonb_build_object('name', 'prod')::text, 'UTF8'));
+INSERT INTO policy_groups VALUES ('policy-group-denied', 'org-' || :'org', 'object-policy-group-denied', 'zz-denied-group', convert_to('{"name":"zz-denied-group"}', 'UTF8'));
 INSERT INTO policy_revisions_policy_groups_association VALUES ('org-' || :'org', 'prod', 'base', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
 INSERT INTO checksums VALUES ('org-' || :'org', :'checksum');
 INSERT INTO sandboxed_checksums VALUES ('org-' || :'org', 'sandbox-fixture', :'checksum');
@@ -425,6 +446,7 @@ CREATE TABLE group_group_relations (parent text NOT NULL, child text NOT NULL);
 CREATE TABLE group_actor_relations (parent text NOT NULL, child text NOT NULL);
 
 INSERT INTO auth_actor VALUES ('actor-row-pivotal', 'actor-pivotal'), ('actor-row-validator', 'actor-validator');
+INSERT INTO auth_actor VALUES ('actor-row-observer', 'actor-observer'), ('actor-row-denied', 'actor-denied');
 INSERT INTO auth_group
 SELECT 'auth-group-' || name, 'group-' || name
 FROM unnest(ARRAY['admins','billing-admins','users','clients']) AS name;
@@ -437,6 +459,7 @@ SELECT id, authz_id
 FROM (VALUES
 	('object-row-org', 'object-org-' || :'org'),
 	('object-row-node-web01', 'object-node-web01'),
+ ('object-row-policy-group-denied', 'object-policy-group-denied'),
 	('object-row-env-default', 'object-env-default'),
 	('object-row-role-web', 'object-role-web'),
 	('object-row-bag-secrets', 'object-bag-secrets'),
@@ -446,6 +469,7 @@ FROM (VALUES
 
 INSERT INTO group_actor_relations VALUES
 	('auth-group-admins', 'actor-row-pivotal'),
+ ('auth-group-users', 'actor-row-observer'),
 	('auth-group-clients', 'actor-row-validator'),
 	('auth-group-server-admins', 'actor-row-pivotal');
 INSERT INTO group_group_relations VALUES ('auth-group-admins', 'auth-group-billing-admins');
@@ -461,6 +485,11 @@ INSERT INTO container_acl_actor SELECT id, 'actor-row-pivotal', permission FROM 
 INSERT INTO container_acl_group SELECT id, 'auth-group-admins', permission FROM auth_container CROSS JOIN live_acl_permissions;
 INSERT INTO object_acl_actor SELECT id, 'actor-row-pivotal', permission FROM auth_object CROSS JOIN live_acl_permissions;
 INSERT INTO object_acl_group SELECT id, 'auth-group-admins', permission FROM auth_object CROSS JOIN live_acl_permissions;
+DELETE FROM actor_acl_actor WHERE target='actor-row-denied';
+DELETE FROM actor_acl_group WHERE target='actor-row-denied';
+DELETE FROM object_acl_actor WHERE target='object-row-policy-group-denied';
+DELETE FROM object_acl_group WHERE target='object-row-policy-group-denied';
+
 SQL
 }
 
@@ -1098,6 +1127,17 @@ run_migration_live_source_extract() {
   psql "$live_source_admin_dsn" -v ON_ERROR_STOP=1 -c "DROP DATABASE \"$live_source_bifrost_db\""
   prepare_live_source_fixture
 
+  echo "==> migration malformed live payload rejects before publication"
+  psql "$live_source_erchef_dsn" -v ON_ERROR_STOP=1 -c "UPDATE nodes SET serialized_object = convert_to('{invalid-json', 'UTF8') WHERE name='web01'"
+  if admin migration source live extract --source-postgres-dsn "$live_source_dsn" --source-bookshelf-root "$live_source_bookshelf_dir" --copy-blobs --org "$org" --output "$failure_dir" --yes --json >"$failure_result"; then
+    echo "malformed live payload unexpectedly accepted" >&2
+    return 1
+  fi
+  require_json_contains "$failure_result" '"source_payload_malformed"'
+  require_json_contains "$failure_result" '"identity_sha256"'
+  test ! -e "$failure_dir"
+  prepare_live_source_fixture
+
   echo "==> migration live source extract"
   if ! admin migration source live extract \
     --source-postgres-dsn "$live_source_dsn" \
@@ -1159,6 +1199,49 @@ run_migration_live_source_import() {
   require_json_contains "$live_source_import_result" '"source_import_blobs"'
   require_json_contains "$live_source_import_result" '"source_import_write"'
   require_json_contains "$live_source_import_progress" '"metadata_imported": true'
+  touch "$live_source_import_sentinel"
+}
+
+verify_live_source_fidelity() {
+  start_restore_server
+  OPENCOOK_FUNCTIONAL_BASE_URL="$restore_server_url" OPENCOOK_MIGRATION_FIDELITY=1 OPENCOOK_MIGRATION_TARGET_DSN="$restore_dsn" \
+    go test ./test/functional -count=1 -run '^TestMigrationFidelity$' -v
+  cleanup_restore_server
+  trap - EXIT
+}
+
+run_migration_live_source_fidelity() {
+  build_cli
+  require_live_source_imported_target
+  echo "==> migration normalization dry-run does not create or replace output"
+  local dry_output="$live_source_root/dry-run-output"
+  remove_source_tree_artifact "$dry_output"
+  admin migration source normalize "$live_source_dir" --output "$dry_output" --dry-run --yes --json >"$live_source_root/normalize-dry-run.json"
+  test ! -e "$dry_output"
+  mkdir "$dry_output"
+  printf 'unchanged' >"$dry_output/sentinel"
+  admin migration source normalize "$live_source_dir" --output "$dry_output" --dry-run --yes --json >"$live_source_root/normalize-existing-dry-run.json"
+  [[ "$(cat "$dry_output/sentinel")" == "unchanged" ]]
+  test ! -e "$dry_output/opencook-source-manifest.json"
+  echo "==> migration persisted number and deny-all ACL checks, including restart"
+  verify_live_source_fidelity
+  verify_live_source_fidelity
+  require_live_source_sync_progress
+  verify_live_source_fidelity
+  ensure_live_source_cutover_manifest
+  local before_hash after_hash
+  before_hash="$(sha256sum "$live_source_backup_dir/manifest.json")"
+  if admin_restore_target migration backup create --output "$live_source_backup_dir" --offline --yes --json >"$live_source_root/backup-existing-rejected.json"; then
+    echo "existing backup unexpectedly overwritten" >&2
+    return 1
+  fi
+  require_json_contains "$live_source_root/backup-existing-rejected.json" '"backup_output_exists"'
+  after_hash="$(sha256sum "$live_source_backup_dir/manifest.json")"
+  [[ "$before_hash" == "$after_hash" ]]
+  reset_restore_target
+  admin_restore_target migration restore apply "$live_source_backup_dir" --offline --yes --json >"$live_source_root/fidelity-restore.json"
+  require_json_contains "$live_source_root/fidelity-restore.json" '"ok": true'
+  verify_live_source_fidelity
   touch "$live_source_import_sentinel"
 }
 
@@ -1248,6 +1331,20 @@ run_migration_live_source_rehearsal() {
   require_json_contains "$live_source_cutover_unfrozen_result" '"name": "source_freeze_evidence"'
   require_json_contains "$live_source_cutover_unfrozen_result" '"status": "error"'
 
+  # History includes the supplied source, but a different latest cursor blocks cutover.
+  sed 's/"source_cursor": "[^"]*"/"source_cursor": "later-snapshot"/' "$live_source_sync_progress" >"$live_source_root/stale-sync-progress.json"
+  if admin migration cutover rehearse \
+    --manifest "$live_source_backup_dir/manifest.json" --source "$live_source_dir" \
+    --source-import-progress "$live_source_import_progress" --source-sync-progress "$live_source_root/stale-sync-progress.json" \
+    --search-check-result "$live_source_search_result" --shadow-result "$live_source_shadow_result" \
+    --source-frozen --rollback-ready --server-url "$restore_server_url" \
+    --requestor-name "$admin_requestor" --requestor-type user --private-key "$admin_private_key" \
+    --json >"$live_source_root/cutover-stale-sync.json"; then
+    echo "cutover incorrectly accepted a historical cursor" >&2
+    return 1
+  fi
+  require_json_contains "$live_source_root/cutover-stale-sync.json" '"source_sync_stale"'
+
   if ! admin migration cutover rehearse \
     --manifest "$live_source_backup_dir/manifest.json" \
     --source "$live_source_dir" \
@@ -1284,6 +1381,7 @@ run_migration_live_source_all() {
   run_migration_live_source_preflight
   run_migration_live_source_extract
   run_migration_live_source_import
+  run_migration_live_source_fidelity
   run_migration_live_source_reindex
   run_migration_live_source_shadow
   run_migration_live_source_rehearsal
@@ -1723,6 +1821,9 @@ case "$phase" in
     ;;
   migration-live-source-import)
     run_migration_live_source_import
+    ;;
+  migration-live-source-fidelity)
+    run_migration_live_source_fidelity
     ;;
   migration-live-source-reindex)
     run_migration_live_source_reindex

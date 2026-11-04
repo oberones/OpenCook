@@ -41,6 +41,7 @@ As of 2026-05-02, OpenCook has moved past pure scaffolding and into the first co
 - generated `<org>-validator` clients can now register normal clients through the stock default-org and explicit-org client bootstrap routes
 - actor key lifecycle now supports list, create, update, delete, and expiration-aware authentication behavior
 - the first migration/cutover tooling slice is now live with redacted preflight checks, OpenCook logical backup create/inspect, offline restore preflight/apply, Chef Server source artifact inventory/normalize/import/sync for normalized source bundles, shadow-read comparison, restored-target complete reindex, cutover rehearsal, and Docker functional coverage
+- live-source blob extraction now resolves native Bookshelf keys using source organization IDs and upstream percent-encoding/SHA-1 sharding, validates headers and content, and preserves checksum-valid raw flat files with Bookshelf magic prefixes
 - `chef-server-ctl`-style operational parity is now live for config validation, service status/doctor, Prometheus-compatible metrics, request IDs, structured logs, log discovery, redacted diagnostics bundles, runbook discovery, service-management docs, and Docker functional coverage
 - deployment evidence triage is now live through `scripts/deployment-evidence.sh`, which collects redacted smoke, migration, and scale evidence manifests before choosing narrow compatibility or safety follow-up work
 - maintenance mode and online repair safety are now live with PostgreSQL-shared maintenance state, process-local standalone truthfulness, Chef-style `503` blocking for mutating Chef-facing writes, preserved reads/read-like POSTs/signed downloads, admin maintenance commands, status/doctor/metrics/log visibility, maintenance-gated reindex/search repair, online default ACL repair, and online org/group/server-admin membership repair through live service seams
@@ -600,6 +601,33 @@ Exit criteria:
 - failover and restore drills exercised
 
 ## Phase 7: Migration and cutover
+
+The admin migration remediation adds protected source/output path checks,
+non-mutating normalization dry runs, fresh-destination backups with verified
+staging, synchronized publication, no-replace rename, and exclusive destination
+locks. Interrupted staging and locks require operator inspection and are never
+reclaimed by another invocation. Linux and macOS provide the required rename
+primitive; unsupported platforms fail closed.
+
+Sync now applies definitions before relationships in deterministic order,
+preserves omitted relationships, clears explicit empty relationship scopes, and
+validates the merged graph before writes. Extraction retains deny-all ACLs and
+rejects malformed serialized data with redacted findings. Number-preserving JSON
+decoding covers normalization, typed conversion, PostgreSQL rehydration, admin
+reads, and shadow comparison. Logical state backups retain policy payloads.
+Cutover freshness uses the latest applied cursor; shadow comparison has explicit
+protocol path rules that leave application data significant.
+
+Qualification on 2026-11-04: permanent regression tests and the full uncached Go
+suite pass. Docker `create restart verify migration-all migration-live-source-all
+migration-scale-all` passes with the small scale profile, as does a final
+`migration-live-source-all` rerun after the recovery refinements. These phases
+exercise PostgreSQL persistence/restart, import/sync, backup/restore, empty ACL
+denial, exact numeric values, and latest-cursor cutover checks. Injected failure
+tests and synthetic Docker source fixtures do not establish acceptance on a real
+Chef/Cinc deployment. Blob streaming and transactional metadata redesign remain
+separate work, and existing offline mutation gates and bundle version identifiers
+are unchanged.
 
 Deliverables:
 

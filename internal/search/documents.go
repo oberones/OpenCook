@@ -1,6 +1,7 @@
 package search
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -293,6 +294,8 @@ func addFlattenedFields(fields map[string][]string, path []string, value any) {
 		addFlattenedLeaf(fields, path, fmt.Sprintf("%d", typed))
 	case int64:
 		addFlattenedLeaf(fields, path, fmt.Sprintf("%d", typed))
+	case json.Number:
+		addFlattenedLeaf(fields, path, typed.String())
 	case float64:
 		addFlattenedLeaf(fields, path, fmt.Sprintf("%v", typed))
 	}

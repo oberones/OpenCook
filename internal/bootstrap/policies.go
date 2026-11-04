@@ -14,9 +14,10 @@ import (
 var validPolicyTokenPattern = regexp.MustCompile(`^[A-Za-z0-9_.:-]+$`)
 
 type PolicyRevision struct {
-	Name       string         `json:"name"`
-	RevisionID string         `json:"revision_id"`
-	Payload    map[string]any `json:"-"`
+	Name       string `json:"name"`
+	RevisionID string `json:"revision_id"`
+	// Payload is included in logical state backups; Chef routes serialize it directly.
+	Payload map[string]any `json:"payload,omitempty"`
 }
 
 type PolicyGroup struct {

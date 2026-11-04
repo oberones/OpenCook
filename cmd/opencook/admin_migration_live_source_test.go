@@ -4,8 +4,11 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/sha1"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -369,6 +372,162 @@ func TestAdminMigrationLiveSourcePayloadReadErrorPreservesSafeFamily(t *testing.
 	}
 	if strings.Contains(err.Error(), underlying.Error()) {
 		t.Fatalf("payload read error leaked driver detail: %q", err.Error())
+	}
+}
+
+func TestAdminMigrationLiveSourceReadsNativeBookshelfFilesystemLayout(t *testing.T) {
+	checksum, body := testAdminMigrationLiveSourceCookbookBlob()
+	root := t.TempDir()
+	path := testAdminMigrationNativeBookshelfPath(root, checksum)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir native Bookshelf shard error = %v", err)
+	}
+	digest, err := hex.DecodeString(checksum)
+	if err != nil {
+		t.Fatalf("decode checksum error = %v", err)
+	}
+	native := append([]byte{0xb0, 0x0c}, digest...)
+	native = append(native, body...)
+	if err := os.WriteFile(path, native, 0o644); err != nil {
+		t.Fatalf("write native Bookshelf blob error = %v", err)
+	}
+	got, err := adminMigrationLiveSourceReadBookshelfBlob(root, "0123456789abcdef0123456789abcdef", checksum)
+	if err != nil || !bytes.Equal(got, body) {
+		t.Fatalf("read native Bookshelf blob = %q, %v, want %q", got, err, body)
+	}
+	got, err = adminMigrationLiveSourceReadBookshelfBlob(filepath.Join(root, "bookshelf"), "0123456789abcdef0123456789abcdef", checksum)
+	if err != nil || !bytes.Equal(got, body) {
+		t.Fatalf("read native Bookshelf bucket-root blob = %q, %v, want %q", got, err, body)
+	}
+}
+
+func TestAdminMigrationLiveSourceRejectsCorruptNativeBookshelfHeader(t *testing.T) {
+	checksum, body := testAdminMigrationLiveSourceCookbookBlob()
+	root := t.TempDir()
+	path := testAdminMigrationNativeBookshelfPath(root, checksum)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir native Bookshelf shard error = %v", err)
+	}
+	native := append([]byte{0xb0, 0x0c}, make([]byte, 16)...)
+	native = append(native, body...)
+	if err := os.WriteFile(path, native, 0o644); err != nil {
+		t.Fatalf("write corrupt native Bookshelf blob error = %v", err)
+	}
+	if _, err := adminMigrationLiveSourceReadBookshelfBlob(root, "0123456789abcdef0123456789abcdef", checksum); !errors.Is(err, errAdminMigrationLiveSourceBookshelfBlobChecksumMismatch) {
+		t.Fatalf("corrupt native Bookshelf read error = %v, want checksum mismatch", err)
+	}
+}
+
+func TestAdminMigrationLiveSourceCopiesNativeBookshelfPerOrganization(t *testing.T) {
+	root := t.TempDir()
+	const checksum = "900150983cd24fb0d6963f7d28e17f72"
+	body := []byte("abc")
+	digest, err := hex.DecodeString(checksum)
+	if err != nil {
+		t.Fatal(err)
+	}
+	native := append(append([]byte{0xb0, 0x0c}, digest...), body...)
+	values := map[adminMigrationSourcePayloadKey][]json.RawMessage{}
+	// Fixed vectors pin uppercase %2F and hashing the encoded full key.
+	fixtures := []struct{ name, guid, path string }{
+		{"ponyville", "0123456789abcdef0123456789abcdef", "30/01/3d/d2/organization-0123456789abcdef0123456789abcdef%2Fchecksum-900150983cd24fb0d6963f7d28e17f72"},
+		{"canterlot", "fedcba9876543210fedcba9876543210", "13/16/1a/ef/organization-fedcba9876543210fedcba9876543210%2Fchecksum-900150983cd24fb0d6963f7d28e17f72"},
+	}
+	for _, fixture := range fixtures {
+		values[adminMigrationSourcePayloadKey{Organization: fixture.name, Family: "organizations"}] = []json.RawMessage{
+			adminMigrationMarshalSourceObject(map[string]any{"name": fixture.name, "guid": fixture.guid}),
+		}
+		values[adminMigrationSourcePayloadKey{Organization: fixture.name, Family: "checksum_references"}] = []json.RawMessage{
+			adminMigrationMarshalSourceObject(map[string]any{"checksum": checksum}),
+		}
+		path := filepath.Join(root, "bookshelf", filepath.FromSlash(fixture.path))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, native, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg := adminMigrationLiveSourceConfig{BookshelfRoot: root, CopyBlobs: true}
+	result := adminMigrationLiveSourceExtractBlobSidecars(context.Background(), cfg, values)
+	if result.Dependency.Status != "ok" || len(result.Files) != 1 || !bytes.Equal(result.Files["blobs/checksums/"+checksum], body) {
+		t.Fatalf("shared checksum extraction = %+v; want one decoded sidecar", result)
+	}
+	if _, err := adminMigrationLiveSourceReadBookshelfBlob(root, "unrelated-org", checksum); !errors.Is(err, errAdminMigrationLiveSourceBookshelfBlobNotFound) {
+		t.Fatalf("unrelated org read = %v; want not found", err)
+	}
+	// A shared sidecar must not mask corrupt content in another source org.
+	corruptPath := filepath.Join(root, "bookshelf", filepath.FromSlash(fixtures[0].path))
+	if err := os.WriteFile(corruptPath, append(native, '!'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	result = adminMigrationLiveSourceExtractBlobSidecars(context.Background(), cfg, values)
+	if result.Dependency.Status != "error" || len(result.Findings) != 1 || result.Findings[0].Code != adminMigrationFindingSourceBlobChecksumMismatch {
+		t.Fatalf("corrupt shared checksum extraction = %+v; want checksum mismatch", result)
+	}
+}
+
+func testAdminMigrationNativeBookshelfPath(root, checksum string) string {
+	// chef_s3:make_key/2 and bksw_io_names:entry_path_sha/1 encode the
+	// organization-scoped key before hashing it and using it as the filename.
+	key := "organization-0123456789abcdef0123456789abcdef%2Fchecksum-" + checksum
+	shard := fmt.Sprintf("%x", sha1.Sum([]byte(key)))
+	return filepath.Join(root, "bookshelf", shard[0:2], shard[2:4], shard[4:6], shard[6:8], key)
+}
+
+func TestAdminMigrationSourceLiveExtractBookshelfBlobFormats(t *testing.T) {
+	_, cookbookBody := testAdminMigrationLiveSourceCookbookBlob()
+	for _, tc := range []struct {
+		name   string
+		body   []byte
+		native bool
+	}{
+		{name: "native organization key", body: cookbookBody, native: true},
+		{name: "raw short magic prefix", body: []byte{0xb0, 0x0c, 'a', 'b', 'c'}},
+		{name: "raw header-sized magic prefix", body: append([]byte{0xb0, 0x0c}, cookbookBody...)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			checksum := adminMigrationMD5Hex(tc.body)
+			path := filepath.Join(root, checksum)
+			stored := tc.body
+			if tc.native {
+				path = testAdminMigrationNativeBookshelfPath(root, checksum)
+				digest, err := hex.DecodeString(checksum)
+				if err != nil {
+					t.Fatal(err)
+				}
+				stored = append(append([]byte{0xb0, 0x0c}, digest...), tc.body...)
+			}
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, stored, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			values := testAdminMigrationLiveSourceBootstrapPayloadValues(t)
+			oldChecksum, _ := testAdminMigrationLiveSourceCookbookBlob()
+			for key, rows := range values {
+				for i, raw := range rows {
+					values[key][i] = bytes.ReplaceAll(raw, []byte(oldChecksum), []byte(checksum))
+				}
+			}
+			cmd, stdout, stderr := newTestCommand(t)
+			cmd.newLiveSource = newAdminMigrationLiveSourceExtractorWithPostgresAdapters(nil, &fakeAdminMigrationLiveSourceBootstrapExtractor{payloadValues: values})
+			output := filepath.Join(t.TempDir(), "bundle")
+			code := cmd.Run(context.Background(), []string{
+				"admin", "migration", "source", "live", "extract",
+				"--source-postgres-dsn", "postgres://source", "--source-bookshelf-root", root,
+				"--copy-blobs", "--output", output, "--yes", "--json",
+			})
+			if code != exitOK {
+				t.Fatalf("extract exit = %d; stdout = %s stderr = %s", code, stdout.String(), stderr.String())
+			}
+			copied, err := os.ReadFile(filepath.Join(output, "blobs", "checksums", checksum))
+			if err != nil || !bytes.Equal(copied, tc.body) {
+				t.Fatalf("copied blob = %x, %v; want %x", copied, err, tc.body)
+			}
+		})
 	}
 }
 
@@ -1206,7 +1365,7 @@ func TestAdminMigrationSourceLiveExtractExistingOutputRequiresConfirmation(t *te
 	requireAdminMigrationFinding(t, requireAdminMigrationArray(t, out, "findings"), "source_normalize_output_exists")
 }
 
-func TestAdminMigrationSourceLiveExtractInterruptedTempDirRequiresConfirmation(t *testing.T) {
+func TestAdminMigrationSourceLiveExtractInterruptedTempDirRequiresOperatorRecovery(t *testing.T) {
 	parent := t.TempDir()
 	outputPath := filepath.Join(parent, "live-source")
 	staleTemp := filepath.Join(parent, ".live-source-normalize-stale")
@@ -1249,16 +1408,16 @@ func TestAdminMigrationSourceLiveExtractInterruptedTempDirRequiresConfirmation(t
 		"--yes",
 		"--json",
 	})
-	if code != exitOK {
-		t.Fatalf("Run(source live extract stale temp --yes) exit = %d, want %d; stdout = %s stderr = %s", code, exitOK, stdout.String(), stderr.String())
+	if code != exitDependencyUnavailable {
+		t.Fatalf("stale staging must block even with --yes: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
 	}
-	if _, err := os.Stat(staleTemp); !os.IsNotExist(err) {
-		t.Fatalf("stale temp stat after --yes = %v, want removed", err)
+	if _, err := os.Stat(staleTemp); err != nil {
+		t.Fatalf("staging was removed: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(outputPath, adminMigrationSourceManifestPath)); err != nil {
-		t.Fatalf("published manifest stat error = %v", err)
+	if fake.extractCalls != 0 {
+		t.Fatal("extraction ran despite stale staging")
 	}
-	requireAdminMigrationDependency(t, requireAdminMigrationArray(t, decodeAdminMigrationOutput(t, stdout.String()), "dependencies"), "normalized_source_output", "ok")
+
 }
 
 func TestAdminMigrationSourceLiveExtractVerifiesBundleBeforePublish(t *testing.T) {
@@ -1470,7 +1629,13 @@ func TestAdminMigrationLiveSourceRawPayloadPreservesCompressedChefJSON(t *testin
 	}
 
 	object := map[string]any{"name": "sql-node"}
-	adminMigrationLiveSourceMergeRawPayload(object, adminMigrationLiveSourceStringFromBytes(compressed.Bytes()))
+	decoded, err := adminMigrationLiveSourceStringFromBytes(compressed.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := adminMigrationLiveSourceMergeRawPayload(object, decoded); err != nil {
+		t.Fatal(err)
+	}
 	if object["name"] != "sql-node" {
 		t.Fatalf("merged name = %v, want SQL-selected name to remain authoritative", object["name"])
 	}
@@ -1683,7 +1848,7 @@ func testAdminMigrationLiveSourceBootstrapPayloadValues(t *testing.T) map[adminM
 	add(adminMigrationSourcePayloadKey{Family: "user_keys"}, map[string]any{"username": "pivotal", "key_name": "default", "public_key": publicKey, "expiration_date": "infinity"})
 	add(adminMigrationSourcePayloadKey{Family: "user_acls"}, testAdminMigrationLiveSourceACLObject("user:pivotal", "pivotal", "admins"))
 	add(adminMigrationSourcePayloadKey{Family: "server_admin_memberships"}, map[string]any{"actor": "pivotal", "type": "user"})
-	add(adminMigrationSourcePayloadKey{Organization: "ponyville", Family: "organizations"}, map[string]any{"name": "ponyville", "orgname": "ponyville", "full_name": "Ponyville", "org_type": "Business", "guid": "ponyville"})
+	add(adminMigrationSourcePayloadKey{Organization: "ponyville", Family: "organizations"}, map[string]any{"name": "ponyville", "orgname": "ponyville", "full_name": "Ponyville", "org_type": "Business", "guid": "0123456789abcdef0123456789abcdef"})
 	add(adminMigrationSourcePayloadKey{Organization: "ponyville", Family: "clients"}, map[string]any{"name": "ponyville-validator", "clientname": "ponyville-validator", "orgname": "ponyville", "validator": true, "admin": false, "public_key": publicKey})
 	add(adminMigrationSourcePayloadKey{Organization: "ponyville", Family: "client_keys"}, map[string]any{"client": "ponyville-validator", "clientname": "ponyville-validator", "key_name": "default", "public_key": publicKey, "expiration_date": "infinity"})
 	for _, group := range []string{"admins", "clients", "users"} {

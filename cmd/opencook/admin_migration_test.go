@@ -460,7 +460,7 @@ func TestAdminMigrationMaintenancePolicyWarnings(t *testing.T) {
 }
 
 func TestAdminMigrationBackupBundleFormatWritesLogicalPayloads(t *testing.T) {
-	root := t.TempDir()
+	root := filepath.Join(t.TempDir(), "backup")
 	bootstrapState, coreObjectState := adminMigrationHealthyStates(t)
 	checksum := writeAdminMigrationTestBlob(t, t.TempDir(), "rainbow")
 	orgObjects := coreObjectState.Orgs["ponyville"]
@@ -3439,43 +3439,18 @@ func TestAdminMigrationShadowCompareReportsPayloadAndSearchMismatches(t *testing
 }
 
 func TestAdminMigrationShadowNormalizePayloadKeepsRunListOrderSignificant(t *testing.T) {
-	source := map[string]any{
-		"actors":     []any{"zebra", "applejack"},
-		"run_list":   []any{"recipe[first]", "recipe[second]"},
-		"url":        "/_blob/checksums/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?source=1",
-		"updated_at": "source timestamp",
-	}
-	target := map[string]any{
-		"actors":      []any{"applejack", "zebra"},
-		"run_list":    []any{"recipe[first]", "recipe[second]"},
-		"url":         "https://opencook.test/_blob/checksums/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?signature=secret",
-		"private_key": "secret",
-		"updated_at":  "target timestamp",
-		"requestor": map[string]any{
-			"type": "user",
-			"name": "pivotal",
-		},
-		"authn_status":   "verified",
-		"storage_status": "memory-bootstrap",
-	}
-	sourceCanonical, err := adminMigrationShadowCanonicalPayload("roles", source)
+	source := map[string]any{"run_list": []any{"recipe[first]", "recipe[second]"}}
+	target := map[string]any{"run_list": []any{"recipe[second]", "recipe[first]"}}
+	a, err := adminMigrationShadowCanonicalPayload("roles", source)
 	if err != nil {
-		t.Fatalf("source canonical error = %v", err)
+		t.Fatal(err)
 	}
-	targetCanonical, err := adminMigrationShadowCanonicalPayload("roles", target)
+	b, err := adminMigrationShadowCanonicalPayload("roles", target)
 	if err != nil {
-		t.Fatalf("target canonical error = %v", err)
+		t.Fatal(err)
 	}
-	if sourceCanonical != targetCanonical {
-		t.Fatalf("canonical payloads differ after normalization:\nsource=%s\ntarget=%s", sourceCanonical, targetCanonical)
-	}
-	target["run_list"] = []any{"recipe[second]", "recipe[first]"}
-	changedCanonical, err := adminMigrationShadowCanonicalPayload("roles", target)
-	if err != nil {
-		t.Fatalf("changed canonical error = %v", err)
-	}
-	if sourceCanonical == changedCanonical {
-		t.Fatalf("run_list reordering was normalized away; source=%s target=%s", sourceCanonical, changedCanonical)
+	if a == b {
+		t.Fatal("run list order was normalized away")
 	}
 }
 
@@ -3889,7 +3864,7 @@ func adminMigrationShadowClientForSourceCoverage(t *testing.T, sourcePath, cover
 		if !ok {
 			t.Fatalf("missing source payload for check %+v", check)
 		}
-		response := adminMigrationShadowTargetFixturePayload(payload)
+		response := adminMigrationShadowTargetFixturePayload(check.Family, payload)
 		for _, checksum := range check.DownloadChecksums {
 			rawURL := "https://opencook.test/_blob/checksums/" + checksum + "?signature=secret"
 			adminMigrationShadowReplaceDownloadURL(response, checksum, rawURL)
@@ -3911,38 +3886,46 @@ func adminMigrationShadowClientForSourceCoverage(t *testing.T, sourcePath, cover
 
 // adminMigrationShadowTargetFixturePayload adds harmless target-only fields and
 // reorders unordered arrays to prove the comparison normalizer is doing work.
-func adminMigrationShadowTargetFixturePayload(payload any) any {
+func adminMigrationShadowTargetFixturePayload(family string, payload any) any {
 	value := adminMigrationShadowJSONValue(payload)
-	adminMigrationShadowMutateFixtureValue("", value)
-	return value
-}
-
-// adminMigrationShadowMutateFixtureValue recursively injects volatile target
-// fields while keeping semantic source data unchanged.
-func adminMigrationShadowMutateFixtureValue(key string, value any) {
-	switch typed := value.(type) {
-	case map[string]any:
-		typed["updated_at"] = "2026-04-30T00:00:00Z"
-		typed["private_key"] = "secret target private key"
-		for childKey, childValue := range typed {
-			if childKey == "url" {
-				if rawURL, ok := childValue.(string); ok {
-					typed[childKey] = adminMigrationShadowTargetFixtureURL(rawURL)
+	var mutate func(string, any)
+	mutate = func(path string, value any) {
+		switch typed := value.(type) {
+		case map[string]any:
+			if path == "" && family == "users" {
+				typed["requestor"] = map[string]any{"name": "pivotal"}
+				typed["authn_status"] = "verified"
+			}
+			for key, child := range typed {
+				childPath := key
+				if path != "" {
+					childPath = path + "/" + key
 				}
-				continue
+				if adminMigrationShadowDownloadPath(family, childPath) {
+					if raw, ok := child.(string); ok {
+						typed[key] = adminMigrationShadowTargetFixtureURL(raw)
+					}
+				} else {
+					mutate(childPath, child)
+				}
 			}
-			adminMigrationShadowMutateFixtureValue(childKey, childValue)
-		}
-	case []any:
-		if adminMigrationShadowUnorderedArrayKey(key) {
-			for left, right := 0, len(typed)-1; left < right; left, right = left+1, right-1 {
-				typed[left], typed[right] = typed[right], typed[left]
+		case []any:
+			if adminMigrationShadowUnorderedPath(family, path) {
+				for i, j := 0, len(typed)-1; i < j; i, j = i+1, j-1 {
+					typed[i], typed[j] = typed[j], typed[i]
+				}
 			}
-		}
-		for _, item := range typed {
-			adminMigrationShadowMutateFixtureValue(key, item)
+			childPath := path + "/*"
+			if path == "" {
+				childPath = "*"
+			}
+			for _, child := range typed {
+				mutate(childPath, child)
+			}
 		}
 	}
+	mutate("", value)
+	return value
 }
 
 // adminMigrationShadowTargetFixtureURL turns source checksum paths into

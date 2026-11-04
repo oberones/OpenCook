@@ -9,6 +9,7 @@ import (
 
 	"github.com/oberones/OpenCook/internal/authz"
 	"github.com/oberones/OpenCook/internal/bootstrap"
+	"github.com/oberones/OpenCook/internal/jsonvalue"
 	"github.com/oberones/OpenCook/internal/testfixtures"
 )
 
@@ -283,7 +284,25 @@ func assertEncryptedDataBagCoreObjectState(t *testing.T, got bootstrap.CoreObjec
 	if !reflect.DeepEqual(gotOrg.DataBags, wantOrg.DataBags) {
 		t.Fatalf("decoded data bags = %#v, want %#v", gotOrg.DataBags, wantOrg.DataBags)
 	}
-	if !reflect.DeepEqual(gotOrg.DataBagItems, wantOrg.DataBagItems) {
+	// Number-preserving row decoding intentionally returns json.Number for
+	// arbitrary attributes; compare their exact JSON data, not Go numeric types.
+	gotJSON, err := json.Marshal(gotOrg.DataBagItems)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantJSON, err := json.Marshal(wantOrg.DataBagItems)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotJSON, err = jsonvalue.CanonicalBytes(gotJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantJSON, err = jsonvalue.CanonicalBytes(wantJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(gotJSON) != string(wantJSON) {
 		t.Fatalf("decoded data bag items = %#v, want %#v", gotOrg.DataBagItems, wantOrg.DataBagItems)
 	}
 }
@@ -311,4 +330,40 @@ func assertEncodedDataBagItemPayload(t *testing.T, rows CoreObjectRows, bagName,
 		return
 	}
 	t.Fatalf("encoded data bag item %s/%s missing from rows", bagName, itemID)
+}
+
+func TestCoreObjectNumbersSurviveEveryAttributeFamily(t *testing.T) {
+	var attributes map[string]any
+	if err := jsonvalue.Unmarshal([]byte(`{"large":9007199254740993,"negative":-9007199254740997,"decimal":0.123456789012345678901,"exponent":1.234567890123456789e40}`), &attributes); err != nil {
+		t.Fatal(err)
+	}
+	state := sampleCoreObjectState()
+	org := state.Orgs["ponyville"]
+	env := org.Environments["prod"]
+	env.DefaultAttributes = attributes
+	org.Environments["prod"] = env
+	node := org.Nodes["node1"]
+	node.Normal = attributes
+	org.Nodes["node1"] = node
+	role := org.Roles["web"]
+	role.OverrideAttributes = attributes
+	org.Roles["web"] = role
+	org.DataBagItems = map[string]map[string]bootstrap.DataBagItem{"bag": {"item": {ID: "item", RawData: attributes}}}
+	org.Policies = map[string]map[string]bootstrap.PolicyRevision{"policy": {"rev": {Name: "policy", RevisionID: "rev", Payload: attributes}}}
+	state.Orgs["ponyville"] = org
+	repo := New("postgres://unused").CoreObjects()
+	rows, err := repo.EncodeCoreObjects(bootstrap.CloneCoreObjectState(state))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := repo.DecodeCoreObjects(rows)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored := got.Orgs["ponyville"]
+	for name, value := range map[string]map[string]any{"node": restored.Nodes["node1"].Normal, "environment": restored.Environments["prod"].DefaultAttributes, "role": restored.Roles["web"].OverrideAttributes, "bag": restored.DataBagItems["bag"]["item"].RawData, "policy": restored.Policies["policy"]["rev"].Payload} {
+		if !reflect.DeepEqual(value, attributes) {
+			t.Fatalf("numbers changed in %s: %v", name, value)
+		}
+	}
 }

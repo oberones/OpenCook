@@ -6,6 +6,7 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
+	"github.com/oberones/OpenCook/internal/jsonvalue"
 	"sort"
 	"strconv"
 	"strings"
@@ -254,7 +255,7 @@ func (r *CookbookRepository) EncodeCookbookVersion(orgName string, version boots
 
 func (r *CookbookRepository) DecodeCookbookVersion(bundle CookbookVersionBundle) (bootstrap.CookbookVersion, error) {
 	var metadata map[string]any
-	if err := json.Unmarshal(bundle.Version.MetadataJSON, &metadata); err != nil {
+	if err := jsonvalue.Unmarshal(bundle.Version.MetadataJSON, &metadata); err != nil {
 		return bootstrap.CookbookVersion{}, fmt.Errorf("unmarshal cookbook metadata: %w", err)
 	}
 
@@ -332,7 +333,7 @@ func (r *CookbookRepository) EncodeCookbookArtifact(orgName string, artifact boo
 
 func (r *CookbookRepository) DecodeCookbookArtifact(bundle CookbookArtifactBundle) (bootstrap.CookbookArtifact, error) {
 	var metadata map[string]any
-	if err := json.Unmarshal(bundle.Artifact.MetadataJSON, &metadata); err != nil {
+	if err := jsonvalue.Unmarshal(bundle.Artifact.MetadataJSON, &metadata); err != nil {
 		return bootstrap.CookbookArtifact{}, fmt.Errorf("unmarshal cookbook artifact metadata: %w", err)
 	}
 
